@@ -495,6 +495,8 @@ def register_cloud():
             # Mark registration as complete
             with open(REGISTRATION_MARKER, 'w') as f:
                 f.write(str(int(time.time())))
+            # Persist Email for Dashboard visibility
+            update_env_var("CLOUD_EMAIL", email)
             return jsonify({"status": "success", "message": "Invitation sent! Check your email."})
         else:
             # Attempt to parse specific error from Worker JSON
@@ -612,6 +614,8 @@ def index():
             env.get("PANGOLIN_ENDPOINT") != factory.get("PANGOLIN_ENDPOINT") or
             env.get("PANGOLIN_DOMAIN") != factory.get("PANGOLIN_DOMAIN")
         )
+    # Feature Flag: Cloud/Email features only active if Registrar is provisioned
+    cloud_enabled = bool(factory.get("REGISTRAR_URL"))
 
     return render_template(
         "dashboard.html",
@@ -625,6 +629,8 @@ def index():
             "mode": "cloudflare" if cf_mode else "pangolin",
             "is_custom_pangolin": is_custom_pangolin,
         },
+        cloud_enabled=cloud_enabled,
+        cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"}
     )
 
 
