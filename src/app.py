@@ -44,6 +44,7 @@ SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
 SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_tunnels.sh"
 SCRIPT_UTILITIES = f"{INSTALL_DIR}/scripts/utilities.sh"
 INSTALL_CREDS_PATH = f"{INSTALL_DIR}/install_creds.json"
+STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
 STATUS_FILE = os.path.join(tempfile.gettempdir(), "homebrain_task_status.json")
 
@@ -448,7 +449,8 @@ def start_setup():
         "domain": env_config.get('PANGOLIN_DOMAIN'),
         "generated_at": time.time()
     }
-    with open(INSTALL_CREDS_PATH, 'w') as f:
+    # Write to staging first. deploy.sh will move it to final path on success.
+    with open(STAGING_CREDS_PATH, 'w') as f:
         json.dump(creds_data, f)
 
     # 4. Assign master password to all services
@@ -1579,7 +1581,7 @@ if __name__ == "__main__":
         logging.error(f"CRITICAL: Migration failed: {e}")
         
     # Attempt update before starting web server
-    threading.Thread(target=perform_first_boot_update).start()
+    # threading.Thread(target=perform_first_boot_update).start()
 
     # For local dev only; in production, use Gunicorn
     # app.run(host="0.0.0.0", port=80, debug=True)  # Keep debug=True for dev, but remove in prod    
@@ -1634,9 +1636,9 @@ def resume_incomplete_setup():
             
             logging.info("Detected interrupted setup state.")
             
-            # Robustness: If credentials don't exist, setup failed too early to resume safely.
+            # If credentials don't exist (neither final nor staging), setup failed too early.
             # We reset the state so the user is redirected to Welcome screen to try again.
-            if not os.path.exists(INSTALL_CREDS_PATH):
+            if not os.path.exists(INSTALL_CREDS_PATH) and not os.path.exists(STAGING_CREDS_PATH):
                 logging.warning("Credentials missing. Resetting setup state to allow retry.")
                 try: os.remove(SETUP_STARTED_MARKER)
                 except: pass

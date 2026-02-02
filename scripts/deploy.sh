@@ -106,16 +106,11 @@ fi
 
 log_info "=== Deployment Complete ==="
 
-# Block completion until the credentials file exists to prevent race condition in UI
-log_info "Waiting for credentials file generation..."
-end_time=$((SECONDS + 120))
-while [ ! -f "$INSTALL_DIR/install_creds.json" ]; do
-    if [ $SECONDS -ge $end_time ]; then
-        log_warn "Timed out waiting for credentials. UI may report partial error."
-        break
-    fi
-    sleep 2
-done
+# ATOMIC HANDOVER: Move credentials from staging to final path
+# This ensures the UI only shows the Success screen when we are actually done.
+if [ -f "$INSTALL_DIR/.install_creds_staging" ]; then
+    mv "$INSTALL_DIR/.install_creds_staging" "$INSTALL_DIR/install_creds.json"
+fi
 
 if [ -f "$INSTALL_DIR/install_creds.json" ]; then
     # Ensure ownership is root:root so the service can read it
