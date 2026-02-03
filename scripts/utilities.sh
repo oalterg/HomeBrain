@@ -117,8 +117,17 @@ get_system_config_status() {
 # --- Helper: Install Dependencies ---
 ensure_ftp_dependencies() {
     if ! command -v vsftpd >/dev/null 2>&1; then
+        # Offline check: Cannot install if offline
+        if ! check_internet; then
+             die "VSFTPD not found and no internet connection. Cannot install FTP dependencies."
+        fi
+        
         log_info "Installing VSFTPD and utilities..."
         export DEBIAN_FRONTEND=noninteractive
+        
+        # Resilience: Wait for lock
+        wait_for_apt_lock
+
         apt-get update -qq
         apt-get install -y -qq vsftpd libpam-pwdfile apache2-utils inotify-tools
     fi

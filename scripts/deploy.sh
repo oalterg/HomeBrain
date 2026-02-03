@@ -9,6 +9,9 @@ if [ -t 1 ]; then :; else exec >> "$SETUP_LOG_FILE" 2>&1; fi
 
 log_info "=== Starting Deployment: $(date) ==="
 
+# Resilience: Ensure time is correct for SSL/Tokens
+wait_for_time_sync
+
 load_env
 
 # --- 0. Ensure dependencies installed ---
@@ -24,7 +27,8 @@ if ! systemctl is-active --quiet docker; then
 fi
 
 # 1a. Pull Images
-docker compose --env-file "$ENV_FILE" $(get_compose_args) pull
+# Try to pull updates, but do not fail if offline (fallback to factory images)
+docker compose --env-file "$ENV_FILE" $(get_compose_args) pull || log_warn "Image pull failed/skipped. Using pre-loaded local images."
 
 # 1b. Start Database FIRST (Fix for 'Not Installed' race condition)
 log_info "Starting Database..."

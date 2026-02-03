@@ -28,6 +28,30 @@ load_env() {
     fi
 }
 
+# --- Resilience Helpers ---
+check_internet() {
+    ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1
+}
+
+wait_for_time_sync() {
+    # Robustness: Block setup until system time is valid (Year >= 2023)
+    # Critical for SSL certificates, Oauth, and TOTP.
+    if [[ $(date +%Y) -lt 2026 ]]; then
+        log_info "System time invalid ($(date)). Waiting for NTP sync..."
+        # Attempt to force systemd-timesyncd
+        systemctl restart systemd-timesyncd || true
+        
+        local retries=0
+        while [[ $(date +%Y) -lt 2026 ]]; do
+            sleep 5
+            ((retries++))
+            if [[ $retries -gt 24 ]]; then log_warn "Time sync timed out. SSL/OAuth may fail."; break; fi
+        done
+        log_info "Time synchronized: $(date)"
+    fi
+}
+
+
 # --- Configuration Helpers ---
 update_env_var() {
     local key="$1"
@@ -146,10 +170,30 @@ wait_for_healthy() {
     return 1
 }
 
+wait_for_apt_lock() {
+    local lock_files=("/var/lib/dpkg/lock" "/var/lib/dpkg/lock-frontend" "/var/lib/apt/lists/lock")
+    for lock in "${lock_files[@]}"; do
+        while fuser "$lock" >/dev/null 2>&1; do
+            log_info "Waiting for apt lock ($lock)..."
+            sleep 3
+        done
+    done
+}
+
 install_deps_enable_docker() {
+    # Offline Fallback: If offline but docker exists, skip apt to prevent crash
+    if ! check_internet; then
+        if command -v docker >/dev/null; then
+            log_warn "Offline mode detected. Skipping apt updates (Docker already installed)."
+            return
+        else
+            log_warn "No internet and Docker not found. Proceeding with apt (may fail)..."
+        fi
+    fi
+
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
-    # Added -qq for quieter output in logs
+    wait_for_apt_lock
     apt-get install -y -qq ca-certificates gnupg lsb-release cron gpg rsync initramfs-tools python3-flask python3-dotenv python3-requests python3-pip jq moreutils pwgen git parted rfkill
     apt-get update -qq
 
@@ -169,6 +213,15 @@ install_deps_enable_docker() {
 install_python_venv_deps(){
     # Install Python dependencies in venv
     VENV_DIR="$INSTALL_DIR/venv"
+    
+    # Optimization: If venv exists and seems valid, skip pip (Offline Safe)
+    if [ -f "$VENV_DIR/bin/activate" ] && [ -d "$VENV_DIR/lib" ]; then
+        if ! check_internet; then
+            log_info "Offline: Using existing venv."
+            return
+        fi
+    fi
+
     if [ ! -d "$VENV_DIR" ]; then
         echo "Creating virtualenv..."
         python3 -m venv "$VENV_DIR"
