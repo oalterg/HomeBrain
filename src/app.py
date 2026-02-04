@@ -144,33 +144,33 @@ def write_status(status):
         current_task_status = status  # Fallback to global if file fails
 
 def read_status():
-    # 1. Try reading from file (Inter-Process Communication)
+    # 1. Try reading from file (Active Background Task)
     try:
         if os.path.exists(STATUS_FILE):
             with open(STATUS_FILE, 'r') as f:
                 return json.load(f)
     except Exception as e:
          logging.error(f"Failed to read status file: {e}")
-    # 2. Check physical state (Persistence & Idempotence)
-    if os.path.exists(os.path.join(INSTALL_DIR, ".setup_complete")):
-        # Don't report success if credentials are missing (Race condition guard)
-        if not os.path.exists(INSTALL_CREDS_PATH):
-            return {"status": "running", "message": "Finalizing credentials...", "log_type": "setup"}
-        return {"status": "success", "message": "Setup complete"}
 
-    # 3. Fallback to default/memory
+    # 2. Check Physical State (No active task file)
+    # If credentials exist, we are in the Handover Phase.
+    # We report 'success' to ensure the dashboard/installer shows the completion state.
+    if os.path.exists(INSTALL_CREDS_PATH):
+        return {"status": "success", "message": "Setup complete"}
+    
+    # 3. Default: System Active / Idle
     return {"status": "idle", "message": "", "log_type": "setup"}
 
 # Initialize status on startup
 try:
-    initial_status = read_status()
-    if initial_status["status"] == "running":
-        initial_status["status"] = "error"
-        initial_status["message"] = "Stale task from previous run detected."
-        write_status(initial_status)
-        logging.warning("Reset stale running task on startup.")
+    # On startup, any 'running' task in the status file is dead.
+    # We remove the file to force a reset to the true persistent state (Idle or Handover).
+    if os.path.exists(STATUS_FILE):
+        logging.info("Startup: Cleaning up previous task status file.")
+        os.remove(STATUS_FILE)
 except Exception as e:
-    logging.error(f"Startup status init failed: {e}. Defaulting to idle.")
+    logging.error(f"Startup status cleanup failed: {e}")
+    # Ensure in-memory fallback is clean
     current_task_status = {"status": "idle", "message": "", "log_type": "setup"}
 
 @app.route("/api/task_status")
