@@ -600,6 +600,23 @@
                 </table>
             </div>
             
+            <div class="card" style="border-left: 4px solid #9b59b6;">
+                <h3>Personal AI Assistant <span class="status-badge status-starting" style="background:#9b59b622; color:#d2b4de; border-color:#9b59b6;">Experimental</span></h3>
+                <p>Run OpenClaw with Nanbeige4.1-3B entirely locally on your machine for a private, autonomous AI assistant.</p>
+                <table style="margin-top:10px;">
+                    <tr>
+                        <td>
+                            <strong>OpenClaw AI</strong><br>
+                            <small style="color:var(--hb-text-dim);">Requires ~4GB RAM for the 3B model.</small>
+                        </td>
+                        <td style="text-align:right;">
+                            <span id="sys-openclaw-status" class="status-badge status-unknown">...</span>
+                            <button onclick="toggleSystem('openclaw')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+            
             <div class="card">
                 <h3>FTP Server (Camera Uploads)</h3>
                 <p>Create dedicated FTP accounts mapping to Nextcloud.</p>
@@ -892,6 +909,7 @@
                 updateBadge('sys-wd-status', data.watchdog, 'enabled');
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
                 updateBadge('sys-pci-status', data.pci, 'gen3');
+                updateBadge('sys-openclaw-status', data.openclaw || 'disabled', 'running');
 
                 checkRedisStatus();
                 
@@ -901,20 +919,28 @@
         async function toggleSystem(feature) {
             let action = "";
             let confirmMsg = "";
-            const el = document.getElementById(feature === 'watchdog' ? 'sys-wd-status' : (feature === 'cron' ? 'sys-cron-status' : 'sys-pci-status'));
-            const current = el.dataset.val;
+            let current = "";
+
+            if (feature === 'openclaw') {
+                current = document.getElementById('sys-openclaw-status').dataset.val;
+                action = current === 'running' || current === 'starting' ? 'disable' : 'enable';
+                confirmMsg = action === 'enable' ? "Install and Start OpenClaw AI? This will download the Nanbeige 4.1 3B model (~2GB) and start local LLM services." : "Disable OpenClaw AI and stop local LLM services?";
+            } else {
+               const el = document.getElementById(feature === 'watchdog' ? 'sys-wd-status' : (feature === 'cron' ? 'sys-cron-status' : 'sys-pci-status'));
+               current = el.dataset.val;
     
-            if (feature === 'watchdog') {
-                action = current === 'enabled' ? 'disable' : 'enable';
-                confirmMsg = `${action.toUpperCase()} Hardware Watchdog?`;
-            } 
-            else if (feature === 'cron') {
-                action = 'enable'; 
-                confirmMsg = "Enforce System Cron for Nextcloud?";
-            }
-            else if (feature === 'pci') {
-                action = current === 'gen3' ? 'disable' : 'enable'; 
-                confirmMsg = `Switch PCIe to ${action === 'enable' ? 'GEN 3 (Experimental)' : 'Gen 2 (Stable)'}?\nA reboot will be required.`;
+               if (feature === 'watchdog') {
+                   action = current === 'enabled' ? 'disable' : 'enable';
+                   confirmMsg = `${action.toUpperCase()} Hardware Watchdog?`;
+               } 
+               else if (feature === 'cron') {
+                   action = 'enable'; 
+                   confirmMsg = "Enforce System Cron for Nextcloud?";
+               }
+               else if (feature === 'pci') {
+                   action = current === 'gen3' ? 'disable' : 'enable'; 
+                   confirmMsg = `Switch PCIe to ${action === 'enable' ? 'GEN 3 (Experimental)' : 'Gen 2 (Stable)'}?\nA reboot will be required.`;
+               }
             }
     
             if (confirm(confirmMsg)) {

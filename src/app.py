@@ -1448,7 +1448,7 @@ def update_system_config():
     action = data.get("action")   # enable/disable or gen3/gen2
 
     # Whitelist features and actions
-    if feature not in ["watchdog", "cron", "pci"]:
+    if feature not in ["watchdog", "cron", "pci", "openclaw"]:
         return jsonify({"error": "Invalid feature"}), 400
 
     safe_action = shlex.quote(action) if action else ""
@@ -1469,6 +1469,25 @@ def update_system_config():
         target = "gen3" if action == "enable" else "gen2" 
         cmd = f"bash {SCRIPT_UTILITIES} pci {target}"
         label = f"Configure PCIe ({target})"
+    elif feature == "openclaw":
+        target_val = "true" if action == "enable" else "false"
+        # Update .env immediately so scripts see the new state
+        update_env_var("ENABLE_OPENCLAW", target_val)
+        
+        safe_env = shlex.quote(ENV_FILE)
+        
+        # Use subshell to ensure environment is re-evaluated
+        cmd_script = f"source {shlex.quote(INSTALL_DIR)}/scripts/common.sh\n"
+        cmd_script += f"profiles=\"$(get_compose_args) $(get_tunnel_profiles)\"\n"
+        cmd_script += f"docker compose --env-file {safe_env} $profiles up -d --remove-orphans\n"
+        
+        if action == "enable":
+            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai\n"
+            label = "Install & Start OpenClaw AI"
+        else:
+            label = "Disable OpenClaw AI"
+            
+        cmd = f"bash -c {shlex.quote(cmd_script)}"
 
     # Execute
     cmd += f" >> {LOG_FILES['setup']} 2>&1"

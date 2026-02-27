@@ -129,11 +129,17 @@ get_tunnel_profiles() {
         # --- Pangolin Mode ---
         profiles="--profile pangolin"
     else
-        die "No complete tunnel configuration found. Deploying local-only."
+        log_info "No complete tunnel configuration found. Deploying local-only."
     fi
 
     # Trim leading space if any
     profiles="${profiles#" "}"
+
+    # --- AI Profile ---
+    local enable_ai="${ENABLE_OPENCLAW:-false}"
+    if [[ "$enable_ai" == "true" ]]; then
+        profiles="${profiles} --profile ai"
+    fi
 
     echo "${profiles}"
 }

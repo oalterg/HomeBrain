@@ -110,8 +110,18 @@ get_system_config_status() {
         cron_status=$(docker exec -u www-data "$nc_cid" php occ config:app:get core backgroundjobs_mode 2>/dev/null || echo "unknown")
     fi
 
-    # Return JSON
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\"}"
+    # OpenClaw AI
+    local ai_status="disabled"
+    if [[ "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
+        local ai_cid=$(docker compose $(get_compose_args) ps -q openclaw 2>/dev/null || true)
+        if [[ -n "$ai_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ai_cid" 2>/dev/null) == "true" ]]; then
+            ai_status="running"
+        else
+            ai_status="starting"
+        fi
+    fi
+
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"openclaw\": \"$ai_status\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -424,6 +434,26 @@ create_ha_admin() {
     return 0
 }
 
+# --- Helper: Setup AI Assistant ---
+setup_openclaw() {
+    log_info "Setting up OpenClaw AI Assistant..."
+   
+    # Wait for container to exist (it might be pulling the image)
+    local retry=0
+    while [[ -z $(docker compose $(get_compose_args) ps -q ollama 2>/dev/null) ]] && [[ $retry -lt 30 ]]; do
+        sleep 2
+        retry=$((retry+1))
+    done
+
+    log_info "Waiting for Ollama engine to initialize..."
+    wait_for_healthy "ollama" 300 || { log_error "Ollama failed to start."; return 1; }
+
+    local ollama_cid=$(docker compose $(get_compose_args) ps -q ollama 2>/dev/null)
+    log_info "Pulling Nanbeige4.1-3B model..."
+    docker exec "$ollama_cid" ollama pull fauxpaslife/nanbeige4.1
+    log_info "Model pulled successfully."
+}
+
 # --- Main Dispatch ---
 case "${1:-}" in
     system_status)
@@ -469,6 +499,9 @@ case "${1:-}" in
         ;;
     ha_admin)
         create_ha_admin "${2:-}"
+        ;;
+    setup_ai)
+        setup_openclaw
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"

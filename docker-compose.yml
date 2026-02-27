@@ -114,8 +114,41 @@ services:
     depends_on:
       - homeassistant
 
+  ollama:
+    profiles:
+      - ai
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  openclaw:
+    profiles:
+      - ai
+    image: coollabsio/openclaw:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - AUTH_USERNAME=admin
+      - AUTH_PASSWORD=test
+      - OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
+    volumes:
+      - openclaw_data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+
 volumes:
   nextcloud_html:
   db_data:
   ha_config:
   redis_data:
+  ollama_data:
+  openclaw_data:
