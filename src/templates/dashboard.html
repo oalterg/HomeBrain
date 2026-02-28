@@ -607,9 +607,13 @@
                     <tr>
                         <td>
                             <strong>OpenClaw AI</strong><br>
+                            <select id="openclaw-model" style="margin-top:5px; width:auto; font-size:0.8em; padding:2px 5px; background:#111; border:1px solid #444;">
+                                <option value="llama3.2">Llama 3.2 (3B)</option>
+                                <option value="nanbeige">Nanbeige 4.1 (3B)</option>
+                            </select><br>
                             <small style="color:var(--hb-text-dim);">Requires ~4GB RAM for the 3B model.</small>
                         </td>
-                        <td style="text-align:right;">
+                        <td style="text-align:right; vertical-align:top;">
                             <span id="sys-openclaw-status" class="status-badge status-unknown">...</span>
                             <button onclick="toggleSystem('openclaw')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
@@ -924,7 +928,15 @@
             if (feature === 'openclaw') {
                 current = document.getElementById('sys-openclaw-status').dataset.val;
                 action = current === 'running' || current === 'starting' ? 'disable' : 'enable';
-                confirmMsg = action === 'enable' ? "Install and Start OpenClaw AI? This will download the Nanbeige 4.1 3B model (~2GB) and start local LLM services." : "Disable OpenClaw AI and stop local LLM services?";
+                const model = document.getElementById('openclaw-model').value;
+                const modelName = model === 'llama3.2' ? 'Llama 3.2 3B' : 'Nanbeige 4.1 3B';
+                confirmMsg = action === 'enable' ? `Install and Start OpenClaw AI with ${modelName}? This will download the model (~2GB) and start local LLM services.` : "Disable OpenClaw AI and stop local LLM services?";
+                
+                if (confirm(confirmMsg)) {
+                    triggerAction('/api/system/config', 'System Config', { feature: feature, action: action, model: model });
+                    setTimeout(loadSystemConfig, 3000);
+                }
+                return; // Early return to bypass the default toggle logic
             } else {
                const el = document.getElementById(feature === 'watchdog' ? 'sys-wd-status' : (feature === 'cron' ? 'sys-cron-status' : 'sys-pci-status'));
                current = el.dataset.val;

@@ -1473,6 +1473,8 @@ def update_system_config():
         target_val = "true" if action == "enable" else "false"
         # Update .env immediately so scripts see the new state
         update_env_var("ENABLE_OPENCLAW", target_val)
+
+        selected_model = data.get("model", "llama3.2")
         
         safe_env = shlex.quote(ENV_FILE)
         
@@ -1482,7 +1484,7 @@ def update_system_config():
         cmd_script += f"docker compose --env-file {safe_env} $profiles up -d --remove-orphans\n"
         
         if action == "enable":
-            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai\n"
+            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai {shlex.quote(selected_model)}\n"
             label = "Install & Start OpenClaw AI"
         else:
             label = "Disable OpenClaw AI"

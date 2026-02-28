@@ -121,6 +121,8 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h # Prevent slow re-loads during sparse conversation
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -137,14 +139,33 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - AUTH_USERNAME=admin
-      - AUTH_PASSWORD=test
-      - OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
+      - AUTH_PASSWORD=${MANAGER_PASSWORD:-test}
+      - OLLAMA_API_KEY=ollama-local
+      - OPENCLAW_PRIMARY_MODEL=${OPENCLAW_PRIMARY_MODEL:-localollama/llama3.2-highctx}
+      - OPENCLAW_GATEWAY_TOKEN=c91a770632780c844fc126165b0cf8891f4d85114588faf606dafc356a279012
+      - BROWSER_CDP_URL=http://browser:9223   # required for the browser tool
+      - OPENCLAW_GATEWAY_BIND=lan
+      - OPENCLAW_GATEWAY_CONTROL_UI_DANGEROUSLY_ALLOW_HOST_HEADER_ORIGIN_FALLBACK=true
     volumes:
       - openclaw_data:/data
     depends_on:
       ollama:
         condition: service_healthy
+      browser:
+        condition: service_started
 
+  browser:
+    profiles:
+      - ai
+    image: coollabsio/openclaw-browser:latest
+    restart: unless-stopped
+    shm_size: 2g
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - browser_data:/config
 volumes:
   nextcloud_html:
   db_data:
@@ -152,3 +173,4 @@ volumes:
   redis_data:
   ollama_data:
   openclaw_data:
+  browser_data:
