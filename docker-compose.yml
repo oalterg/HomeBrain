@@ -121,6 +121,7 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
+      - ./Modelfile:./config/Modelfile:ro  # Mount the Modelfile
     environment:
       - OLLAMA_KEEP_ALIVE=24h # Prevent slow re-loads during sparse conversation
     healthcheck:
@@ -129,48 +130,86 @@ services:
       timeout: 10s
       retries: 5
 
-  openclaw:
+# OpenClaw Gateway (main service)
+  openclaw-gateway:
     profiles:
       - ai
-    image: coollabsio/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:latest  # Pulls latest official image
     restart: unless-stopped
     ports:
-      - "8081:8080"
+      - "18789:18789"  # OpenClaw UI on a free port
+      - "18790:18790"  # Bridge port (optional)
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - AUTH_USERNAME=admin
-      - AUTH_PASSWORD=${MANAGER_PASSWORD:-test}
-      - OLLAMA_API_KEY=ollama-local
-      - OPENCLAW_PRIMARY_MODEL=${OPENCLAW_PRIMARY_MODEL:-localollama/llama3.2-highctx}
-      - OPENCLAW_GATEWAY_TOKEN=c91a770632780c844fc126165b0cf8891f4d85114588faf606dafc356a279012
-      - BROWSER_CDP_URL=http://browser:9223   # required for the browser tool
-      - OPENCLAW_GATEWAY_BIND=lan
-      - OPENCLAW_GATEWAY_CONTROL_UI_DANGEROUSLY_ALLOW_HOST_HEADER_ORIGIN_FALLBACK=true
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}  # From .env (generate with openssl rand -hex 32)
+      - OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      - CLAUDE_AI_SESSION_KEY=${CLAUDE_AI_SESSION_KEY:-}  # Optional for Claude integration
+      - CLAUDE_WEB_SESSION_KEY=${CLAUDE_WEB_SESSION_KEY:-}  # Optional
+      - CLAUDE_WEB_COOKIE=${CLAUDE_WEB_COOKIE:-}  # Optional
+      - OLLAMA_BASE_URL=http://ollama:11434  # Integrate with your existing Ollama
+      - OLLAMA_API_KEY=ollama-local  # Dummy key for local Ollama
     volumes:
-      - openclaw_data:/data
+      - openclaw_config:/home/node/.openclaw
+      - openclaw_workspace:/home/node/.openclaw/workspace
+    init: true
+    command:
+      - "node"
+      - "dist/index.js"
+      - "gateway"
+      - "--bind"
+      - "lan"
+      - "--port"
+      - "18789"
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       ollama:
         condition: service_healthy
-      browser:
-        condition: service_started
 
-  browser:
+  # OpenClaw CLI (for onboarding and management, run manually)
+  openclaw-cli:
     profiles:
       - ai
-    image: coollabsio/openclaw-browser:latest
-    restart: unless-stopped
-    shm_size: 2g
+    image: ghcr.io/openclaw/openclaw:latest  # Same as gateway
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      - BROWSER=echo
+      - CLAUDE_AI_SESSION_KEY=${CLAUDE_AI_SESSION_KEY:-}
+      - CLAUDE_WEB_SESSION_KEY=${CLAUDE_WEB_SESSION_KEY:-}
+      - CLAUDE_WEB_COOKIE=${CLAUDE_WEB_COOKIE:-}
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_API_KEY=ollama-local
     volumes:
-      - browser_data:/config
+      - openclaw_config:/home/node/.openclaw
+      - openclaw_workspace:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
 volumes:
   nextcloud_html:
   db_data:
   ha_config:
   redis_data:
   ollama_data:
-  openclaw_data:
-  browser_data:
+  openclaw_config:  # New for OpenClaw config
+  openclaw_workspace:  # New for OpenClaw workspace

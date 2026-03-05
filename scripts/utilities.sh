@@ -473,7 +473,6 @@ setup_openclaw() {
     log_info "Configuring model for 16k context..."
     docker exec "$ollama_cid" sh -c "echo 'FROM $ai_pull_name' > /tmp/Modelfile && echo 'PARAMETER num_ctx 16384' >> /tmp/Modelfile && echo 'PARAMETER temperature 0.7' >> /tmp/Modelfile && ollama create $ai_model_custom -f /tmp/Modelfile"
     
-    log_info "Injecting OpenClaw provider configuration..."
     # Dynamically find the compose volume name to be 100% robust
     local vol_name=$(docker volume ls -q | grep "_openclaw_data" | head -n 1)
     if [ -n "$vol_name" ]; then
@@ -494,8 +493,8 @@ setup_openclaw() {
                     \"supportsTools\": true
                 }]
             } | 
-            .agents.defaults.timeout = 1800 |
-            .agents.defaults.timeoutSeconds = 1800 |
+            .agents.defaults.timeout = 3600 |
+            .agents.defaults.timeoutSeconds = 3600 |
             .gateway.trustedProxies = [\"127.0.0.1\"] |
             .gateway.controlUi.allowedOrigins = [\"http://192.168.178.43:8081\", \"http://homebrain.local:8081\", \"http://localhost:8081\", \"http://127.0.0.1:8081\"] |
             .gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true |
@@ -508,6 +507,41 @@ setup_openclaw() {
     else
         log_error "Could not find openclaw_data volume to configure."
     fi
+}
+
+configure_openclaw() {
+    log_info "=== Starting OpenClaw & AI Setup ==="
+
+    # 1. Ensure we have our secure token
+    ensure_openclaw_token
+
+    # 2. Start Ollama and wait for it to be ready
+    log_info "Starting Ollama..."
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d ollama
+    wait_for_healthy "ollama" 120 || die "Ollama failed to become healthy."
+
+    # 3. Apply the Modelfile parameters
+    # This is idempotent: it will quickly re-verify or update the model if the Modelfile changed.
+    log_info "Applying custom AI parameters from Modelfile..."
+    local model_name="${OPENCLAW_PRIMARY_MODEL:-localollama/llama3.2-highctx}"
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama create "$model_name" -f /config/Modelfile || log_warn "Failed to create Ollama model from Modelfile."
+
+    # 4. Start the OpenClaw Brain
+    log_info "Starting OpenClaw Brain..."
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d openclaw
+    
+    # Give the brain a few seconds to boot its internal Node.js server before hitting it with the CLI
+    sleep 10
+
+    # 5. Run the Onboarding (Idempotent: will succeed or harmlessly skip if already onboarded)
+    log_info "Running OpenClaw CLI Onboarding..."
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli onboard || log_warn "Onboarding exited with non-zero status (it may already be onboarded)."
+
+    # 6. Start the Gateway
+    log_info "Starting OpenClaw Gateway..."
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d openclaw-gateway
+    
+    log_info "=== OpenClaw Setup Complete ==="
 }
 
 # --- Main Dispatch ---
@@ -552,6 +586,11 @@ case "${1:-}" in
         ;;
     activate_tunnels)
         activate_tunnels
+        ;;
+    openclaw_cli)
+        shift
+        log_info "Executing OpenClaw CLI: $*"
+        docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli "$@"
         ;;
     ha_admin)
         create_ha_admin "${2:-}"
