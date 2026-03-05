@@ -245,6 +245,19 @@ install_python_venv_deps(){
     fi
 }
 
+ensure_openclaw_token() {
+    # Idempotent check: only generate if missing or empty
+    if ! grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE" || grep -q "^OPENCLAW_GATEWAY_TOKEN=$" "$ENV_FILE"; then
+        log_info "Generating secure OPENCLAW_GATEWAY_TOKEN..."
+        # Remove any empty existing key to avoid duplicates
+        sed -i '/^OPENCLAW_GATEWAY_TOKEN=/d' "$ENV_FILE"
+        echo "OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)" >> "$ENV_FILE"
+    fi
+    
+    # Reload env so the current script has access to the new token
+    set -a; source "$ENV_FILE"; set +a
+}
+
 # --- Maintenance Mode ---
 set_maintenance_mode() {
     local mode="$1" # --on or --off

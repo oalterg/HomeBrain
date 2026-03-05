@@ -1677,5 +1677,27 @@ def resume_incomplete_setup():
     except Exception as e:
         logging.error(f"Failed to resume setup: {e}")
 
+# --- OpenClaw CLI Endpoint ---
+@app.route('/api/openclaw/cli', methods=['POST'])
+def openclaw_cli_exec():
+    # Optional: if you have an auth session check, uncomment the next line
+    # if not session.get('authenticated'): return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.json
+    args = data.get('args', [])
+    if not isinstance(args, list):
+        return jsonify({"success": False, "output": "Error: arguments must be a list."})
+        
+    cmd = ["bash", f"{INSTALL_DIR}/utilities.sh", "openclaw_cli"] + args
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        output = result.stdout + ("\n" + result.stderr if result.stderr else "")
+        return jsonify({"success": result.returncode == 0, "output": output.strip()})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "output": "Command timed out after 120 seconds."})
+    except Exception as e:
+        return jsonify({"success": False, "output": f"Execution failed: {str(e)}"})
+
+
 # Start resume check in background on app load
 threading.Thread(target=resume_incomplete_setup, daemon=True).start()

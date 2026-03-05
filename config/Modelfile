@@ -1,0 +1,4 @@
+FROM llama3.2:3b
+PARAMETER num_ctx 8192
+PARAMETER num_batch 256
+PARAMETER num_thread 4
