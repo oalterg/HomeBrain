@@ -121,7 +121,7 @@ services:
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
-      - ./Modelfile:./config/Modelfile:ro  # Mount the Modelfile
+      - ./config/Modelfile:/Modelfile:ro
     environment:
       - OLLAMA_KEEP_ALIVE=24h # Prevent slow re-loads during sparse conversation
     healthcheck:
@@ -132,6 +132,7 @@ services:
 
 # OpenClaw Gateway (main service)
   openclaw-gateway:
+    user: "0:0"
     profiles:
       - ai
     image: ghcr.io/openclaw/openclaw:latest  # Pulls latest official image
@@ -152,15 +153,13 @@ services:
     volumes:
       - openclaw_config:/home/node/.openclaw
       - openclaw_workspace:/home/node/.openclaw/workspace
-    init: true
-    command:
-      - "node"
-      - "dist/index.js"
-      - "gateway"
-      - "--bind"
-      - "lan"
-      - "--port"
-      - "18789"
+      - ./config/openclaw-default-config.json:/home/node/.openclaw/openclaw-default-config.json
+    command: >
+      sh -c "
+        cp -f /home/node/.openclaw/openclaw-default-config.json /home/node/.openclaw/openclaw.json &&
+        chown 1000:1000 /home/node/.openclaw/openclaw.json &&
+        exec node dist/index.js gateway --bind lan --port 18789
+      "
     healthcheck:
       test:
         - "CMD"
@@ -211,5 +210,5 @@ volumes:
   ha_config:
   redis_data:
   ollama_data:
-  openclaw_config:  # New for OpenClaw config
-  openclaw_workspace:  # New for OpenClaw workspace
+  openclaw_config:
+  openclaw_workspace:
