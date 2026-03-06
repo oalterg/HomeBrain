@@ -1,0 +1,48 @@
+{
+  "gateway": {
+    "bind": "lan",
+    "port": 18789,
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": "94d46994c65c9644e37d9c2023cc0938d56e5a80059998414a47b7b11baf4e7b"
+    },
+    "controlUi": {
+      "allowedOrigins": [
+        "http://homebrain.local:18789",
+        "http://localhost:18789",
+        "http://127.0.0.1:18789"
+      ],
+      "dangerouslyAllowHostHeaderOriginFallback": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "trustedProxies": ["127.0.0.1"]
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "apiKey": "ollama-local",
+        "models": [
+          {
+            "id": "llama3.2:3b-highctx",
+            "name": "Llama 3.2 (High Context)",
+            "contextWindow": 16384
+          },
+          {
+            "id": "nanbeige4.1-tools",
+            "name": "Nanbeige 4.1 Tools",
+            "contextWindow": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/llama3.2:3b-highctx"
+      }
+    }
+  }
+}

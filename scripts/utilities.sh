@@ -446,14 +446,13 @@ setup_openclaw() {
     local display_name="Llama 3.2 3B (16k)"
 
     if [[ "$requested_model" == "nanbeige" ]]; then
-        ai_pull_name="fauxpaslife/nanbeige4.1"
+        ai_pull_name="tomng/nanbeige4.1"
         ai_model_custom="nanbeige4.1-tools"
         display_name="Nanbeige 4.1 (Tools)"
     fi
     
     # Update environment so docker-compose targets the correct model on restart
     update_env_var "OPENCLAW_PRIMARY_MODEL" "localollama/$ai_model_custom"
-
    
     # Wait for container to exist (it might be pulling the image)
     local retry=0
@@ -476,32 +475,6 @@ setup_openclaw() {
     # Dynamically find the compose volume name to be 100% robust
     local vol_name=$(docker volume ls -q | grep "_openclaw_data" | head -n 1)
     if [ -n "$vol_name" ]; then
-        docker run --rm -v "${vol_name}:/data" alpine sh -c '
-            apk add --no-cache jq &&
-            mkdir -p /data/.openclaw &&
-            touch /data/.openclaw/openclaw.json &&
-            (grep -q "{" /data/.openclaw/openclaw.json || echo "{}" > /data/.openclaw/openclaw.json) &&
-            jq ".models.providers.localollama = {
-                \"api\": \"openai-completions\",
-                \"baseUrl\": \"http://ollama:11434/v1\",
-                \"apiKey\": \"ollama-local\",
-                \"timeoutMs\": 1800000,
-                \"models\": [{
-                    \"id\": \"'"$ai_model_custom"'\",
-                    \"name\": \"'"$display_name"'\",
-                    \"contextWindow\": 16384,
-                    \"supportsTools\": true
-                }]
-            } | 
-            .agents.defaults.timeout = 3600 |
-            .agents.defaults.timeoutSeconds = 3600 |
-            .gateway.trustedProxies = [\"127.0.0.1\"] |
-            .gateway.controlUi.allowedOrigins = [\"http://192.168.178.43:8081\", \"http://homebrain.local:8081\", \"http://localhost:8081\", \"http://127.0.0.1:8081\"] |
-            .gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true |
-            .gateway.controlUi.allowInsecureAuth = true |
-            .gateway.controlUi.dangerouslyDisableDeviceAuth = true
-            " /data/.openclaw/openclaw.json > /tmp/tmp.json && mv /tmp/tmp.json /data/.openclaw/openclaw.json
-        '
         log_info "Restarting OpenClaw to apply settings..."
         docker compose $(get_compose_args) restart openclaw
     else
@@ -586,11 +559,6 @@ case "${1:-}" in
         ;;
     activate_tunnels)
         activate_tunnels
-        ;;
-    openclaw_cli)
-        shift
-        log_info "Executing OpenClaw CLI: $*"
-        docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli "$@"
         ;;
     ha_admin)
         create_ha_admin "${2:-}"
