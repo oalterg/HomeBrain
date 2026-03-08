@@ -440,64 +440,66 @@ create_ha_admin() {
 setup_openclaw() {
     log_info "Setting up OpenClaw AI Assistant..."
 
-    local requested_model="${1:-llama3.2}"
-    local ai_pull_name="llama3.2:3b"
-    local ai_model_custom="llama3.2-highctx"
-    local display_name="Llama 3.2 3B (16k)"
+    local requested_model="${1:-ministral-3-14b}"
+    local ai_pull_name=""
+    local ai_model_custom=""
+    local ctx_size="16384"
 
-    if [[ "$requested_model" == "nanbeige" ]]; then
-        ai_pull_name="tomng/nanbeige4.1"
-        ai_model_custom="nanbeige4.1-tools"
-        display_name="Nanbeige 4.1 (Tools)"
-    fi
+    # Map UI selections to 16GB VRAM optimized quantizations
+    case "$requested_model" in
+        "gpt-oss-20b")
+            ai_pull_name="gpt-oss:20b-q4_K_M"
+            ai_model_custom="gpt-oss-20b-openclaw"
+            ;;
+        "ministral-14b")
+            ai_pull_name="ministral-3:14b-q5_K_M"
+            ai_model_custom="ministral-14b-openclaw"
+            ;;
+        "qwen-9b")
+            ai_pull_name="qwen3.5:9b-q5_K_M"
+            ai_model_custom="qwen-9b-openclaw"
+            ;;
+        "qwen-35b")
+            ai_pull_name="qwen3.5:35b-q3_K_S"
+            ai_model_custom="qwen-35b-openclaw"
+            ctx_size="4096" # Strictly capped to fit 35B model inside 16GB VRAM
+            ;;
+        "lfm2")
+            ai_pull_name="lfm2:latest"
+            ai_model_custom="lfm2-openclaw"
+            ;;
+        *)
+            ai_pull_name="ministral-3:14b-q5_K_M"
+            ai_model_custom="ministral-14b-openclaw"
+            ;;
+    esac
     
-    # Update environment so docker-compose targets the correct model on restart
-    update_env_var "OPENCLAW_PRIMARY_MODEL" "localollama/$ai_model_custom"
-   
-    # Wait for container to exist (it might be pulling the image)
-    local retry=0
-    while [[ -z $(docker compose $(get_compose_args) ps -q ollama 2>/dev/null) ]] && [[ $retry -lt 30 ]]; do
-        sleep 2
-        retry=$((retry+1))
-    done
+    # Use native 'ollama/' provider prefix for OpenClaw stability
+    update_env_var "OPENCLAW_PRIMARY_MODEL" "ollama/$ai_model_custom"
 
-    log_info "Waiting for Ollama engine to initialize..."
-    wait_for_healthy "ollama" 300 || { log_error "Ollama failed to start."; return 1; }
-
-    local ollama_cid=$(docker compose $(get_compose_args) ps -q ollama 2>/dev/null)
-    log_info "Pulling $ai_pull_name base model..."
-    docker exec "$ollama_cid" ollama pull "$ai_pull_name"
-    log_info "Model pulled successfully."
-    
-    log_info "Configuring model for 16k context..."
-    docker exec "$ollama_cid" sh -c "echo 'FROM $ai_pull_name' > /tmp/Modelfile && echo 'PARAMETER num_ctx 16384' >> /tmp/Modelfile && echo 'PARAMETER temperature 0.7' >> /tmp/Modelfile && ollama create $ai_model_custom -f /tmp/Modelfile"
-    
-    # Dynamically find the compose volume name to be 100% robust
-    local vol_name=$(docker volume ls -q | grep "_openclaw_data" | head -n 1)
-    if [ -n "$vol_name" ]; then
-        log_info "Restarting OpenClaw to apply settings..."
-        docker compose $(get_compose_args) restart openclaw
-    else
-        log_error "Could not find openclaw_data volume to configure."
-    fi
-}
-
-configure_openclaw() {
-    log_info "=== Starting OpenClaw & AI Setup ==="
-
-    # 1. Ensure we have our secure token
+    # Ensure we have our secure token for the Gateway/CLI
     ensure_openclaw_token
 
-    # 2. Start Ollama and wait for it to be ready
+
+    # Robustness: Prevent Docker volume bugs by ensuring the file exists before boot
+    mkdir -p "$INSTALL_DIR/config"
+    if [ -d "$INSTALL_DIR/config/Modelfile" ]; then rm -rf "$INSTALL_DIR/config/Modelfile"; fi
+    
+    # Idempotently write the Modelfile
+    cat > "$INSTALL_DIR/config/Modelfile" <<EOF
+FROM $ai_pull_name
+PARAMETER num_ctx $ctx_size
+EOF
+
+    # Start Ollama and wait for it to be ready
     log_info "Starting Ollama..."
     docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d ollama
     wait_for_healthy "ollama" 120 || die "Ollama failed to become healthy."
 
-    # 3. Apply the Modelfile parameters
-    # This is idempotent: it will quickly re-verify or update the model if the Modelfile changed.
-    log_info "Applying custom AI parameters from Modelfile..."
-    local model_name="${OPENCLAW_PRIMARY_MODEL:-localollama/llama3.2-highctx}"
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama create "$model_name" -f /config/Modelfile || log_warn "Failed to create Ollama model from Modelfile."
+    # Apply the Modelfile parameters
+    log_info "Configuring model via Modelfile..."
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama pull "$ai_pull_name"
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama create "$ai_model_custom" -f /Modelfile || log_warn "Failed to create Ollama model from Modelfile."
 
     # 4. Start the OpenClaw Brain
     log_info "Starting OpenClaw Brain..."
@@ -565,6 +567,11 @@ case "${1:-}" in
         ;;
     setup_ai)
         setup_openclaw
+        ;;
+    openclaw_cli)
+        shift
+        log_info "Executing OpenClaw CLI: $*"
+        docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli "$@"
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"

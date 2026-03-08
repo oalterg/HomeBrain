@@ -1542,7 +1542,7 @@ def update_system_config():
         # Update .env immediately so scripts see the new state
         update_env_var("ENABLE_OPENCLAW", target_val)
 
-        selected_model = data.get("model", "llama3.2")
+        selected_model = data.get("model", "ministral-14b")
         
         safe_env = shlex.quote(ENV_FILE)
         
