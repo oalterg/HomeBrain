@@ -610,8 +610,13 @@
                             <select id="openclaw-model" style="margin-top:5px; width:auto; font-size:0.8em; padding:2px 5px; background:#111; border:1px solid #444;">
                                 <option value="llama3.2">Llama 3.2 (3B)</option>
                                 <option value="nanbeige">Nanbeige 4.1 (3B)</option>
+                                <option value="ministral-3-14b">Ministral 3 14B (Q5_K_M)</option>
+                                <option value="gpt-oss-20b">GPT-OSS 20B (Q4_K_M)</option>
+                                <option value="qwen-9b">Qwen 3.5 9B (Q5_K_M)</option>
+                                <option value="qwen-35b">Qwen 3.5 35B (Q3_K_S)</option>
+                                <option value="lfm2">LFM2</option>
                             </select><br>
-                            <small style="color:var(--hb-text-dim);">Requires ~4GB RAM for the 3B model.</small>
+                            <small style="color:var(--hb-text-dim);">Quantizations optimized for 16GB VRAM GPUs.</small>
                         </td>
                         <td style="text-align:right; vertical-align:top;">
                             <span id="sys-openclaw-status" class="status-badge status-unknown">...</span>
@@ -929,9 +934,16 @@
                 current = document.getElementById('sys-openclaw-status').dataset.val;
                 action = current === 'running' || current === 'starting' ? 'disable' : 'enable';
                 const model = document.getElementById('openclaw-model').value;
-                const modelName = model === 'llama3.2' ? 'Llama 3.2 3B' : 'Nanbeige 4.1 3B';
-                confirmMsg = action === 'enable' ? `Install and Start OpenClaw AI with ${modelName}? This will download the model (~2GB) and start local LLM services.` : "Disable OpenClaw AI and stop local LLM services?";
-                
+                const modelNames = {
+                    'ministral-3-14b': 'Ministral 3 14B',
+                    'gpt-oss-20b': 'GPT-OSS 20B',
+                    'qwen-9b': 'Qwen 3.5 9B',
+                    'qwen-35b': 'Qwen 3.5 35B',
+                    'lfm2': 'LFM2'
+                };
+                const modelName = modelNames[model] || model;
+                confirmMsg = action === 'enable' ? `Install and Start OpenClaw AI with ${modelName}? This will download the model and start local LLM services.` : "Disable OpenClaw AI and stop local LLM services?";
+
                 if (confirm(confirmMsg)) {
                     triggerAction('/api/system/config', 'System Config', { feature: feature, action: action, model: model });
                     setTimeout(loadSystemConfig, 3000);

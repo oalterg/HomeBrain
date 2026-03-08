@@ -25,14 +25,29 @@
         "apiKey": "ollama-local",
         "models": [
           {
-            "id": "llama3.2:3b-highctx",
-            "name": "Llama 3.2 (High Context)",
+            "id": "ministral-14b-openclaw",
+            "name": "Ministral 3 14B",
             "contextWindow": 16384
           },
           {
-            "id": "nanbeige4.1-tools",
-            "name": "Nanbeige 4.1 Tools",
-            "contextWindow": 32768
+            "id": "gpt-oss-20b-openclaw",
+            "name": "GPT-OSS 20B",
+            "contextWindow": 16384
+          },
+          {
+            "id": "qwen-9b-openclaw",
+            "name": "Qwen 3.5 9B",
+            "contextWindow": 16384
+          },
+          {
+            "id": "qwen-35b-openclaw",
+            "name": "Qwen 3.5 35B",
+            "contextWindow": 4096
+          },
+          {
+            "id": "lfm2-openclaw",
+            "name": "LFM2",
+            "contextWindow": 16384
           }
         ]
       }
@@ -41,7 +56,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "ollama/llama3.2:3b-highctx"
+        "primary": "ollama/ministral-14b-openclaw"
       }
     }
   }
