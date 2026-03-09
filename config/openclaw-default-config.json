@@ -27,27 +27,27 @@
           {
             "id": "ministral-14b-openclaw",
             "name": "Ministral 3 14B",
-            "contextWindow": 16384
+            "contextWindow": 32768
           },
           {
             "id": "gpt-oss-20b-openclaw",
             "name": "GPT-OSS 20B",
-            "contextWindow": 16384
+            "contextWindow": 131072
           },
           {
             "id": "qwen-9b-openclaw",
             "name": "Qwen 3.5 9B",
-            "contextWindow": 16384
+            "contextWindow": 65536
           },
           {
             "id": "qwen-35b-openclaw",
             "name": "Qwen 3.5 35B",
-            "contextWindow": 4096
+            "contextWindow": 32768
           },
           {
             "id": "lfm2-openclaw",
             "name": "LFM2",
-            "contextWindow": 16384
+            "contextWindow": 131072
           }
         ]
       }
@@ -56,7 +56,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "ollama/ministral-14b-openclaw"
+        "primary": "ollama/ministral-14b-openclaw",
+        "fallbacks": [
+          "ollama/qwen-35b-openclaw"
+        ]
       }
     }
   }
