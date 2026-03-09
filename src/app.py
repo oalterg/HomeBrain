@@ -1746,26 +1746,29 @@ def resume_incomplete_setup():
         logging.error(f"Failed to resume setup: {e}")
 
 # --- OpenClaw CLI Endpoint ---
-@app.route('/api/openclaw/cli', methods=['POST'])
-def openclaw_cli_exec():
-    # Optional: if you have an auth session check, uncomment the next line
-    # if not session.get('authenticated'): return jsonify({"error": "Unauthorized"}), 401
+@app.route('/api/openclaw/cli/stream', methods=['GET'])
+def openclaw_cli_stream():
+    if not session.get('authenticated'): abort(401)
     
-    data = request.json
-    args = data.get('args', [])
-    if not isinstance(args, list):
-        return jsonify({"success": False, "output": "Error: arguments must be a list."})
-        
-    cmd = ["bash", f"{INSTALL_DIR}/utilities.sh", "openclaw_cli"] + args
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        output = result.stdout + ("\n" + result.stderr if result.stderr else "")
-        return jsonify({"success": result.returncode == 0, "output": output.strip()})
-    except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "output": "Command timed out after 120 seconds."})
-    except Exception as e:
-        return jsonify({"success": False, "output": f"Execution failed: {str(e)}"})
+    args_str = request.args.get('args', '')
+    args = shlex.split(args_str)
+    
+    def generate():
+        cmd = ["bash", f"{SCRIPT_UTILITIES}", "openclaw_cli"] + args
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    clean_line = line.rstrip('\r\n').replace('\n', '\\n')
+                    yield f"data: {clean_line}\n\n"
+            process.stdout.close()
+            process.wait()
+            yield "data: [DONE]\n\n"
+        except Exception as e:
+            yield f"data: Error executing command: {str(e)}\n\n"
+            yield "data: [DONE]\n\n"
 
+    return Response(generate(), mimetype='text/event-stream')
 
 # Start resume check in background on app load
 threading.Thread(target=resume_incomplete_setup, daemon=True).start()

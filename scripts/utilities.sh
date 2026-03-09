@@ -450,27 +450,32 @@ setup_openclaw() {
         "gpt-oss-20b")
             ai_pull_name="gpt-oss:20b-q4_K_M"
             ai_model_custom="gpt-oss-20b-openclaw"
+            ctx_size=ctx_size="131072"
             ;;
         "ministral-14b")
             ai_pull_name="ministral-3:14b-q5_K_M"
             ai_model_custom="ministral-14b-openclaw"
+            ctx_size="32768"
             ;;
         "qwen-9b")
             ai_pull_name="qwen3.5:9b-q5_K_M"
             ai_model_custom="qwen-9b-openclaw"
+            ctx_size="65536"
             ;;
         "qwen-35b")
-            ai_pull_name="qwen3.5:35b-q3_K_S"
+            ai_pull_name="qwen3.5:35b-a3b"   # MoE variant
             ai_model_custom="qwen-35b-openclaw"
-            ctx_size="4096" # Strictly capped to fit 35B model inside 16GB VRAM
+            ctx_size="32768"
             ;;
         "lfm2")
             ai_pull_name="lfm2:latest"
             ai_model_custom="lfm2-openclaw"
+            ctx_size="131072"   # MoE
             ;;
         *)
             ai_pull_name="ministral-3:14b-q5_K_M"
             ai_model_custom="ministral-14b-openclaw"
+            ctx_size="32768"
             ;;
     esac
     
@@ -508,11 +513,7 @@ EOF
     # Give the brain a few seconds to boot its internal Node.js server before hitting it with the CLI
     sleep 10
 
-    # 5. Run the Onboarding (Idempotent: will succeed or harmlessly skip if already onboarded)
-    log_info "Running OpenClaw CLI Onboarding..."
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli onboard || log_warn "Onboarding exited with non-zero status (it may already be onboarded)."
-
-    # 6. Start the Gateway
+    # 5. Start the Gateway
     log_info "Starting OpenClaw Gateway..."
     docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d openclaw-gateway
     
@@ -571,7 +572,8 @@ case "${1:-}" in
     openclaw_cli)
         shift
         log_info "Executing OpenClaw CLI: $*"
-        docker compose --env-file "$ENV_FILE" $(get_compose_args) run --rm openclaw-cli "$@"
+        # Use -e FORCE_COLOR=1 to ensure QR codes render even without TTY, and -T for script compatibility
+        docker compose --env-file "$ENV_FILE" $(get_compose_args) run -T --rm -e FORCE_COLOR=1 openclaw-cli "$@"
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"
