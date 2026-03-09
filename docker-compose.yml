@@ -176,6 +176,7 @@ services:
 
   # OpenClaw CLI (for onboarding and management, run manually)
   openclaw-cli:
+    user: "0:0"
     profiles:
       - ai
     image: ghcr.io/openclaw/openclaw:latest  # Same as gateway
