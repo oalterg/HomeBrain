@@ -467,6 +467,11 @@ setup_openclaw() {
             ai_model_custom="qwen-35b-openclaw"
             ctx_size="32768"
             ;;
+        "qwen-2b")
+            ai_pull_name="qwen3.5:2b-q4_K_M"   # MoE variant
+            ai_model_custom="qwen-2b-openclaw"
+            ctx_size="32768"
+            ;;
         "lfm2")
             ai_pull_name="lfm2:latest"
             ai_model_custom="lfm2-openclaw"

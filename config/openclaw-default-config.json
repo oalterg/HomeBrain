@@ -45,6 +45,11 @@
             "contextWindow": 32768
           },
           {
+            "id": "qwen3.5:2b-q4-32k",
+            "name": "Qwen 3.5 2B Q4 (32k)",
+            "contextWindow": 32768
+          },
+          {
             "id": "lfm2-openclaw",
             "name": "LFM2",
             "contextWindow": 131072
@@ -56,7 +61,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "ollama/ministral-14b-openclaw",
+        "primary": "ollama/gpt-oss-20b-openclaw",
         "fallbacks": [
           "ollama/qwen-35b-openclaw"
         ]
