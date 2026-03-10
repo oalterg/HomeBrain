@@ -156,8 +156,11 @@ services:
       - ./config/openclaw-default-config.json:/home/node/.openclaw/openclaw-default-config.json
     command: >
       sh -c "
-        cp -f /home/node/.openclaw/openclaw-default-config.json /home/node/.openclaw/openclaw.json &&
-        chown 1000:1000 /home/node/.openclaw/openclaw.json &&
+        if [ ! -f /home/node/.openclaw/openclaw.json ]; then
+          echo 'Initializing default OpenClaw configuration...';
+          cp /home/node/.openclaw/openclaw-default-config.json /home/node/.openclaw/openclaw.json;
+          chown 1000:1000 /home/node/.openclaw/openclaw.json;
+        fi &&
         exec node dist/index.js gateway --bind lan --port 18789
       "
     healthcheck:
