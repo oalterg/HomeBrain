@@ -1128,7 +1128,8 @@
             if (confirm(`DANGER: This will ERASE ALL DATA on ${path}.\n\nAre you sure?`)) {
                 const check = prompt(`Type 'FORMAT' to confirm formatting ${path}`);
                 if (check === "FORMAT") {
-                    triggerAction('/api/drives/format', 'Format Drive', { path: path });
+                    await triggerAction('/api/drives/format', 'Format Drive', { path: path });
+                    setTimeout(loadDrives, 5000); // Refresh list to show newly created partition
                 }
             }
         }
