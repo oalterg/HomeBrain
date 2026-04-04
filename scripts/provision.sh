@@ -51,7 +51,6 @@ if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
         wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg 2>/dev/null || true
         if [[ -f /etc/apt/keyrings/rocm.gpg ]]; then
             # Use 'noble' (24.04 LTS) as ROCm may not have packages for newer Ubuntu releases yet
-            local rocm_codename
             rocm_codename=$(lsb_release -cs)
             # Fall back to noble if current codename has no ROCm packages
             if ! wget -q --spider "https://repo.radeon.com/rocm/apt/latest/dists/${rocm_codename}" 2>/dev/null; then
