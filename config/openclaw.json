@@ -64,7 +64,7 @@
   },
   "channels": {
     "whatsapp": {
-      "enabled": true,
+      "enabled": false,
       "dmPolicy": "allowlist",
       "selfChatMode": true,
       "allowFrom": [],
@@ -105,7 +105,7 @@
   "plugins": {
     "entries": {
       "whatsapp": {
-        "enabled": true
+        "enabled": false
       }
     }
   }
