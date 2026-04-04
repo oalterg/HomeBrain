@@ -774,6 +774,7 @@ setup_openclaw() {
         patch_openclaw_config "$config_dest" "$model_id"
         chown -R admin:admin /home/admin/.openclaw
         chmod 600 "$config_dest"
+        sudo -u admin openclaw daemon install 2>/dev/null || true
         sudo -u admin openclaw daemon start \
             || { log_error "daemon start failed. Try: sudo -u admin openclaw daemon install"; return 1; }
         log_info "=== OpenClaw started (fast path) ==="
