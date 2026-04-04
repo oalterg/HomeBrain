@@ -473,11 +473,7 @@ create_ha_admin() {
 
 # Get the llama-server binary path for the current platform
 get_llama_bin_path() {
-    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
-        echo "/home/admin/llama-server/llama-server"
-    else
-        echo "/home/admin/llama.cpp/build/bin/llama-server"
-    fi
+    echo "/home/admin/llama-server/llama-server"
 }
 
 # Generate the systemd service file at runtime from model/platform config
@@ -495,6 +491,8 @@ Type=simple
 User=admin
 Group=admin
 WorkingDirectory=$(dirname "$bin_path")
+Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
+Environment="GGML_VK_DEVICE=0"
 ExecStart=${bin_path} \\
   --model ${model_path} \\
   --ctx-size ${ctx_size} \\
@@ -517,8 +515,8 @@ EOF
     chmod 644 "$service_dest"
 }
 
-# Install llama-server from prebuilt release binary (x86 + ROCm)
-install_llama_x86() {
+# Install prebuilt llama-server with Vulkan GPU support (both platforms)
+install_llama_prebuilt() {
     local LLAMA_INSTALL_DIR="/home/admin/llama-server"
     local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
 
@@ -528,29 +526,38 @@ install_llama_x86() {
         return 0
     fi
 
-    log_info "Installing ROCm runtime for AMD GPU..."
+    # Install Vulkan runtime (RADV for AMD, same packages for both archs)
+    log_info "Installing Vulkan runtime..."
     wait_for_apt_lock
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq wget curl jq rocm-hip-runtime 2>/dev/null \
-        || log_warn "rocm-hip-runtime not in repos. GPU offload may require manual ROCm install."
+    apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
+        || log_warn "Vulkan driver install returned non-zero. GPU offload may not work."
+
+    # Map architecture to release asset suffix
+    local arch_suffix
+    if [[ "$HB_ARCH" == "x86_64" ]]; then
+        arch_suffix="x64"
+    else
+        arch_suffix="arm64"
+    fi
 
     log_info "Fetching latest llama.cpp release..."
     local latest_tag
-    latest_tag=$(curl -sLf https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | jq -r '.tag_name') \
-        || die "Failed to query llama.cpp releases."
+    latest_tag=$(curl -sLf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
+        | jq -r '.tag_name') || die "Failed to query llama.cpp releases."
 
     local asset_url
-    asset_url=$(curl -sLf "https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/${latest_tag}" \
-        | jq -r '.assets[] | select(.name | test("ubuntu.*rocm.*x64")) | .browser_download_url' | head -1)
+    asset_url=$(curl -sLf "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${latest_tag}" \
+        | jq -r --arg suffix "$arch_suffix" \
+          '.assets[] | select(.name | test("ubuntu.*vulkan.*" + $suffix)) | .browser_download_url' \
+        | head -1)
 
     if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
-        log_warn "No prebuilt ROCm binary found for ${latest_tag}. Falling back to source build..."
-        install_llama_rpi5  # reuse source build path (works on x86 too)
-        return $?
+        die "No prebuilt Vulkan binary found for ${latest_tag} (${arch_suffix}). Check https://github.com/ggml-org/llama.cpp/releases"
     fi
 
-    log_info "Downloading prebuilt llama-server (${latest_tag})..."
+    log_info "Downloading prebuilt llama-server ${latest_tag} (Vulkan ${arch_suffix})..."
     mkdir -p "$LLAMA_INSTALL_DIR"
     local tmp_archive="/tmp/llama-release.tar.gz"
     wget -O "$tmp_archive" "$asset_url" \
@@ -561,45 +568,6 @@ install_llama_x86() {
     [[ -x "$LLAMA_BIN" ]] || chmod +x "$LLAMA_BIN"
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after extraction at $LLAMA_BIN"
     log_info "Installed prebuilt llama-server: $LLAMA_BIN"
-}
-
-# Build llama-server from source (Pi 5 / fallback)
-install_llama_rpi5() {
-    local LLAMA_DIR="/home/admin/llama.cpp"
-    local LLAMA_BIN="${LLAMA_DIR}/build/bin/llama-server"
-
-    # Fast-path: binary already present
-    if [[ -x "$LLAMA_BIN" ]]; then
-        log_info "llama-server binary already present at $LLAMA_BIN."
-        return 0
-    fi
-
-    log_info "Installing build dependencies..."
-    wait_for_apt_lock
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq cmake g++ git pkg-config wget \
-        libvulkan-dev glslang-tools vulkan-tools
-
-    log_info "Building llama.cpp from source (this takes 10-20 minutes on Pi 5)..."
-    if [[ -d "$LLAMA_DIR" ]]; then
-        log_info "Source directory exists. Updating..."
-        sudo -u admin git -C "$LLAMA_DIR" fetch --depth 1 origin main 2>/dev/null || true
-        sudo -u admin git -C "$LLAMA_DIR" reset --hard origin/main 2>/dev/null || true
-    else
-        log_info "Cloning llama.cpp (shallow)..."
-        sudo -u admin git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
-    fi
-
-    log_info "Configuring build (Vulkan GPU offload enabled)..."
-    sudo -u admin cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-
-    log_info "Compiling llama-server ($(nproc) cores)..."
-    sudo -u admin cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)" --target llama-server \
-        || die "llama.cpp build failed. Check build output above."
-
-    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after build at $LLAMA_BIN"
-    log_info "Build complete: $LLAMA_BIN"
 }
 
 # Download model file with resume support
@@ -678,13 +646,8 @@ setup_llama_server() {
         die "No internet connection. Cannot install llama-server."
     fi
 
-    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
-        log_info "[2/5] Installing prebuilt llama-server (ROCm)..."
-        install_llama_x86
-    else
-        log_info "[2/5] Building llama-server from source (Vulkan)..."
-        install_llama_rpi5
-    fi
+    log_info "[2/5] Installing prebuilt llama-server (Vulkan)..."
+    install_llama_prebuilt
 
     LLAMA_BIN=$(get_llama_bin_path)
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"

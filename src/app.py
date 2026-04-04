@@ -27,7 +27,7 @@ def detect_platform():
     if arch == "aarch64":
         return {"platform": "rpi5", "arch": "aarch64", "gpu_backend": "vulkan", "ai_default": "opt-in", "product_name": "HomeCloud", "product_suffix": "Cloud"}
     elif arch == "x86_64":
-        return {"platform": "x86_ubuntu", "arch": "x86_64", "gpu_backend": "rocm", "ai_default": "opt-out", "product_name": "HomeBrain", "product_suffix": "Brain"}
+        return {"platform": "x86_ubuntu", "arch": "x86_64", "gpu_backend": "vulkan", "ai_default": "opt-out", "product_name": "HomeBrain", "product_suffix": "Brain"}
     return {"platform": "unknown", "arch": arch, "gpu_backend": "none", "ai_default": "opt-in", "product_name": "HomeBrain", "product_suffix": "Brain"}
 
 PLATFORM_INFO = detect_platform()

@@ -8,7 +8,7 @@ HomeBrain is a self-hosted private cloud server automation platform. It automate
 
 Two product variants share one codebase:
 - **HomeCloud** — Raspberry Pi 5 (aarch64, 8 GB RAM). AI is opt-in. Headless appliance.
-- **HomeBrain** — x86 mATX (AMD Ryzen CPU, RX 9060 XT GPU, Ubuntu Server). AI is opt-out (default-on). Runs llama-server with ROCm GPU offload.
+- **HomeBrain** — x86 mATX (AMD Ryzen CPU, RX 9060 XT GPU, Ubuntu Server). AI is opt-out (default-on). Runs llama-server with Vulkan GPU offload.
 
 Platform is detected at runtime (`uname -m`) and drives all downstream behavior: package lists, AI build strategy, dashboard branding, and feature guards.
 
