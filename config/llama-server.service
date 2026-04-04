@@ -1,0 +1,32 @@
+[Unit]
+Description=llama.cpp inference server
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/llama.cpp
+
+# Adjust --model, -ngl (GPU layers), and --ctx-size to match your hardware.
+ExecStart=/home/admin/llama.cpp/build/bin/llama-server \
+  --model /home/admin/Qwen3.5-27B-Q4_K_M.gguf \
+  --ctx-size 131072 \
+  --parallel 1 \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --swa-full \
+  -ngl 41 \
+  -fa on
+
+Restart=always
+RestartSec=10
+# Allow up to 10 min for model load + GPU init
+TimeoutStartSec=600
+OOMScoreAdjust=-500
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

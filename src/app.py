@@ -524,50 +524,49 @@ def mount_drive():
     if not drive_path or "mmcblk" in drive_path:
         return jsonify({"error": "Invalid drive"}), 400
 
-    # 1. Determine the actual device/partition path to use
+    # Use absolute paths for system tools
+    blkid_path = shutil.which("blkid") or "/usr/sbin/blkid"
+    lsblk_path = shutil.which("lsblk") or "/usr/bin/lsblk"
+
+    # 1. Robustly determine the target partition
+    # If user selected /dev/sda, find the first child partition (e.g. /dev/sda1)
     target_path = drive_path
-    
-    # Check if this is a whole disk device (e.g., /dev/sda)
-    # If it is a whole disk, append '1' to check the first partition (e.g., /dev/sda1)
-    # This is a common convention, though 'p1' for NVMe/MMC can also occur.
-    # The lsblk output in list_drives provides only whole disk paths, so we check for common partition suffixes.
-    if not drive_path.endswith(('0','1','2','3','4','5','6','7','8','9')) and not drive_path.endswith('p'):
-        # Try appending '1'
-        target_path = drive_path + '1'
+    try:
+        # Ask lsblk for the first child partition of the selected device
+        child_part = subprocess.check_output(
+            [lsblk_path, "-no", "NAME", "-n", "-l", drive_path], 
+            text=True
+        ).strip().split('\n')
         
-        # Verify if the partition actually exists
-        if not os.path.exists(target_path):
-             # For some systems (e.g., NVMe/MMC), the partition might be /dev/nvme0n1p1.
-             # We rely on the user selecting the whole disk, so if /dev/sdX1 doesn't exist, we fallback
-             # to trying the original whole-disk path, as it *might* have been formatted without partitions.
-             target_path = drive_path
+        # If there are children, the first one after the parent is usually the partition
+        if len(child_part) > 1:
+            target_path = f"/dev/{child_part[1].strip()}"
+    except Exception as e:
+        logging.warning(f"lsblk partition detection failed: {e}")
+
              
     # 2. Get UUID and FSType from the target path
     try:
-        # Check UUID/FSType of the identified partition/device
-        uuid_cmd = f"blkid -o value -s UUID {shlex.quote(target_path)}"
-        fstype_cmd = f"blkid -o value -s TYPE {shlex.quote(target_path)}"
-
-        uuid = subprocess.check_output(uuid_cmd, shell=True).decode().strip()
-        fstype = subprocess.check_output(fstype_cmd, shell=True).decode().strip()
-
-        if not uuid:
-            # Fallback to the original whole-disk path if the partition check failed
-            if target_path != drive_path:
-                uuid = subprocess.check_output(f"blkid -o value -s UUID {shlex.quote(drive_path)}", shell=True).decode().strip()
-                fstype = subprocess.check_output(f"blkid -o value -s TYPE {shlex.quote(drive_path)}", shell=True).decode().strip()
-                if uuid:
-                     target_path = drive_path # Use the whole disk path if it has a UUID
-            
+        # We use -o export for blkid as it is easier to parse and more reliable
+        output = subprocess.check_output([blkid_path, "-p", "-o", "export", target_path], text=True)
+        info = dict(line.split("=", 1) for line in output.strip().split("\n") if "=" in line)
+        
+        uuid = info.get("UUID")
+        fstype = info.get("TYPE")
         if not uuid:
             # If still no UUID, it means the disk or its first partition is unformatted.
             return jsonify({"error": "No UUID found. Drive is likely unformatted or partitioned incorrectly."}), 400
 
         if fstype not in ["ext4", "ext3", "xfs"]:
             return jsonify({"error": f"Unsupported filesystem ({fstype})"}), 400
-    except:
-        return jsonify({"error": "Could not read drive info (blkid failed)"}), 500
 
+    except subprocess.CalledProcessError as e:
+        logging.error(f"blkid failed on {target_path}: {e}")
+        return jsonify({"error": f"Could not read drive info (blkid exit {e.returncode})"}), 500
+    except Exception as e:
+        logging.error(f"Unexpected mount error: {str(e)}")
+        return jsonify({"error": f"System error: {str(e)}"}), 500
+    
     # 3. Use the discovered UUID and FSType to update fstab
     # We use target_path for unmounting but UUID for fstab entry.
     cmd = (
@@ -853,32 +852,101 @@ def list_drives():
 
 @app.route("/api/drives/format", methods=["POST"])
 @limiter.limit("3 per minute")
-def format_drive():
+def format_backup_drive():
+    # Dynamically find the path to the tools, or fallback to standard locations
+    wipefs_path = shutil.which("wipefs") or "/usr/sbin/wipefs"
+    parted_path = shutil.which("parted") or "/usr/sbin/parted"
+    mkfs_path = shutil.which("mkfs.ext4") or "/sbin/mkfs.ext4"
+    partprobe_path = shutil.which("partprobe") or "/usr/sbin/partprobe"
+    umount_path = shutil.which("umount") or "/bin/umount"
+    udevadm_path = shutil.which("udevadm") or "/bin/udevadm"
+
     if current_task_status["status"] == "running":
         return jsonify({"error": "Task running"}), 409
 
-    drive_path = request.json.get("path")
-    if not drive_path or "mmcblk" in drive_path:
-        return jsonify({"error": "Invalid drive"}), 400
+    device_path = request.json.get("path")
+    if not device_path:
+        return jsonify({"error": "No drive path provided"}), 400
 
-    # Quote drive path to prevent command injection
-    safe_path = shlex.quote(drive_path)
-    cmd = (
-        f"umount {safe_path}* || true; "
-        f"wipefs -a {safe_path}; "
-        f"mkfs.ext4 -F -L 'NextcloudBackup' {safe_path}; "
-        f"mkdir -p {BACKUP_DIR}; "
-        f"UUID=$(blkid -o value -s UUID {safe_path}); "
-        f"sed -i '\|{BACKUP_DIR}|d' /etc/fstab; "
-        f'echo "UUID=$UUID {BACKUP_DIR} ext4 defaults,nofail 0 2" >> /etc/fstab; '
-        f"mount -a;"
-    )
+    logging.info(f"Initiating format sequence for {device_path}")
+    
+    # Safety Check: Never format the boot drive (nvme0n1 in your case)
+    if "nvme" in device_path or "mmcblk" in device_path:
+        error_msg = f"Refusing to format potential system drive: {device_path}"
+        logging.error(error_msg)
+        return jsonify({"error": error_msg}), 400
 
-    threading.Thread(
-        target=run_background_task, args=("Format Drive", cmd, "setup")
-    ).start()
-    return jsonify({"status": "started"})
+    def format_task():
+        try:
+            # 1. Unmount any existing partitions silently using absolute path
+            # We use '|| true' because if nothing is mounted, umount returns an error code we want to ignore.
+            subprocess.run(f"{umount_path} {device_path}* 2>/dev/null || true", shell=True)
 
+            # 2. Wipe existing partition tables and signatures
+            logging.info(f"Wiping existing signatures on {device_path}...")
+            subprocess.run(
+                [wipefs_path, "-a", device_path], 
+                capture_output=True, text=True, check=True
+            )
+
+            # 3. Create a fresh GPT label and a single primary partition taking up 100% of the space
+            logging.info("Creating new GPT partition table...")
+            subprocess.run(
+                [parted_path, "-s", device_path, "mklabel", "gpt", "mkpart", "primary", "ext4", "0%", "100%"], 
+                capture_output=True, text=True, check=True
+            )
+            
+            # 4. Force kernel re-read and wait for system to settle
+            # This is much more stable than a simple sleep.
+            subprocess.run([partprobe_path, device_path], capture_output=True)
+            subprocess.run([udevadm_path, "settle"], timeout=10, capture_output=True)
+
+            # 5. Robust Partition Naming
+            # Standard drives: /dev/sda -> /dev/sda1
+            # NVMe/eMMC/Loop: /dev/nvme0n1 -> /dev/nvme0n1p1
+            partition_path = f"{device_path}1"
+            if device_path[-1].isdigit():
+                partition_path = f"{device_path}p1"
+
+            # 6. Format the newly created partition
+            logging.info(f"Formatting {partition_path} to ext4...")
+            mkfs_result = subprocess.run(
+                [mkfs_path, "-F", partition_path], 
+                capture_output=True, text=True, check=True
+            )
+            
+            logging.info(f"Format complete. mkfs output: {mkfs_result.stdout}")
+            write_status({
+                "status": "success",
+                "message": f"Successfully formatted {partition_path}. You can now mount it.",
+                "log_type": "setup"
+            })
+            
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Command '{' '.join(e.cmd)}' failed (Code {e.returncode}). Error: {e.stderr.strip()}"
+            logging.error(f"Format Drive Error: {error_msg}")
+            write_status({
+                "status": "error",
+                "message": f"Format failed: {error_msg}",
+                "log_type": "setup"
+            })
+            
+        except Exception as e:
+            logging.error(f"Unexpected system error during format of {device_path}: {str(e)}")
+            write_status({
+                "status": "error",
+                "message": f"Unexpected error: {str(e)}",
+                "log_type": "setup"
+            })
+
+    write_status({
+        "status": "running",
+        "message": f"Formatting {device_path}...",
+        "log_type": "setup"
+    })
+    threading.Thread(target=format_task).start()
+    
+    return jsonify({"status": "started", "message": f"Format process started for {device_path}"})
 
 # --- Routes: Backup Config & Stats ---
 @app.route("/api/backup/stats")
@@ -1470,26 +1538,13 @@ def update_system_config():
         cmd = f"bash {SCRIPT_UTILITIES} pci {target}"
         label = f"Configure PCIe ({target})"
     elif feature == "openclaw":
-        target_val = "true" if action == "enable" else "false"
-        # Update .env immediately so scripts see the new state
-        update_env_var("ENABLE_OPENCLAW", target_val)
-
-        selected_model = data.get("model", "ministral-14b")
-        
-        safe_env = shlex.quote(ENV_FILE)
-        
-        # Use subshell to ensure environment is re-evaluated
-        cmd_script = f"source {shlex.quote(INSTALL_DIR)}/scripts/common.sh\n"
-        cmd_script += f"profiles=\"$(get_compose_args) $(get_tunnel_profiles)\"\n"
-        cmd_script += f"docker compose --env-file {safe_env} $profiles up -d --remove-orphans\n"
-        
+        update_env_var("ENABLE_OPENCLAW", "true" if action == "enable" else "false")
         if action == "enable":
-            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai {shlex.quote(selected_model)}\n"
-            label = "Install & Start OpenClaw AI"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai"
+            label = "Install & Start AI Stack"
         else:
-            label = "Disable OpenClaw AI"
-            
-        cmd = f"bash -c {shlex.quote(cmd_script)}"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} stop_ai"
+            label = "Disable AI Stack"
 
     # Execute
     cmd += f" >> {LOG_FILES['setup']} 2>&1"
@@ -1676,31 +1731,6 @@ def resume_incomplete_setup():
             threading.Thread(target=run_background_task, args=("Resumed Setup", cmd, "setup")).start()
     except Exception as e:
         logging.error(f"Failed to resume setup: {e}")
-
-# --- OpenClaw CLI Endpoint ---
-@app.route('/api/openclaw/cli/stream', methods=['GET'])
-def openclaw_cli_stream():
-    if not session.get('authenticated'): abort(401)
-    
-    args_str = request.args.get('args', '')
-    args = shlex.split(args_str)
-    
-    def generate():
-        cmd = ["bash", f"{SCRIPT_UTILITIES}", "openclaw_cli"] + args
-        try:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    clean_line = line.rstrip('\r\n').replace('\n', '\\n')
-                    yield f"data: {clean_line}\n\n"
-            process.stdout.close()
-            process.wait()
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            yield f"data: Error executing command: {str(e)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return Response(generate(), mimetype='text/event-stream')
 
 # Start resume check in background on app load
 threading.Thread(target=resume_incomplete_setup, daemon=True).start()
