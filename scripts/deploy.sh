@@ -158,9 +158,9 @@ auto_setup_ai() {
                           "AI_MODEL_MIN_SIZE=$m_min" "AI_NGL=$m_ngl" "AI_CTX_SIZE=$m_ctx" "AI_EXTRA_FLAGS=$m_extra"; do
                     key="${kv%%=*}" val="${kv#*=}"
                     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-                        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+                        sed -i "s|^${key}=.*|${key}='${val}'|" "$ENV_FILE"
                     else
-                        echo "${key}=${val}" >> "$ENV_FILE"
+                        echo "${key}='${val}'" >> "$ENV_FILE"
                     fi
                 done
             fi

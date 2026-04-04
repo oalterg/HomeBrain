@@ -535,12 +535,12 @@ install_llama_x86() {
 
     log_info "Fetching latest llama.cpp release..."
     local latest_tag
-    latest_tag=$(curl -sf https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | jq -r '.tag_name') \
+    latest_tag=$(curl -sLf https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | jq -r '.tag_name') \
         || die "Failed to query llama.cpp releases."
 
     local asset_url
-    asset_url=$(curl -sf "https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/${latest_tag}" \
-        | jq -r '.assets[] | select(.name | test("ubuntu.*x64.*rocm")) | .browser_download_url' | head -1)
+    asset_url=$(curl -sLf "https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/${latest_tag}" \
+        | jq -r '.assets[] | select(.name | test("ubuntu.*rocm.*x64")) | .browser_download_url' | head -1)
 
     if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
         log_warn "No prebuilt ROCm binary found for ${latest_tag}. Falling back to source build..."

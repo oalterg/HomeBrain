@@ -101,14 +101,14 @@ update_env_var() {
             # Escape value for sed (basic safety for URLs/domains)
             local safe_val
             safe_val=$(printf '%s\n' "$value" | sed -e 's/[\/&]/\\&/g')
-            sed -i "s|^${key}=.*|${key}=${safe_val}|" "$ENV_FILE"
+            sed -i "s|^${key}=.*|${key}='${safe_val}'|" "$ENV_FILE"
         else
             # If key missing, append it
-            echo "${key}=${value}" >> "$ENV_FILE"
+            echo "${key}='${value}'" >> "$ENV_FILE"
         fi
     else
         log_warn ".env file not found, creating new one."
-        echo "${key}=${value}" > "$ENV_FILE"
+        echo "${key}='${value}'" > "$ENV_FILE"
     fi
 }
 
