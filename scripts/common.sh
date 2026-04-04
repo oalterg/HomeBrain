@@ -17,6 +17,44 @@ log_warn() { echo "[WARN] $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
 
+# --- Platform Detection ---
+detect_platform() {
+    local arch
+    arch=$(uname -m)
+
+    if [[ "$arch" == "aarch64" ]]; then
+        export HB_PLATFORM="rpi5"
+        export HB_ARCH="aarch64"
+        export HB_GPU_BACKEND="vulkan"
+        export HB_AI_DEFAULT="opt-in"
+    elif [[ "$arch" == "x86_64" ]]; then
+        export HB_PLATFORM="x86_ubuntu"
+        export HB_ARCH="x86_64"
+        export HB_GPU_BACKEND="rocm"
+        export HB_AI_DEFAULT="opt-out"
+    else
+        export HB_PLATFORM="unknown"
+        export HB_ARCH="$arch"
+        export HB_GPU_BACKEND="none"
+        export HB_AI_DEFAULT="opt-in"
+    fi
+}
+detect_platform
+
+# --- User Management ---
+# Ensure the 'admin' system user exists (Pi OS ships with it; Ubuntu Desktop does not)
+ensure_admin_user() {
+    if id -u admin >/dev/null 2>&1; then
+        return 0
+    fi
+    log_info "Creating 'admin' system user..."
+    useradd -m -s /bin/bash admin
+    # Add to docker group if it exists (created by Docker install)
+    if getent group docker >/dev/null 2>&1; then
+        usermod -aG docker admin
+    fi
+}
+
 # --- Environment Loading ---
 load_env() {
     if [[ -f "$ENV_FILE" ]]; then
@@ -194,14 +232,21 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
-    apt-get install -y -qq ca-certificates gnupg lsb-release cron gpg rsync initramfs-tools python3-flask python3-dotenv python3-requests python3-pip jq moreutils pwgen git parted rfkill
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip jq moreutils pwgen git parted"
+    local platform_pkgs=""
+    if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+        platform_pkgs="initramfs-tools rfkill"
+    fi
+    apt-get install -y -qq $common_pkgs $platform_pkgs
     apt-get update -qq
 
     # Docker setup
     if ! [ -f /etc/apt/keyrings/docker.gpg ]; then
         mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+        local os_id
+        os_id=$(. /etc/os-release && echo "$ID")  # "debian" or "ubuntu"
+        curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${os_id} $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
         apt-get update -y -qq
     fi
     

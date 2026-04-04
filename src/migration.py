@@ -2,11 +2,12 @@ import os
 import shutil
 import logging
 import subprocess
+import platform
 
 # Configuration Constants
 INSTALL_DIR = "/opt/homebrain"
 ENV_FILE = os.path.join(INSTALL_DIR, ".env")
-FACTORY_CONFIG = "/boot/firmware/factory_config.txt"
+FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if platform.machine() == "aarch64" else "/opt/homebrain/factory_config.txt"
 SERVICE_TEMPLATE = os.path.join(INSTALL_DIR, "config/homebrain-manager.service")
 
 def get_env_map():

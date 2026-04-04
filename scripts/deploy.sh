@@ -98,14 +98,15 @@ log_info "Configuring Cron..."
 bash "$SCRIPT_DIR/utilities.sh" cron || log_error "Nextcloud cron configuration failed."
 
 # --- 4. Hardening ---
-log_info "Disabling Wireless interfaces..."
-
-if command -v rfkill >/dev/null 2>&1; then
+# Disable wireless on headless appliance (HomeCloud/Pi). Desktop (HomeBrain/x86) keeps wifi/bluetooth.
+if [[ "$HB_PLATFORM" == "rpi5" ]]; then
     log_info "Disabling Wireless interfaces..."
-    rfkill block wifi || log_warn "WiFi could not be disabled (possibly already disabled or unavailable)."
-    rfkill block bluetooth || log_warn "Bluetooth could not be disabled (possibly already disabled or unavailable)."
-else
-    log_warn "rfkill command not found. Wireless interfaces not disabled."
+    if command -v rfkill >/dev/null 2>&1; then
+        rfkill block wifi || log_warn "WiFi could not be disabled (possibly already disabled or unavailable)."
+        rfkill block bluetooth || log_warn "Bluetooth could not be disabled (possibly already disabled or unavailable)."
+    else
+        log_warn "rfkill command not found. Wireless interfaces not disabled."
+    fi
 fi
 
 log_info "=== Deployment Complete ==="
@@ -127,3 +128,49 @@ touch "$INSTALL_DIR/.setup_complete"
 
 # Signal specifically for the UI to pick up
 echo "Deployment Complete - Ready for Handover"
+
+# --- Post-Handover: AI auto-install (opt-out platforms only) ---
+# Runs AFTER handover so the user sees the dashboard immediately.
+# Launched in background so it doesn't block the deployment signal.
+auto_setup_ai() {
+    local enable_flag="${ENABLE_OPENCLAW:-true}"
+    if [[ "$enable_flag" == "false" ]]; then return 0; fi
+
+    log_info "AI is default-on for ${HB_PLATFORM}. Setting up AI stack in background..."
+
+    # Set default model if none selected yet
+    if [[ -z "${AI_MODEL_ID:-}" ]]; then
+        local models_file="$INSTALL_DIR/config/platform_models.json"
+        if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+            local default_model
+            default_model=$(jq -r --arg p "$HB_PLATFORM" '.[$p].models[] | select(.default == true) | .id' "$models_file" | head -1)
+            if [[ -n "$default_model" ]]; then
+                log_info "Auto-selecting default model: $default_model"
+                local m_file m_url m_min m_ngl m_ctx m_extra
+                m_file=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .filename' "$models_file")
+                m_url=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .url' "$models_file")
+                m_min=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .min_size_bytes' "$models_file")
+                m_ngl=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.ngl' "$models_file")
+                m_ctx=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.ctx_size' "$models_file")
+                m_extra=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.extra_flags' "$models_file")
+                local key val
+                for kv in "AI_MODEL_ID=$default_model" "AI_MODEL_FILENAME=$m_file" "AI_MODEL_URL=$m_url" \
+                          "AI_MODEL_MIN_SIZE=$m_min" "AI_NGL=$m_ngl" "AI_CTX_SIZE=$m_ctx" "AI_EXTRA_FLAGS=$m_extra"; do
+                    key="${kv%%=*}" val="${kv#*=}"
+                    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+                        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+                    else
+                        echo "${key}=${val}" >> "$ENV_FILE"
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    bash "$SCRIPT_DIR/utilities.sh" setup_ai >> "$SETUP_LOG_FILE" 2>&1 \
+        || log_warn "AI stack auto-setup failed (non-fatal). Install manually from the dashboard."
+}
+
+if [[ "$HB_AI_DEFAULT" == "opt-out" ]]; then
+    auto_setup_ai &
+fi

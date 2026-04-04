@@ -5,10 +5,16 @@ set -euo pipefail
 # distinct APP_DIR removed; we run directly from the repo structure
 INSTALL_DIR="/opt/homebrain"
 SERVICE_DIR="$INSTALL_DIR/src"
-BOOT_CONFIG="/boot/firmware/factory_config.txt"
 LOG_DIR="/var/log/homebrain"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+
+# Platform-conditional boot config path
+if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+    BOOT_CONFIG="/boot/firmware/factory_config.txt"
+else
+    BOOT_CONFIG="/opt/homebrain/factory_config.txt"
+fi
 
 # --- Input Validation ---
 if [[ $EUID -ne 0 ]]; then echo "Run as root."; exit 1; fi
@@ -20,6 +26,24 @@ wait_for_time_sync
 # --- 1. System Dependencies ---
 echo "Installing Application Dependencies..."
 install_deps_enable_docker
+
+# --- 1b. Ensure admin user exists (Ubuntu Desktop doesn't ship with one) ---
+ensure_admin_user
+
+# --- 1c. Platform-specific hardening ---
+if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+    # Disable Apache if present (conflicts with HomeBrain dashboard on port 80)
+    systemctl disable --now apache2 2>/dev/null || true
+
+    # Open firewall ports if ufw is active
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+        log_info "Opening firewall ports for HomeBrain services..."
+        ufw allow 80/tcp    # Dashboard
+        ufw allow 8080/tcp  # Nextcloud
+        ufw allow 8123/tcp  # Home Assistant
+        ufw allow 18789/tcp # OpenClaw
+    fi
+fi
 
 # --- 2. Write Factory Config ---
 echo "Writing factory configuration..."

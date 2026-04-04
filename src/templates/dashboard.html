@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>HomeBrain Dashboard</title>
+    <title>{{ platform.product_name }} Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
     <style>
@@ -272,7 +272,7 @@
 
 <body>
     <div class="header">
-        <h1 class="logo">Home<span>Brain</span><small>Private Cloud Manager</small></h1>
+        <h1 class="logo">Home<span>{{ platform.product_suffix }}</span><small>Private Cloud Manager</small></h1>
         <div class="header-status">
             <div id="global-status" class="global-status">System Active</div>
             <div class="provider-mode">Tunnel: {{ tunnel.mode.upper() }}</div>
@@ -427,7 +427,7 @@
     <div id="connectivity" class="tab-content">
         <div class="card" style="border-left: 4px solid var(--hb-green);">
              <h3 style="border-bottom:none; margin-bottom:10px;">Authentication</h3>
-             <p style="margin-bottom:0;">The <strong>Master Admin Password</strong> controls access to HomeBrain Manager, Nextcloud, and Home Assistant.</p>
+             <p style="margin-bottom:0;">The <strong>Master Admin Password</strong> controls access to {{ platform.product_name }} Manager, Nextcloud, and Home Assistant.</p>
         </div>
 
         {% if cloud_enabled %}
@@ -557,6 +557,7 @@
                 <p>Advanced hardware and task management.</p>
 
                 <table style="margin-top:10px;">
+                    {% if platform.platform == 'rpi5' %}
                     <tr>
                         <td>
                             <strong>Hardware Watchdog</strong><br>
@@ -567,6 +568,7 @@
                             <button onclick="toggleSystem('watchdog')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
+                    {% endif %}
                     <tr>
                         <td>
                             <strong>Nextcloud Cron</strong><br>
@@ -577,6 +579,7 @@
                             <button onclick="toggleSystem('cron')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Enforce</button>
                         </td>
                     </tr>
+                    {% if platform.platform == 'rpi5' %}
                     <tr>
                         <td>
                             <strong>PCIe Speed</strong><br>
@@ -587,6 +590,7 @@
                             <button onclick="toggleSystem('pci')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
+                    {% endif %}
                     <tr>
                         <td>
                             <strong>Redis Caching</strong><br>
@@ -618,6 +622,10 @@
                         <td style="text-align:right;"><span id="sys-openclaw-status" class="status-badge status-unknown">...</span></td>
                     </tr>
                 </table>
+                <div id="ai-model-selector" style="margin-top:10px; display:none;">
+                    <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
+                    <select id="ai-model-select" style="width:100%; padding:6px; margin-top:4px; font-size:0.85em; background:var(--hb-card-bg); color:var(--hb-text); border:1px solid var(--hb-border); border-radius:4px;"></select>
+                </div>
                 <div style="text-align:right; margin-top:10px;">
                     <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
                 </div>
@@ -912,9 +920,11 @@
                     el.dataset.val = val;
                 };
 
-                updateBadge('sys-wd-status', data.watchdog, 'enabled');
+                const wdEl = document.getElementById('sys-wd-status');
+                if (wdEl && data.watchdog !== 'unsupported') updateBadge('sys-wd-status', data.watchdog, 'enabled');
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
-                updateBadge('sys-pci-status', data.pci, 'gen3');
+                const pciEl = document.getElementById('sys-pci-status');
+                if (pciEl && data.pci !== 'unsupported') updateBadge('sys-pci-status', data.pci, 'gen3');
                 updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed');
 
                 checkRedisStatus();
@@ -956,6 +966,15 @@
                 linkWrap.style.display = 'none';
             }
 
+            // Model selector (show only when not installed)
+            const modelSelector = document.getElementById('ai-model-selector');
+            if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
+                modelSelector.style.display = 'block';
+                loadAIModels();
+            } else {
+                modelSelector.style.display = 'none';
+            }
+
             // Unified button
             const btn = document.getElementById('btn-ai-toggle');
             btn.disabled = false;
@@ -971,6 +990,25 @@
             }
         }
 
+        let aiModelsLoaded = false;
+        async function loadAIModels() {
+            if (aiModelsLoaded) return;
+            try {
+                const res = await fetch('/api/ai/models', { credentials: 'include' });
+                const data = await res.json();
+                const select = document.getElementById('ai-model-select');
+                select.innerHTML = '';
+                (data.models || []).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.id + ' (' + (m.min_size_bytes / 1073741824).toFixed(0) + ' GB)';
+                    if (m.default) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                aiModelsLoaded = true;
+            } catch(e) { console.error("Failed to load AI models", e); }
+        }
+
         async function toggleSystem(feature) {
             let action = "";
             let confirmMsg = "";
@@ -982,10 +1020,15 @@
                 const bothRunning = llamaState === 'running' && ocState === 'running';
                 const neitherInstalled = llamaState === 'not_installed' && ocState === 'not_installed';
                 const action = bothRunning ? 'disable' : 'enable';
+                const isRpi = '{{ platform.platform }}' === 'rpi5';
 
                 let confirmMsg;
                 if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
-                    confirmMsg = "Install the AI stack?\n\nThis will build llama.cpp, download a ~15 GB model, and install OpenClaw. The process takes 30\u201360 minutes.\n\nProgress will be shown in the Setup Log.";
+                    const selectedModel = document.getElementById('ai-model-select')?.value || 'default';
+                    const buildNote = isRpi
+                        ? "This will build llama.cpp from source, download the model, and install OpenClaw. The process takes 30\u201360 minutes."
+                        : "This will download a prebuilt llama-server, the model, and install OpenClaw.";
+                    confirmMsg = `Install the AI stack (${selectedModel})?\n\n${buildNote}\n\nProgress will be shown in the Setup Log.`;
                 } else if (action === 'enable') {
                     confirmMsg = "Start the AI services?\n\nllama-server takes a few minutes to load the model into memory.";
                 } else {
@@ -993,9 +1036,20 @@
                 }
 
                 if (confirm(confirmMsg)) {
+                    // Persist model selection before triggering install
+                    if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
+                        const modelId = document.getElementById('ai-model-select')?.value;
+                        if (modelId) {
+                            await fetch('/api/ai/model', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({ model_id: modelId })
+                            });
+                        }
+                    }
                     triggerAction('/api/system/config', 'AI Stack', { feature: feature, action: action });
                     if (action === 'enable') {
-                        // Switch to Setup Log so the user can watch install/startup progress
                         currentLogSource = 'setup';
                         document.getElementById('log-selector').value = 'setup';
                         openTab('logs');
@@ -1376,7 +1430,7 @@
  
         async function doManagerUpdate() {
             const channel = document.getElementById('update-channel').value;
-            if (!confirm(`Update HomeBrain Manager to ${channel} ${pendingUpdateTarget}? The interface will restart.`)) return;
+            if (!confirm(`Update {{ platform.product_name }} Manager to ${channel} ${pendingUpdateTarget}? The interface will restart.`)) return;
             
             const res = await fetch('/api/manager/update', { 
                 method: 'POST', headers: {'Content-Type': 'application/json'},
