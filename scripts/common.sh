@@ -236,10 +236,20 @@ install_deps_enable_docker() {
     local platform_pkgs=""
     if [[ "$HB_PLATFORM" == "rpi5" ]]; then
         platform_pkgs="initramfs-tools rfkill"
-    elif [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
-        platform_pkgs="chromium-browser"
     fi
     apt-get install -y -qq $common_pkgs $platform_pkgs
+
+    # Install headless Chromium for OpenClaw browser tool (x86 only, non-fatal)
+    # On Ubuntu, chromium-browser is a snap wrapper that may return non-zero in non-interactive mode
+    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+        apt-get install -y -qq chromium-browser 2>/dev/null \
+            || log_warn "chromium-browser install returned non-zero (snap wrapper). Checking if snap installed..."
+        if command -v chromium-browser >/dev/null 2>&1 || snap list chromium >/dev/null 2>&1; then
+            log_info "Chromium available for headless browsing."
+        else
+            log_warn "Chromium not available. OpenClaw browser tool will not work."
+        fi
+    fi
     apt-get update -qq
 
     # Docker setup
