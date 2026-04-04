@@ -67,7 +67,7 @@
       "enabled": false,
       "dmPolicy": "open",
       "selfChatMode": true,
-      "allowFrom": [],
+      "allowFrom": ["*"],
       "groupPolicy": "allowlist",
       "debounceMs": 0,
       "mediaMaxMb": 50
