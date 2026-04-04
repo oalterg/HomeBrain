@@ -65,7 +65,7 @@
   "channels": {
     "whatsapp": {
       "enabled": false,
-      "dmPolicy": "allowlist",
+      "dmPolicy": "open",
       "selfChatMode": true,
       "allowFrom": [],
       "groupPolicy": "allowlist",
