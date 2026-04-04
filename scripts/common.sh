@@ -232,7 +232,7 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
-    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip jq moreutils pwgen git parted"
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted"
     local platform_pkgs=""
     if [[ "$HB_PLATFORM" == "rpi5" ]]; then
         platform_pkgs="initramfs-tools rfkill"
