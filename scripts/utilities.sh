@@ -112,18 +112,31 @@ get_system_config_status() {
         cron_status=$(docker exec -u www-data "$nc_cid" php occ config:app:get core backgroundjobs_mode 2>/dev/null || echo "unknown")
     fi
 
-    # OpenClaw AI
-    local ai_status="disabled"
-    if [[ "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
-        local ai_cid=$(docker compose $(get_compose_args) ps -q openclaw 2>/dev/null || true)
-        if [[ -n "$ai_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ai_cid" 2>/dev/null) == "true" ]]; then
-            ai_status="running"
+    # llama-server (inference engine)
+    local llama_status="not_installed"
+    if [[ -f /home/admin/llama.cpp/build/bin/llama-server ]]; then
+        if systemctl is-active --quiet llama-server 2>/dev/null; then
+            if curl -sf --max-time 3 http://127.0.0.1:8001/health >/dev/null 2>&1; then
+                llama_status="running"
+            else
+                llama_status="starting"
+            fi
         else
-            ai_status="starting"
+            llama_status="disabled"
         fi
     fi
 
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"openclaw\": \"$ai_status\"}"
+    # OpenClaw AI (system service managed by openclaw daemon)
+    local ai_status="not_installed"
+    if command -v openclaw >/dev/null 2>&1; then
+        if timeout 5 sudo -u admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+            ai_status="running"
+        else
+            ai_status="disabled"
+        fi
+    fi
+
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -436,93 +449,233 @@ create_ha_admin() {
     return 0
 }
 
-# --- Helper: Setup AI Assistant ---
+# --- Helper: Setup llama-server (llama.cpp inference engine) ---
+setup_llama_server() {
+    log_info "=== Setting up llama-server ==="
+
+    local LLAMA_DIR="/home/admin/llama.cpp"
+    local LLAMA_BIN="${LLAMA_DIR}/build/bin/llama-server"
+    local MODEL_NAME="Qwen3.5-27B-Q4_K_M.gguf"
+    local MODEL_PATH="/home/admin/${MODEL_NAME}"
+    local MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
+    local SERVICE_SRC="${SCRIPT_DIR}/../config/llama-server.service"
+    local SERVICE_DEST="/etc/systemd/system/llama-server.service"
+    local HEALTH_URL="http://127.0.0.1:8001/health"
+
+    # --- [1/5] Fast-path: already built and model present ---
+    log_info "[1/5] Checking for existing llama-server installation..."
+    if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+        log_info "llama-server and model already present. Syncing service and starting..."
+        cp "$SERVICE_SRC" "$SERVICE_DEST"
+        systemctl daemon-reload
+        systemctl enable --now llama-server
+
+        # Jump straight to health poll
+        wait_for_llama_health "$HEALTH_URL" 600
+        return $?
+    fi
+
+    # --- [2/5] Install build dependencies ---
+    log_info "[2/5] Installing build dependencies..."
+    if ! check_internet; then
+        die "No internet connection. Cannot install llama-server."
+    fi
+
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq cmake g++ git pkg-config wget \
+        libvulkan-dev glslang-tools vulkan-tools
+
+    # --- [3/5] Clone and build llama.cpp ---
+    log_info "[3/5] Building llama.cpp (this takes 10-20 minutes on Pi 5)..."
+    if [[ -d "$LLAMA_DIR" ]]; then
+        log_info "Source directory exists. Pulling latest changes..."
+        sudo -u admin git -C "$LLAMA_DIR" pull --ff-only 2>/dev/null || true
+    else
+        log_info "Cloning llama.cpp (shallow)..."
+        sudo -u admin git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
+    fi
+
+    log_info "Configuring build (Vulkan GPU offload enabled)..."
+    sudo -u admin cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
+
+    log_info "Compiling llama-server ($(nproc) cores)..."
+    sudo -u admin cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)" --target llama-server \
+        || die "llama.cpp build failed. Check build output above."
+
+    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after build at $LLAMA_BIN"
+    log_info "Build complete: $LLAMA_BIN"
+
+    # --- [4/5] Download model ---
+    log_info "[4/5] Downloading model: ${MODEL_NAME}..."
+
+    # Pre-flight disk space check (need ~20 GB for model + build artifacts)
+    local avail_kb
+    avail_kb=$(df --output=avail /home | tail -1 | tr -d ' ')
+    if [[ "$avail_kb" -lt 20000000 ]]; then
+        die "Insufficient disk space: $(( avail_kb / 1048576 )) GB available, need at least 20 GB."
+    fi
+
+    if [[ -f "$MODEL_PATH" ]]; then
+        local size
+        size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+        if [[ "$size" -gt 14000000000 ]]; then
+            log_info "Model already downloaded ($(( size / 1073741824 )) GB). Skipping."
+        else
+            log_warn "Model file exists but appears truncated (${size} bytes). Re-downloading..."
+            rm -f "$MODEL_PATH"
+        fi
+    fi
+
+    if [[ ! -f "$MODEL_PATH" ]]; then
+        log_info "Downloading ~15 GB model. This will take a while..."
+        sudo -u admin wget --continue --progress=dot:giga \
+            -O "$MODEL_PATH" "$MODEL_URL" \
+            || die "Model download failed. Re-run to resume (wget supports resume)."
+
+        local size
+        size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+        if [[ "$size" -lt 14000000000 ]]; then
+            die "Downloaded model is too small (${size} bytes). File may be truncated or URL may be wrong."
+        fi
+        log_info "Model downloaded: $(( size / 1073741824 )) GB"
+    fi
+
+    # --- [5/5] Deploy service and start ---
+    log_info "[5/5] Deploying llama-server service..."
+    cp "$SERVICE_SRC" "$SERVICE_DEST"
+    chmod 644 "$SERVICE_DEST"
+    systemctl daemon-reload
+    systemctl enable --now llama-server
+
+    wait_for_llama_health "$HEALTH_URL" 600
+    return $?
+}
+
+# Helper: poll llama-server health endpoint
+wait_for_llama_health() {
+    local url="$1"
+    local timeout="$2"
+    local elapsed=0
+
+    log_info "Waiting for llama-server to load model (up to ${timeout}s)..."
+    while [[ $elapsed -lt $timeout ]]; do
+        if curl -sf --max-time 3 "$url" >/dev/null 2>&1; then
+            log_info "llama-server is healthy on port 8001."
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        if (( elapsed % 60 == 0 )); then
+            log_info "Still loading model... (${elapsed}s/${timeout}s)"
+        fi
+    done
+
+    log_error "llama-server did not pass health check within ${timeout}s."
+    log_error "Check: journalctl -u llama-server -n 50"
+    return 1
+}
+
+# --- Helper: Setup OpenClaw AI Agent (system service) ---
 setup_openclaw() {
-    log_info "Setting up OpenClaw AI Assistant..."
+    log_info "=== Setting up OpenClaw AI Assistant ==="
 
-    local requested_model="${1:-ministral-3-14b}"
-    local ai_pull_name=""
-    local ai_model_custom=""
-    local ctx_size="16384"
+    # Pre-flight: warn if llama-server is not reachable
+    if ! curl -sf --max-time 5 http://127.0.0.1:8001/health >/dev/null 2>&1; then
+        log_warn "llama-server is not responding on port 8001. OpenClaw may not work correctly."
+    fi
 
-    # Map UI selections to 16GB VRAM optimized quantizations
-    case "$requested_model" in
-        "gpt-oss-20b")
-            ai_pull_name="gpt-oss:20b-q4_K_M"
-            ai_model_custom="gpt-oss-20b-openclaw"
-            ctx_size=ctx_size="131072"
-            ;;
-        "ministral-14b")
-            ai_pull_name="ministral-3:14b-q5_K_M"
-            ai_model_custom="ministral-14b-openclaw"
-            ctx_size="32768"
-            ;;
-        "qwen-9b")
-            ai_pull_name="qwen3.5:9b-q5_K_M"
-            ai_model_custom="qwen-9b-openclaw"
-            ctx_size="65536"
-            ;;
-        "qwen-35b")
-            ai_pull_name="qwen3.5:35b-a3b"   # MoE variant
-            ai_model_custom="qwen-35b-openclaw"
-            ctx_size="32768"
-            ;;
-        "qwen-2b")
-            ai_pull_name="qwen3.5:2b-q4_K_M"   # MoE variant
-            ai_model_custom="qwen-2b-openclaw"
-            ctx_size="32768"
-            ;;
-        "lfm2")
-            ai_pull_name="lfm2:latest"
-            ai_model_custom="lfm2-openclaw"
-            ctx_size="131072"   # MoE
-            ;;
-        *)
-            ai_pull_name="ministral-3:14b-q5_K_M"
-            ai_model_custom="ministral-14b-openclaw"
-            ctx_size="32768"
-            ;;
-    esac
-    
-    # Use native 'ollama/' provider prefix for OpenClaw stability
-    update_env_var "OPENCLAW_PRIMARY_MODEL" "ollama/$ai_model_custom"
+    local config_src="${SCRIPT_DIR}/../config/openclaw.json"
+    local config_dest="/home/admin/.openclaw/openclaw.json"
 
-    # Ensure we have our secure token for the Gateway/CLI
-    ensure_openclaw_token
+    # --- Step 1: Fast-path if binary already installed ---
+    log_info "[1/3] Checking for existing OpenClaw installation..."
+    if command -v openclaw >/dev/null 2>&1; then
+        log_info "OpenClaw already installed ($(openclaw --version 2>/dev/null || echo 'unknown version')). Syncing config and starting..."
+        mkdir -p /home/admin/.openclaw
+        cp "$config_src" "$config_dest"
+        chown -R admin:admin /home/admin/.openclaw
+        chmod 600 "$config_dest"
+        sudo -u admin openclaw daemon start \
+            || { log_error "daemon start failed. Try: sudo -u admin openclaw daemon install"; return 1; }
+        log_info "=== OpenClaw started (fast path) ==="
+        return 0
+    fi
 
+    # --- Step 2: Fresh install ---
+    log_info "[2/3] Installing OpenClaw..."
 
-    # Robustness: Prevent Docker volume bugs by ensuring the file exists before boot
-    mkdir -p "$INSTALL_DIR/config"
-    if [ -d "$INSTALL_DIR/config/Modelfile" ]; then rm -rf "$INSTALL_DIR/config/Modelfile"; fi
-    
-    # Idempotently write the Modelfile
-    cat > "$INSTALL_DIR/config/Modelfile" <<EOF
-FROM $ai_pull_name
-PARAMETER num_ctx $ctx_size
-EOF
+    if ! check_internet; then
+        die "No internet connection. Cannot install OpenClaw."
+    fi
 
-    # Start Ollama and wait for it to be ready
-    log_info "Starting Ollama..."
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d ollama
-    wait_for_healthy "ollama" 120 || die "Ollama failed to become healthy."
+    # OpenClaw requires Node.js 22.14+ (24 recommended)
+    local need_node=false
+    if ! command -v node >/dev/null 2>&1; then
+        need_node=true
+    else
+        local node_major
+        node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')
+        if [[ "$node_major" -lt 22 ]]; then
+            log_info "Node.js ${node_major} found but 22+ is required. Upgrading..."
+            need_node=true
+        fi
+    fi
 
-    # Apply the Modelfile parameters
-    log_info "Configuring model via Modelfile..."
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama pull "$ai_pull_name"
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) exec -T ollama ollama create "$ai_model_custom" -f /Modelfile || log_warn "Failed to create Ollama model from Modelfile."
+    if [[ "$need_node" == "true" ]]; then
+        log_info "Installing Node.js 22 LTS via NodeSource..."
+        wait_for_apt_lock
+        export DEBIAN_FRONTEND=noninteractive
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        apt-get install -y -qq nodejs
+    fi
 
-    # 4. Start the OpenClaw Brain
-    log_info "Starting OpenClaw Brain..."
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d openclaw
-    
-    # Give the brain a few seconds to boot its internal Node.js server before hitting it with the CLI
-    sleep 10
+    log_info "Node $(node --version)"
+    # --no-onboard: skip interactive wizard — we manage config ourselves
+    log_info "Downloading and installing OpenClaw (this may take a minute)..."
+    curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard \
+        || die "OpenClaw install failed. See https://docs.openclaw.ai for help."
 
-    # 5. Start the Gateway
-    log_info "Starting OpenClaw Gateway..."
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d openclaw-gateway
-    
-    log_info "=== OpenClaw Setup Complete ==="
+    command -v openclaw >/dev/null 2>&1 \
+        || die "openclaw binary not found in PATH after install. Check the install output above."
+
+    log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
+
+    # --- Step 3: Write config and register daemon ---
+    log_info "[3/3] Writing config and registering daemon..."
+    if [[ ! -f "$config_src" ]]; then
+        die "config/openclaw.json not found at $config_src — ensure it is committed to the repository."
+    fi
+    mkdir -p /home/admin/.openclaw
+    cp "$config_src" "$config_dest"
+    chown -R admin:admin /home/admin/.openclaw
+    chmod 600 "$config_dest"
+    log_info "Config written to $config_dest"
+
+    # Let openclaw install its own systemd service (runs as admin user)
+    sudo -u admin openclaw daemon install \
+        || die "openclaw daemon install failed."
+    sudo -u admin openclaw daemon start \
+        || die "openclaw daemon start failed."
+
+    # Verify startup (up to 30 s)
+    local retries=0
+    while [[ $retries -lt 15 ]]; do
+        if sudo -u admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+            local ip
+            ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+            log_info "OpenClaw is running. Access at http://${ip}:18789"
+            log_info "=== OpenClaw setup complete ==="
+            return 0
+        fi
+        sleep 2
+        ((retries++))
+    done
+
+    log_error "OpenClaw did not report as running within 30 s."
+    log_error "Check status with: sudo -u admin openclaw gateway status"
+    return 1
 }
 
 # --- Main Dispatch ---
@@ -572,13 +725,14 @@ case "${1:-}" in
         create_ha_admin "${2:-}"
         ;;
     setup_ai)
+        setup_llama_server || { log_error "llama-server setup failed. Aborting AI stack install."; exit 1; }
         setup_openclaw
         ;;
-    openclaw_cli)
-        shift
-        log_info "Executing OpenClaw CLI: $*"
-        # Use -e FORCE_COLOR=1 to ensure QR codes render even without TTY, and -T for script compatibility
-        docker compose --env-file "$ENV_FILE" $(get_compose_args) run -T --rm -e FORCE_COLOR=1 openclaw-cli "$@"
+    stop_ai)
+        sudo -u admin openclaw daemon stop 2>/dev/null || true
+        log_info "OpenClaw stopped."
+        systemctl disable --now llama-server 2>/dev/null || true
+        log_info "llama-server stopped and disabled."
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"

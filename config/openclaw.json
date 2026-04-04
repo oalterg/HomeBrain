@@ -1,0 +1,112 @@
+{
+  "browser": {
+    "enabled": true,
+    "headless": true
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "llamacpp": {
+        "baseUrl": "http://127.0.0.1:8001/v1",
+        "apiKey": "1234",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen3.5-27B-Q4_K_M",
+            "name": "Qwen3.5-27B-Q4_K_M",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "llamacpp/Qwen3.5-27B-Q4_K_M"
+      },
+      "models": {
+        "llamacpp/Qwen3.5-27B-Q4_K_M": {}
+      },
+      "workspace": "/home/admin/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "heartbeat": {
+        "every": "60m"
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "profile": "full",
+          "alsoAllow": ["browser"]
+        }
+      }
+    ]
+  },
+  "tools": {
+    "profile": "coding"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [],
+      "dangerouslyAllowHostHeaderOriginFallback": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "auth": {
+      "mode": "token",
+      "token": ""
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send"
+      ]
+    }
+  },
+  "plugins": {
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      }
+    }
+  }
+}

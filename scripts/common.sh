@@ -135,12 +135,6 @@ get_tunnel_profiles() {
     # Trim leading space if any
     profiles="${profiles#" "}"
 
-    # --- AI Profile ---
-    local enable_ai="${ENABLE_OPENCLAW:-false}"
-    if [[ "$enable_ai" == "true" ]]; then
-        profiles="${profiles} --profile ai"
-    fi
-
     echo "${profiles}"
 }
 
@@ -243,19 +237,6 @@ install_python_venv_deps(){
         echo "Installing Python dependencies..."
         "$venv_pip" install -r "$INSTALL_DIR/requirements.txt"
     fi
-}
-
-ensure_openclaw_token() {
-    # Idempotent check: only generate if missing or empty
-    if ! grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE" || grep -q "^OPENCLAW_GATEWAY_TOKEN=$" "$ENV_FILE"; then
-        log_info "Generating secure OPENCLAW_GATEWAY_TOKEN..."
-        # Remove any empty existing key to avoid duplicates
-        sed -i '/^OPENCLAW_GATEWAY_TOKEN=/d' "$ENV_FILE"
-        echo "OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)" >> "$ENV_FILE"
-    fi
-    
-    # Reload env so the current script has access to the new token
-    set -a; source "$ENV_FILE"; set +a
 }
 
 # --- Maintenance Mode ---

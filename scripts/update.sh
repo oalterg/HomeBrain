@@ -69,8 +69,6 @@ fi
 log_info "Downloading from $URL..."
 curl -L -f -s --max-time 60 --retry 3 --retry-delay 5 "$URL" -o "$TEMP_DIR/update.tar.gz" || { log_error "Download failed"; exit 1; }
 
-# Todo: Add checksum verification
-
 # 3. Extract
 log_info "Extracting..."
 mkdir -p "$TEMP_DIR/extract"

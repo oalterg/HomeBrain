@@ -1538,26 +1538,13 @@ def update_system_config():
         cmd = f"bash {SCRIPT_UTILITIES} pci {target}"
         label = f"Configure PCIe ({target})"
     elif feature == "openclaw":
-        target_val = "true" if action == "enable" else "false"
-        # Update .env immediately so scripts see the new state
-        update_env_var("ENABLE_OPENCLAW", target_val)
-
-        selected_model = data.get("model", "ministral-14b")
-        
-        safe_env = shlex.quote(ENV_FILE)
-        
-        # Use subshell to ensure environment is re-evaluated
-        cmd_script = f"source {shlex.quote(INSTALL_DIR)}/scripts/common.sh\n"
-        cmd_script += f"profiles=\"$(get_compose_args) $(get_tunnel_profiles)\"\n"
-        cmd_script += f"docker compose --env-file {safe_env} $profiles up -d --remove-orphans\n"
-        
+        update_env_var("ENABLE_OPENCLAW", "true" if action == "enable" else "false")
         if action == "enable":
-            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai {shlex.quote(selected_model)}\n"
-            label = "Install & Start OpenClaw AI"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai"
+            label = "Install & Start AI Stack"
         else:
-            label = "Disable OpenClaw AI"
-            
-        cmd = f"bash -c {shlex.quote(cmd_script)}"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} stop_ai"
+            label = "Disable AI Stack"
 
     # Execute
     cmd += f" >> {LOG_FILES['setup']} 2>&1"
@@ -1744,31 +1731,6 @@ def resume_incomplete_setup():
             threading.Thread(target=run_background_task, args=("Resumed Setup", cmd, "setup")).start()
     except Exception as e:
         logging.error(f"Failed to resume setup: {e}")
-
-# --- OpenClaw CLI Endpoint ---
-@app.route('/api/openclaw/cli/stream', methods=['GET'])
-def openclaw_cli_stream():
-    if not session.get('authenticated'): abort(401)
-    
-    args_str = request.args.get('args', '')
-    args = shlex.split(args_str)
-    
-    def generate():
-        cmd = ["bash", f"{SCRIPT_UTILITIES}", "openclaw_cli"] + args
-        try:
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    clean_line = line.rstrip('\r\n').replace('\n', '\\n')
-                    yield f"data: {clean_line}\n\n"
-            process.stdout.close()
-            process.wait()
-            yield "data: [DONE]\n\n"
-        except Exception as e:
-            yield f"data: Error executing command: {str(e)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return Response(generate(), mimetype='text/event-stream')
 
 # Start resume check in background on app load
 threading.Thread(target=resume_incomplete_setup, daemon=True).start()

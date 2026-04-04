@@ -602,56 +602,27 @@
             
             <div class="card" style="border-left: 4px solid #9b59b6;">
                 <h3>Personal AI Assistant <span class="status-badge status-starting" style="background:#9b59b622; color:#d2b4de; border-color:#9b59b6;">Experimental</span></h3>
-                <p>Run OpenClaw with Nanbeige4.1-3B entirely locally on your machine for a private, autonomous AI assistant.</p>
+                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
                 <table style="margin-top:10px;">
                     <tr>
+                        <td><strong>Inference Engine</strong> <small style="color:var(--hb-text-dim);">(llama-server :8001)</small></td>
+                        <td style="text-align:right;"><span id="sys-llama-status" class="status-badge status-unknown">...</span></td>
+                    </tr>
+                    <tr>
                         <td>
-                            <strong>OpenClaw AI</strong><br>
-                            <select id="openclaw-model" style="margin-top:5px; width:auto; font-size:0.8em; padding:2px 5px; background:#111; border:1px solid #444;">
-                                <option value="llama3.2">Llama 3.2 (3B)</option>
-                                <option value="nanbeige">Nanbeige 4.1 (3B)</option>
-                                <option value="ministral-3-14b">Ministral 3 14B (Q5_K_M)</option>
-                                <option value="gpt-oss-20b">GPT-OSS 20B (Q4_K_M)</option>
-                                <option value="qwen-9b">Qwen 3.5 9B (Q5_K_M)</option>
-                                <option value="qwen-35b">Qwen 3.5 35B (MoE A3B)</option>
-                                <option value="lfm2">LFM2</option>
-                            </select><br>
-                            <small style="color:var(--hb-text-dim);">Quantizations optimized for 16GB VRAM GPUs.</small>
+                            <strong>AI Agent</strong> <small style="color:var(--hb-text-dim);">(OpenClaw)</small><br>
+                            <small id="openclaw-link" style="display:none; margin-top:4px;">
+                                <a id="openclaw-link-anchor" href="#" target="_blank" style="color:var(--hb-green);">Open OpenClaw &rarr;</a>
+                            </small>
                         </td>
-                        <td style="text-align:right; vertical-align:top;">
-                            <span id="sys-openclaw-status" class="status-badge status-unknown">...</span>
-                            <button onclick="toggleSystem('openclaw')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
-                        </td>
+                        <td style="text-align:right;"><span id="sys-openclaw-status" class="status-badge status-unknown">...</span></td>
                     </tr>
                 </table>
+                <div style="text-align:right; margin-top:10px;">
+                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
+                </div>
             </div>
             
-        <div class="card" id="openclaw-card">
-            <h3>🤖 AI Agent Management</h3>
-            <p style="color: var(--hb-text-dim); margin-bottom: 15px;">Manage your OpenClaw node pairing and approvals directly without SSH.</p>
-            
-            <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
-                <button onclick="runOpenClaw(['status'])" style="background: #3498db; border-color: #3498db;">Check Status</button>
-                <button onclick="runOpenClaw(['node', 'list'])" style="background: #9b59b6; border-color: #9b59b6;">List Nodes</button>
-                <button onclick="runOpenClaw(['configure'])" style="background: var(--hb-green); color: black; border-color: var(--hb-green); font-weight: bold;">Link Account (QR)</button>
-                <button onclick="runOpenClaw(['node', 'pair'])" style="background: #27ae60; border-color: #27ae60;">Pair Node</button>
-                <button onclick="runOpenClaw(['system-run', 'approve'])" style="background: var(--hb-warning); color: black; border-color: var(--hb-warning); font-weight: bold;">Approve Tasks</button>
-            </div>
-            
-            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                <input type="text" id="oc-custom-cmd" placeholder="Custom args (e.g. node pair --force)" style="margin-bottom:0; flex: 1;">
-                <button onclick="runCustomOpenClaw()">Run Command</button>
-            </div>
-            
-            <div id="oc-terminal" style="
-                height: 350px; background: #0c0c0c; color: #2ecc71; padding: 15px; 
-                border-radius: 5px; border: 1px solid #333; overflow-y: auto; overflow-x: auto;
-                font-family: 'Consolas', 'Monaco', 'Courier New', monospace; 
-                white-space: pre; font-size: 0.9em; line-height: 1.0; letter-spacing: 0;
-            ">Ready. Select an action above to interact with the OpenClaw CLI.</div>
-        </div>
-
-
             <div class="card">
                 <h3>FTP Server (Camera Uploads)</h3>
                 <p>Create dedicated FTP accounts mapping to Nextcloud.</p>
@@ -944,11 +915,60 @@
                 updateBadge('sys-wd-status', data.watchdog, 'enabled');
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
                 updateBadge('sys-pci-status', data.pci, 'gen3');
-                updateBadge('sys-openclaw-status', data.openclaw || 'disabled', 'running');
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed');
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
+        }
+
+        function updateAIStatus(llamaStatus, openclawStatus) {
+            const badgeMap = {
+                running:       ['status-running',  'RUNNING'],
+                starting:      ['status-starting', 'LOADING MODEL...'],
+                disabled:      ['status-stopped',  'STOPPED'],
+                not_installed: ['status-unknown',  'NOT INSTALLED']
+            };
+
+            // llama-server badge
+            const llamaEl = document.getElementById('sys-llama-status');
+            const [lCls, lTxt] = badgeMap[llamaStatus] || badgeMap.not_installed;
+            llamaEl.className = 'status-badge ' + lCls;
+            llamaEl.innerText = lTxt;
+            llamaEl.dataset.val = llamaStatus;
+
+            // OpenClaw badge
+            const ocEl = document.getElementById('sys-openclaw-status');
+            const [oCls, oTxt] = badgeMap[openclawStatus] || badgeMap.not_installed;
+            ocEl.className = 'status-badge ' + oCls;
+            ocEl.innerText = openclawStatus === 'starting' ? 'STARTING' : oTxt;
+            ocEl.dataset.val = openclawStatus;
+
+            // OpenClaw link (only when running)
+            const linkWrap = document.getElementById('openclaw-link');
+            const linkAnchor = document.getElementById('openclaw-link-anchor');
+            if (openclawStatus === 'running') {
+                const url = `http://${location.hostname}:18789`;
+                linkAnchor.href = url;
+                linkAnchor.innerText = `Open OpenClaw \u2192 :18789`;
+                linkWrap.style.display = 'block';
+            } else {
+                linkWrap.style.display = 'none';
+            }
+
+            // Unified button
+            const btn = document.getElementById('btn-ai-toggle');
+            btn.disabled = false;
+            if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
+                btn.innerText = 'Install';
+            } else if (llamaStatus === 'running' && openclawStatus === 'running') {
+                btn.innerText = 'Disable';
+            } else if (llamaStatus === 'starting' || openclawStatus === 'starting') {
+                btn.innerText = 'Starting...';
+                btn.disabled = true;
+            } else {
+                btn.innerText = 'Enable';
+            }
         }
 
         async function toggleSystem(feature) {
@@ -957,24 +977,32 @@
             let current = "";
 
             if (feature === 'openclaw') {
-                current = document.getElementById('sys-openclaw-status').dataset.val;
-                action = current === 'running' || current === 'starting' ? 'disable' : 'enable';
-                const model = document.getElementById('openclaw-model').value;
-                const modelNames = {
-                    'ministral-3-14b': 'Ministral 3 14B',
-                    'gpt-oss-20b': 'GPT-OSS 20B',
-                    'qwen-9b': 'Qwen 3.5 9B',
-                    'qwen-35b': 'Qwen 3.5 35B',
-                    'lfm2': 'LFM2'
-                };
-                const modelName = modelNames[model] || model;
-                confirmMsg = action === 'enable' ? `Install and Start OpenClaw AI with ${modelName}? This will download the model and start local LLM services.` : "Disable OpenClaw AI and stop local LLM services?";
+                const llamaState = document.getElementById('sys-llama-status').dataset.val;
+                const ocState = document.getElementById('sys-openclaw-status').dataset.val;
+                const bothRunning = llamaState === 'running' && ocState === 'running';
+                const neitherInstalled = llamaState === 'not_installed' && ocState === 'not_installed';
+                const action = bothRunning ? 'disable' : 'enable';
+
+                let confirmMsg;
+                if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
+                    confirmMsg = "Install the AI stack?\n\nThis will build llama.cpp, download a ~15 GB model, and install OpenClaw. The process takes 30\u201360 minutes.\n\nProgress will be shown in the Setup Log.";
+                } else if (action === 'enable') {
+                    confirmMsg = "Start the AI services?\n\nllama-server takes a few minutes to load the model into memory.";
+                } else {
+                    confirmMsg = "Stop both AI services (llama-server and OpenClaw)?";
+                }
 
                 if (confirm(confirmMsg)) {
-                    triggerAction('/api/system/config', 'System Config', { feature: feature, action: action, model: model });
-                    setTimeout(loadSystemConfig, 3000);
+                    triggerAction('/api/system/config', 'AI Stack', { feature: feature, action: action });
+                    if (action === 'enable') {
+                        // Switch to Setup Log so the user can watch install/startup progress
+                        currentLogSource = 'setup';
+                        document.getElementById('log-selector').value = 'setup';
+                        openTab('logs');
+                    }
+                    setTimeout(loadSystemConfig, 5000);
                 }
-                return; // Early return to bypass the default toggle logic
+                return;
             } else {
                const el = document.getElementById(feature === 'watchdog' ? 'sys-wd-status' : (feature === 'cron' ? 'sys-cron-status' : 'sys-pci-status'));
                current = el.dataset.val;
@@ -1439,63 +1467,6 @@
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
         }
-
-        // --- OpenClaw CLI Integration ---
-        let ocEventSource = null;
-
-        function ansiToHtml(text) {
-            // Basic ANSI color mapper to render terminal QR codes and colors
-            return text.replace(/\x1b\[([0-9;]*)m/g, (match, p1) => {
-                if (!p1 || p1 === '0') return '</span>';
-                let styles = [];
-                let codes = p1.split(';');
-                for (let c of codes) {
-                    if (c === '30') styles.push('color: black;');
-                    if (c === '31') styles.push('color: red;');
-                    if (c === '32') styles.push('color: green;');
-                    if (c === '33') styles.push('color: yellow;');
-                    if (c === '37' || c === '39') styles.push('color: white;');
-                    if (c === '40') styles.push('background-color: black;');
-                    if (c === '47') styles.push('background-color: white;');
-                    if (c === '7') styles.push('filter: invert(100%);'); // Inverse (QR codes use this)
-                    if (c === '1') styles.push('font-weight: bold;');
-                }
-                if (styles.length) return `<span style="${styles.join(' ')}">`;
-                return '';
-            }) + '</span>'.repeat(10); // Safe closing
-        }
-
-        function runOpenClaw(args) {
-            const term = document.getElementById('oc-terminal');
-            term.innerHTML = `<span style="color: #f39c12;">[Executing] openclaw ${args.join(' ')}...</span>\n\n`;
-            
-            if (ocEventSource) ocEventSource.close();
-            
-            const params = new URLSearchParams({ args: args.join(' ') });
-            ocEventSource = new EventSource('/api/openclaw/cli/stream?' + params.toString());
-            
-            ocEventSource.onmessage = function(e) {
-                if (e.data === '[DONE]') {
-                    term.innerHTML += `\n<span style="color: var(--hb-green);">[Process Completed]</span>\n`;
-                    ocEventSource.close();
-                    return;
-                }
-                const cleanLine = e.data.replace(/\\n/g, '\n');
-                term.innerHTML += ansiToHtml(cleanLine) + '\n';
-                term.scrollTop = term.scrollHeight;
-            };
-            
-            ocEventSource.onerror = function(e) {
-                term.innerHTML += `\n<span style="color: var(--hb-danger);">[Stream Disconnected]</span>\n`;
-                ocEventSource.close();
-            };
-        }
-
-        function runCustomOpenClaw() {
-            const cmd = document.getElementById('oc-custom-cmd').value.trim();
-            if (cmd) runOpenClaw(cmd.split(' '));
-        }
-
 
         init();
     </script>
