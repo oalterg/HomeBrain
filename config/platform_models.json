@@ -1,0 +1,74 @@
+{
+  "rpi5": {
+    "models": [
+      {
+        "id": "gemma-4-E2B-it-Q4_K_M",
+        "filename": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+        "min_size_bytes": 1500000000,
+        "context_window": 8192,
+        "ngl": 0,
+        "default": true
+      },
+      {
+        "id": "Qwen3.5-2B-Q4_K_M",
+        "filename": "Qwen3.5-2B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
+        "min_size_bytes": 1200000000,
+        "context_window": 32768,
+        "ngl": 0,
+        "default": false
+      }
+    ],
+    "llama_server": {
+      "ngl": 0,
+      "ctx_size": 8192,
+      "extra_flags": ""
+    }
+  },
+  "x86_ubuntu": {
+    "models": [
+      {
+        "id": "Qwen3.5-27B-Q4_K_M",
+        "filename": "Qwen3.5-27B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf",
+        "min_size_bytes": 14000000000,
+        "context_window": 131072,
+        "ngl": 99,
+        "default": true
+      },
+      {
+        "id": "gemma-4-26B-A4B-it-UD-Q4_K_M",
+        "filename": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        "min_size_bytes": 14000000000,
+        "context_window": 131072,
+        "ngl": 99,
+        "default": false
+      },
+      {
+        "id": "Qwen3.5-35B-A3B-Q4_K_M",
+        "filename": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf",
+        "min_size_bytes": 18000000000,
+        "context_window": 131072,
+        "ngl": 99,
+        "default": false
+      },
+      {
+        "id": "Qwen3.5-9B-UD-Q8_K_XL",
+        "filename": "Qwen3.5-9B-UD-Q8_K_XL.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q8_K_XL.gguf",
+        "min_size_bytes": 9000000000,
+        "context_window": 131072,
+        "ngl": 99,
+        "default": false
+      }
+    ],
+    "llama_server": {
+      "ngl": 99,
+      "ctx_size": 131072,
+      "extra_flags": "--swa-full -fa on"
+    }
+  }
+}

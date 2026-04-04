@@ -9,12 +9,21 @@ source "$SCRIPT_DIR/common.sh"
 VSFTPD_CONF="/etc/vsftpd.conf"
 FTP_PASSWD_FILE="/etc/vsftpd/ftppasswd"
 USER_CONFIG_DIR="/etc/vsftpd/user_conf"
-BOOT_CONFIG="/boot/firmware/config.txt"
+if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+else
+    BOOT_CONFIG=""
+fi
 WATCHDOG_CONF="/etc/watchdog.conf"
 NC_CRON_FILE="/etc/cron.d/nextcloud-cron"
 
-# --- Helper: Configure Watchdog ---
+# --- Helper: Configure Watchdog (Pi 5 only) ---
 configure_watchdog() {
+    if [[ "$HB_PLATFORM" != "rpi5" ]]; then
+        log_info "Watchdog configuration is Pi-specific. Skipping on ${HB_PLATFORM}."
+        return 0
+    fi
+
     local action="$1" # enable | disable
 
     if [[ "$action" == "enable" ]]; then
@@ -77,10 +86,15 @@ EOF
     log_info "Nextcloud cron configured."
 }
 
-# --- Helper: Configure PCIe Speed ---
+# --- Helper: Configure PCIe Speed (Pi 5 only) ---
 configure_pci_speed() {
+    if [[ "$HB_PLATFORM" != "rpi5" ]]; then
+        log_info "PCIe configuration is Pi-specific. Skipping on ${HB_PLATFORM}."
+        return 0
+    fi
+
     local speed="$1" # gen2 | gen3
-    
+
     if [[ "$speed" == "gen3" ]]; then
         log_info "Enabling PCIe Gen 3.0 speeds..."
         if ! grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG"; then
@@ -97,13 +111,15 @@ configure_pci_speed() {
 get_system_config_status() {
     load_env
 
-    # Watchdog
-    local wd_status="disabled"
-    if systemctl is-active --quiet watchdog; then wd_status="enabled"; fi
-
-    # PCIe
-    local pci_status="gen2"
-    if grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG"; then pci_status="gen3"; fi
+    # Watchdog & PCIe (Pi-only)
+    local wd_status="unsupported"
+    local pci_status="unsupported"
+    if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+        wd_status="disabled"
+        if systemctl is-active --quiet watchdog; then wd_status="enabled"; fi
+        pci_status="gen2"
+        if [[ -n "$BOOT_CONFIG" ]] && grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG" 2>/dev/null; then pci_status="gen3"; fi
+    fi
 
     # NC Cron
     local cron_status="unknown"
@@ -112,9 +128,11 @@ get_system_config_status() {
         cron_status=$(docker exec -u www-data "$nc_cid" php occ config:app:get core backgroundjobs_mode 2>/dev/null || echo "unknown")
     fi
 
-    # llama-server (inference engine)
+    # llama-server (inference engine) — platform-aware binary path
     local llama_status="not_installed"
-    if [[ -f /home/admin/llama.cpp/build/bin/llama-server ]]; then
+    local llama_bin
+    llama_bin=$(get_llama_bin_path)
+    if [[ -f "$llama_bin" ]]; then
         if systemctl is-active --quiet llama-server 2>/dev/null; then
             if curl -sf --max-time 3 http://127.0.0.1:8001/health >/dev/null 2>&1; then
                 llama_status="running"
@@ -136,7 +154,7 @@ get_system_config_status() {
         fi
     fi
 
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\"}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"platform\": \"$HB_PLATFORM\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -450,48 +468,122 @@ create_ha_admin() {
 }
 
 # --- Helper: Setup llama-server (llama.cpp inference engine) ---
-setup_llama_server() {
-    log_info "=== Setting up llama-server ==="
 
-    local LLAMA_DIR="/home/admin/llama.cpp"
-    local LLAMA_BIN="${LLAMA_DIR}/build/bin/llama-server"
-    local MODEL_NAME="Qwen3.5-27B-Q4_K_M.gguf"
-    local MODEL_PATH="/home/admin/${MODEL_NAME}"
-    local MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
-    local SERVICE_SRC="${SCRIPT_DIR}/../config/llama-server.service"
-    local SERVICE_DEST="/etc/systemd/system/llama-server.service"
-    local HEALTH_URL="http://127.0.0.1:8001/health"
+# Get the llama-server binary path for the current platform
+get_llama_bin_path() {
+    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+        echo "/home/admin/llama-server/llama-server"
+    else
+        echo "/home/admin/llama.cpp/build/bin/llama-server"
+    fi
+}
 
-    # --- [1/5] Fast-path: already built and model present ---
-    log_info "[1/5] Checking for existing llama-server installation..."
-    if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
-        log_info "llama-server and model already present. Syncing service and starting..."
-        cp "$SERVICE_SRC" "$SERVICE_DEST"
-        systemctl daemon-reload
-        systemctl enable --now llama-server
+# Generate the systemd service file at runtime from model/platform config
+generate_llama_service() {
+    local bin_path="$1" model_path="$2" ngl="$3" ctx_size="$4" extra_flags="$5"
+    local service_dest="/etc/systemd/system/llama-server.service"
 
-        # Jump straight to health poll
-        wait_for_llama_health "$HEALTH_URL" 600
+    cat > "$service_dest" <<EOF
+[Unit]
+Description=llama.cpp inference server
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=$(dirname "$bin_path")
+ExecStart=${bin_path} \\
+  --model ${model_path} \\
+  --ctx-size ${ctx_size} \\
+  --parallel 1 \\
+  --host 127.0.0.1 \\
+  --port 8001 \\
+  -ngl ${ngl} ${extra_flags:+\\
+  $extra_flags}
+
+Restart=always
+RestartSec=10
+TimeoutStartSec=600
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 "$service_dest"
+}
+
+# Install llama-server from prebuilt release binary (x86 + ROCm)
+install_llama_x86() {
+    local LLAMA_INSTALL_DIR="/home/admin/llama-server"
+    local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
+
+    # Fast-path: binary already present
+    if [[ -x "$LLAMA_BIN" ]]; then
+        log_info "llama-server binary already present at $LLAMA_BIN."
+        return 0
+    fi
+
+    log_info "Installing ROCm runtime for AMD GPU..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq wget curl jq rocm-hip-runtime 2>/dev/null \
+        || log_warn "rocm-hip-runtime not in repos. GPU offload may require manual ROCm install."
+
+    log_info "Fetching latest llama.cpp release..."
+    local latest_tag
+    latest_tag=$(curl -sf https://api.github.com/repos/ggerganov/llama.cpp/releases/latest | jq -r '.tag_name') \
+        || die "Failed to query llama.cpp releases."
+
+    local asset_url
+    asset_url=$(curl -sf "https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/${latest_tag}" \
+        | jq -r '.assets[] | select(.name | test("ubuntu.*x64.*rocm")) | .browser_download_url' | head -1)
+
+    if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+        log_warn "No prebuilt ROCm binary found for ${latest_tag}. Falling back to source build..."
+        install_llama_rpi5  # reuse source build path (works on x86 too)
         return $?
     fi
 
-    # --- [2/5] Install build dependencies ---
-    log_info "[2/5] Installing build dependencies..."
-    if ! check_internet; then
-        die "No internet connection. Cannot install llama-server."
+    log_info "Downloading prebuilt llama-server (${latest_tag})..."
+    mkdir -p "$LLAMA_INSTALL_DIR"
+    local tmp_archive="/tmp/llama-release.tar.gz"
+    wget -O "$tmp_archive" "$asset_url" \
+        || die "Failed to download llama-server release."
+    tar -xzf "$tmp_archive" -C "$LLAMA_INSTALL_DIR" --strip-components=1
+    rm -f "$tmp_archive"
+
+    [[ -x "$LLAMA_BIN" ]] || chmod +x "$LLAMA_BIN"
+    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after extraction at $LLAMA_BIN"
+    log_info "Installed prebuilt llama-server: $LLAMA_BIN"
+}
+
+# Build llama-server from source (Pi 5 / fallback)
+install_llama_rpi5() {
+    local LLAMA_DIR="/home/admin/llama.cpp"
+    local LLAMA_BIN="${LLAMA_DIR}/build/bin/llama-server"
+
+    # Fast-path: binary already present
+    if [[ -x "$LLAMA_BIN" ]]; then
+        log_info "llama-server binary already present at $LLAMA_BIN."
+        return 0
     fi
 
+    log_info "Installing build dependencies..."
     wait_for_apt_lock
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq cmake g++ git pkg-config wget \
         libvulkan-dev glslang-tools vulkan-tools
 
-    # --- [3/5] Clone and build llama.cpp ---
-    log_info "[3/5] Building llama.cpp (this takes 10-20 minutes on Pi 5)..."
+    log_info "Building llama.cpp from source (this takes 10-20 minutes on Pi 5)..."
     if [[ -d "$LLAMA_DIR" ]]; then
-        log_info "Source directory exists. Pulling latest changes..."
-        sudo -u admin git -C "$LLAMA_DIR" pull --ff-only 2>/dev/null || true
+        log_info "Source directory exists. Updating..."
+        sudo -u admin git -C "$LLAMA_DIR" fetch --depth 1 origin main 2>/dev/null || true
+        sudo -u admin git -C "$LLAMA_DIR" reset --hard origin/main 2>/dev/null || true
     else
         log_info "Cloning llama.cpp (shallow)..."
         sudo -u admin git clone --depth 1 https://github.com/ggerganov/llama.cpp.git "$LLAMA_DIR"
@@ -506,46 +598,103 @@ setup_llama_server() {
 
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after build at $LLAMA_BIN"
     log_info "Build complete: $LLAMA_BIN"
+}
 
-    # --- [4/5] Download model ---
-    log_info "[4/5] Downloading model: ${MODEL_NAME}..."
+# Download model file with resume support
+download_model() {
+    local MODEL_NAME="$1" MODEL_URL="$2" MODEL_PATH="$3" MIN_SIZE="$4"
 
-    # Pre-flight disk space check (need ~20 GB for model + build artifacts)
+    log_info "Downloading model: ${MODEL_NAME}..."
+
+    # Pre-flight disk space check
     local avail_kb
     avail_kb=$(df --output=avail /home | tail -1 | tr -d ' ')
-    if [[ "$avail_kb" -lt 20000000 ]]; then
-        die "Insufficient disk space: $(( avail_kb / 1048576 )) GB available, need at least 20 GB."
+    local need_kb=$(( MIN_SIZE / 1024 + 5000000 ))  # model size + 5 GB headroom
+    if [[ "$avail_kb" -lt "$need_kb" ]]; then
+        die "Insufficient disk space: $(( avail_kb / 1048576 )) GB available, need at least $(( need_kb / 1048576 )) GB."
     fi
 
     if [[ -f "$MODEL_PATH" ]]; then
         local size
         size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
-        if [[ "$size" -gt 14000000000 ]]; then
+        if [[ "$size" -gt "$MIN_SIZE" ]]; then
             log_info "Model already downloaded ($(( size / 1073741824 )) GB). Skipping."
+            return 0
         else
             log_warn "Model file exists but appears truncated (${size} bytes). Re-downloading..."
             rm -f "$MODEL_PATH"
         fi
     fi
 
-    if [[ ! -f "$MODEL_PATH" ]]; then
-        log_info "Downloading ~15 GB model. This will take a while..."
-        sudo -u admin wget --continue --progress=dot:giga \
-            -O "$MODEL_PATH" "$MODEL_URL" \
-            || die "Model download failed. Re-run to resume (wget supports resume)."
+    log_info "Downloading $(( MIN_SIZE / 1073741824 )) GB+ model. This will take a while..."
+    sudo -u admin wget --continue --progress=dot:giga \
+        -O "$MODEL_PATH" "$MODEL_URL" \
+        || die "Model download failed. Re-run to resume (wget supports resume)."
 
-        local size
-        size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
-        if [[ "$size" -lt 14000000000 ]]; then
-            die "Downloaded model is too small (${size} bytes). File may be truncated or URL may be wrong."
-        fi
-        log_info "Model downloaded: $(( size / 1073741824 )) GB"
+    local size
+    size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+    if [[ "$size" -lt "$MIN_SIZE" ]]; then
+        die "Downloaded model is too small (${size} bytes). File may be truncated or URL may be wrong."
     fi
+    log_info "Model downloaded: $(( size / 1073741824 )) GB"
+}
+
+# Main setup orchestrator
+setup_llama_server() {
+    log_info "=== Setting up llama-server (${HB_PLATFORM}) ==="
+    load_env
+
+    # Read model config from .env (set by dashboard model selector)
+    local MODEL_NAME="${AI_MODEL_FILENAME:-}"
+    local MODEL_URL="${AI_MODEL_URL:-}"
+    local MODEL_PATH="/home/admin/${MODEL_NAME}"
+    local NGL="${AI_NGL:-0}"
+    local CTX_SIZE="${AI_CTX_SIZE:-8192}"
+    local EXTRA_FLAGS="${AI_EXTRA_FLAGS:-}"
+    local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
+    local LLAMA_BIN
+    LLAMA_BIN=$(get_llama_bin_path)
+    local HEALTH_URL="http://127.0.0.1:8001/health"
+
+    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
+        die "No AI model configured. Please select a model in the dashboard before installing."
+    fi
+
+    # --- [1/5] Fast-path: binary and model already present ---
+    log_info "[1/5] Checking for existing llama-server installation..."
+    if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+        log_info "llama-server and model already present. Syncing service and starting..."
+        generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$NGL" "$CTX_SIZE" "$EXTRA_FLAGS"
+        systemctl daemon-reload
+        systemctl enable --now llama-server
+        wait_for_llama_health "$HEALTH_URL" 600
+        return $?
+    fi
+
+    # --- [2/5] & [3/5] Install binary (platform-specific) ---
+    if ! check_internet; then
+        die "No internet connection. Cannot install llama-server."
+    fi
+
+    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+        log_info "[2/5] Installing prebuilt llama-server (ROCm)..."
+        install_llama_x86
+    else
+        log_info "[2/5] Building llama-server from source (Vulkan)..."
+        install_llama_rpi5
+    fi
+
+    LLAMA_BIN=$(get_llama_bin_path)
+    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"
+    log_info "[3/5] Binary ready: $LLAMA_BIN"
+
+    # --- [4/5] Download model ---
+    log_info "[4/5] Downloading model..."
+    download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
 
     # --- [5/5] Deploy service and start ---
     log_info "[5/5] Deploying llama-server service..."
-    cp "$SERVICE_SRC" "$SERVICE_DEST"
-    chmod 644 "$SERVICE_DEST"
+    generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$NGL" "$CTX_SIZE" "$EXTRA_FLAGS"
     systemctl daemon-reload
     systemctl enable --now llama-server
 
@@ -578,8 +727,34 @@ wait_for_llama_health() {
 }
 
 # --- Helper: Setup OpenClaw AI Agent (system service) ---
+
+# Patch openclaw.json model references to match the selected AI model
+patch_openclaw_config() {
+    local config_file="$1"
+    local model_id="$2"
+
+    if [[ -z "$model_id" ]]; then
+        log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
+        return 0
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq not found. Cannot patch openclaw config model references."
+        return 0
+    fi
+
+    jq --arg id "$model_id" '
+        .models.providers.llamacpp.models[0].id = $id |
+        .models.providers.llamacpp.models[0].name = $id |
+        .agents.defaults.model.primary = ("llamacpp/" + $id) |
+        .agents.defaults.models = {("llamacpp/" + $id): {}}
+    ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
+    log_info "Patched openclaw.json with model: $model_id"
+}
+
 setup_openclaw() {
     log_info "=== Setting up OpenClaw AI Assistant ==="
+    load_env
 
     # Pre-flight: warn if llama-server is not reachable
     if ! curl -sf --max-time 5 http://127.0.0.1:8001/health >/dev/null 2>&1; then
@@ -588,6 +763,7 @@ setup_openclaw() {
 
     local config_src="${SCRIPT_DIR}/../config/openclaw.json"
     local config_dest="/home/admin/.openclaw/openclaw.json"
+    local model_id="${AI_MODEL_ID:-}"
 
     # --- Step 1: Fast-path if binary already installed ---
     log_info "[1/3] Checking for existing OpenClaw installation..."
@@ -595,6 +771,7 @@ setup_openclaw() {
         log_info "OpenClaw already installed ($(openclaw --version 2>/dev/null || echo 'unknown version')). Syncing config and starting..."
         mkdir -p /home/admin/.openclaw
         cp "$config_src" "$config_dest"
+        patch_openclaw_config "$config_dest" "$model_id"
         chown -R admin:admin /home/admin/.openclaw
         chmod 600 "$config_dest"
         sudo -u admin openclaw daemon start \
@@ -649,6 +826,7 @@ setup_openclaw() {
     fi
     mkdir -p /home/admin/.openclaw
     cp "$config_src" "$config_dest"
+    patch_openclaw_config "$config_dest" "$model_id"
     chown -R admin:admin /home/admin/.openclaw
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
