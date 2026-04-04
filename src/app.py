@@ -586,7 +586,7 @@ def mount_drive():
         f"umount {shlex.quote(target_path)} || true; "
         f"mkdir -p {BACKUP_DIR}; "
         # Remove any existing entry for the backup dir to avoid conflicts
-        f"sed -i '\|{BACKUP_DIR}|d' /etc/fstab; "
+        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab; "
         # Add new entry using the validated UUID
         f'echo "UUID={uuid} {BACKUP_DIR} {fstype} defaults,nofail 0 2" >> /etc/fstab; '
         f"mount -a"
@@ -882,7 +882,7 @@ def format_drive():
         f"mkfs.ext4 -F -L 'NextcloudBackup' {safe_path}; "
         f"mkdir -p {BACKUP_DIR}; "
         f"UUID=$(blkid -o value -s UUID {safe_path}); "
-        f"sed -i '\|{BACKUP_DIR}|d' /etc/fstab; "
+        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab; "
         f'echo "UUID=$UUID {BACKUP_DIR} ext4 defaults,nofail 0 2" >> /etc/fstab; '
         f"mount -a;"
     )
