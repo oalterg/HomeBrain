@@ -147,7 +147,7 @@ get_system_config_status() {
     # OpenClaw AI (system service managed by openclaw daemon)
     local ai_status="not_installed"
     if command -v openclaw >/dev/null 2>&1; then
-        if timeout 5 sudo -u admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+        if timeout 5 run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
             ai_status="running"
         else
             ai_status="disabled"
@@ -752,6 +752,22 @@ patch_openclaw_config() {
     log_info "Patched openclaw.json with model: $model_id"
 }
 
+# Run a command as admin with systemd user session environment
+# Required for openclaw daemon/gateway which uses systemd user services
+run_as_admin() {
+    local admin_uid
+    admin_uid=$(id -u admin)
+    # Ensure linger is enabled (allows user services without login)
+    loginctl enable-linger admin 2>/dev/null || true
+    # Ensure runtime dir exists
+    mkdir -p "/run/user/${admin_uid}" 2>/dev/null || true
+    chown admin:admin "/run/user/${admin_uid}" 2>/dev/null || true
+    sudo -u admin \
+        XDG_RUNTIME_DIR="/run/user/${admin_uid}" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${admin_uid}/bus" \
+        "$@"
+}
+
 setup_openclaw() {
     log_info "=== Setting up OpenClaw AI Assistant ==="
     load_env
@@ -774,8 +790,8 @@ setup_openclaw() {
         patch_openclaw_config "$config_dest" "$model_id"
         chown -R admin:admin /home/admin/.openclaw
         chmod 600 "$config_dest"
-        sudo -u admin openclaw daemon install 2>/dev/null || true
-        sudo -u admin openclaw daemon start \
+        run_as_admin openclaw daemon install 2>/dev/null || true
+        run_as_admin openclaw daemon start \
             || { log_error "daemon start failed. Try: sudo -u admin openclaw daemon install"; return 1; }
         log_info "=== OpenClaw started (fast path) ==="
         return 0
@@ -833,15 +849,15 @@ setup_openclaw() {
     log_info "Config written to $config_dest"
 
     # Let openclaw install its own systemd service (runs as admin user)
-    sudo -u admin openclaw daemon install \
+    run_as_admin openclaw daemon install \
         || die "openclaw daemon install failed."
-    sudo -u admin openclaw daemon start \
+    run_as_admin openclaw daemon start \
         || die "openclaw daemon start failed."
 
     # Verify startup (up to 30 s)
     local retries=0
     while [[ $retries -lt 15 ]]; do
-        if sudo -u admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+        if run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
             local ip
             ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
             log_info "OpenClaw is running. Access at http://${ip}:18789"
@@ -908,7 +924,7 @@ case "${1:-}" in
         setup_openclaw
         ;;
     stop_ai)
-        sudo -u admin openclaw daemon stop 2>/dev/null || true
+        run_as_admin openclaw daemon stop 2>/dev/null || true
         log_info "OpenClaw stopped."
         systemctl disable --now llama-server 2>/dev/null || true
         log_info "llama-server stopped and disabled."
