@@ -27,12 +27,12 @@ wait_for_time_sync
 echo "Installing Application Dependencies..."
 install_deps_enable_docker
 
-# --- 1b. Ensure admin user exists (Ubuntu Desktop doesn't ship with one) ---
+# --- 1b. Ensure admin user exists (Ubuntu Server doesn't ship with one) ---
 ensure_admin_user
 
 # --- 1c. Platform-specific hardening ---
 if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
-    # Disable Apache if present (conflicts with HomeBrain dashboard on port 80)
+    # Disable conflicting web servers if present
     systemctl disable --now apache2 2>/dev/null || true
 
     # Open firewall ports if ufw is active
@@ -43,6 +43,23 @@ if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
         ufw allow 8123/tcp  # Home Assistant
         ufw allow 18789/tcp # OpenClaw
     fi
+
+    # Add AMD ROCm repository for GPU compute support
+    if [[ ! -f /etc/apt/sources.list.d/rocm.list ]]; then
+        log_info "Adding AMD ROCm repository..."
+        mkdir -p /etc/apt/keyrings
+        wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg 2>/dev/null || true
+        if [[ -f /etc/apt/keyrings/rocm.gpg ]]; then
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/latest $(lsb_release -cs) main" > /etc/apt/sources.list.d/rocm.list
+            apt-get update -qq
+        else
+            log_warn "Failed to add ROCm repository key. GPU compute may require manual setup."
+        fi
+    fi
+
+    # Install kernel driver for AMD GPU (needed on Server; Desktop includes via Mesa)
+    apt-get install -y -qq amdgpu-dkms 2>/dev/null \
+        || log_warn "amdgpu-dkms not available. Stock kernel driver will be used."
 fi
 
 # --- 2. Write Factory Config ---

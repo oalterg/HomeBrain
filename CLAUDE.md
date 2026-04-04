@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-HomeBrain is a self-hosted private cloud server automation platform for Raspberry Pi 5. It automates deployment of Nextcloud and Home Assistant in Docker containers, accessible via encrypted tunnels (Pangolin or Cloudflare). There is no vendor lock-in; all data stays on-device. User manages all functionality via the dashboard GUI.
+HomeBrain is a self-hosted private cloud server automation platform. It automates deployment of Nextcloud and Home Assistant in Docker containers, accessible via encrypted tunnels (Pangolin or Cloudflare). There is no vendor lock-in; all data stays on-device. User manages all functionality via the dashboard GUI.
+
+Two product variants share one codebase:
+- **HomeCloud** — Raspberry Pi 5 (aarch64, 8 GB RAM). AI is opt-in. Headless appliance.
+- **HomeBrain** — x86 mATX (AMD Ryzen CPU, RX 9060 XT GPU, Ubuntu Server). AI is opt-out (default-on). Runs llama-server with ROCm GPU offload.
+
+Platform is detected at runtime (`uname -m`) and drives all downstream behavior: package lists, AI build strategy, dashboard branding, and feature guards.
 
 ## Running the Application
 
