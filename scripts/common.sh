@@ -42,7 +42,7 @@ detect_platform() {
 detect_platform
 
 # --- User Management ---
-# Ensure the 'admin' system user exists (Pi OS ships with it; Ubuntu Desktop does not)
+# Ensure the 'admin' system user exists (Pi OS ships with it; Ubuntu Server does not)
 ensure_admin_user() {
     if id -u admin >/dev/null 2>&1; then
         return 0
@@ -236,6 +236,8 @@ install_deps_enable_docker() {
     local platform_pkgs=""
     if [[ "$HB_PLATFORM" == "rpi5" ]]; then
         platform_pkgs="initramfs-tools rfkill"
+    elif [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+        platform_pkgs="chromium-browser"
     fi
     apt-get install -y -qq $common_pkgs $platform_pkgs
     apt-get update -qq
