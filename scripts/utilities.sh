@@ -147,7 +147,7 @@ get_system_config_status() {
     # OpenClaw AI (system service managed by openclaw daemon)
     local ai_status="not_installed"
     if command -v openclaw >/dev/null 2>&1; then
-        if timeout 5 run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+        if timeout 15 run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
             ai_status="running"
         else
             ai_status="disabled"
