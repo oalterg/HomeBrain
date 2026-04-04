@@ -30,7 +30,7 @@ detect_platform() {
     elif [[ "$arch" == "x86_64" ]]; then
         export HB_PLATFORM="x86_ubuntu"
         export HB_ARCH="x86_64"
-        export HB_GPU_BACKEND="rocm"
+        export HB_GPU_BACKEND="vulkan"
         export HB_AI_DEFAULT="opt-out"
     else
         export HB_PLATFORM="unknown"

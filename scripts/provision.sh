@@ -44,29 +44,18 @@ if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
         ufw allow 18789/tcp # OpenClaw
     fi
 
-    # Add AMD ROCm repository for GPU compute support
-    if [[ ! -f /etc/apt/sources.list.d/rocm.list ]]; then
-        log_info "Adding AMD ROCm repository..."
-        mkdir -p /etc/apt/keyrings
-        wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg 2>/dev/null || true
-        if [[ -f /etc/apt/keyrings/rocm.gpg ]]; then
-            # Use 'noble' (24.04 LTS) as ROCm may not have packages for newer Ubuntu releases yet
-            rocm_codename=$(lsb_release -cs)
-            # Fall back to noble if current codename has no ROCm packages
-            if ! wget -q --spider "https://repo.radeon.com/rocm/apt/latest/dists/${rocm_codename}" 2>/dev/null; then
-                rocm_codename="noble"
-                log_info "ROCm repo not available for $(lsb_release -cs). Using ${rocm_codename} instead."
-            fi
-            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/latest ${rocm_codename} main" > /etc/apt/sources.list.d/rocm.list
-            apt-get update -qq
-        else
-            log_warn "Failed to add ROCm repository key. GPU compute may require manual setup."
-        fi
-    fi
+    # Vulkan drivers for AMD GPU (RADV via Mesa, ships in Ubuntu archive)
+    log_info "Installing Vulkan drivers for AMD GPU..."
+    apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
+        || log_warn "Vulkan driver install failed. GPU inference may not work."
 
-    # Install kernel driver for AMD GPU (needed on Server; Desktop includes via Mesa)
-    apt-get install -y -qq amdgpu-dkms 2>/dev/null \
-        || log_warn "amdgpu-dkms not available. Stock kernel driver will be used."
+    # Prevent AMD GPU runtime power management (keeps model in VRAM while idle)
+    local grub_file="/etc/default/grub"
+    if [[ -f "$grub_file" ]] && ! grep -q "amdgpu.runpm=0" "$grub_file"; then
+        log_info "Disabling AMD GPU runtime power management (amdgpu.runpm=0)..."
+        sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0"/' "$grub_file"
+        update-grub 2>/dev/null || log_warn "update-grub failed. Kernel parameter may require manual setup."
+    fi
 fi
 
 # --- 2. Write Factory Config ---

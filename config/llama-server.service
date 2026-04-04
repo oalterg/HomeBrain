@@ -6,17 +6,19 @@ After=network.target
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=/home/admin/llama.cpp
+WorkingDirectory=/home/admin/llama-server
+Environment="LD_LIBRARY_PATH=/home/admin/llama-server"
+Environment="GGML_VK_DEVICE=0"
 
 # Adjust --model, -ngl (GPU layers), and --ctx-size to match your hardware.
-ExecStart=/home/admin/llama.cpp/build/bin/llama-server \
+ExecStart=/home/admin/llama-server/llama-server \
   --model /home/admin/Qwen3.5-27B-Q4_K_M.gguf \
   --ctx-size 131072 \
   --parallel 1 \
   --host 127.0.0.1 \
   --port 8001 \
   --swa-full \
-  -ngl 41 \
+  -ngl 99 \
   -fa on
 
 Restart=always
