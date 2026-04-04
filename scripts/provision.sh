@@ -50,7 +50,7 @@ if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
         || log_warn "Vulkan driver install failed. GPU inference may not work."
 
     # Prevent AMD GPU runtime power management (keeps model in VRAM while idle)
-    local grub_file="/etc/default/grub"
+    grub_file="/etc/default/grub"
     if [[ -f "$grub_file" ]] && ! grep -q "amdgpu.runpm=0" "$grub_file"; then
         log_info "Disabling AMD GPU runtime power management (amdgpu.runpm=0)..."
         sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0"/' "$grub_file"

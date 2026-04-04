@@ -44,15 +44,16 @@ detect_platform
 # --- User Management ---
 # Ensure the 'admin' system user exists (Pi OS ships with it; Ubuntu Server does not)
 ensure_admin_user() {
-    if id -u admin >/dev/null 2>&1; then
-        return 0
+    if ! id -u admin >/dev/null 2>&1; then
+        log_info "Creating 'admin' system user..."
+        useradd -m -s /bin/bash admin
     fi
-    log_info "Creating 'admin' system user..."
-    useradd -m -s /bin/bash admin
-    # Add to docker group if it exists (created by Docker install)
-    if getent group docker >/dev/null 2>&1; then
-        usermod -aG docker admin
-    fi
+    # Ensure admin is in required groups (idempotent)
+    for grp in docker render video; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -aG "$grp" admin 2>/dev/null || true
+        fi
+    done
 }
 
 # --- Environment Loading ---
