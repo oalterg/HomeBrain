@@ -715,7 +715,7 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
-        .models.providers.llamacpp.requestTimeout = 600000 |
+        .agents.defaults.llm.idleTimeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}}
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
