@@ -1664,30 +1664,33 @@
             waSocket.onmessage = function(ev) {
                 try {
                     var msg = JSON.parse(ev.data);
+                    var payload = msg.payload || {};
 
-                    // Handle connect.challenge event (gateway sends nonce before connect)
+                    // Handle connect.challenge event
                     if (msg.type === 'event' && msg.event === 'connect.challenge') {
                         if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
                         sendConnect();
                         return;
                     }
 
-                    // Handle responses (type: "res" or has result/error with id)
-                    if (!authenticated && msg.result && (msg.result.protocol || msg.result.gateway)) {
-                        authenticated = true;
-                        msgEl.textContent = 'Requesting QR code...';
-                        send('web.login.start', { force: true, timeoutMs: 60000 });
-                        return;
-                    }
+                    // Skip other events (health, tick, etc.)
+                    if (msg.type === 'event') return;
 
-                    if (!authenticated && msg.error) {
-                        msgEl.textContent = 'Gateway auth failed: ' + (msg.error.message || JSON.stringify(msg.error));
+                    // Handle connect response (type: "res", ok: true, payload.type: "hello-ok")
+                    if (msg.type === 'res' && !authenticated) {
+                        if (msg.ok && payload.protocol) {
+                            authenticated = true;
+                            msgEl.textContent = 'Requesting QR code...';
+                            send('web.login.start', { force: true, timeoutMs: 60000 });
+                        } else {
+                            msgEl.textContent = 'Gateway auth failed: ' + (payload.message || payload.reason || JSON.stringify(payload));
+                        }
                         return;
                     }
 
                     // Handle QR code response
-                    if (msg.result && msg.result.qrDataUrl) {
-                        imgEl.src = msg.result.qrDataUrl;
+                    if (msg.type === 'res' && payload.qrDataUrl) {
+                        imgEl.src = payload.qrDataUrl;
                         imgEl.style.display = 'block';
                         msgEl.textContent = 'Scan this QR code with WhatsApp';
                         send('web.login.wait', { timeoutMs: 120000 });
@@ -1695,16 +1698,16 @@
                     }
 
                     // Handle successful link
-                    if (msg.result && msg.result.connected) {
+                    if (msg.type === 'res' && payload.connected) {
                         imgEl.style.display = 'none';
                         msgEl.textContent = 'WhatsApp linked successfully!';
                         setTimeout(closeWhatsAppModal, 2000);
                         return;
                     }
 
-                    // Handle RPC errors after auth
-                    if (msg.error && authenticated) {
-                        msgEl.textContent = msg.error.message || 'Linking failed.';
+                    // Handle errors
+                    if (msg.type === 'res' && !msg.ok) {
+                        msgEl.textContent = payload.message || 'Linking failed.';
                     }
                 } catch(e) { /* ignore parse errors */ }
             };
