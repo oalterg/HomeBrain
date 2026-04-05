@@ -926,14 +926,14 @@
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
                 const pciEl = document.getElementById('sys-pci-status');
                 if (pciEl && data.pci !== 'unsupported') updateBadge('sys-pci-status', data.pci, 'gen3');
-                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed');
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id);
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
         }
 
-        function updateAIStatus(llamaStatus, openclawStatus) {
+        function updateAIStatus(llamaStatus, openclawStatus, currentModelId) {
             const badgeMap = {
                 running:       ['status-running',  'RUNNING'],
                 starting:      ['status-starting', 'LOADING MODEL...'],
@@ -974,7 +974,7 @@
                 loadAIModels();
             } else if (llamaStatus === 'running' || llamaStatus === 'disabled') {
                 modelSelector.style.display = 'block';
-                loadAIModels(statusData.ai_model_id);
+                loadAIModels(currentModelId);
             } else {
                 modelSelector.style.display = 'none';
             }
