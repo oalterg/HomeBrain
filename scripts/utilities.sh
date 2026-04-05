@@ -699,6 +699,7 @@ wait_for_llama_health() {
 patch_openclaw_config() {
     local config_file="$1"
     local model_id="$2"
+    local ctx_size="${3:-}"
 
     if [[ -z "$model_id" ]]; then
         log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
@@ -710,13 +711,15 @@ patch_openclaw_config() {
         return 0
     fi
 
-    jq --arg id "$model_id" '
+    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
+        .models.providers.llamacpp.models[0].contextWindow = $ctx |
+        .models.providers.llamacpp.requestTimeout = 600000 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}}
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-    log_info "Patched openclaw.json with model: $model_id"
+    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
 
 # Run a command as admin with systemd user session environment
@@ -754,7 +757,7 @@ setup_openclaw() {
         log_info "OpenClaw already installed ($(openclaw --version 2>/dev/null || echo 'unknown version')). Syncing config and starting..."
         mkdir -p /home/admin/.openclaw
         cp "$config_src" "$config_dest"
-        patch_openclaw_config "$config_dest" "$model_id"
+        patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
         chown -R admin:admin /home/admin/.openclaw
         chmod 600 "$config_dest"
         run_as_admin openclaw daemon install 2>/dev/null || true
@@ -810,7 +813,7 @@ setup_openclaw() {
     fi
     mkdir -p /home/admin/.openclaw
     cp "$config_src" "$config_dest"
-    patch_openclaw_config "$config_dest" "$model_id"
+    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
     chown -R admin:admin /home/admin/.openclaw
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
@@ -898,28 +901,15 @@ case "${1:-}" in
         ;;
     switch_model)
         log_info "=== Switching AI model ==="
-        # Capture old model path from current service before .env reload
-        old_model_file=""
-        if [[ -f "/etc/systemd/system/llama-server.service" ]]; then
-            old_model_file=$(grep -oP '(?<=--model )\S+' /etc/systemd/system/llama-server.service || true)
-        fi
-
         # Stop running services
         run_as_admin openclaw daemon stop 2>/dev/null || true
         systemctl stop llama-server 2>/dev/null || true
         log_info "Stopped AI services."
 
         # Re-run full setup (downloads new model if needed, regenerates service, starts)
+        # Previously-downloaded models are kept on disk for faster switching.
         setup_llama_server || { log_error "Model switch failed during llama-server setup."; exit 1; }
         setup_openclaw
-
-        # Clean up old model file (only if different from new and switch succeeded)
-        load_env
-        new_model="/home/admin/${AI_MODEL_FILENAME}"
-        if [[ -n "$old_model_file" && "$old_model_file" != "$new_model" && -f "$old_model_file" ]]; then
-            log_info "Removing previous model: $old_model_file"
-            rm -f "$old_model_file"
-        fi
 
         log_info "Model switch complete."
         ;;

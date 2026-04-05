@@ -43,8 +43,8 @@
         "filename": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
         "min_size_bytes": 14000000000,
-        "context_window": 49152,
-        "ngl": 52,
+        "context_window": 70000,
+        "ngl": 20,
         "extra_flags": "--swa-full --jinja -fa on",
         "default": false
       },
