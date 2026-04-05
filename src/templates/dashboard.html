@@ -624,7 +624,8 @@
                 </table>
                 <div id="ai-model-selector" style="margin-top:10px; display:none;">
                     <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
-                    <select id="ai-model-select" style="width:100%; padding:6px; margin-top:4px; font-size:0.85em; background:var(--hb-card-bg); color:var(--hb-text); border:1px solid var(--hb-border); border-radius:4px;"></select>
+                    <select id="ai-model-select" onchange="onModelSelectChange()" style="width:100%; padding:6px; margin-top:4px; font-size:0.85em; background:var(--hb-card-bg); color:var(--hb-text); border:1px solid var(--hb-border); border-radius:4px;"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none; margin-top:6px; padding:4px 14px; font-size:0.8em;">Switch Model</button>
                 </div>
                 <div style="text-align:right; margin-top:10px;">
                     <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
@@ -966,11 +967,14 @@
                 linkWrap.style.display = 'none';
             }
 
-            // Model selector (show only when not installed)
+            // Model selector (show when not installed or when running/disabled)
             const modelSelector = document.getElementById('ai-model-selector');
             if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
                 modelSelector.style.display = 'block';
                 loadAIModels();
+            } else if (llamaStatus === 'running' || llamaStatus === 'disabled') {
+                modelSelector.style.display = 'block';
+                loadAIModels(statusData.ai_model_id);
             } else {
                 modelSelector.style.display = 'none';
             }
@@ -991,22 +995,64 @@
         }
 
         let aiModelsLoaded = false;
-        async function loadAIModels() {
-            if (aiModelsLoaded) return;
+        async function loadAIModels(currentModelId) {
+            const select = document.getElementById('ai-model-select');
+            if (aiModelsLoaded) {
+                if (currentModelId) {
+                    select.value = currentModelId;
+                    select.dataset.currentModel = currentModelId;
+                }
+                return;
+            }
             try {
                 const res = await fetch('/api/ai/models', { credentials: 'include' });
                 const data = await res.json();
-                const select = document.getElementById('ai-model-select');
                 select.innerHTML = '';
                 (data.models || []).forEach(m => {
                     const opt = document.createElement('option');
                     opt.value = m.id;
                     opt.textContent = m.id + ' (' + (m.min_size_bytes / 1073741824).toFixed(0) + ' GB)';
-                    if (m.default) opt.selected = true;
+                    if (currentModelId ? m.id === currentModelId : m.default) opt.selected = true;
                     select.appendChild(opt);
                 });
+                if (currentModelId) select.dataset.currentModel = currentModelId;
                 aiModelsLoaded = true;
             } catch(e) { console.error("Failed to load AI models", e); }
+        }
+
+        function onModelSelectChange() {
+            const btn = document.getElementById('btn-switch-model');
+            const select = document.getElementById('ai-model-select');
+            const llamaStatus = document.getElementById('sys-llama-status')?.dataset?.val;
+            if (llamaStatus && llamaStatus !== 'not_installed' && select.dataset.currentModel && select.value !== select.dataset.currentModel) {
+                btn.style.display = 'inline-block';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        async function switchModel() {
+            const modelId = document.getElementById('ai-model-select').value;
+            const msg = `Switch AI model to ${modelId}?\n\nThis will stop the AI services, download the new model if needed, and restart. The AI assistant will be unavailable during the switch.`;
+            if (!confirm(msg)) return;
+            try {
+                const res = await fetch('/api/ai/model/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ model_id: modelId })
+                });
+                if (res.ok) {
+                    currentLogSource = 'setup';
+                    document.getElementById('log-selector').value = 'setup';
+                    openTab('logs');
+                    document.getElementById('btn-switch-model').style.display = 'none';
+                    setTimeout(loadSystemConfig, 5000);
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Failed to switch model');
+                }
+            } catch(e) { alert("Failed to start model switch: " + e); }
         }
 
         async function toggleSystem(feature) {

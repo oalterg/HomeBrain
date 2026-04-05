@@ -156,7 +156,8 @@ get_system_config_status() {
         fi
     fi
 
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"platform\": \"$HB_PLATFORM\"}"
+    local current_model="${AI_MODEL_ID:-}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -636,7 +637,8 @@ setup_llama_server() {
         log_info "llama-server and model already present. Syncing service and starting..."
         generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$NGL" "$CTX_SIZE" "$EXTRA_FLAGS"
         systemctl daemon-reload
-        systemctl enable --now llama-server
+        systemctl enable llama-server
+        systemctl restart llama-server
         wait_for_llama_health "$HEALTH_URL" 600
         return $?
     fi
@@ -893,6 +895,33 @@ case "${1:-}" in
         log_info "OpenClaw stopped."
         systemctl disable --now llama-server 2>/dev/null || true
         log_info "llama-server stopped and disabled."
+        ;;
+    switch_model)
+        log_info "=== Switching AI model ==="
+        # Capture old model path from current service before .env reload
+        local old_model_file=""
+        if [[ -f "/etc/systemd/system/llama-server.service" ]]; then
+            old_model_file=$(grep -oP '(?<=--model )\S+' /etc/systemd/system/llama-server.service || true)
+        fi
+
+        # Stop running services
+        run_as_admin openclaw daemon stop 2>/dev/null || true
+        systemctl stop llama-server 2>/dev/null || true
+        log_info "Stopped AI services."
+
+        # Re-run full setup (downloads new model if needed, regenerates service, starts)
+        setup_llama_server || { log_error "Model switch failed during llama-server setup."; exit 1; }
+        setup_openclaw
+
+        # Clean up old model file (only if different from new and switch succeeded)
+        load_env
+        local new_model="/home/admin/${AI_MODEL_FILENAME}"
+        if [[ -n "$old_model_file" && "$old_model_file" != "$new_model" && -f "$old_model_file" ]]; then
+            log_info "Removing previous model: $old_model_file"
+            rm -f "$old_model_file"
+        fi
+
+        log_info "Model switch complete."
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"
