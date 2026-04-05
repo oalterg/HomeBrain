@@ -10,7 +10,6 @@
         "baseUrl": "http://127.0.0.1:8001/v1",
         "apiKey": "1234",
         "api": "openai-completions",
-        "requestTimeout": 600000,
         "models": [
           {
             "id": "Qwen3.5-27B-Q4_K_M",
@@ -32,6 +31,9 @@
       },
       "models": {
         "llamacpp/Qwen3.5-27B-Q4_K_M": {}
+      },
+      "llm": {
+        "idleTimeoutSeconds": 0
       },
       "workspace": "/home/admin/.openclaw/workspace",
       "compaction": {
