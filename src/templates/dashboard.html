@@ -1642,24 +1642,23 @@
                 return id;
             }
 
-            function sendConnect(nonce) {
+            function sendConnect() {
                 if (authenticated) return;
                 send('connect', {
                     minProtocol: 3, maxProtocol: 3,
-                    client: { name: 'homebrain-dashboard', version: '1.0', platform: 'web', mode: 'webchat' },
+                    client: { id: 'homebrain-dashboard', version: '1.0', platform: 'web', mode: 'webchat' },
                     role: 'operator', scopes: ['operator.admin'],
                     auth: { token: token },
                     caps: [],
                     userAgent: navigator.userAgent,
-                    locale: navigator.language,
-                    nonce: nonce || ''
+                    locale: navigator.language
                 });
             }
 
             waSocket.onopen = function() {
                 msgEl.textContent = 'Authenticating with gateway...';
                 // Gateway may or may not send connect.challenge; send connect after 750ms fallback
-                connectTimer = setTimeout(function() { sendConnect(''); }, 750);
+                connectTimer = setTimeout(function() { sendConnect(); }, 750);
             };
 
             waSocket.onmessage = function(ev) {
@@ -1669,8 +1668,7 @@
                     // Handle connect.challenge event (gateway sends nonce before connect)
                     if (msg.type === 'event' && msg.event === 'connect.challenge') {
                         if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-                        var nonce = (msg.payload && msg.payload.nonce) ? msg.payload.nonce : '';
-                        sendConnect(nonce);
+                        sendConnect();
                         return;
                     }
 
