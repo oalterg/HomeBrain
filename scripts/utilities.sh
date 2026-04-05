@@ -724,7 +724,12 @@ patch_openclaw_config() {
         return 0
     fi
 
-    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" '
+    # Build allowed origins for cross-origin WebSocket from HomeBrain dashboard
+    local lan_ip
+    lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local origins="[\"http://${lan_ip}\", \"http://${lan_ip}:80\", \"http://localhost\", \"http://127.0.0.1\"]"
+
+    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" --argjson origins "$origins" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
@@ -734,7 +739,8 @@ patch_openclaw_config() {
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
         .browser.noSandbox = true |
         .channels.whatsapp.enabled = true |
-        .plugins.entries.whatsapp.enabled = true
+        .plugins.entries.whatsapp.enabled = true |
+        .gateway.controlUi.allowedOrigins = $origins
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
