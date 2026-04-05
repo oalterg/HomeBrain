@@ -518,11 +518,12 @@ EOF
 
 # Install prebuilt llama-server with Vulkan GPU support (both platforms)
 install_llama_prebuilt() {
+    local force="${1:-false}"
     local LLAMA_INSTALL_DIR="/home/admin/llama-server"
     local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
 
-    # Fast-path: binary already present
-    if [[ -x "$LLAMA_BIN" ]]; then
+    # Fast-path: binary already present (skip unless force update)
+    if [[ "$force" != "true" ]] && [[ -x "$LLAMA_BIN" ]]; then
         log_info "llama-server binary already present at $LLAMA_BIN."
         return 0
     fi
@@ -717,7 +718,9 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
         .agents.defaults.llm.idleTimeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
-        .agents.defaults.models = {("llamacpp/" + $id): {}}
+        .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        .browser.executablePath = "/usr/bin/google-chrome-stable" |
+        .browser.noSandbox = true
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
@@ -912,6 +915,14 @@ case "${1:-}" in
         setup_openclaw
 
         log_info "Model switch complete."
+        ;;
+    update_llama)
+        log_info "=== Updating llama-server to latest release ==="
+        load_env
+        systemctl stop llama-server 2>/dev/null || true
+        install_llama_prebuilt "true"
+        setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
+        log_info "llama-server updated and restarted."
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"

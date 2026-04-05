@@ -240,15 +240,21 @@ install_deps_enable_docker() {
     fi
     apt-get install -y -qq $common_pkgs $platform_pkgs
 
-    # Install headless Chromium for OpenClaw browser tool (x86 only, non-fatal)
-    # On Ubuntu, chromium-browser is a snap wrapper that may return non-zero in non-interactive mode
+    # Install Google Chrome for OpenClaw browser tool (x86 only, non-fatal)
+    # Uses deb package instead of snap to avoid confinement issues on headless servers
     if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
-        apt-get install -y -qq chromium-browser 2>/dev/null \
-            || log_warn "chromium-browser install returned non-zero (snap wrapper). Checking if snap installed..."
-        if command -v chromium-browser >/dev/null 2>&1 || snap list chromium >/dev/null 2>&1; then
-            log_info "Chromium available for headless browsing."
+        if ! command -v google-chrome-stable >/dev/null 2>&1; then
+            log_info "Installing Google Chrome for headless browsing..."
+            wget -q -O /tmp/google-chrome.deb \
+                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
+                && apt-get install -y -qq /tmp/google-chrome.deb \
+                && rm -f /tmp/google-chrome.deb \
+                || log_warn "Chrome install failed. OpenClaw browser tool may not work."
+        fi
+        if command -v google-chrome-stable >/dev/null 2>&1; then
+            log_info "Chrome available for headless browsing."
         else
-            log_warn "Chromium not available. OpenClaw browser tool will not work."
+            log_warn "Chrome not available. OpenClaw browser tool will not work."
         fi
     fi
     apt-get update -qq
