@@ -109,6 +109,9 @@
     "entries": {
       "whatsapp": {
         "enabled": false
+      },
+      "browser": {
+        "enabled": true
       }
     }
   }
