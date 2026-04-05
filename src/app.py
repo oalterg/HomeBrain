@@ -1484,6 +1484,45 @@ def set_ai_model():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/ai/model/switch", methods=["POST"])
+@limiter.limit("3 per minute")
+def switch_ai_model():
+    """Switch to a different AI model (updates .env, restarts services)."""
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "A task is already running"}), 409
+
+    data = request.json
+    model_id = data.get("model_id")
+    if not model_id:
+        return jsonify({"error": "model_id required"}), 400
+
+    models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
+    try:
+        with open(models_file, "r") as f:
+            all_models = json.load(f)
+        platform_data = all_models.get(PLATFORM_INFO["platform"], {})
+        model = next((m for m in platform_data.get("models", []) if m["id"] == model_id), None)
+        if not model:
+            return jsonify({"error": f"Unknown model: {model_id}"}), 400
+
+        server_defaults = platform_data.get("llama_server", {})
+        update_env_var("AI_MODEL_ID", model["id"])
+        update_env_var("AI_MODEL_FILENAME", model["filename"])
+        update_env_var("AI_MODEL_URL", model["url"])
+        update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
+        update_env_var("AI_NGL", str(model.get("ngl", server_defaults.get("ngl", 0))))
+        update_env_var("AI_CTX_SIZE", str(model.get("context_window", server_defaults.get("ctx_size", 8192))))
+        update_env_var("AI_EXTRA_FLAGS", server_defaults.get("extra_flags", ""))
+
+        cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} switch_model >> {LOG_FILES['setup']} 2>&1"
+        threading.Thread(
+            target=run_background_task, args=(f"Switch AI model to {model_id}", cmd, "setup")
+        ).start()
+
+        return jsonify({"status": "started", "model": model_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/system/config", methods=["GET"])
 @limiter.limit("30 per minute")
 def get_system_config():
