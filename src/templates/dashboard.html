@@ -1625,35 +1625,75 @@
 
             waSocket = new WebSocket('ws://' + host + ':' + port);
             let reqId = 0;
+            let authenticated = false;
 
             function send(method, params) {
                 const id = 'hb-' + (++reqId);
-                waSocket.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: Object.assign({}, params, { token: token }) }));
+                waSocket.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: params || {} }));
                 return id;
             }
 
+            function sendConnect(nonce) {
+                send('connect', {
+                    minProtocol: 3, maxProtocol: 3,
+                    client: { name: 'homebrain-dashboard', version: '1.0', platform: 'web', mode: 'webchat' },
+                    role: 'operator', scopes: ['operator.admin'],
+                    auth: { token: token },
+                    caps: [],
+                    userAgent: navigator.userAgent,
+                    locale: navigator.language,
+                    nonce: nonce || ''
+                });
+            }
+
             waSocket.onopen = function() {
-                msgEl.textContent = 'Requesting QR code...';
-                send('web.login.start', { force: false, timeoutMs: 30000 });
+                msgEl.textContent = 'Authenticating with gateway...';
             };
 
             waSocket.onmessage = function(ev) {
                 try {
                     const msg = JSON.parse(ev.data);
-                    if (msg.result) {
-                        if (msg.result.qrDataUrl) {
-                            imgEl.src = msg.result.qrDataUrl;
-                            imgEl.style.display = 'block';
-                            msgEl.textContent = 'Scan this QR code with WhatsApp';
-                            send('web.login.wait', { timeoutMs: 120000 });
-                        }
-                        if (msg.result.connected) {
-                            imgEl.style.display = 'none';
-                            msgEl.textContent = 'WhatsApp linked successfully!';
-                            setTimeout(closeWhatsAppModal, 2000);
-                        }
+
+                    // Handle connect.challenge event (gateway sends nonce)
+                    if (msg.type === 'event' && msg.event === 'connect.challenge') {
+                        var nonce = msg.payload && msg.payload.nonce ? msg.payload.nonce : '';
+                        sendConnect(nonce);
+                        return;
                     }
-                    if (msg.error) {
+
+                    // Handle connect hello response (auth success)
+                    if (msg.id && msg.result && !authenticated && (msg.result.protocol || msg.result.gateway)) {
+                        authenticated = true;
+                        msgEl.textContent = 'Requesting QR code...';
+                        send('web.login.start', { force: true, timeoutMs: 60000 });
+                        return;
+                    }
+
+                    // Handle auth failure
+                    if (msg.id && msg.error && !authenticated) {
+                        msgEl.textContent = 'Gateway auth failed: ' + (msg.error.message || 'unknown');
+                        return;
+                    }
+
+                    // Handle QR code response
+                    if (msg.result && msg.result.qrDataUrl) {
+                        imgEl.src = msg.result.qrDataUrl;
+                        imgEl.style.display = 'block';
+                        msgEl.textContent = 'Scan this QR code with WhatsApp';
+                        send('web.login.wait', { timeoutMs: 120000 });
+                        return;
+                    }
+
+                    // Handle successful link
+                    if (msg.result && msg.result.connected) {
+                        imgEl.style.display = 'none';
+                        msgEl.textContent = 'WhatsApp linked successfully!';
+                        setTimeout(closeWhatsAppModal, 2000);
+                        return;
+                    }
+
+                    // Handle RPC errors
+                    if (msg.error && authenticated) {
                         msgEl.textContent = msg.error.message || 'Linking failed.';
                     }
                 } catch(e) { /* ignore parse errors */ }
