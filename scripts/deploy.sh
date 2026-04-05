@@ -150,9 +150,9 @@ auto_setup_ai() {
                 m_file=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .filename' "$models_file")
                 m_url=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .url' "$models_file")
                 m_min=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .min_size_bytes' "$models_file")
-                m_ngl=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.ngl' "$models_file")
-                m_ctx=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.ctx_size' "$models_file")
-                m_extra=$(jq -r --arg p "$HB_PLATFORM" '.[$p].llama_server.extra_flags' "$models_file")
+                m_ngl=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .ngl) // .[$p].llama_server.ngl' "$models_file")
+                m_ctx=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .context_window) // .[$p].llama_server.ctx_size' "$models_file")
+                m_extra=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .extra_flags) // .[$p].llama_server.extra_flags' "$models_file")
                 local key val
                 for kv in "AI_MODEL_ID=$default_model" "AI_MODEL_FILENAME=$m_file" "AI_MODEL_URL=$m_url" \
                           "AI_MODEL_MIN_SIZE=$m_min" "AI_NGL=$m_ngl" "AI_CTX_SIZE=$m_ctx" "AI_EXTRA_FLAGS=$m_extra"; do

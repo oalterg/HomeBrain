@@ -33,8 +33,9 @@
         "filename": "Qwen3.5-27B-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf",
         "min_size_bytes": 14000000000,
-        "context_window": 131072,
-        "ngl": 99,
+        "context_window": 49152,
+        "ngl": 55,
+        "extra_flags": "--jinja -fa on",
         "default": true
       },
       {
@@ -42,8 +43,9 @@
         "filename": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
         "min_size_bytes": 14000000000,
-        "context_window": 131072,
-        "ngl": 99,
+        "context_window": 49152,
+        "ngl": 52,
+        "extra_flags": "--swa-full --jinja -fa on",
         "default": false
       },
       {
@@ -51,8 +53,9 @@
         "filename": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf",
         "min_size_bytes": 18000000000,
-        "context_window": 131072,
-        "ngl": 99,
+        "context_window": 32768,
+        "ngl": 45,
+        "extra_flags": "--jinja -fa on",
         "default": false
       },
       {
@@ -62,13 +65,14 @@
         "min_size_bytes": 9000000000,
         "context_window": 131072,
         "ngl": 99,
+        "extra_flags": "--jinja -fa on",
         "default": false
       }
     ],
     "llama_server": {
       "ngl": 99,
       "ctx_size": 131072,
-      "extra_flags": "--swa-full -fa on"
+      "extra_flags": "--jinja -fa on"
     }
   }
 }
