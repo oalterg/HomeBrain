@@ -899,7 +899,7 @@ case "${1:-}" in
     switch_model)
         log_info "=== Switching AI model ==="
         # Capture old model path from current service before .env reload
-        local old_model_file=""
+        old_model_file=""
         if [[ -f "/etc/systemd/system/llama-server.service" ]]; then
             old_model_file=$(grep -oP '(?<=--model )\S+' /etc/systemd/system/llama-server.service || true)
         fi
@@ -915,7 +915,7 @@ case "${1:-}" in
 
         # Clean up old model file (only if different from new and switch succeeded)
         load_env
-        local new_model="/home/admin/${AI_MODEL_FILENAME}"
+        new_model="/home/admin/${AI_MODEL_FILENAME}"
         if [[ -n "$old_model_file" && "$old_model_file" != "$new_model" && -f "$old_model_file" ]]; then
             log_info "Removing previous model: $old_model_file"
             rm -f "$old_model_file"
