@@ -1626,14 +1626,24 @@
             waSocket = new WebSocket('ws://' + host + ':' + port);
             let reqId = 0;
             let authenticated = false;
+            let connectTimer = null;
+
+            function genId() {
+                // Match OpenClaw's ID format: 8 hex chars
+                var s = '';
+                for (var i = 0; i < 8; i++) s += Math.floor(Math.random()*16).toString(16);
+                return s;
+            }
 
             function send(method, params) {
-                const id = 'hb-' + (++reqId);
-                waSocket.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: params || {} }));
+                var id = genId();
+                // OpenClaw gateway uses {type:"req"} framing, NOT JSON-RPC 2.0
+                waSocket.send(JSON.stringify({ type: 'req', id: id, method: method, params: params || {} }));
                 return id;
             }
 
             function sendConnect(nonce) {
+                if (authenticated) return;
                 send('connect', {
                     minProtocol: 3, maxProtocol: 3,
                     client: { name: 'homebrain-dashboard', version: '1.0', platform: 'web', mode: 'webchat' },
@@ -1648,30 +1658,32 @@
 
             waSocket.onopen = function() {
                 msgEl.textContent = 'Authenticating with gateway...';
+                // Gateway may or may not send connect.challenge; send connect after 750ms fallback
+                connectTimer = setTimeout(function() { sendConnect(''); }, 750);
             };
 
             waSocket.onmessage = function(ev) {
                 try {
-                    const msg = JSON.parse(ev.data);
+                    var msg = JSON.parse(ev.data);
 
-                    // Handle connect.challenge event (gateway sends nonce)
+                    // Handle connect.challenge event (gateway sends nonce before connect)
                     if (msg.type === 'event' && msg.event === 'connect.challenge') {
-                        var nonce = msg.payload && msg.payload.nonce ? msg.payload.nonce : '';
+                        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+                        var nonce = (msg.payload && msg.payload.nonce) ? msg.payload.nonce : '';
                         sendConnect(nonce);
                         return;
                     }
 
-                    // Handle connect hello response (auth success)
-                    if (msg.id && msg.result && !authenticated && (msg.result.protocol || msg.result.gateway)) {
+                    // Handle responses (type: "res" or has result/error with id)
+                    if (!authenticated && msg.result && (msg.result.protocol || msg.result.gateway)) {
                         authenticated = true;
                         msgEl.textContent = 'Requesting QR code...';
                         send('web.login.start', { force: true, timeoutMs: 60000 });
                         return;
                     }
 
-                    // Handle auth failure
-                    if (msg.id && msg.error && !authenticated) {
-                        msgEl.textContent = 'Gateway auth failed: ' + (msg.error.message || 'unknown');
+                    if (!authenticated && msg.error) {
+                        msgEl.textContent = 'Gateway auth failed: ' + (msg.error.message || JSON.stringify(msg.error));
                         return;
                     }
 
@@ -1692,7 +1704,7 @@
                         return;
                     }
 
-                    // Handle RPC errors
+                    // Handle RPC errors after auth
                     if (msg.error && authenticated) {
                         msgEl.textContent = msg.error.message || 'Linking failed.';
                     }
@@ -1700,7 +1712,7 @@
             };
 
             waSocket.onerror = function() { msgEl.textContent = 'WebSocket connection failed.'; };
-            waSocket.onclose = function() { waSocket = null; };
+            waSocket.onclose = function() { waSocket = null; if (connectTimer) clearTimeout(connectTimer); };
         }
 
         function closeWhatsAppModal() {
