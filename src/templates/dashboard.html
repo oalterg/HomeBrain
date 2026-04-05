@@ -621,6 +621,17 @@
                         </td>
                         <td style="text-align:right;"><span id="sys-openclaw-status" class="status-badge status-unknown">...</span></td>
                     </tr>
+                    <tr id="whatsapp-row" style="display:none;">
+                        <td>
+                            <strong>WhatsApp</strong> <small style="color:var(--hb-text-dim);">(Chat Channel)</small><br>
+                            <small id="whatsapp-link-action" style="display:none; margin-top:4px;">
+                                <a href="#" onclick="startWhatsAppLink(); return false;" style="color:var(--hb-green);">Link WhatsApp &rarr;</a>
+                            </small>
+                        </td>
+                        <td style="text-align:right;">
+                            <span id="sys-whatsapp-status" class="status-badge status-unknown">...</span>
+                        </td>
+                    </tr>
                 </table>
                 <div id="ai-model-selector" style="margin-top:10px; display:none;">
                     <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
@@ -926,14 +937,14 @@
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
                 const pciEl = document.getElementById('sys-pci-status');
                 if (pciEl && data.pci !== 'unsupported') updateBadge('sys-pci-status', data.pci, 'gen3');
-                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id);
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled');
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
         }
 
-        function updateAIStatus(llamaStatus, openclawStatus, currentModelId) {
+        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus) {
             const badgeMap = {
                 running:       ['status-running',  'RUNNING'],
                 starting:      ['status-starting', 'LOADING MODEL...'],
@@ -991,6 +1002,25 @@
                 btn.disabled = true;
             } else {
                 btn.innerText = 'Enable';
+            }
+
+            // WhatsApp status row
+            const waRow = document.getElementById('whatsapp-row');
+            const waEl = document.getElementById('sys-whatsapp-status');
+            const waAction = document.getElementById('whatsapp-link-action');
+            if (waStatus && waStatus !== 'disabled' && openclawStatus === 'running') {
+                waRow.style.display = '';
+                if (waStatus === 'linked') {
+                    waEl.className = 'status-badge status-running';
+                    waEl.innerText = 'LINKED';
+                    waAction.style.display = 'none';
+                } else {
+                    waEl.className = 'status-badge status-stopped';
+                    waEl.innerText = 'NOT LINKED';
+                    waAction.style.display = 'block';
+                }
+            } else {
+                waRow.style.display = 'none';
             }
         }
 
@@ -1568,7 +1598,92 @@
                 .replace(/'/g, "&#039;");
         }
 
+        // --- WhatsApp QR Linking ---
+        let waSocket = null;
+
+        function startWhatsAppLink() {
+            const modal = document.getElementById('whatsapp-qr-modal');
+            modal.style.display = 'flex';
+            const msgEl = document.getElementById('whatsapp-qr-message');
+            const imgEl = document.getElementById('whatsapp-qr-img');
+            msgEl.textContent = 'Connecting to gateway...';
+            imgEl.style.display = 'none';
+
+            fetch('/api/ai/whatsapp/link-token', { credentials: 'include' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) { msgEl.textContent = data.error; return; }
+                    connectWhatsAppWs(data.token, data.port);
+                })
+                .catch(() => { msgEl.textContent = 'Failed to get gateway token.'; });
+        }
+
+        function connectWhatsAppWs(token, port) {
+            const host = window.location.hostname;
+            const msgEl = document.getElementById('whatsapp-qr-message');
+            const imgEl = document.getElementById('whatsapp-qr-img');
+
+            waSocket = new WebSocket('ws://' + host + ':' + port);
+            let reqId = 0;
+
+            function send(method, params) {
+                const id = 'hb-' + (++reqId);
+                waSocket.send(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: Object.assign({}, params, { token: token }) }));
+                return id;
+            }
+
+            waSocket.onopen = function() {
+                msgEl.textContent = 'Requesting QR code...';
+                send('web.login.start', { force: false, timeoutMs: 30000 });
+            };
+
+            waSocket.onmessage = function(ev) {
+                try {
+                    const msg = JSON.parse(ev.data);
+                    if (msg.result) {
+                        if (msg.result.qrDataUrl) {
+                            imgEl.src = msg.result.qrDataUrl;
+                            imgEl.style.display = 'block';
+                            msgEl.textContent = 'Scan this QR code with WhatsApp';
+                            send('web.login.wait', { timeoutMs: 120000 });
+                        }
+                        if (msg.result.connected) {
+                            imgEl.style.display = 'none';
+                            msgEl.textContent = 'WhatsApp linked successfully!';
+                            setTimeout(closeWhatsAppModal, 2000);
+                        }
+                    }
+                    if (msg.error) {
+                        msgEl.textContent = msg.error.message || 'Linking failed.';
+                    }
+                } catch(e) { /* ignore parse errors */ }
+            };
+
+            waSocket.onerror = function() { msgEl.textContent = 'WebSocket connection failed.'; };
+            waSocket.onclose = function() { waSocket = null; };
+        }
+
+        function closeWhatsAppModal() {
+            document.getElementById('whatsapp-qr-modal').style.display = 'none';
+            if (waSocket) { waSocket.close(); waSocket = null; }
+        }
+
         init();
     </script>
+
+    <div id="whatsapp-qr-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+        background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:var(--hb-card-bg); border:1px solid var(--hb-border); border-radius:8px; padding:24px; max-width:400px; text-align:center;">
+            <h3 style="margin-top:0;">Link WhatsApp</h3>
+            <p id="whatsapp-qr-message" style="color:var(--hb-text-dim); font-size:0.9em;">Connecting...</p>
+            <div id="whatsapp-qr-container" style="margin:16px auto;">
+                <img id="whatsapp-qr-img" style="display:none; max-width:280px; border-radius:4px;" />
+            </div>
+            <p style="font-size:0.8em; color:var(--hb-text-dim);">
+                Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Scan QR code
+            </p>
+            <button onclick="closeWhatsAppModal()" style="margin-top:12px; padding:6px 18px;">Close</button>
+        </div>
+    </div>
 </body>
 </html>

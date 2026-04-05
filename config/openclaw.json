@@ -69,7 +69,7 @@
   },
   "channels": {
     "whatsapp": {
-      "enabled": false,
+      "enabled": true,
       "dmPolicy": "open",
       "selfChatMode": true,
       "allowFrom": ["*"],
@@ -110,7 +110,7 @@
   "plugins": {
     "entries": {
       "whatsapp": {
-        "enabled": false
+        "enabled": true
       },
       "browser": {
         "enabled": true

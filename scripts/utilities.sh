@@ -156,8 +156,20 @@ get_system_config_status() {
         fi
     fi
 
+    # WhatsApp channel link status
+    local wa_status="disabled"
+    if command -v openclaw >/dev/null 2>&1 && [[ "$ai_status" != "not_installed" ]]; then
+        local wa_output
+        wa_output=$(run_as_admin timeout 10 openclaw channels status --probe 2>/dev/null || true)
+        if echo "$wa_output" | grep -qi "whatsapp.*linked\|whatsapp.*connected"; then
+            wa_status="linked"
+        elif echo "$wa_output" | grep -qi "whatsapp.*not linked\|whatsapp.*disconnected"; then
+            wa_status="not_linked"
+        fi
+    fi
+
     local current_model="${AI_MODEL_ID:-}"
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -720,7 +732,9 @@ patch_openclaw_config() {
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
-        .browser.noSandbox = true
+        .browser.noSandbox = true |
+        .channels.whatsapp.enabled = true |
+        .plugins.entries.whatsapp.enabled = true
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
