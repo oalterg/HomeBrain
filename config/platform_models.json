@@ -45,7 +45,7 @@
         "min_size_bytes": 14000000000,
         "context_window": 65536,
         "ngl": 20,
-        "extra_flags": "--swa-full --jinja -fa on",
+        "extra_flags": "--jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 --ctx-checkpoints 32 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0",
         "default": false
       },
       {
