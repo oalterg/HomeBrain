@@ -632,6 +632,14 @@
                             <span id="sys-whatsapp-status" class="status-badge status-unknown">...</span>
                         </td>
                     </tr>
+                    <tr id="whisper-row" style="display:none;">
+                        <td>
+                            <strong>Speech-to-Text</strong> <small style="color:var(--hb-text-dim);">(Whisper)</small>
+                        </td>
+                        <td style="text-align:right;">
+                            <span id="sys-whisper-status" class="status-badge status-unknown">...</span>
+                        </td>
+                    </tr>
                 </table>
                 <div id="ai-model-selector" style="margin-top:10px; display:none;">
                     <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
@@ -937,14 +945,14 @@
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
                 const pciEl = document.getElementById('sys-pci-status');
                 if (pciEl && data.pci !== 'unsupported') updateBadge('sys-pci-status', data.pci, 'gen3');
-                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled');
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled', data.whisper || 'not_installed');
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
         }
 
-        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus) {
+        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus, whisperStatus) {
             const badgeMap = {
                 running:       ['status-running',  'RUNNING'],
                 starting:      ['status-starting', 'LOADING MODEL...'],
@@ -1021,6 +1029,22 @@
                 }
             } else {
                 waRow.style.display = 'none';
+            }
+
+            // Whisper STT status row
+            const whisperRow = document.getElementById('whisper-row');
+            const whisperEl = document.getElementById('sys-whisper-status');
+            if (whisperStatus && whisperStatus !== 'not_installed') {
+                whisperRow.style.display = '';
+                if (whisperStatus === 'running') {
+                    whisperEl.className = 'status-badge status-running';
+                    whisperEl.innerText = 'RUNNING';
+                } else {
+                    whisperEl.className = 'status-badge status-stopped';
+                    whisperEl.innerText = 'STOPPED';
+                }
+            } else {
+                whisperRow.style.display = 'none';
             }
         }
 

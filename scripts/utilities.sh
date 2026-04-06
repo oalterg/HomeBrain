@@ -168,8 +168,19 @@ get_system_config_status() {
         fi
     fi
 
+    # whisper-server + proxy (speech-to-text)
+    local whisper_status="not_installed"
+    if [[ -x "/home/admin/whisper-server/whisper-server" ]]; then
+        if systemctl is-active --quiet whisper-server 2>/dev/null \
+           && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
+            whisper_status="running"
+        else
+            whisper_status="stopped"
+        fi
+    fi
+
     local current_model="${AI_MODEL_ID:-}"
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"whisper\": \"$whisper_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -706,6 +717,224 @@ wait_for_llama_health() {
     return 1
 }
 
+# --- Helper: Setup whisper-server (speech-to-text) ---
+
+install_whisper_server() {
+    local force="${1:-false}"
+    local WHISPER_INSTALL_DIR="/home/admin/whisper-server"
+    local WHISPER_BIN="${WHISPER_INSTALL_DIR}/whisper-server"
+
+    if [[ "$force" != "true" ]] && [[ -x "$WHISPER_BIN" ]]; then
+        log_info "whisper-server binary already present at $WHISPER_BIN."
+        return 0
+    fi
+
+    # whisper.cpp has no prebuilt Linux binaries — build from source
+    log_info "Installing build dependencies for whisper.cpp..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq cmake g++ git ffmpeg \
+        mesa-vulkan-drivers libvulkan1 vulkan-tools glslc 2>/dev/null \
+        || log_warn "Some dependency installs returned non-zero."
+
+    local src_dir="/tmp/whisper.cpp"
+    if [[ -d "$src_dir/.git" ]]; then
+        log_info "Updating existing whisper.cpp source..."
+        git -C "$src_dir" pull --ff-only 2>/dev/null || true
+    else
+        log_info "Cloning whisper.cpp..."
+        rm -rf "$src_dir"
+        git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git "$src_dir" \
+            || die "Failed to clone whisper.cpp"
+    fi
+
+    log_info "Building whisper-server with Vulkan GPU support..."
+    cd "$src_dir"
+    rm -rf build
+    cmake -B build \
+        -DGGML_VULKAN=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        || die "CMake configure failed"
+    cmake --build build --target whisper-server -j"$(nproc)" \
+        || die "whisper-server build failed"
+
+    mkdir -p "$WHISPER_INSTALL_DIR"
+    cp build/bin/whisper-server "$WHISPER_BIN"
+    chmod +x "$WHISPER_BIN"
+    [[ -x "$WHISPER_BIN" ]] || die "whisper-server binary not found after build"
+    log_info "Installed whisper-server: $WHISPER_BIN"
+}
+
+generate_whisper_services() {
+    local bin_path="$1" model_path="$2"
+    local internal_port=8003   # whisper-server listens here (WAV only)
+    local proxy_port=8002      # proxy listens here (any format → WAV)
+
+    # --- whisper-server (internal, WAV-only) ---
+    cat > /etc/systemd/system/whisper-server.service <<EOF
+[Unit]
+Description=whisper.cpp speech-to-text server
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=$(dirname "$bin_path")
+Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
+Environment="GGML_VK_DEVICE=0"
+ExecStart=${bin_path} \\
+  --model ${model_path} \\
+  --host 127.0.0.1 \\
+  --port ${internal_port} \\
+  --inference-path /v1/audio/transcriptions
+
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+OOMScoreAdjust=-300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/whisper-server.service
+
+    # --- whisper-proxy (converts OGG/Opus → WAV for whisper-server) ---
+    # WhatsApp sends voice messages as OGG/Opus; whisper.cpp only accepts WAV.
+    # The proxy converts via ffmpeg before forwarding to whisper-server.
+    local proxy_script="/home/admin/whisper-server/whisper_proxy.py"
+    cp "${SCRIPT_DIR}/whisper_proxy.py" "$proxy_script"
+    chown admin:admin "$proxy_script"
+
+    cat > /etc/systemd/system/whisper-proxy.service <<EOF
+[Unit]
+Description=Whisper audio format proxy (OGG->WAV)
+After=whisper-server.service
+Requires=whisper-server.service
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+Environment="WHISPER_UPSTREAM=http://127.0.0.1:${internal_port}"
+Environment="WHISPER_PROXY_PORT=${proxy_port}"
+ExecStart=/usr/bin/python3 ${proxy_script}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/whisper-proxy.service
+}
+
+setup_whisper_server() {
+    log_info "=== Setting up whisper-server (speech-to-text) ==="
+    load_env
+
+    # x86-only feature
+    if [[ "$HB_PLATFORM" != "x86_ubuntu" ]]; then
+        log_info "Whisper STT is only available on x86 HomeBrain. Skipping."
+        return 0
+    fi
+
+    # Read whisper model config from .env (or defaults from platform_models.json)
+    local MODEL_NAME="${AI_WHISPER_MODEL_FILENAME:-}"
+    local MODEL_URL="${AI_WHISPER_MODEL_URL:-}"
+    local MIN_SIZE="${AI_WHISPER_MODEL_MIN_SIZE:-600000000}"
+    local WHISPER_BIN="/home/admin/whisper-server/whisper-server"
+
+    # If no whisper model configured yet, pick the default from platform_models.json
+    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
+        local pm_file="${SCRIPT_DIR}/../config/platform_models.json"
+        if [[ -f "$pm_file" ]] && command -v jq >/dev/null 2>&1; then
+            MODEL_NAME=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .filename' "$pm_file")
+            MODEL_URL=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .url' "$pm_file")
+            MIN_SIZE=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .min_size_bytes' "$pm_file")
+            local MODEL_ID
+            MODEL_ID=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .id' "$pm_file")
+
+            # Persist defaults to .env for future fast-path
+            update_env_var "AI_WHISPER_MODEL_ID" "$MODEL_ID"
+            update_env_var "AI_WHISPER_MODEL_FILENAME" "$MODEL_NAME"
+            update_env_var "AI_WHISPER_MODEL_URL" "$MODEL_URL"
+            update_env_var "AI_WHISPER_MODEL_MIN_SIZE" "$MIN_SIZE"
+        else
+            log_warn "No whisper model configured and cannot read defaults. Skipping."
+            return 0
+        fi
+    fi
+
+    local MODEL_PATH="/home/admin/${MODEL_NAME}"
+
+    # --- [1/5] Fast-path: binary and model already present ---
+    log_info "[1/5] Checking for existing whisper-server installation..."
+    if [[ -x "$WHISPER_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+        log_info "whisper-server and model already present. Syncing services and starting..."
+        generate_whisper_services "$WHISPER_BIN" "$MODEL_PATH"
+        systemctl daemon-reload
+        systemctl enable whisper-server whisper-proxy
+        systemctl restart whisper-server
+        systemctl restart whisper-proxy
+        wait_for_whisper_health 8002 120
+        return $?
+    fi
+
+    if ! check_internet; then
+        die "No internet connection. Cannot install whisper-server."
+    fi
+
+    # --- [2/5] Install ffmpeg (needed by proxy for OGG→WAV conversion) ---
+    log_info "[2/5] Installing ffmpeg..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -qq ffmpeg 2>/dev/null || log_warn "ffmpeg install returned non-zero."
+
+    # --- [3/5] Build whisper-server from source ---
+    log_info "[3/5] Building whisper-server (Vulkan)..."
+    install_whisper_server
+
+    # --- [4/5] Download model ---
+    log_info "[4/5] Downloading whisper model..."
+    download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
+
+    # --- [5/5] Deploy services and start ---
+    log_info "[5/5] Deploying whisper-server + proxy services..."
+    generate_whisper_services "$WHISPER_BIN" "$MODEL_PATH"
+    systemctl daemon-reload
+    systemctl enable --now whisper-server
+    systemctl enable --now whisper-proxy
+
+    wait_for_whisper_health 8002 120
+    return $?
+}
+
+wait_for_whisper_health() {
+    local port="$1"
+    local timeout="$2"
+    local elapsed=0
+
+    log_info "Waiting for whisper-server to become ready (up to ${timeout}s)..."
+    while [[ $elapsed -lt $timeout ]]; do
+        if curl -sf --max-time 3 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+            log_info "whisper-server is healthy on port ${port}."
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    log_error "whisper-server did not pass health check within ${timeout}s."
+    log_error "Check: journalctl -u whisper-server -n 50"
+    return 1
+}
+
 # --- Helper: Setup OpenClaw AI Agent (system service) ---
 
 # Patch openclaw.json model references to match the selected AI model
@@ -740,7 +969,11 @@ patch_openclaw_config() {
         .browser.noSandbox = true |
         .channels.whatsapp.enabled = true |
         .plugins.entries.whatsapp.enabled = true |
-        .gateway.controlUi.allowedOrigins = $origins
+        .gateway.controlUi.allowedOrigins = $origins |
+        .tools.media.audio.enabled = true |
+        .tools.media.audio.scope.default = "allow" |
+        .tools.media.audio.models = [{"provider": "openai", "model": "whisper-1", "capabilities": ["audio"], "baseUrl": "http://127.0.0.1:8002/v1", "timeoutSeconds": 30}] |
+        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
@@ -914,6 +1147,7 @@ case "${1:-}" in
         ;;
     setup_ai)
         setup_llama_server || { log_error "llama-server setup failed. Aborting AI stack install."; exit 1; }
+        setup_whisper_server || log_warn "whisper-server setup failed. Voice messages will not be transcribed."
         setup_openclaw
         ;;
     stop_ai)
@@ -921,17 +1155,22 @@ case "${1:-}" in
         log_info "OpenClaw stopped."
         systemctl disable --now llama-server 2>/dev/null || true
         log_info "llama-server stopped and disabled."
+        systemctl disable --now whisper-proxy 2>/dev/null || true
+        systemctl disable --now whisper-server 2>/dev/null || true
+        log_info "whisper-server and proxy stopped and disabled."
         ;;
     switch_model)
         log_info "=== Switching AI model ==="
         # Stop running services
         run_as_admin openclaw daemon stop 2>/dev/null || true
         systemctl stop llama-server 2>/dev/null || true
+        systemctl stop whisper-server 2>/dev/null || true
         log_info "Stopped AI services."
 
         # Re-run full setup (downloads new model if needed, regenerates service, starts)
         # Previously-downloaded models are kept on disk for faster switching.
         setup_llama_server || { log_error "Model switch failed during llama-server setup."; exit 1; }
+        setup_whisper_server || log_warn "whisper-server restart failed."
         setup_openclaw
 
         log_info "Model switch complete."

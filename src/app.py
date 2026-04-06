@@ -1448,7 +1448,8 @@ def get_ai_models():
         return jsonify({
             "platform": platform_key,
             "models": platform_data.get("models", []),
-            "llama_server": platform_data.get("llama_server", {})
+            "llama_server": platform_data.get("llama_server", {}),
+            "whisper_models": platform_data.get("whisper", {}).get("models", [])
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -73,6 +73,28 @@
       "ngl": 99,
       "ctx_size": 131072,
       "extra_flags": "--jinja -fa on"
+    },
+    "whisper": {
+      "models": [
+        {
+          "id": "large-v3-turbo-q5_0",
+          "filename": "ggml-large-v3-turbo-q5_0.bin",
+          "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+          "min_size_bytes": 600000000,
+          "default": true
+        },
+        {
+          "id": "base.en",
+          "filename": "ggml-base.en.bin",
+          "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+          "min_size_bytes": 140000000,
+          "default": false
+        }
+      ],
+      "server": {
+        "port": 8002,
+        "host": "127.0.0.1"
+      }
     }
   }
 }
