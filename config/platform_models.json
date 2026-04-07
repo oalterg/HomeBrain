@@ -44,8 +44,8 @@
         "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
         "min_size_bytes": 14000000000,
         "context_window": 65536,
-        "ngl": 20,
-        "extra_flags": "--jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 --ctx-checkpoints 32 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0",
+        "ngl": 99,
+        "extra_flags": "-parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --threads 6",
         "default": false
       },
       {
