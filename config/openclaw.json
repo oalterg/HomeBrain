@@ -68,8 +68,6 @@
         "scope": { "default": "allow" },
         "models": [
           {
-            "provider": "openai",
-            "model": "whisper-1",
             "capabilities": ["audio"],
             "baseUrl": "http://127.0.0.1:8002/v1",
             "timeoutSeconds": 30

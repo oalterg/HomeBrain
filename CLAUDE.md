@@ -94,3 +94,4 @@ Runs on app startup to handle version drift (e.g., syncing the systemd service f
 - Aim for robustness and user-friendliness — the user should never need to SSH
 - Ask when uncertain rather than guessing
 - Think critically and give open feedback on the approach, not just the implementation
+- Maintain CLAUDE.md and TODO file, they are yours

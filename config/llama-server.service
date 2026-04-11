@@ -1,32 +1,25 @@
 [Unit]
 Description=llama.cpp inference server
-After=network.target
+After=network.target multi-user.target
+Wants=multi-user.target
 
 [Service]
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=/home/admin/llama-server
-Environment="LD_LIBRARY_PATH=/home/admin/llama-server"
+WorkingDirectory=@BIN_DIR@
+Environment="LD_LIBRARY_PATH=@BIN_DIR@"
 Environment="GGML_VK_DEVICE=0"
 
-# Adjust --model, -ngl (GPU layers), and --ctx-size to match your hardware.
-ExecStart=/home/admin/llama-server/llama-server \
-  --model /home/admin/Qwen3.5-27B-Q4_K_M.gguf \
-  --ctx-size 131072 \
-  --parallel 1 \
-  --host 127.0.0.1 \
-  --port 8001 \
-  --swa-full \
-  -ngl 99 \
-  -fa on
+# Wait for GPU device to be available before starting
+ExecStartPre=/bin/sh -c 'until [ -e /dev/dri/card0 ] || [ -e /dev/dri/renderD128 ]; do sleep 1; done'
+
+ExecStart=@BIN_PATH@ --model @MODEL_PATH@ --ctx-size @CTX_SIZE@ --host 127.0.0.1 --port 8001 -ngl @NGL@@EXTRA_FLAGS@
 
 Restart=always
 RestartSec=10
-# Allow up to 10 min for model load + GPU init
 TimeoutStartSec=600
 OOMScoreAdjust=-500
-
 StandardOutput=journal
 StandardError=journal
 

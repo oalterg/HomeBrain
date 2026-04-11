@@ -29,13 +29,13 @@
   "x86_ubuntu": {
     "models": [
       {
-        "id": "Qwen3.5-27B-Q4_K_M",
-        "filename": "Qwen3.5-27B-Q4_K_M.gguf",
-        "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf",
+        "id": "Qwen3.5-27B-IQ4_XS",
+        "filename": "Qwen3.5-27B-IQ4_XS.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-IQ4_XS.gguf",
         "min_size_bytes": 14000000000,
-        "context_window": 49152,
-        "ngl": 55,
-        "extra_flags": "--jinja -fa on",
+        "context_window": 131072,
+        "ngl": 99,
+        "extra_flags": "--parallel 1 --fit off --jinja -fa on  --cache-type-k q4_0 --cache-type-v q4_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0 --threads 6",
         "default": true
       },
       {
@@ -45,7 +45,7 @@
         "min_size_bytes": 14000000000,
         "context_window": 65536,
         "ngl": 99,
-        "extra_flags": "-parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --threads 6",
+        "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --threads 6",
         "default": false
       },
       {
@@ -53,9 +53,9 @@
         "filename": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
         "url": "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf",
         "min_size_bytes": 18000000000,
-        "context_window": 32768,
-        "ngl": 45,
-        "extra_flags": "--jinja -fa on",
+        "context_window": 65536,
+        "ngl": 99,
+        "extra_flags": "--parallel 1 --jinja -fa on --fit on -ctk q4_0 -ctv q4_0",
         "default": false
       },
       {
@@ -65,7 +65,7 @@
         "min_size_bytes": 9000000000,
         "context_window": 131072,
         "ngl": 99,
-        "extra_flags": "--jinja -fa on",
+        "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0 --threads 6",
         "default": false
       }
     ],

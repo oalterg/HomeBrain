@@ -1,0 +1,67 @@
+Features:
+
+    1. LLama Server Parameter llamacpp fine-tuning
+        - Qwen3.5-27B-Q4_K_M
+        - Qwen3.5-27B-IQ4_XS
+        - Qwen3.5-35B-A3B-Q4_K_M
+
+    2. Update Management of llamacpp (pulling latest from GitHub release)
+        - Central user control from homebrain dashboard
+        - OpenClaw offers update management through OpenClaw dashboad, not required in homebrain dashboard
+
+    3: MCP Server
+        - Protonmail
+        - Nextcloud
+
+    4. Clean up: Fully remove RPi5 AI feature: No GPU, and insufficient compute, therefore no local inference, no OpenClaw.
+        - The user shall not see any "Enable AI Assistant" option, reserved for "HomeBrain"
+        - This reduces internal complexity, and enhances robustness, stability.
+        - Summary: HomeBrain AI Assistant is OPT-OUT, HomeCloud (RPi5) offers no AI Assistant Option.
+        - Test of RPi4 test target
+
+    5. Homebrain localhost-only deployment (no tunnel) option
+        - access nextcloud, homeassistant on localhost, nextcloud now gives untrusted endpoint or sth like this error
+        - E2E, alredy supported from provisioning onwards
+
+    6. Hardening: Instance shall be always-on (auto boot if on power)
+        - Watchdog?
+
+    7. Polish up homebrain dashboard:
+        - Additional system stats (uptime, cpu, gpu temp, gpu vram, gpu load)
+        - Extend logging view to OpenClaw, llamacpp
+
+    8. Backup: Include OpenClaw Config and Agent Workspace
+
+
+Issues:
+    1. OpenClaw GW API key should be persistent, not regenerated every session.
+        - Preferably, the during deployment generated Master password shall also apply to OpenClaw, no dedicated key for the user to remember
+    2. OpenClaw whatsapp channel should be restricted to only incoming messages from specified numbers, not default all - consider in whatsapp pairing in homebrain dashboard
+    3. Backup shows nvme0n1 as potential backup drive
+    4. User and paths mingled
+        - Project path: /home/admin/ --> /opt/homebrain/
+        - User: admin --> homebrain (keep homebrain, instead of creating new user)
+    5. When switching models from homebrain dashboard, this breaks the openclaw configuration:
+    2026-04-08 17:56:30 (8.00 MB/s) - '/home/admin/Qwen3.5-9B-UD-Q8_K_XL.gguf' saved [12974040288/12974040288]
+[INFO] Model downloaded: 12 GB
+[INFO] [5/5] Deploying llama-server service...
+[INFO] Waiting for llama-server to load model (up to 600s)...
+[INFO] llama-server is healthy on port 8001.
+[INFO] === Setting up whisper-server (speech-to-text) ===
+[INFO] [1/4] Checking for existing whisper-server installation...
+[INFO] whisper-server and model already present. Syncing service and starting...
+[INFO] Waiting for whisper-server to become ready (up to 120s)...
+[INFO] whisper-server is healthy on port 8002.
+[INFO] === Setting up OpenClaw AI Assistant ===
+[INFO] [1/3] Checking for existing OpenClaw installation...
+[INFO] OpenClaw already installed (OpenClaw 2026.4.2 (d74a122)). Syncing config and starting...
+[INFO] Patched openclaw.json with model: Qwen3.5-9B-UD-Q8_K_XL (ctx: 131072)
+Config invalid
+File: ~/.openclaw/openclaw.json
+Problem:
+- tools.media.audio: Unrecognized keys: "provider", "model"
+Run: openclaw doctor --fix
+[ERROR] daemon start failed. Try: sudo -u admin openclaw daemon install
+
+    6. The llama systemd file has race condition with gpu driver on startup
+        -  fixed in config/llama-server.service, please fully apply this fix

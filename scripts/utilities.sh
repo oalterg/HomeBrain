@@ -500,42 +500,29 @@ get_llama_bin_path() {
     echo "/home/admin/llama-server/llama-server"
 }
 
-# Generate the systemd service file at runtime from model/platform config
+# Generate the systemd service file at runtime from model/platform config.
+# Uses config/llama-server.service as the canonical template, substituting
+# dynamic values (binary path, model path, GPU layers, ctx size, extra flags).
 generate_llama_service() {
-    local bin_path="$1" model_path="$2" ngl="$3" ctx_size="$4" extra_flags="$5"
+    local bin_path="$1" model_path="$2" ngl="$3" ctx_size="$4" extra_flags="${5:-}"
     local service_dest="/etc/systemd/system/llama-server.service"
+    local template="${SCRIPT_DIR}/../config/llama-server.service"
+    local bin_dir
+    bin_dir=$(dirname "$bin_path")
 
-    cat > "$service_dest" <<EOF
-[Unit]
-Description=llama.cpp inference server
-After=network.target
+    [[ -f "$template" ]] || die "llama-server.service template not found at $template"
 
-[Service]
-Type=simple
-User=admin
-Group=admin
-WorkingDirectory=$(dirname "$bin_path")
-Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
-Environment="GGML_VK_DEVICE=0"
-ExecStart=${bin_path} \\
-  --model ${model_path} \\
-  --ctx-size ${ctx_size} \\
-  --parallel 1 \\
-  --host 127.0.0.1 \\
-  --port 8001 \\
-  -ngl ${ngl} ${extra_flags:+\\
-  $extra_flags}
+    local extra_suffix=""
+    [[ -n "$extra_flags" ]] && extra_suffix=" ${extra_flags}"
 
-Restart=always
-RestartSec=10
-TimeoutStartSec=600
-OOMScoreAdjust=-500
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    sed \
+        -e "s|@BIN_DIR@|${bin_dir}|g" \
+        -e "s|@BIN_PATH@|${bin_path}|g" \
+        -e "s|@MODEL_PATH@|${model_path}|g" \
+        -e "s|@CTX_SIZE@|${ctx_size}|g" \
+        -e "s|@NGL@|${ngl}|g" \
+        -e "s|@EXTRA_FLAGS@|${extra_suffix}|g" \
+        "$template" > "$service_dest"
     chmod 644 "$service_dest"
 }
 
@@ -972,7 +959,7 @@ patch_openclaw_config() {
         .gateway.controlUi.allowedOrigins = $origins |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
-        .tools.media.audio.models = [{"provider": "openai", "model": "whisper-1", "capabilities": ["audio"], "baseUrl": "http://127.0.0.1:8002/v1", "timeoutSeconds": 30}] |
+        .tools.media.audio.models = (.tools.media.audio.models | map(del(.provider, .model) | .baseUrl = "http://127.0.0.1:8002/v1" | .timeoutSeconds = 30)) |
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
