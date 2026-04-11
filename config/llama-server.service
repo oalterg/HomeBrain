@@ -7,14 +7,19 @@ Wants=multi-user.target
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=@BIN_DIR@
-Environment="LD_LIBRARY_PATH=@BIN_DIR@"
+WorkingDirectory=__WORKDIR__
+Environment="LD_LIBRARY_PATH=__WORKDIR__"
 Environment="GGML_VK_DEVICE=0"
 
-# Wait for GPU device to be available before starting
+# Wait for GPU device node before starting inference
 ExecStartPre=/bin/sh -c 'until [ -e /dev/dri/card0 ] || [ -e /dev/dri/renderD128 ]; do sleep 1; done'
 
-ExecStart=@BIN_PATH@ --model @MODEL_PATH@ --ctx-size @CTX_SIZE@ --host 127.0.0.1 --port 8001 -ngl @NGL@@EXTRA_FLAGS@
+ExecStart=__LLAMA_BIN__ \
+  --model __LLAMA_MODEL__ \
+  --ctx-size __CTX_SIZE__ \
+  --host 127.0.0.1 \
+  --port 8001 \
+  -ngl __NGL__ __EXTRA_FLAGS__
 
 Restart=always
 RestartSec=10
