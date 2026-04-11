@@ -1,0 +1,32 @@
+# Local credentials and notes — never commit
+misc
+misc.txt
+local
+local.txt
+notes
+notes.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+
+# Environment files
+.env
+.env.*
+!.env.template
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
