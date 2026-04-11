@@ -42,7 +42,7 @@
       "llm": {
         "idleTimeoutSeconds": 0
       },
-      "workspace": "/home/admin/.openclaw/workspace",
+      "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
       },

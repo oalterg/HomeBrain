@@ -14,7 +14,13 @@ wait_for_time_sync
 
 load_env
 
-# --- 0. Ensure dependencies installed ---
+# --- 0a. Verify HomeBrain OS user and group membership ---
+ensure_homebrain_user
+
+# --- 0b. Migrate legacy /home/admin data to /home/homebrain (no-op on fresh installs) ---
+bash "$SCRIPT_DIR/utilities.sh" migrate || log_warn "Migration step failed (non-fatal on fresh installs)."
+
+# --- 0c. Ensure dependencies installed ---
 install_deps_enable_docker
 
 # --- 1. Docker Stack Deployment ---

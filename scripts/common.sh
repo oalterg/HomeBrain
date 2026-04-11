@@ -8,6 +8,10 @@ export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 export OVERRIDE_FILE="$INSTALL_DIR/docker-compose.override.yml"
 export BACKUP_MOUNTDIR="/mnt/backup"
 
+# --- Canonical HomeBrain OS User ---
+export HOMEBRAIN_USER="homebrain"
+export HOMEBRAIN_HOME="/home/${HOMEBRAIN_USER}"
+
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
@@ -42,16 +46,16 @@ detect_platform() {
 detect_platform
 
 # --- User Management ---
-# Ensure the 'admin' system user exists (Pi OS ships with it; Ubuntu Server does not)
-ensure_admin_user() {
-    if ! id -u admin >/dev/null 2>&1; then
-        log_info "Creating 'admin' system user..."
-        useradd -m -s /bin/bash admin
+# Verify the homebrain system user exists and is in the required groups.
+# The user is pre-provisioned on the OS image; this function is a guard only.
+ensure_homebrain_user() {
+    if ! id -u "${HOMEBRAIN_USER}" >/dev/null 2>&1; then
+        die "System user '${HOMEBRAIN_USER}' does not exist. Please provision the OS image correctly."
     fi
-    # Ensure admin is in required groups (idempotent)
+    # Ensure homebrain is in required groups (idempotent)
     for grp in docker render video; do
         if getent group "$grp" >/dev/null 2>&1; then
-            usermod -aG "$grp" admin 2>/dev/null || true
+            usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
         fi
     done
 }

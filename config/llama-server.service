@@ -5,8 +5,8 @@ Wants=multi-user.target
 
 [Service]
 Type=simple
-User=admin
-Group=admin
+User=__HOMEBRAIN_USER__
+Group=__HOMEBRAIN_USER__
 WorkingDirectory=__WORKDIR__
 Environment="LD_LIBRARY_PATH=__WORKDIR__"
 Environment="GGML_VK_DEVICE=0"

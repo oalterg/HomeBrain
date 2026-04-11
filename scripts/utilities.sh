@@ -170,7 +170,7 @@ get_system_config_status() {
 
     # whisper-server + proxy (speech-to-text)
     local whisper_status="not_installed"
-    if [[ -x "/home/admin/whisper-server/whisper-server" ]]; then
+    if [[ -x "${HOMEBRAIN_HOME}/whisper-server/whisper-server" ]]; then
         if systemctl is-active --quiet whisper-server 2>/dev/null \
            && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
             whisper_status="running"
@@ -497,7 +497,7 @@ create_ha_admin() {
 
 # Get the llama-server binary path for the current platform
 get_llama_bin_path() {
-    echo "/home/admin/llama-server/llama-server"
+    echo "${HOMEBRAIN_HOME}/llama-server/llama-server"
 }
 
 # Generate the systemd service file at runtime from model/platform config.
@@ -519,6 +519,7 @@ generate_llama_service() {
         -e "s|__CTX_SIZE__|${ctx_size}|g" \
         -e "s|__NGL__|${ngl}|g" \
         -e "s|__EXTRA_FLAGS__|${extra_flags}|g" \
+        -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
         "$template" > "$service_dest"
     chmod 644 "$service_dest"
 }
@@ -526,7 +527,7 @@ generate_llama_service() {
 # Install prebuilt llama-server with Vulkan GPU support (both platforms)
 install_llama_prebuilt() {
     local force="${1:-false}"
-    local LLAMA_INSTALL_DIR="/home/admin/llama-server"
+    local LLAMA_INSTALL_DIR="${HOMEBRAIN_HOME}/llama-server"
     local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
 
     # Fast-path: binary already present (skip unless force update)
@@ -606,7 +607,7 @@ download_model() {
     fi
 
     log_info "Downloading $(( MIN_SIZE / 1073741824 )) GB+ model. This will take a while..."
-    sudo -u admin wget --continue --progress=dot:giga \
+    sudo -u "${HOMEBRAIN_USER}" wget --continue --progress=dot:giga \
         -O "$MODEL_PATH" "$MODEL_URL" \
         || die "Model download failed. Re-run to resume (wget supports resume)."
 
@@ -626,7 +627,7 @@ setup_llama_server() {
     # Read model config from .env (set by dashboard model selector)
     local MODEL_NAME="${AI_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_MODEL_URL:-}"
-    local MODEL_PATH="/home/admin/${MODEL_NAME}"
+    local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
     local NGL="${AI_NGL:-0}"
     local CTX_SIZE="${AI_CTX_SIZE:-8192}"
     local EXTRA_FLAGS="${AI_EXTRA_FLAGS:-}"
@@ -705,7 +706,7 @@ wait_for_llama_health() {
 
 install_whisper_server() {
     local force="${1:-false}"
-    local WHISPER_INSTALL_DIR="/home/admin/whisper-server"
+    local WHISPER_INSTALL_DIR="${HOMEBRAIN_HOME}/whisper-server"
     local WHISPER_BIN="${WHISPER_INSTALL_DIR}/whisper-server"
 
     if [[ "$force" != "true" ]] && [[ -x "$WHISPER_BIN" ]]; then
@@ -764,8 +765,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=admin
-Group=admin
+User=${HOMEBRAIN_USER}
+Group=${HOMEBRAIN_USER}
 WorkingDirectory=$(dirname "$bin_path")
 Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
 Environment="GGML_VK_DEVICE=0"
@@ -790,9 +791,9 @@ EOF
     # --- whisper-proxy (converts OGG/Opus → WAV for whisper-server) ---
     # WhatsApp sends voice messages as OGG/Opus; whisper.cpp only accepts WAV.
     # The proxy converts via ffmpeg before forwarding to whisper-server.
-    local proxy_script="/home/admin/whisper-server/whisper_proxy.py"
+    local proxy_script="${HOMEBRAIN_HOME}/whisper-server/whisper_proxy.py"
     cp "${SCRIPT_DIR}/whisper_proxy.py" "$proxy_script"
-    chown admin:admin "$proxy_script"
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$proxy_script"
 
     cat > /etc/systemd/system/whisper-proxy.service <<EOF
 [Unit]
@@ -802,8 +803,8 @@ Requires=whisper-server.service
 
 [Service]
 Type=simple
-User=admin
-Group=admin
+User=${HOMEBRAIN_USER}
+Group=${HOMEBRAIN_USER}
 Environment="WHISPER_UPSTREAM=http://127.0.0.1:${internal_port}"
 Environment="WHISPER_PROXY_PORT=${proxy_port}"
 ExecStart=/usr/bin/python3 ${proxy_script}
@@ -832,7 +833,7 @@ setup_whisper_server() {
     local MODEL_NAME="${AI_WHISPER_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_WHISPER_MODEL_URL:-}"
     local MIN_SIZE="${AI_WHISPER_MODEL_MIN_SIZE:-600000000}"
-    local WHISPER_BIN="/home/admin/whisper-server/whisper-server"
+    local WHISPER_BIN="${HOMEBRAIN_HOME}/whisper-server/whisper-server"
 
     # If no whisper model configured yet, pick the default from platform_models.json
     if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
@@ -855,7 +856,7 @@ setup_whisper_server() {
         fi
     fi
 
-    local MODEL_PATH="/home/admin/${MODEL_NAME}"
+    local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
 
     # --- [1/5] Fast-path: binary and model already present ---
     log_info "[1/5] Checking for existing whisper-server installation..."
@@ -963,19 +964,19 @@ patch_openclaw_config() {
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
 
-# Run a command as admin with systemd user session environment
-# Required for openclaw daemon/gateway which uses systemd user services
+# Run a command as the HomeBrain OS user with systemd user session environment.
+# Required for openclaw daemon/gateway which uses systemd user services.
 run_as_admin() {
-    local admin_uid
-    admin_uid=$(id -u admin)
+    local hb_uid
+    hb_uid=$(id -u "${HOMEBRAIN_USER}")
     # Ensure linger is enabled (allows user services without login)
-    loginctl enable-linger admin 2>/dev/null || true
+    loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
     # Ensure runtime dir exists
-    mkdir -p "/run/user/${admin_uid}" 2>/dev/null || true
-    chown admin:admin "/run/user/${admin_uid}" 2>/dev/null || true
-    sudo -u admin \
-        XDG_RUNTIME_DIR="/run/user/${admin_uid}" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${admin_uid}/bus" \
+    mkdir -p "/run/user/${hb_uid}" 2>/dev/null || true
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "/run/user/${hb_uid}" 2>/dev/null || true
+    sudo -u "${HOMEBRAIN_USER}" \
+        XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
         "$@"
 }
 
@@ -989,21 +990,21 @@ setup_openclaw() {
     fi
 
     local config_src="${SCRIPT_DIR}/../config/openclaw.json"
-    local config_dest="/home/admin/.openclaw/openclaw.json"
+    local config_dest="${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
     local model_id="${AI_MODEL_ID:-}"
 
     # --- Step 1: Fast-path if binary already installed ---
     log_info "[1/3] Checking for existing OpenClaw installation..."
     if command -v openclaw >/dev/null 2>&1; then
         log_info "OpenClaw already installed ($(openclaw --version 2>/dev/null || echo 'unknown version')). Syncing config and starting..."
-        mkdir -p /home/admin/.openclaw
+        mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
         cp "$config_src" "$config_dest"
         patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
-        chown -R admin:admin /home/admin/.openclaw
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
         chmod 600 "$config_dest"
         run_as_admin openclaw daemon install 2>/dev/null || true
         run_as_admin openclaw daemon start \
-            || { log_error "daemon start failed. Try: sudo -u admin openclaw daemon install"; return 1; }
+            || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
         log_info "=== OpenClaw started (fast path) ==="
         return 0
     fi
@@ -1052,14 +1053,14 @@ setup_openclaw() {
     if [[ ! -f "$config_src" ]]; then
         die "config/openclaw.json not found at $config_src — ensure it is committed to the repository."
     fi
-    mkdir -p /home/admin/.openclaw
+    mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     cp "$config_src" "$config_dest"
     patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
-    chown -R admin:admin /home/admin/.openclaw
+    chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
 
-    # Let openclaw install its own systemd service (runs as admin user)
+    # Let openclaw install its own systemd service (runs as HomeBrain user)
     run_as_admin openclaw daemon install \
         || die "openclaw daemon install failed."
     run_as_admin openclaw daemon start \
@@ -1080,8 +1081,75 @@ setup_openclaw() {
     done
 
     log_error "OpenClaw did not report as running within 30 s."
-    log_error "Check status with: sudo -u admin openclaw gateway status"
+    log_error "Check status with: sudo -u ${HOMEBRAIN_USER} openclaw gateway status"
     return 1
+}
+
+# --- Migration: admin → homebrain ---
+# Moves AI binaries, models and OpenClaw config from /home/admin to HOMEBRAIN_HOME.
+# Called by deploy.sh on upgrade; silently no-ops on fresh installs.
+migrate_admin_to_homebrain() {
+    local lock="/tmp/.hb_migration.lock"
+    local old_home="/home/admin"
+
+    # Skip if old home doesn't exist or is already empty
+    if [[ ! -d "$old_home" ]] || [[ -z "$(ls -A "$old_home" 2>/dev/null)" ]]; then
+        log_info "Migration: /home/admin not found or empty — nothing to migrate."
+        return 0
+    fi
+
+    # Prevent concurrent runs
+    if ! ( set -C; echo $$ > "$lock" ) 2>/dev/null; then
+        log_warn "Migration already in progress (lock: $lock). Skipping."
+        return 0
+    fi
+    trap 'rm -f "$lock"' RETURN
+
+    log_info "=== Migrating /home/admin → ${HOMEBRAIN_HOME} ==="
+
+    # 1. Move AI binary directories
+    for dir in llama-server whisper-server; do
+        if [[ -d "${old_home}/${dir}" && ! -d "${HOMEBRAIN_HOME}/${dir}" ]]; then
+            log_info "Migration: moving ${old_home}/${dir} → ${HOMEBRAIN_HOME}/${dir}"
+            mv "${old_home}/${dir}" "${HOMEBRAIN_HOME}/${dir}" \
+                || { log_error "Migration: failed to move ${dir}"; return 1; }
+            chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/${dir}"
+        fi
+    done
+
+    # 2. Move model files (potentially huge — atomic rename within same filesystem)
+    for model in "${old_home}"/*.gguf; do
+        [[ -f "$model" ]] || continue
+        local fname
+        fname=$(basename "$model")
+        local target="${HOMEBRAIN_HOME}/${fname}"
+        if [[ ! -f "$target" ]]; then
+            log_info "Migration: moving model ${fname} → ${HOMEBRAIN_HOME}/"
+            mv "$model" "$target" \
+                || { log_error "Migration: failed to move model ${fname}"; return 1; }
+            chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$target"
+        else
+            log_info "Migration: model ${fname} already at destination — removing old copy."
+            rm -f "$model" 2>/dev/null || true
+        fi
+    done
+
+    # 3. Migrate OpenClaw config directory
+    if [[ -d "${old_home}/.openclaw" && ! -d "${HOMEBRAIN_HOME}/.openclaw" ]]; then
+        log_info "Migration: copying ${old_home}/.openclaw → ${HOMEBRAIN_HOME}/.openclaw"
+        cp -a "${old_home}/.openclaw" "${HOMEBRAIN_HOME}/.openclaw" \
+            || { log_error "Migration: failed to copy .openclaw config"; return 1; }
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
+    fi
+
+    # 4. Transfer systemd linger from admin to homebrain
+    loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
+    loginctl disable-linger admin 2>/dev/null || true
+
+    # 5. Reload systemd so any moved service files take effect
+    systemctl daemon-reload
+
+    log_info "=== Migration complete ==="
 }
 
 # --- Main Dispatch ---
@@ -1167,6 +1235,9 @@ case "${1:-}" in
         install_llama_prebuilt "true"
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
+        ;;
+    migrate)
+        migrate_admin_to_homebrain
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"

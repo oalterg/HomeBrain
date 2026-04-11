@@ -427,7 +427,7 @@ def start_setup():
         # Harden: Ensure file is only readable by root
         os.chmod(ENV_FILE, 0o600)
         # Set Passwords & Critical Defaults
-        update_env_var("NEXTCLOUD_DATA_DIR", "/home/admin/nextcloud")
+        update_env_var("NEXTCLOUD_DATA_DIR", os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), "nextcloud"))
         update_env_var("NEXTCLOUD_ADMIN_USER", "admin")
 
 
@@ -1596,7 +1596,7 @@ def update_system_config():
 def whatsapp_link_token():
     """Return the OpenClaw gateway token + port for WhatsApp WebSocket linking."""
     try:
-        config_path = "/home/admin/.openclaw/openclaw.json"
+        config_path = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), ".openclaw/openclaw.json")
         if not os.path.exists(config_path):
             return jsonify({"error": "OpenClaw not configured"}), 404
         with open(config_path) as f:

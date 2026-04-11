@@ -32,7 +32,7 @@ fi
 if [[ "$ARG_FLAG" != "--no-prompt" ]]; then
     echo "⚠️ WARNING: RESTORE PROCESS INITIATED ⚠️"
     echo "Restoring: $BACKUP_FILE"
-    echo "This will WIPE ALL DATA in: ${NEXTCLOUD_DATA_DIR:-/home/admin/nextcloud}"
+    echo "This will WIPE ALL DATA in: ${NEXTCLOUD_DATA_DIR:-${HOMEBRAIN_HOME}/nextcloud}"
     read -p "Type 'wipe' to confirm: " confirm
     if [[ "$confirm" != "wipe" ]]; then
         echo "Restore aborted by user."
@@ -45,7 +45,7 @@ log_info "Verifying backup integrity..."
 if ! gzip -t "$BACKUP_FILE"; then die "Corrupt backup file."; fi
 
 # --- Restore Logic ---
-TMP_DIR=$(mktemp -d -p /home/admin)
+TMP_DIR=$(mktemp -d -p "${HOMEBRAIN_HOME}")
 trap 'rm -rf "$TMP_DIR"; log_info "Cleanup done."' EXIT
 if [ ! -d "$TMP_DIR" ]; then
     die "Failed to create temporary directory."
