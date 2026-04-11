@@ -943,7 +943,23 @@ patch_openclaw_config() {
     lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     local origins="[\"http://${lan_ip}\", \"http://${lan_ip}:80\", \"http://localhost\", \"http://127.0.0.1\"]"
 
-    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" --argjson origins "$origins" '
+    # Derive a stable gateway token from MASTER_PASSWORD so it survives redeployment
+    local gw_token=""
+    if [[ -n "${MASTER_PASSWORD:-}" ]]; then
+        gw_token=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
+    else
+        log_warn "MASTER_PASSWORD is unset — skipping gateway token derivation; token will remain empty"
+    fi
+
+    local jq_extra_args=()
+    local jq_token_patch=""
+    if [[ -n "$gw_token" ]]; then
+        jq_extra_args=(--arg gw_token "$gw_token")
+        jq_token_patch='| .gateway.auth.token = $gw_token'
+    fi
+
+    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" --argjson origins "$origins" \
+        "${jq_extra_args[@]}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
@@ -960,6 +976,7 @@ patch_openclaw_config() {
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
         .tools.media.audio.models[0].timeoutSeconds = 30 |
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
+        '"$jq_token_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
 }
