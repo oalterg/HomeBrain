@@ -978,8 +978,19 @@
             const linkWrap = document.getElementById('openclaw-link');
             const linkAnchor = document.getElementById('openclaw-link-anchor');
             if (openclawStatus === 'running') {
-                const url = `http://${location.hostname}:18789`;
-                linkAnchor.href = url;
+                // Pre-authenticate the link by appending the gateway token.
+                // Query param name is `?token=` — may need adjustment if OpenClaw
+                // uses a different convention (e.g. ?apiKey= or ?key=).
+                fetch('/api/ai/whatsapp/link-token')
+                    .then(r => r.ok ? r.json() : Promise.reject())
+                    .then(data => {
+                        const port = data.port || 18789;
+                        const base = `http://${location.hostname}:${port}`;
+                        linkAnchor.href = data.token ? `${base}?token=${encodeURIComponent(data.token)}` : base;
+                    })
+                    .catch(() => {
+                        linkAnchor.href = `http://${location.hostname}:18789`;
+                    });
                 linkAnchor.innerText = `Open OpenClaw \u2192 :18789`;
                 linkWrap.style.display = 'block';
             } else {
