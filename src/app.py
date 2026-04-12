@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import shutil
 import secrets
@@ -808,13 +809,13 @@ def list_drives():
             .decode()
             .strip()
         )
-        if "mmcblk" in root_dev:
-            root_disk = root_dev.split("p")[0]
-        else:
-            root_disk = root_dev.strip("0123456789")
+        # Layer 1: Robustly strip partition suffix to get the whole-disk name.
+        # re.sub handles NVMe (nvme0n1p7→nvme0n1), SATA (sda3→sda), eMMC (mmcblk0p1→mmcblk0).
+        root_disk = re.sub(r'p?\d+$', '', root_dev)
 
+        # Include children (partitions) so we can inspect their mount points.
         output = subprocess.check_output(
-            "lsblk -J -d -o NAME,SIZE,TYPE,MODEL,RM", shell=True
+            "lsblk -J -o NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT", shell=True
         ).decode()
         data = json.loads(output)
 
@@ -832,17 +833,31 @@ def list_drives():
         except:
             pass
 
+        system_mounts = {'/', '/boot', '/boot/efi', '/opt/homebrain'}
+
         candidates = []
         for dev in data["blockdevices"]:
             dev_name = f"/dev/{dev['name']}"
-            
+
             # Filter out system pseudo-devices (zram, loop, ram)
             if dev["type"] != "disk":
                 continue
             if dev_name.startswith("/dev/zram") or dev_name.startswith("/dev/loop") or dev_name.startswith("/dev/ram"):
                 continue
-                
-            if dev_name in root_disk or root_disk in dev_name:
+
+            # Layer 2: Skip non-removable drives (RM=0) — internal NVMe/SATA are never removable.
+            rm = str(dev.get("rm", "0")).strip()
+            if rm != "1":
+                continue
+
+            # Layer 1 (continued): Skip the disk that contains the root filesystem.
+            if dev_name == root_disk or root_disk.startswith(dev_name):
+                continue
+
+            # Layer 3: Skip any disk whose partitions host critical system mount points.
+            # Belt-and-suspenders safety net in case RM or name matching ever misses.
+            child_mounts = {c.get("mountpoint") for c in dev.get("children", []) if c.get("mountpoint")}
+            if child_mounts & system_mounts:
                 continue
 
             # Robust check: Is this drive (or a partition on it) mounted at /mnt/backup?
