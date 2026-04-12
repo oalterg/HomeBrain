@@ -978,15 +978,16 @@
             const linkWrap = document.getElementById('openclaw-link');
             const linkAnchor = document.getElementById('openclaw-link-anchor');
             if (openclawStatus === 'running') {
-                // Pre-authenticate the link by appending the gateway token.
-                // Query param name is `?token=` — may need adjustment if OpenClaw
-                // uses a different convention (e.g. ?apiKey= or ?key=).
+                // Pre-authenticate the link via URL fragment so the token is never
+                // sent to the server in logs. OpenClaw 2026.3.7+ uses `#token=`.
+                // Older versions don't support fragments — user will be prompted
+                // to enter the token manually in that case.
                 fetch('/api/ai/whatsapp/link-token')
                     .then(r => r.ok ? r.json() : Promise.reject())
                     .then(data => {
                         const port = data.port || 18789;
-                        const base = `http://${location.hostname}:${port}`;
-                        linkAnchor.href = data.token ? `${base}?token=${encodeURIComponent(data.token)}` : base;
+                        const base = `http://${location.hostname}:${port}/`;
+                        linkAnchor.href = data.token ? `${base}#token=${encodeURIComponent(data.token)}` : base;
                     })
                     .catch(() => {
                         linkAnchor.href = `http://${location.hostname}:18789`;
