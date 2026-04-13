@@ -458,21 +458,29 @@ def start_setup():
         update_env_var("NEXTCLOUD_ADMIN_USER", "admin")
 
 
-    # Map Factory Config to Environment Variables
+    # Write deployment mode chosen in the setup wizard
+    data = request.get_json(silent=True) or {}
+    deployment_mode = data.get("deployment_mode", "local")
+    update_env_var("DEPLOYMENT_MODE", deployment_mode)
+
+    # Map credentials: prefer form submission, fall back to factory config
     factory = get_factory_config()
 
-    # Propagate Pangolin credentials from factory config.
-    # Mode is derived at runtime from credential presence — no explicit DEPLOYMENT_MODE needed.
-    for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
-        if factory.get(key): update_env_var(key, factory[key])
+    if deployment_mode == "remote":
+        newt_id       = data.get("pangolin_id")       or factory.get("NEWT_ID", "")
+        newt_secret   = data.get("pangolin_secret")   or factory.get("NEWT_SECRET", "")
+        pan_endpoint  = data.get("pangolin_endpoint") or factory.get("PANGOLIN_ENDPOINT", "")
+        pan_domain    = data.get("pangolin_domain")   or factory.get("PANGOLIN_DOMAIN", "")
 
-    # Domain Logic: Main Domain -> Subdomains (only when Pangolin is provisioned)
-    if factory.get("PANGOLIN_DOMAIN"):
-        main_dom = factory["PANGOLIN_DOMAIN"]
-        update_env_var("PANGOLIN_DOMAIN", main_dom)
-        update_env_var("MANAGER_DOMAIN", main_dom)
-        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
-        update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
+        update_env_var("NEWT_ID",           newt_id)
+        update_env_var("NEWT_SECRET",       newt_secret)
+        update_env_var("PANGOLIN_ENDPOINT", pan_endpoint)
+
+        if pan_domain:
+            update_env_var("PANGOLIN_DOMAIN",            pan_domain)
+            update_env_var("MANAGER_DOMAIN",             pan_domain)
+            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS",  f"nc.{pan_domain}")
+            update_env_var("HA_TRUSTED_DOMAINS",         f"ha.{pan_domain}")
 
     env_config = get_env_config()
     

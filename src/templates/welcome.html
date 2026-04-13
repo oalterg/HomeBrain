@@ -21,7 +21,7 @@
             letter-spacing: -1px;
         }
         .logo span { color: #2ecc71; }
-        
+
         .card {
             background: #1e1e1e;
             padding: 30px;
@@ -31,14 +31,60 @@
             box-shadow: 0 4px 15px rgba(0,0,0,0.3);
             border: 1px solid #333;
         }
-        
+
         h1 { font-weight: 300; color: #eee; }
-        
+
         ul { list-style: none; padding: 0; }
         li { padding: 10px 0; border-bottom: 1px solid #333; color: #ccc; }
         li:last-child { border-bottom: none; }
-        
-        button {
+
+        /* Mode selector cards */
+        .mode-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .mode-option {
+            border: 2px solid #333;
+            border-radius: 10px;
+            padding: 20px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            text-align: left;
+        }
+        .mode-option:hover { border-color: #555; background: #252525; }
+        .mode-option.selected {
+            border-color: #2ecc71;
+            background: rgba(46, 204, 113, 0.08);
+        }
+        .mode-option input[type=radio] { display: none; }
+        .mode-option .mode-title {
+            font-size: 1.05em;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        .mode-option .mode-desc {
+            font-size: 0.85em;
+            color: #999;
+            line-height: 1.4;
+        }
+
+        #pangolin-fields { display: none; margin-top: 20px; }
+        #pangolin-fields label { font-size: 0.9em; color: #bbb; display: block; margin-bottom: 4px; margin-top: 14px; }
+        #pangolin-fields input {
+            width: 100%;
+            box-sizing: border-box;
+            background: #252525;
+            border: 1px solid #444;
+            color: #eee;
+            border-radius: 6px;
+            padding: 9px 12px;
+            font-size: 0.95em;
+        }
+
+        button.btn-main {
             background-color: #2ecc71;
             color: #000;
             font-weight: bold;
@@ -50,49 +96,120 @@
             cursor: pointer;
             transition: transform 0.2s, background-color 0.2s;
         }
-        button:hover {
-            transform: scale(1.05);
-            background-color: #27ae60;
-        }
-        button:disabled {
-            background-color: #555;
-            color: #888;
-            transform: none;
-            cursor: not-allowed;
-        }
+        button.btn-main:hover { transform: scale(1.05); background-color: #27ae60; }
+        button.btn-main:disabled { background-color: #555; color: #888; transform: none; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
     <h1>Private Cloud Setup</h1>
-    <p style="color: #aaa;">Device Provisioning & Initialization</p>
+    <p style="color: #aaa;">Choose how you want to access your {{ platform.product_name }}</p>
 
     <div class="card">
-        <h3 style="margin-top:0; color:#2ecc71;">Device Identity</h3>
+        <h3 style="margin-top:0; color:#2ecc71;">Access Mode</h3>
+
+        <div class="mode-grid">
+            <label class="mode-option selected" id="opt-local" onclick="selectMode('local')">
+                <input type="radio" name="mode" value="local" checked>
+                <div class="mode-title">🏠 Local Network</div>
+                <div class="mode-desc">Access on your home network only.<br>No internet account required.</div>
+            </label>
+            <label class="mode-option" id="opt-remote" onclick="selectMode('remote')">
+                <input type="radio" name="mode" value="remote">
+                <div class="mode-title">🌐 Remote Access</div>
+                <div class="mode-desc">Access from anywhere via Pangolin tunnel.<br>Requires Pangolin credentials.</div>
+            </label>
+        </div>
+
+        <div id="pangolin-fields">
+            <label>Pangolin Endpoint</label>
+            <input type="text" id="pan-endpoint" placeholder="https://pangolin.yourdomain.com" autocomplete="off">
+            <label>Device ID</label>
+            <input type="text" id="pan-id" placeholder="newt-xxxxxxxx" autocomplete="off">
+            <label>Device Secret</label>
+            <input type="password" id="pan-secret" placeholder="Secret key" autocomplete="off">
+            <label>Main Domain</label>
+            <input type="text" id="pan-domain" placeholder="myserver.homebrain.com" autocomplete="off">
+        </div>
+    </div>
+
+    {% if config.NEWT_ID %}
+    <div class="card" style="border-color:#2ecc71; margin-top:15px;">
+        <h3 style="margin-top:0; color:#2ecc71;">Factory Provisioned Device</h3>
         <ul>
             <li><strong>Device ID:</strong> {{ config.NEWT_ID }}</li>
             <li><strong>Main Domain:</strong> {{ config.PANGOLIN_DOMAIN }}</li>
             <li><strong>Status:</strong> <span style="color:#2ecc71">Online & Ready</span></li>
         </ul>
-        <div style="margin-top: 20px; padding: 15px; background: #252525; border-radius: 6px; font-size: 0.9em; color: #ddd;">
-            <strong>Note:</strong> You have successfully authenticated with the Factory Password. 
-            Clicking below will install the software stack and generate your unique 
-            <strong>Master Admin Password</strong>.
-        </div>
+        <p style="font-size:0.85em; color:#888; margin-bottom:0;">Tunnel credentials are pre-provisioned. Select Remote Access to use them.</p>
     </div>
+    {% endif %}
 
-    <button onclick="startSetup()" id="btn">Initialize System</button>
+    <button class="btn-main" onclick="startSetup()" id="btn">Initialize System</button>
     <p id="msg" style="color: #888; margin-top: 20px; font-size: 0.9em;"></p>
 
     <script>
+        var selectedMode = 'local';
+
+        // Pre-select Remote if factory-provisioned
+        {% if config.NEWT_ID %}
+        selectMode('remote');
+        {% endif %}
+
+        function selectMode(mode) {
+            selectedMode = mode;
+            document.getElementById('opt-local').classList.toggle('selected', mode === 'local');
+            document.getElementById('opt-remote').classList.toggle('selected', mode === 'remote');
+            document.getElementById('pangolin-fields').style.display = mode === 'remote' ? 'block' : 'none';
+
+            // Pre-fill factory credentials if available
+            if (mode === 'remote') {
+                {% if config.PANGOLIN_ENDPOINT %}
+                if (!document.getElementById('pan-endpoint').value)
+                    document.getElementById('pan-endpoint').value = '{{ config.PANGOLIN_ENDPOINT }}';
+                {% endif %}
+                {% if config.NEWT_ID %}
+                if (!document.getElementById('pan-id').value)
+                    document.getElementById('pan-id').value = '{{ config.NEWT_ID }}';
+                {% endif %}
+                {% if config.PANGOLIN_DOMAIN %}
+                if (!document.getElementById('pan-domain').value)
+                    document.getElementById('pan-domain').value = '{{ config.PANGOLIN_DOMAIN }}';
+                {% endif %}
+            }
+        }
+
         function startSetup() {
-            if (!confirm("Start automated installation? This will take about 10-15 minutes.")) return;
+            var payload = { deployment_mode: selectedMode };
+
+            if (selectedMode === 'remote') {
+                var endpoint = document.getElementById('pan-endpoint').value.trim();
+                var id       = document.getElementById('pan-id').value.trim();
+                var secret   = document.getElementById('pan-secret').value.trim();
+                var domain   = document.getElementById('pan-domain').value.trim();
+                if (!id || !secret || !domain) {
+                    alert('Please fill in all Pangolin fields for Remote Access.');
+                    return;
+                }
+                payload.pangolin_endpoint = endpoint;
+                payload.pangolin_id       = id;
+                payload.pangolin_secret   = secret;
+                payload.pangolin_domain   = domain;
+            }
+
+            if (!confirm(selectedMode === 'local'
+                ? 'Start setup in Local Network mode?\n\nServices will be accessible on your home network only.'
+                : 'Start setup in Remote Access mode?\n\nThis will configure the Pangolin tunnel for external access.')) return;
 
             document.getElementById('btn').disabled = true;
-            document.getElementById('btn').innerText = "Starting...";
-            document.getElementById('msg').innerText = "Initiating background processes. Please wait...";
+            document.getElementById('btn').innerText = 'Starting...';
+            document.getElementById('msg').innerText = 'Initiating background processes. Please wait...';
 
-            fetch('/start_setup', { method: 'POST' })
+            fetch('/start_setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
                 .then(res => {
                     if (res.status === 401) { location.reload(); return null; }
                     return res.json();
@@ -100,16 +217,16 @@
                 .then(data => {
                     if (!data) return;
                     if (data.status === 'started') {
-                        document.getElementById('msg').innerText = "Setup started. Redirecting to progress view...";
+                        document.getElementById('msg').innerText = 'Setup started. Redirecting to progress view...';
                         setTimeout(() => window.location.reload(), 2000);
                     } else {
-                        alert("Error: " + data.error);
+                        alert('Error: ' + data.error);
                         document.getElementById('btn').disabled = false;
-                        document.getElementById('btn').innerText = "Initialize System";
+                        document.getElementById('btn').innerText = 'Initialize System';
                     }
                 })
-                .catch(e => {
-                    alert("Connection failed. Check network.");
+                .catch(function() {
+                    alert('Connection failed. Check network.');
                     document.getElementById('btn').disabled = false;
                 });
         }
