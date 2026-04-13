@@ -23,7 +23,7 @@ services:
   
   redis:
     image: redis:8.4.0-alpine
-    restart: always
+    restart: unless-stopped
     volumes:
       - redis_data:/data
     healthcheck:

@@ -2,6 +2,7 @@
 Description=llama.cpp inference server
 After=network.target multi-user.target
 Wants=multi-user.target
+StartLimitIntervalSec=600
 
 [Service]
 Type=simple
@@ -23,6 +24,9 @@ ExecStart=__LLAMA_BIN__ \
 
 Restart=always
 RestartSec=10
+TimeoutStopSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=5
 TimeoutStartSec=600
 OOMScoreAdjust=-500
 StandardOutput=journal

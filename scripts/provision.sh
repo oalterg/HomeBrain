@@ -82,12 +82,32 @@ if [[ "$HAS_GPU" == "true" ]]; then
         || log_warn "Vulkan driver install failed. GPU inference may not work."
 
     # Prevent AMD GPU runtime power management (keeps model in VRAM while idle)
-    grub_file="/etc/default/grub"
-    if [[ -f "$grub_file" ]] && ! grep -q "amdgpu.runpm=0" "$grub_file"; then
-        log_info "Disabling AMD GPU runtime power management (amdgpu.runpm=0)..."
-        sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0"/' "$grub_file"
-        update-grub 2>/dev/null || log_warn "update-grub failed. Kernel parameter may require manual setup."
+    # Add amdgpu.runpm=0 and amdgpu.pg_mask=0 to GRUB if not already present
+    if ! grep -q "amdgpu.runpm=0" /etc/default/grub 2>/dev/null; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0 amdgpu.pg_mask=0"/' /etc/default/grub
+        update-grub 2>/dev/null || true
+        log_info "Disabled AMD GPU runtime PM via kernel params (requires reboot to take effect)."
+    elif ! grep -q "amdgpu.pg_mask=0" /etc/default/grub 2>/dev/null; then
+        sed -i 's/amdgpu.runpm=0/amdgpu.runpm=0 amdgpu.pg_mask=0/' /etc/default/grub
+        update-grub 2>/dev/null || true
+        log_info "Added amdgpu.pg_mask=0 to kernel params."
     fi
+
+    # Disable GPU runtime PM immediately via sysfs (takes effect now, no reboot needed)
+    GPU_PM_APPLIED=false
+    for ctrl in /sys/class/drm/card*/device/power/control; do
+        if [[ -f "$ctrl" ]]; then
+            echo "on" > "$ctrl" 2>/dev/null && GPU_PM_APPLIED=true
+        fi
+    done
+    if [[ "$GPU_PM_APPLIED" == "true" ]]; then
+        log_info "Disabled AMD GPU runtime power management (VRAM will stay loaded)."
+    fi
+
+    # Deploy udev rule for AMD GPU runtime PM (survives hotplug/driver reload)
+    cp "${SCRIPT_DIR}/../config/99-amdgpu-runpm.rules" /etc/udev/rules.d/
+    udevadm control --reload-rules 2>/dev/null || true
+    log_info "Deployed AMD GPU udev rule to /etc/udev/rules.d/"
 fi
 
 # --- 2. Write Factory Config ---
@@ -159,6 +179,13 @@ else
     exit 1
 fi
 
+# Deploy and enable sleep inhibitor service
+cp "${SCRIPT_DIR}/../config/inhibit-sleep.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now inhibit-sleep.service 2>/dev/null \
+    && log_info "Sleep inhibitor service enabled." \
+    || log_warn "Failed to enable sleep inhibitor service."
+
 echo "HomeBrain Provisioning Complete."
 echo "======================================================="
 echo "   PROVISIONING COMPLETE"
@@ -166,3 +193,8 @@ echo "======================================================="
 echo "   Device is ready for first boot."
 echo "   Password will be generated during deployment."
 echo "======================================================="
+log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log_info "ACTION REQUIRED: Set BIOS 'Restore on AC Power Loss' → 'Power On'"
+log_info "This ensures HomeBrain auto-starts after a power outage."
+log_info "Location: BIOS → Power Management → AC Power Recovery"
+log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
