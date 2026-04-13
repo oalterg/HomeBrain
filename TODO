@@ -36,7 +36,6 @@ Features:
 Issues:
     1. OpenClaw GW API key should be persistent, not regenerated every session.
         - Preferably, the during deployment generated Master password shall also apply to OpenClaw, no dedicated key for the user to remember
-    2. OpenClaw whatsapp channel should be restricted to only incoming messages from specified numbers, not default all - consider in whatsapp pairing in homebrain dashboard
     3. Backup shows nvme0n1 as potential backup drive
     4. User and paths mingled
         - Project path: /home/admin/ --> /opt/homebrain/
