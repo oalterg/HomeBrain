@@ -275,7 +275,13 @@
         <h1 class="logo">Home<span>{{ platform.product_suffix }}</span><small>Private Cloud Manager</small></h1>
         <div class="header-status">
             <div id="global-status" class="global-status">System Active</div>
-            <div class="provider-mode">Tunnel: {{ tunnel.mode.upper() }}</div>
+            <div class="provider-mode">
+                {% if deployment_mode == 'local' %}
+                <span style="background:rgba(46,204,113,0.12); border:1px solid var(--hb-green); color:var(--hb-green); padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Local Network</span>
+                {% else %}
+                <span style="background:rgba(52,152,219,0.12); border:1px solid #3498db; color:#3498db; padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Remote Access</span>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -297,8 +303,8 @@
                 <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="status-badge status-unknown">...</span></div>
                 
                 <div style="margin-top:25px; display:flex; gap:15px;">
-                    <a href="https://{{ nc_domain }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Nextcloud</button></a>
-                    <a href="https://{{ ha_domain }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Home Assistant</button></a>
+                    <a href="{{ nc_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Nextcloud</button></a>
+                    <a href="{{ ha_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Home Assistant</button></a>
                 </div>
             </div>
 
@@ -452,8 +458,12 @@
         </div>
         {% endif %}
 
-        <div class="card">
-            <h3>Tunnel Configuration</h3>
+        <div class="card" {% if deployment_mode == 'local' %}style="opacity:0.45; pointer-events:none;" title="Tunnel configuration is not available in Local Network mode"{% endif %}>
+            <h3>Tunnel Configuration
+                {% if deployment_mode == 'local' %}
+                <span style="font-size:0.6em; font-weight:400; color:var(--hb-text-dim); margin-left:8px;">— not used in Local Network mode</span>
+                {% endif %}
+            </h3>
 
             {% if tunnel.mode == 'pangolin' %}
             <div style="background:rgba(46, 204, 113, 0.1); border:1px solid var(--hb-green); padding:15px; border-radius:6px; margin-bottom:20px;">

@@ -16,9 +16,38 @@ else
     BOOT_CONFIG="/opt/homebrain/factory_config.txt"
 fi
 
-# --- Input Validation ---
+# --- Input Validation & Mode Detection ---
 if [[ $EUID -ne 0 ]]; then echo "Run as root."; exit 1; fi
-if [ "$#" -lt 5 ]; then echo "Usage: $0 <ID> <SECRET> <MAIN_DOMAIN> <PAN_EP> <FACTORY_PASS> [REGISTRAR_URL] [REGISTRAR_SECRET]"; exit 1; fi
+
+# Local mode  (0-1 args): provision.sh [FACTORY_PASS]
+# Remote mode (5+ args):  provision.sh <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS> [REGISTRAR_URL] [REGISTRAR_SECRET]
+if [[ $# -ge 5 ]]; then
+    PROVISION_MODE="remote"
+elif [[ $# -le 1 ]]; then
+    PROVISION_MODE="local"
+else
+    echo "Usage (local mode):  $0 [FACTORY_PASS]"
+    echo "Usage (remote mode): $0 <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS> [REGISTRAR_URL] [REGISTRAR_SECRET]"
+    exit 1
+fi
+
+if [[ "$PROVISION_MODE" == "remote" ]]; then
+    PROV_NEWT_ID="${1}"
+    PROV_NEWT_SECRET="${2}"
+    PROV_PANGOLIN_DOMAIN="${3}"
+    PROV_PANGOLIN_ENDPOINT="${4}"
+    PROV_FACTORY_PASS="${5}"
+    PROV_REGISTRAR_URL="${6:-}"
+    PROV_REGISTRAR_SECRET="${7:-}"
+else
+    PROV_NEWT_ID=""
+    PROV_NEWT_SECRET=""
+    PROV_PANGOLIN_DOMAIN=""
+    PROV_PANGOLIN_ENDPOINT=""
+    PROV_FACTORY_PASS="${1:-}"
+    PROV_REGISTRAR_URL=""
+    PROV_REGISTRAR_SECRET=""
+fi
 
 # Resilience: Ensure time is correct
 wait_for_time_sync
@@ -59,15 +88,16 @@ if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
 fi
 
 # --- 2. Write Factory Config ---
-echo "Writing factory configuration..."
+echo "Writing factory configuration (mode: ${PROVISION_MODE})..."
 cat > "$BOOT_CONFIG" <<EOF
-NEWT_ID=${1}
-NEWT_SECRET=${2}
-PANGOLIN_DOMAIN=${3}
-PANGOLIN_ENDPOINT=${4}
-FACTORY_PASSWORD=${5}
-REGISTRAR_URL=${6:-}
-REGISTRAR_SECRET=${7:-}
+DEPLOYMENT_MODE=${PROVISION_MODE}
+NEWT_ID=${PROV_NEWT_ID}
+NEWT_SECRET=${PROV_NEWT_SECRET}
+PANGOLIN_DOMAIN=${PROV_PANGOLIN_DOMAIN}
+PANGOLIN_ENDPOINT=${PROV_PANGOLIN_ENDPOINT}
+FACTORY_PASSWORD=${PROV_FACTORY_PASS}
+REGISTRAR_URL=${PROV_REGISTRAR_URL}
+REGISTRAR_SECRET=${PROV_REGISTRAR_SECRET}
 EOF
 chmod 600 "$BOOT_CONFIG"
 
@@ -97,9 +127,13 @@ MASTER_PASSWORD=placeholder
 PANGOLIN_DOMAIN=example.com
 EOF
 
-# Pull Pangolin to ensure images are present
-COMPOSE_PROFILES="pangolin" \
-docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
+# Pull images — include Pangolin profile only in remote mode
+if [[ "$PROVISION_MODE" == "remote" ]]; then
+    COMPOSE_PROFILES="pangolin" \
+    docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
+else
+    docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
+fi
 
 # Cleanup temp env so User Setup generates a fresh secure one
 rm "$INSTALL_DIR/.env"

@@ -398,6 +398,30 @@ def is_setup_started():
     return os.path.exists(SETUP_STARTED_MARKER)
 
 
+def is_local_mode():
+    """Returns True when running in LAN-only mode (no tunnel configured)."""
+    env = get_env_config()
+    mode = env.get("DEPLOYMENT_MODE", "local")
+    if mode == "local":
+        return True
+    # Also treat as local if no tunnel credentials exist despite mode=remote
+    has_tunnel = any(env.get(k) for k in ["PANGOLIN_DOMAIN", "NEWT_ID", "CF_TOKEN_NC", "CF_TOKEN_HA"])
+    return not has_tunnel
+
+
+def get_lan_ip():
+    """Returns the primary LAN IP of this machine."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+
 def calculate_sha256(filepath):
     sha256_hash = hashlib.sha256()
     with open(filepath, "rb") as f:
@@ -434,16 +458,22 @@ def start_setup():
 
     # Map Factory Config to Environment Variables
     factory = get_factory_config()
-    for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
-        if key in factory: update_env_var(key, factory[key])
-    
-    # Domain Logic: Main Domain -> Subdomains
-    if "PANGOLIN_DOMAIN" in factory:
-        main_dom = factory["PANGOLIN_DOMAIN"]
-        update_env_var("PANGOLIN_DOMAIN", main_dom)
-        update_env_var("MANAGER_DOMAIN", main_dom)
-        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
-        update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
+
+    # Propagate deployment mode — defaults to "local" for open-source / no-tunnel installs
+    deployment_mode = factory.get("DEPLOYMENT_MODE", "local")
+    update_env_var("DEPLOYMENT_MODE", deployment_mode)
+
+    if deployment_mode == "remote":
+        for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
+            if key in factory: update_env_var(key, factory[key])
+
+        # Domain Logic: Main Domain -> Subdomains (remote mode only)
+        if factory.get("PANGOLIN_DOMAIN"):
+            main_dom = factory["PANGOLIN_DOMAIN"]
+            update_env_var("PANGOLIN_DOMAIN", main_dom)
+            update_env_var("MANAGER_DOMAIN", main_dom)
+            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
+            update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
 
     env_config = get_env_config()
     
@@ -617,6 +647,19 @@ def index():
     factory = get_factory_config()
     env = get_env_config()
 
+    # Deployment mode
+    local = is_local_mode()
+    deployment_mode = "local" if local else "remote"
+
+    # Compute service URLs based on mode
+    if local:
+        lan_ip = get_lan_ip()
+        nc_url = f"http://{lan_ip}:8080"
+        ha_url = f"http://{lan_ip}:8123"
+    else:
+        nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
+        ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
+
     # Determine Tunnel Provider Mode
     # If any CF token exists, we are in Cloudflare mode
     cf_mode = bool(env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"))
@@ -634,6 +677,9 @@ def index():
 
     return render_template(
         "dashboard.html",
+        deployment_mode=deployment_mode,
+        nc_url=nc_url,
+        ha_url=ha_url,
         main_domain=env.get("PANGOLIN_DOMAIN"),
         nc_domain=env.get("NEXTCLOUD_TRUSTED_DOMAINS"),
         ha_domain=env.get("HA_TRUSTED_DOMAINS"),
@@ -648,6 +694,18 @@ def index():
         cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"},
         platform=PLATFORM_INFO
     )
+
+
+# --- Routes: Deployment Mode ---
+@app.route("/api/deployment-mode")
+def deployment_mode_api():
+    """Returns current deployment mode and tunnel domain (if any)."""
+    env = get_env_config()
+    local = is_local_mode()
+    tunnel_domain = None
+    if not local:
+        tunnel_domain = env.get("PANGOLIN_DOMAIN") or env.get("NEXTCLOUD_TRUSTED_DOMAINS") or None
+    return jsonify({"mode": "local" if local else "remote", "tunnelDomain": tunnel_domain})
 
 
 # --- Routes: API Status ---

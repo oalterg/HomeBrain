@@ -181,6 +181,20 @@ get_tunnel_profiles() {
     echo "${profiles}"
 }
 
+# Returns 0 (true) when running in local/LAN-only mode (no tunnel credentials).
+# Checks DEPLOYMENT_MODE env var first; falls back to detecting absence of tunnel creds.
+is_local_mode() {
+    local mode="${DEPLOYMENT_MODE:-local}"
+    [[ "$mode" == "local" ]] && return 0
+    # Even if mode is "remote", treat as local if no tunnel credentials are configured
+    local has_tunnel=false
+    [[ -n "${PANGOLIN_DOMAIN:-}" ]] && has_tunnel=true
+    [[ -n "${NEWT_ID:-}" ]]         && has_tunnel=true
+    [[ -n "${CF_TOKEN_NC:-}" ]]     && has_tunnel=true
+    [[ -n "${CF_TOKEN_HA:-}" ]]     && has_tunnel=true
+    $has_tunnel && return 1 || return 0
+}
+
 wait_for_healthy() {
     local service_name="$1"
     local timeout_seconds="$2"
@@ -375,11 +389,30 @@ configure_nc_ha_proxy_settings() {
 
     # 1. Update Nextcloud Trusted Proxies
     if [[ -n "$nc_cid" ]]; then
-        # Nextcloud HTTPS & Proxy Config
-        docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
+        if is_local_mode; then
+            # Local mode: HTTP only, trust LAN addresses, no tunnel domain required
+            local lan_ip
+            lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=http || die "Failed to set overwriteprotocol."
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="http://homebrain.local:8080" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="localhost" || die "Failed to set trusted_domains localhost."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || die "Failed to set trusted_domains homebrain.local."
+            if [[ -n "$lan_ip" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || die "Failed to set trusted_domains LAN IP."
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="${lan_ip}:8080" || true
+            fi
+            # If an explicit trusted domain was set anyway, honour it at slot 5
+            if [[ -n "${NEXTCLOUD_TRUSTED_DOMAINS:-}" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 5 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || true
+            fi
+        else
+            # Remote mode: HTTPS via tunnel, use configured domain
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://${NEXTCLOUD_TRUSTED_DOMAINS}" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
+        fi
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 0 --value="$TRUSTED_PROXIES_0" || die "Failed to set trusted_proxies 0."
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 1 --value="$TRUSTED_PROXIES_1" || die "Failed to set trusted_proxies 1."
-        docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
         # Use index 10 to avoid conflict with existing static ones
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 10 --value="$subnet" || die "Failed to set trusted_proxies 10."
         # Also ensure localhost is trusted
