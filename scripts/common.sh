@@ -181,18 +181,16 @@ get_tunnel_profiles() {
     echo "${profiles}"
 }
 
-# Returns 0 (true) when running in local/LAN-only mode (no tunnel credentials).
-# Checks DEPLOYMENT_MODE env var first; falls back to detecting absence of tunnel creds.
+# Returns 0 (true) when running in local/LAN-only mode.
+# Logic: local if Pangolin not provisioned (credentials absent), OR if user explicitly
+# set DEPLOYMENT_MODE=local to opt out despite having credentials.
+# When Pangolin IS provisioned, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
 is_local_mode() {
-    local mode="${DEPLOYMENT_MODE:-local}"
-    [[ "$mode" == "local" ]] && return 0
-    # Even if mode is "remote", treat as local if no tunnel credentials are configured
-    local has_tunnel=false
-    [[ -n "${PANGOLIN_DOMAIN:-}" ]] && has_tunnel=true
-    [[ -n "${NEWT_ID:-}" ]]         && has_tunnel=true
-    [[ -n "${CF_TOKEN_NC:-}" ]]     && has_tunnel=true
-    [[ -n "${CF_TOKEN_HA:-}" ]]     && has_tunnel=true
-    $has_tunnel && return 1 || return 0
+    # No Pangolin credentials at all — always local regardless of DEPLOYMENT_MODE
+    [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
+    # Credentials present but user explicitly opted out
+    [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
+    return 1
 }
 
 wait_for_healthy() {

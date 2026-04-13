@@ -90,7 +90,6 @@ fi
 # --- 2. Write Factory Config ---
 echo "Writing factory configuration (mode: ${PROVISION_MODE})..."
 cat > "$BOOT_CONFIG" <<EOF
-DEPLOYMENT_MODE=${PROVISION_MODE}
 NEWT_ID=${PROV_NEWT_ID}
 NEWT_SECRET=${PROV_NEWT_SECRET}
 PANGOLIN_DOMAIN=${PROV_PANGOLIN_DOMAIN}

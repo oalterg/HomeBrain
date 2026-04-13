@@ -399,14 +399,16 @@ def is_setup_started():
 
 
 def is_local_mode():
-    """Returns True when running in LAN-only mode (no tunnel configured)."""
+    """Returns True when running in LAN-only mode.
+    Local if Pangolin credentials are absent, or if user explicitly set DEPLOYMENT_MODE=local.
+    When credentials are present, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
+    """
     env = get_env_config()
-    mode = env.get("DEPLOYMENT_MODE", "local")
-    if mode == "local":
+    # No Pangolin credentials — always local
+    if not all(env.get(k) for k in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"]):
         return True
-    # Also treat as local if no tunnel credentials exist despite mode=remote
-    has_tunnel = any(env.get(k) for k in ["PANGOLIN_DOMAIN", "NEWT_ID", "CF_TOKEN_NC", "CF_TOKEN_HA"])
-    return not has_tunnel
+    # Credentials present but user opted out
+    return env.get("DEPLOYMENT_MODE", "remote") == "local"
 
 
 def get_lan_ip():
@@ -459,21 +461,18 @@ def start_setup():
     # Map Factory Config to Environment Variables
     factory = get_factory_config()
 
-    # Propagate deployment mode — defaults to "local" for open-source / no-tunnel installs
-    deployment_mode = factory.get("DEPLOYMENT_MODE", "local")
-    update_env_var("DEPLOYMENT_MODE", deployment_mode)
+    # Propagate Pangolin credentials from factory config.
+    # Mode is derived at runtime from credential presence — no explicit DEPLOYMENT_MODE needed.
+    for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
+        if factory.get(key): update_env_var(key, factory[key])
 
-    if deployment_mode == "remote":
-        for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
-            if key in factory: update_env_var(key, factory[key])
-
-        # Domain Logic: Main Domain -> Subdomains (remote mode only)
-        if factory.get("PANGOLIN_DOMAIN"):
-            main_dom = factory["PANGOLIN_DOMAIN"]
-            update_env_var("PANGOLIN_DOMAIN", main_dom)
-            update_env_var("MANAGER_DOMAIN", main_dom)
-            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
-            update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
+    # Domain Logic: Main Domain -> Subdomains (only when Pangolin is provisioned)
+    if factory.get("PANGOLIN_DOMAIN"):
+        main_dom = factory["PANGOLIN_DOMAIN"]
+        update_env_var("PANGOLIN_DOMAIN", main_dom)
+        update_env_var("MANAGER_DOMAIN", main_dom)
+        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
+        update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
 
     env_config = get_env_config()
     
