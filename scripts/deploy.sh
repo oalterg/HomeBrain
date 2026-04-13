@@ -104,8 +104,8 @@ log_info "Configuring Cron..."
 bash "$SCRIPT_DIR/utilities.sh" cron || log_error "Nextcloud cron configuration failed."
 
 # --- 4. Hardening ---
-# Disable wireless on headless appliance (HomeCloud/Pi). Desktop (HomeBrain/x86) keeps wifi/bluetooth.
-if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+# Disable wireless on headless appliance (Pi). Desktop (x86) keeps wifi/bluetooth.
+if [[ -d "/boot/firmware" ]]; then
     log_info "Disabling Wireless interfaces..."
     if command -v rfkill >/dev/null 2>&1; then
         rfkill block wifi || log_warn "WiFi could not be disabled (possibly already disabled or unavailable)."
@@ -135,30 +135,36 @@ touch "$INSTALL_DIR/.setup_complete"
 # Signal specifically for the UI to pick up
 echo "Deployment Complete - Ready for Handover"
 
-# --- Post-Handover: AI auto-install (opt-out platforms only) ---
+# --- Post-Handover: AI auto-install (GPU-gated) ---
 # Runs AFTER handover so the user sees the dashboard immediately.
 # Launched in background so it doesn't block the deployment signal.
 auto_setup_ai() {
+    # Only auto-setup AI if GPU is present
+    if [[ "${HAS_GPU:-false}" != "true" ]]; then
+        log_info "No GPU detected. AI stack auto-setup skipped. Install manually from the dashboard if needed."
+        return 0
+    fi
+
     local enable_flag="${ENABLE_OPENCLAW:-true}"
     if [[ "$enable_flag" == "false" ]]; then return 0; fi
 
-    log_info "AI is default-on for ${HB_PLATFORM}. Setting up AI stack in background..."
+    log_info "GPU detected. Setting up AI stack in background..."
 
     # Set default model if none selected yet
     if [[ -z "${AI_MODEL_ID:-}" ]]; then
         local models_file="$INSTALL_DIR/config/platform_models.json"
         if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
             local default_model
-            default_model=$(jq -r --arg p "$HB_PLATFORM" '.[$p].models[] | select(.default == true) | .id' "$models_file" | head -1)
+            default_model=$(jq -r '.models[] | select(.default == true) | .id' "$models_file" | head -1)
             if [[ -n "$default_model" ]]; then
                 log_info "Auto-selecting default model: $default_model"
                 local m_file m_url m_min m_ngl m_ctx m_extra
-                m_file=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .filename' "$models_file")
-                m_url=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .url' "$models_file")
-                m_min=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '.[$p].models[] | select(.id == $id) | .min_size_bytes' "$models_file")
-                m_ngl=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .ngl) // .[$p].llama_server.ngl' "$models_file")
-                m_ctx=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .context_window) // .[$p].llama_server.ctx_size' "$models_file")
-                m_extra=$(jq -r --arg p "$HB_PLATFORM" --arg id "$default_model" '(.[$p].models[] | select(.id == $id) | .extra_flags) // .[$p].llama_server.extra_flags' "$models_file")
+                m_file=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .filename' "$models_file")
+                m_url=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .url' "$models_file")
+                m_min=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .min_size_bytes' "$models_file")
+                m_ngl=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .ngl) // .llama_server.ngl' "$models_file")
+                m_ctx=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .context_window) // .llama_server.ctx_size' "$models_file")
+                m_extra=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags' "$models_file")
                 local key val
                 for kv in "AI_MODEL_ID=$default_model" "AI_MODEL_FILENAME=$m_file" "AI_MODEL_URL=$m_url" \
                           "AI_MODEL_MIN_SIZE=$m_min" "AI_NGL=$m_ngl" "AI_CTX_SIZE=$m_ctx" "AI_EXTRA_FLAGS=$m_extra"; do

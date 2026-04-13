@@ -9,8 +9,8 @@ LOG_DIR="/var/log/homebrain"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 
-# Platform-conditional boot config path
-if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+# Boot config path detection (filesystem-based, not platform-based)
+if [[ -d "/boot/firmware" ]]; then
     BOOT_CONFIG="/boot/firmware/factory_config.txt"
 else
     BOOT_CONFIG="/opt/homebrain/factory_config.txt"
@@ -59,8 +59,11 @@ install_deps_enable_docker
 # --- 1b. Ensure admin user exists (Ubuntu Server doesn't ship with one) ---
 ensure_admin_user
 
-# --- 1c. Platform-specific hardening ---
-if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+# --- 1c. GPU-gated hardening (Vulkan drivers, firewall, grub tweaks) ---
+# Detect GPU before proceeding
+detect_gpu
+
+if [[ "$HAS_GPU" == "true" ]]; then
     # Disable conflicting web servers if present
     systemctl disable --now apache2 2>/dev/null || true
 
@@ -99,6 +102,9 @@ REGISTRAR_URL=${PROV_REGISTRAR_URL}
 REGISTRAR_SECRET=${PROV_REGISTRAR_SECRET}
 EOF
 chmod 600 "$BOOT_CONFIG"
+
+# Store HAS_GPU for later use
+update_env_var "HAS_GPU" "$HAS_GPU"
 
 # --- 3. Setup Python Environment ---
 echo "Provisioning HomeBrain Manager..."

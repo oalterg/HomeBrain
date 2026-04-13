@@ -7,7 +7,8 @@ import platform
 # Configuration Constants
 INSTALL_DIR = "/opt/homebrain"
 ENV_FILE = os.path.join(INSTALL_DIR, ".env")
-FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if platform.machine() == "aarch64" else "/opt/homebrain/factory_config.txt"
+# Boot config path detection (filesystem-based, not platform-based)
+FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/firmware") else "/opt/homebrain/factory_config.txt"
 SERVICE_TEMPLATE = os.path.join(INSTALL_DIR, "config/homebrain-manager.service")
 
 def get_env_map():
@@ -106,7 +107,7 @@ def run_migrations():
     old_source_build = "/home/admin/llama.cpp"
     old_prebuilt_dir = "/home/admin/llama-server"
 
-    if platform.machine() == "x86_64" and (os.path.exists(rocm_list) or os.path.exists(old_source_build)):
+    if os.path.exists(rocm_list) or os.path.exists(old_source_build):
         logging.info("Migration: Cleaning up ROCm artifacts for Vulkan transition...")
         try:
             for f in [rocm_list, rocm_gpg]:

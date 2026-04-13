@@ -21,29 +21,23 @@ log_warn() { echo "[WARN] $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
 
-# --- Platform Detection ---
-detect_platform() {
-    local arch
-    arch=$(uname -m)
-
-    if [[ "$arch" == "aarch64" ]]; then
-        export HB_PLATFORM="rpi5"
-        export HB_ARCH="aarch64"
-        export HB_GPU_BACKEND="vulkan"
-        export HB_AI_DEFAULT="opt-in"
-    elif [[ "$arch" == "x86_64" ]]; then
-        export HB_PLATFORM="x86_ubuntu"
-        export HB_ARCH="x86_64"
-        export HB_GPU_BACKEND="vulkan"
-        export HB_AI_DEFAULT="opt-out"
-    else
-        export HB_PLATFORM="unknown"
-        export HB_ARCH="$arch"
-        export HB_GPU_BACKEND="none"
-        export HB_AI_DEFAULT="opt-in"
-    fi
+# --- GPU Detection ---
+detect_gpu() {
+  # Layer 1: DRM render node (works for AMD/Nvidia/Intel on Linux)
+  if ls /dev/dri/renderD* &>/dev/null 2>&1; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  # Layer 2: sysfs DRM
+  if ls /sys/class/drm/render* &>/dev/null 2>&1; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  # Layer 3: lspci VGA/3D/Display controller
+  if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qiE "VGA|3D|Display"; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  HAS_GPU=false; export HAS_GPU
 }
-detect_platform
+detect_gpu
 
 # --- User Management ---
 # Verify the homebrain system user exists and is in the required groups.
@@ -250,15 +244,11 @@ install_deps_enable_docker() {
     log_info "Installing dependencies"
     wait_for_apt_lock
     local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted"
-    local platform_pkgs=""
-    if [[ "$HB_PLATFORM" == "rpi5" ]]; then
-        platform_pkgs="initramfs-tools rfkill"
-    fi
-    apt-get install -y -qq $common_pkgs $platform_pkgs
+    apt-get install -y -qq $common_pkgs
 
     # Install Google Chrome for OpenClaw browser tool (x86 only, non-fatal)
     # Uses deb package instead of snap to avoid confinement issues on headless servers
-    if [[ "$HB_PLATFORM" == "x86_ubuntu" ]]; then
+    if [[ "$HAS_GPU" == "true" ]]; then
         if ! command -v google-chrome-stable >/dev/null 2>&1; then
             log_info "Installing Google Chrome for headless browsing..."
             wget -q -O /tmp/google-chrome.deb \

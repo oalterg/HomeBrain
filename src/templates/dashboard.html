@@ -567,8 +567,7 @@
                 <p>Advanced hardware and task management.</p>
 
                 <table style="margin-top:10px;">
-                    {% if platform.platform == 'rpi5' %}
-                    <tr>
+                    <tr id="watchdog-row" style="display:none;">
                         <td>
                             <strong>Hardware Watchdog</strong><br>
                             <small style="color:var(--hb-text-dim);">Auto-reboots system if frozen.</small>
@@ -578,7 +577,6 @@
                             <button onclick="toggleSystem('watchdog')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
-                    {% endif %}
                     <tr>
                         <td>
                             <strong>Nextcloud Cron</strong><br>
@@ -589,8 +587,7 @@
                             <button onclick="toggleSystem('cron')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Enforce</button>
                         </td>
                     </tr>
-                    {% if platform.platform == 'rpi5' %}
-                    <tr>
+                    <tr id="pci-row" style="display:none;">
                         <td>
                             <strong>PCIe Speed</strong><br>
                             <small style="color:var(--hb-text-dim);">Gen 3.0 (Experimental).</small>
@@ -600,7 +597,6 @@
                             <button onclick="toggleSystem('pci')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
-                    {% endif %}
                     <tr>
                         <td>
                             <strong>Redis Caching</strong><br>
@@ -613,7 +609,8 @@
                     </tr>
                 </table>
             </div>
-            
+
+            {% if has_gpu %}
             <div class="card" style="border-left: 4px solid #9b59b6;">
                 <h3>Personal AI Assistant <span class="status-badge status-starting" style="background:#9b59b622; color:#d2b4de; border-color:#9b59b6;">Experimental</span></h3>
                 <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
@@ -660,6 +657,15 @@
                     <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
                 </div>
             </div>
+            {% else %}
+            <div class="card" style="border-left: 4px solid #9b59b6; opacity: 0.45; pointer-events: none;">
+                <h3>Personal AI Assistant <span class="status-badge" style="background:#95a5a622; color:#bdc3c7; border-color:#95a5a6;">GPU Required</span></h3>
+                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
+                <p style="color:var(--hb-text-dim); font-size:0.9em; margin-top:10px;">
+                    This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
+                </p>
+            </div>
+            {% endif %}
             
             <div class="card">
                 <h3>FTP Server (Camera Uploads)</h3>
@@ -950,11 +956,23 @@
                     el.dataset.val = val;
                 };
 
+                // Watchdog (Pi-only, visible only if supported)
                 const wdEl = document.getElementById('sys-wd-status');
-                if (wdEl && data.watchdog !== 'unsupported') updateBadge('sys-wd-status', data.watchdog, 'enabled');
+                const wdRow = document.getElementById('watchdog-row');
+                if (data.watchdog !== 'unsupported') {
+                    if (wdRow) wdRow.style.display = 'table-row';
+                    if (wdEl) updateBadge('sys-wd-status', data.watchdog, 'enabled');
+                }
+
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
+
+                // PCIe (Pi-only, visible only if supported)
                 const pciEl = document.getElementById('sys-pci-status');
-                if (pciEl && data.pci !== 'unsupported') updateBadge('sys-pci-status', data.pci, 'gen3');
+                const pciRow = document.getElementById('pci-row');
+                if (data.pci !== 'unsupported') {
+                    if (pciRow) pciRow.style.display = 'table-row';
+                    if (pciEl) updateBadge('sys-pci-status', data.pci, 'gen3');
+                }
                 updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled', data.whisper || 'not_installed');
 
                 checkRedisStatus();
@@ -1142,14 +1160,11 @@
                 const bothRunning = llamaState === 'running' && ocState === 'running';
                 const neitherInstalled = llamaState === 'not_installed' && ocState === 'not_installed';
                 const action = bothRunning ? 'disable' : 'enable';
-                const isRpi = '{{ platform.platform }}' === 'rpi5';
 
                 let confirmMsg;
                 if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
                     const selectedModel = document.getElementById('ai-model-select')?.value || 'default';
-                    const buildNote = isRpi
-                        ? "This will build llama.cpp from source, download the model, and install OpenClaw. The process takes 30\u201360 minutes."
-                        : "This will download a prebuilt llama-server, the model, and install OpenClaw.";
+                    const buildNote = "This will download a prebuilt llama-server, the model, and install OpenClaw.";
                     confirmMsg = `Install the AI stack (${selectedModel})?\n\n${buildNote}\n\nProgress will be shown in the Setup Log.`;
                 } else if (action === 'enable') {
                     confirmMsg = "Start the AI services?\n\nllama-server takes a few minutes to load the model into memory.";

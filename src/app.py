@@ -22,19 +22,28 @@ from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
 
-# --- Platform Detection ---
-def detect_platform():
-    arch = platform.machine()
-    if arch == "aarch64":
-        return {"platform": "rpi5", "arch": "aarch64", "gpu_backend": "vulkan", "ai_default": "opt-in", "product_name": "HomeCloud", "product_suffix": "Cloud"}
-    elif arch == "x86_64":
-        return {"platform": "x86_ubuntu", "arch": "x86_64", "gpu_backend": "vulkan", "ai_default": "opt-out", "product_name": "HomeBrain", "product_suffix": "Brain"}
-    return {"platform": "unknown", "arch": arch, "gpu_backend": "none", "ai_default": "opt-in", "product_name": "HomeBrain", "product_suffix": "Brain"}
+# --- GPU Detection ---
+def has_gpu() -> bool:
+    """Check if a GPU is available. Reads HAS_GPU from env, falls back to /dev/dri probe."""
+    val = os.environ.get("HAS_GPU", "").lower()
+    if val in ("true", "1", "yes"):
+        return True
+    if val in ("false", "0", "no"):
+        return False
+    # Fallback: probe /dev/dri directly (for existing installs without HAS_GPU in .env)
+    import glob
+    return bool(glob.glob("/dev/dri/renderD*"))
 
-PLATFORM_INFO = detect_platform()
+def get_models():
+    """Load flat model list from platform_models.json."""
+    models_path = os.path.join(INSTALL_DIR, 'config', 'platform_models.json')
+    with open(models_path) as f:
+        data = json.load(f)
+    return data.get("models", []), data.get("default", "")
 
 # --- Configuration & Constants ---
-FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if PLATFORM_INFO["platform"] == "rpi5" else "/opt/homebrain/factory_config.txt"
+# Boot config path detection (filesystem-based)
+FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/firmware") else "/opt/homebrain/factory_config.txt"
 HOMEBRAIN_ROOT = "/opt/homebrain"
 INSTALL_DIR = HOMEBRAIN_ROOT # Alias for backward compatibility if needed
 SETUP_STARTED_MARKER = f"{INSTALL_DIR}/.setup_started"
@@ -643,13 +652,13 @@ def index():
     # We MUST show the installing/success view so the user can claim them,
     # even if the setup is marked as complete.
     if os.path.exists(INSTALL_CREDS_PATH):
-        return render_template("installing.html", handover_ready=True, platform=PLATFORM_INFO)
+        return render_template("installing.html", handover_ready=True, has_gpu=has_gpu())
 
     if not is_setup_complete():
         # If setup is running, show progress (No auth required for this specific view state)
         if is_setup_started():
-            return render_template("installing.html", platform=PLATFORM_INFO)
-        return render_template("welcome.html", config=get_factory_config(), platform=PLATFORM_INFO)
+            return render_template("installing.html", has_gpu=has_gpu())
+        return render_template("welcome.html", config=get_factory_config(), has_gpu=has_gpu())
 
     factory = get_factory_config()
     env = get_env_config()
@@ -699,7 +708,7 @@ def index():
         },
         cloud_enabled=cloud_enabled,
         cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"},
-        platform=PLATFORM_INFO
+        has_gpu=has_gpu()
     )
 
 
@@ -1518,18 +1527,17 @@ def perform_first_boot_update():
 @app.route("/api/ai/models", methods=["GET"])
 @limiter.limit("30 per minute")
 def get_ai_models():
-    """Returns available AI models for the detected platform."""
+    """Returns available AI models (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
     try:
         models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
         with open(models_file, "r") as f:
-            all_models = json.load(f)
-        platform_key = PLATFORM_INFO["platform"]
-        platform_data = all_models.get(platform_key, {})
+            data = json.load(f)
         return jsonify({
-            "platform": platform_key,
-            "models": platform_data.get("models", []),
-            "llama_server": platform_data.get("llama_server", {}),
-            "whisper_models": platform_data.get("whisper", {}).get("models", [])
+            "models": data.get("models", []),
+            "llama_server": data.get("llama_server", {}),
+            "whisper_models": data.get("whisper", {}).get("models", [])
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1537,7 +1545,10 @@ def get_ai_models():
 @app.route("/api/ai/model", methods=["POST"])
 @limiter.limit("5 per minute")
 def set_ai_model():
-    """Persist the user's model selection to .env for the AI setup scripts."""
+    """Persist the user's model selection to .env for the AI setup scripts (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
+
     data = request.json
     model_id = data.get("model_id")
     if not model_id:
@@ -1548,12 +1559,12 @@ def set_ai_model():
     try:
         with open(models_file, "r") as f:
             all_models = json.load(f)
-        platform_data = all_models.get(PLATFORM_INFO["platform"], {})
-        model = next((m for m in platform_data.get("models", []) if m["id"] == model_id), None)
+        models = all_models.get("models", [])
+        model = next((m for m in models if m["id"] == model_id), None)
         if not model:
             return jsonify({"error": f"Unknown model: {model_id}"}), 400
 
-        server_defaults = platform_data.get("llama_server", {})
+        server_defaults = all_models.get("llama_server", {})
         update_env_var("AI_MODEL_ID", model["id"])
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
@@ -1568,7 +1579,9 @@ def set_ai_model():
 @app.route("/api/ai/model/switch", methods=["POST"])
 @limiter.limit("3 per minute")
 def switch_ai_model():
-    """Switch to a different AI model (updates .env, restarts services)."""
+    """Switch to a different AI model (updates .env, restarts services) (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
     if current_task_status["status"] == "running":
         return jsonify({"error": "A task is already running"}), 409
 
@@ -1581,12 +1594,12 @@ def switch_ai_model():
     try:
         with open(models_file, "r") as f:
             all_models = json.load(f)
-        platform_data = all_models.get(PLATFORM_INFO["platform"], {})
-        model = next((m for m in platform_data.get("models", []) if m["id"] == model_id), None)
+        models = all_models.get("models", [])
+        model = next((m for m in models if m["id"] == model_id), None)
         if not model:
             return jsonify({"error": f"Unknown model: {model_id}"}), 400
 
-        server_defaults = platform_data.get("llama_server", {})
+        server_defaults = all_models.get("llama_server", {})
         update_env_var("AI_MODEL_ID", model["id"])
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
@@ -1603,6 +1616,12 @@ def switch_ai_model():
         return jsonify({"status": "started", "model": model_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/system/capabilities", methods=["GET"])
+@limiter.limit("30 per minute")
+def system_capabilities():
+    """Returns system capabilities (GPU availability, AI features, etc.)."""
+    return jsonify({"has_gpu": has_gpu(), "ai_enabled": has_gpu()})
 
 @app.route("/api/system/config", methods=["GET"])
 @limiter.limit("30 per minute")
@@ -1633,8 +1652,8 @@ def update_system_config():
     if feature not in ["watchdog", "cron", "pci", "openclaw"]:
         return jsonify({"error": "Invalid feature"}), 400
 
-    # Pi-only features
-    if feature in ["watchdog", "pci"] and PLATFORM_INFO["platform"] != "rpi5":
+    # Pi-only features (check by boot config path existence)
+    if feature in ["watchdog", "pci"] and not os.path.isdir("/boot/firmware"):
         return jsonify({"error": f"{feature} is only available on Raspberry Pi"}), 400
 
     safe_action = shlex.quote(action) if action else ""

@@ -9,7 +9,8 @@ source "$SCRIPT_DIR/common.sh"
 VSFTPD_CONF="/etc/vsftpd.conf"
 FTP_PASSWD_FILE="/etc/vsftpd/ftppasswd"
 USER_CONFIG_DIR="/etc/vsftpd/user_conf"
-if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+# Boot config path detection (filesystem-based)
+if [[ -d "/boot/firmware" ]]; then
     BOOT_CONFIG="/boot/firmware/config.txt"
 else
     BOOT_CONFIG=""
@@ -19,8 +20,8 @@ NC_CRON_FILE="/etc/cron.d/nextcloud-cron"
 
 # --- Helper: Configure Watchdog (Pi 5 only) ---
 configure_watchdog() {
-    if [[ "$HB_PLATFORM" != "rpi5" ]]; then
-        log_info "Watchdog configuration is Pi-specific. Skipping on ${HB_PLATFORM}."
+    if [[ ! -f "$BOOT_CONFIG" ]]; then
+        log_info "Watchdog configuration is Pi-specific. Skipping on non-Pi platform."
         return 0
     fi
 
@@ -88,8 +89,8 @@ EOF
 
 # --- Helper: Configure PCIe Speed (Pi 5 only) ---
 configure_pci_speed() {
-    if [[ "$HB_PLATFORM" != "rpi5" ]]; then
-        log_info "PCIe configuration is Pi-specific. Skipping on ${HB_PLATFORM}."
+    if [[ ! -f "$BOOT_CONFIG" ]]; then
+        log_info "PCIe configuration is Pi-specific. Skipping on non-Pi platform."
         return 0
     fi
 
@@ -114,11 +115,11 @@ get_system_config_status() {
     # Watchdog & PCIe (Pi-only)
     local wd_status="unsupported"
     local pci_status="unsupported"
-    if [[ "$HB_PLATFORM" == "rpi5" ]]; then
+    if [[ -f "$BOOT_CONFIG" ]]; then
         wd_status="disabled"
         if systemctl is-active --quiet watchdog; then wd_status="enabled"; fi
         pci_status="gen2"
-        if [[ -n "$BOOT_CONFIG" ]] && grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG" 2>/dev/null; then pci_status="gen3"; fi
+        if grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG" 2>/dev/null; then pci_status="gen3"; fi
     fi
 
     # NC Cron
@@ -180,7 +181,7 @@ get_system_config_status() {
     fi
 
     local current_model="${AI_MODEL_ID:-}"
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"whisper\": \"$whisper_status\", \"platform\": \"$HB_PLATFORM\", \"ai_model_id\": \"$current_model\"}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"whisper\": \"$whisper_status\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -546,7 +547,9 @@ install_llama_prebuilt() {
 
     # Map architecture to release asset suffix
     local arch_suffix
-    if [[ "$HB_ARCH" == "x86_64" ]]; then
+    local machine_arch
+    machine_arch=$(uname -m)
+    if [[ "$machine_arch" == "x86_64" ]]; then
         arch_suffix="x64"
     else
         arch_suffix="arm64"
@@ -621,7 +624,7 @@ download_model() {
 
 # Main setup orchestrator
 setup_llama_server() {
-    log_info "=== Setting up llama-server (${HB_PLATFORM}) ==="
+    log_info "=== Setting up llama-server ==="
     load_env
 
     # Read model config from .env (set by dashboard model selector)
@@ -823,9 +826,9 @@ setup_whisper_server() {
     log_info "=== Setting up whisper-server (speech-to-text) ==="
     load_env
 
-    # x86-only feature
-    if [[ "$HB_PLATFORM" != "x86_ubuntu" ]]; then
-        log_info "Whisper STT is only available on x86 HomeBrain. Skipping."
+    # GPU-only feature
+    if [[ "$HAS_GPU" != "true" ]]; then
+        log_info "Whisper STT requires a compatible GPU. Skipping."
         return 0
     fi
 
@@ -839,11 +842,11 @@ setup_whisper_server() {
     if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
         local pm_file="${SCRIPT_DIR}/../config/platform_models.json"
         if [[ -f "$pm_file" ]] && command -v jq >/dev/null 2>&1; then
-            MODEL_NAME=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .filename' "$pm_file")
-            MODEL_URL=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .url' "$pm_file")
-            MIN_SIZE=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .min_size_bytes' "$pm_file")
+            MODEL_NAME=$(jq -r '.whisper.models[] | select(.default==true) | .filename' "$pm_file")
+            MODEL_URL=$(jq -r '.whisper.models[] | select(.default==true) | .url' "$pm_file")
+            MIN_SIZE=$(jq -r '.whisper.models[] | select(.default==true) | .min_size_bytes' "$pm_file")
             local MODEL_ID
-            MODEL_ID=$(jq -r '.x86_ubuntu.whisper.models[] | select(.default==true) | .id' "$pm_file")
+            MODEL_ID=$(jq -r '.whisper.models[] | select(.default==true) | .id' "$pm_file")
 
             # Persist defaults to .env for future fast-path
             update_env_var "AI_WHISPER_MODEL_ID" "$MODEL_ID"

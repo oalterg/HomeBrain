@@ -11,8 +11,8 @@ WorkingDirectory=__WORKDIR__
 Environment="LD_LIBRARY_PATH=__WORKDIR__"
 Environment="GGML_VK_DEVICE=0"
 
-# Wait for GPU device node before starting inference
-ExecStartPre=/bin/sh -c 'until [ -e /dev/dri/card0 ] || [ -e /dev/dri/renderD128 ]; do sleep 1; done'
+# Wait for GPU device node before starting inference (30 second timeout)
+ExecStartPre=/bin/sh -c 'i=0; until [ -e /dev/dri/renderD128 ] || [ -e /dev/dri/card0 ]; do sleep 1; i=$((i+1)); [ $i -ge 30 ] && exit 1; done'
 
 ExecStart=__LLAMA_BIN__ \
   --model __LLAMA_MODEL__ \
