@@ -136,6 +136,14 @@ mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$ST
 
 # 5. Stop Services / Enable Maintenance Mode
 log_info "Preparing services..."
+
+# Stop OpenClaw daemon for consistent snapshot
+if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw &>/dev/null; then
+    log_info "Stopping OpenClaw daemon for consistent backup..."
+    timeout 10 sudo -u "${HOMEBRAIN_USER}" openclaw daemon stop 2>/dev/null \
+        || log_warn "OpenClaw daemon stop timed out — backup may be inconsistent"
+fi
+
 set_maintenance_mode "--on"
 
 # STOP Home Assistant to ensure SQLite DB consistency
@@ -204,10 +212,52 @@ if [[ -n "$HA_CID" ]]; then
         alpine sh -c "cp -a /config/. /backup/" || die "HA Config backup failed."
 fi
 
+# ── OpenClaw Config & Workspace ─────────────────────────────────────────────
+if [[ "${HAS_GPU:-false}" == "true" ]]; then
+    OPENCLAW_DIR="${HOMEBRAIN_HOME}/.openclaw"
+
+    # Always back up config file
+    if [[ -f "${OPENCLAW_DIR}/openclaw.json" ]]; then
+        mkdir -p "${STAGING_DIR}/openclaw_config"
+        cp "${OPENCLAW_DIR}/openclaw.json" "${STAGING_DIR}/openclaw_config/"
+        log_info "OpenClaw config backed up."
+    else
+        log_warn "OpenClaw config not found at ${OPENCLAW_DIR}/openclaw.json — skipping."
+    fi
+
+    # Workspace backup (opt-out: default true)
+    if [[ "${BACKUP_OPENCLAW_WORKSPACE:-true}" == "true" ]]; then
+        if [[ -d "${OPENCLAW_DIR}/workspace" ]]; then
+            WS_SIZE=$(du -sm "${OPENCLAW_DIR}/workspace" 2>/dev/null | cut -f1)
+            WS_WARN_MB="${BACKUP_OPENCLAW_SIZE_WARN_MB:-500}"
+            if [[ -n "${WS_SIZE}" && "${WS_SIZE}" -gt "${WS_WARN_MB}" ]]; then
+                log_warn "OpenClaw workspace is ${WS_SIZE} MB (threshold: ${WS_WARN_MB} MB). Consider enabling BACKUP_OPENCLAW_EXCLUDE_CACHES=true."
+            fi
+            RSYNC_EXCLUDES=()
+            if [[ "${BACKUP_OPENCLAW_EXCLUDE_CACHES:-false}" == "true" ]]; then
+                RSYNC_EXCLUDES+=(--exclude="cache/" --exclude="*.tmp")
+            fi
+            mkdir -p "${STAGING_DIR}/openclaw_workspace"
+            rsync -a --quiet "${RSYNC_EXCLUDES[@]}" \
+                "${OPENCLAW_DIR}/workspace/" "${STAGING_DIR}/openclaw_workspace/"
+            log_info "OpenClaw workspace backed up (${WS_SIZE:-unknown} MB)."
+        else
+            log_warn "OpenClaw workspace directory not found — skipping."
+        fi
+    fi
+fi
+
 # 10. Restart Services
 log_info "Resuming services..."
 if [[ -n "$HA_CID" ]]; then docker start "$HA_CID"; fi
 set_maintenance_mode "--off"
+
+# Restart OpenClaw daemon
+if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw &>/dev/null; then
+    log_info "Restarting OpenClaw daemon..."
+    sudo -u "${HOMEBRAIN_USER}" openclaw daemon start 2>/dev/null \
+        || log_warn "OpenClaw daemon restart failed after backup — restart manually if needed"
+fi
 
 # 11. Compress
 log_info "Compressing archive..."

@@ -443,6 +443,40 @@
                 <button class="btn-danger" onclick="confirmRestore()">Restore Selected</button>
             </div>
         </div>
+
+        {% if has_gpu %}
+        <div class="card" style="margin-top: 16px;">
+          <div class="card-header">
+            <h3 class="card-title">🤖 OpenClaw AI Assistant</h3>
+          </div>
+          <div class="card-body">
+            <div class="stat-row">
+              <span class="stat-label">Config file</span>
+              <span id="oc-backup-config-status" class="badge badge-muted">Checking...</span>
+            </div>
+            <div class="stat-row" style="margin-top: 8px;">
+              <span class="stat-label">Workspace size</span>
+              <span id="oc-backup-workspace-size">—</span>
+              <span id="oc-backup-size-warning" style="display:none; color:#e74c3c; margin-left:8px;">⚠ Large workspace</span>
+            </div>
+            <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 10px;">
+              <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                <input type="checkbox" id="oc-backup-include-workspace" checked
+                       onchange="updateOpenClawBackupSetting('include_workspace', this.checked)">
+                <span>Include agent workspace in backups</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                <input type="checkbox" id="oc-backup-exclude-caches"
+                       onchange="updateOpenClawBackupSetting('exclude_caches', this.checked)">
+                <span>Exclude model caches (reduces backup size)</span>
+              </label>
+            </div>
+            <p style="margin-top: 12px; font-size: 0.8em; color: var(--text-muted, #888);">
+              ⚠ Workspace contains conversation history and agent memory. Backups are stored unencrypted.
+            </p>
+          </div>
+        </div>
+        {% endif %}
     </div>
 
     <div id="connectivity" class="tab-content">
@@ -829,6 +863,7 @@
                 loadBackups();
                 loadBackupConfig();
                 loadDiskStats();
+                loadOpenClawBackupStatus();
             }
             if (id === 'logs') {
                 pollLogs();
@@ -1525,6 +1560,39 @@
             if (check === "RESTORE") {
                 triggerAction('/api/restore', 'Restore', { filename: file });
             }
+        }
+
+        function loadOpenClawBackupStatus() {
+            fetch('/api/openclaw/backup-status')
+                .then(r => r.json())
+                .then(data => {
+                    const configEl = document.getElementById('oc-backup-config-status');
+                    if (configEl) {
+                        configEl.textContent = data.config_present ? 'Present' : 'Missing';
+                        configEl.className = 'badge ' + (data.config_present ? 'badge-success' : 'badge-danger');
+                    }
+                    const sizeEl = document.getElementById('oc-backup-workspace-size');
+                    if (sizeEl) {
+                        sizeEl.textContent = data.workspace_size_mb !== null
+                            ? data.workspace_size_mb + ' MB'
+                            : 'Not found';
+                    }
+                    const warnEl = document.getElementById('oc-backup-size-warning');
+                    if (warnEl) warnEl.style.display = data.workspace_size_warning ? 'inline' : 'none';
+                    const inclEl = document.getElementById('oc-backup-include-workspace');
+                    if (inclEl) inclEl.checked = data.backup_workspace;
+                    const exclEl = document.getElementById('oc-backup-exclude-caches');
+                    if (exclEl) exclEl.checked = data.exclude_caches;
+                })
+                .catch(() => {});
+        }
+
+        function updateOpenClawBackupSetting(key, value) {
+            fetch('/api/backup/openclaw-settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({[key]: value})
+            }).catch(() => {});
         }
 
         async function triggerAction(endpoint, name, body = {}) {

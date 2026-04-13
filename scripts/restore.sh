@@ -69,6 +69,8 @@ HAS_NC_APPS=false
 HAS_NC_DB=false
 HAS_NC_CONFIG=false
 HAS_HA_CONFIG=false
+HAS_OPENCLAW_CONFIG=false
+HAS_OPENCLAW_WORKSPACE=false
 
 # Check for legacy (root/data) or new (nc_data) folder structures
 if [[ -d "$TMP_DIR/nc_data" ]] || [[ -d "$TMP_DIR/data" ]]; then HAS_NC_DATA=true; fi
@@ -76,8 +78,11 @@ if [[ -d "$TMP_DIR/nc_apps" ]]; then HAS_NC_APPS=true; fi
 if [[ -d "$TMP_DIR/nc_db" ]] || [[ -f "$TMP_DIR/db/nextcloud.sql" ]]; then HAS_NC_DB=true; fi
 if [[ -d "$TMP_DIR/nc_config" ]] || [[ -d "$TMP_DIR/config" ]]; then HAS_NC_CONFIG=true; fi
 if [[ -d "$TMP_DIR/ha_config" ]]; then HAS_HA_CONFIG=true; fi
+[[ -d "${TMP_DIR}/openclaw_config" ]] && HAS_OPENCLAW_CONFIG=true
+[[ -d "${TMP_DIR}/openclaw_workspace" ]] && HAS_OPENCLAW_WORKSPACE=true
 
 log_info "Backup Contents: NC_DATA=$HAS_NC_DATA, NC_DB=$HAS_NC_DB, NC_CONFIG=$HAS_NC_CONFIG, HA=$HAS_HA_CONFIG"
+log_info "OpenClaw config in archive: ${HAS_OPENCLAW_CONFIG} | workspace: ${HAS_OPENCLAW_WORKSPACE}"
 
 if [ "$HAS_NC_DATA" = false ] && [ "$HAS_HA_CONFIG" = false ]; then
     die "Invalid backup: No Data or HA config found."
@@ -111,6 +116,26 @@ if [ "$HAS_HA_CONFIG" = true ]; then
     docker run --rm --volumes-from "$HA_CID" \
     -v "$TMP_DIR/ha_config":/restore_src:ro \
     alpine sh -c "rm -rf /config/* && cp -a /restore_src/. /config/" || die "HA restore failed."
+fi
+
+# ── Restore OpenClaw ────────────────────────────────────────────────────────
+if [[ "${HAS_OPENCLAW_CONFIG}" == "true" ]]; then
+    log_info "Restoring OpenClaw config..."
+    mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
+    cp "${TMP_DIR}/openclaw_config/openclaw.json" "${HOMEBRAIN_HOME}/.openclaw/"
+    chmod 600 "${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
+    log_info "OpenClaw config restored."
+fi
+
+if [[ "${HAS_OPENCLAW_WORKSPACE}" == "true" ]]; then
+    log_info "Restoring OpenClaw workspace..."
+    mkdir -p "${HOMEBRAIN_HOME}/.openclaw/workspace"
+    rsync -a --delete --quiet \
+        "${TMP_DIR}/openclaw_workspace/" \
+        "${HOMEBRAIN_HOME}/.openclaw/workspace/"
+    chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw/workspace"
+    log_info "OpenClaw workspace restored."
 fi
 
 # --- 2.5 Restore Nextcloud Apps (If Present) ---

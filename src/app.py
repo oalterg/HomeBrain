@@ -1177,6 +1177,54 @@ def trigger_restore():
     return jsonify({"status": "started"})
 
 
+@app.route('/api/openclaw/backup-status')
+def openclaw_backup_status():
+    """Return OpenClaw backup configuration and workspace stats."""
+    openclaw_dir = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), ".openclaw")
+    config_path = os.path.join(openclaw_dir, "openclaw.json")
+    workspace_path = os.path.join(openclaw_dir, "workspace")
+
+    config_present = os.path.isfile(config_path)
+
+    workspace_size_mb = None
+    if os.path.isdir(workspace_path):
+        try:
+            result = subprocess.check_output(
+                ["du", "-sm", workspace_path], stderr=subprocess.DEVNULL
+            )
+            workspace_size_mb = int(result.decode().split()[0])
+        except Exception:
+            pass
+
+    warn_threshold = int(os.environ.get("BACKUP_OPENCLAW_SIZE_WARN_MB", "500"))
+
+    return jsonify({
+        "config_present": config_present,
+        "workspace_size_mb": workspace_size_mb,
+        "workspace_size_warning": (
+            workspace_size_mb is not None and workspace_size_mb > warn_threshold
+        ),
+        "warn_threshold_mb": warn_threshold,
+        "backup_workspace": os.environ.get("BACKUP_OPENCLAW_WORKSPACE", "true").lower() == "true",
+        "exclude_caches": os.environ.get("BACKUP_OPENCLAW_EXCLUDE_CACHES", "false").lower() == "true",
+    })
+
+
+@app.route('/api/backup/openclaw-settings', methods=['POST'])
+def update_openclaw_backup_settings():
+    """Update OpenClaw backup settings."""
+    data = request.get_json(silent=True) or {}
+    if "include_workspace" in data:
+        val = "true" if data["include_workspace"] else "false"
+        update_env_var("BACKUP_OPENCLAW_WORKSPACE", val)
+        os.environ["BACKUP_OPENCLAW_WORKSPACE"] = val
+    if "exclude_caches" in data:
+        val = "true" if data["exclude_caches"] else "false"
+        update_env_var("BACKUP_OPENCLAW_EXCLUDE_CACHES", val)
+        os.environ["BACKUP_OPENCLAW_EXCLUDE_CACHES"] = val
+    return jsonify({"success": True})
+
+
 # --- Routes: Tunnel Management ---
 @app.route("/api/tunnel", methods=["POST"])
 @limiter.limit("5 per minute")
