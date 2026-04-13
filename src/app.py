@@ -34,6 +34,29 @@ def has_gpu() -> bool:
     import glob
     return bool(glob.glob("/dev/dri/renderD*"))
 
+def get_gpu_stats() -> dict:
+    """Read GPU stats from sysfs — AMD amdgpu driver (no rocm-smi dependency)."""
+    import glob as _glob
+    result = {"available": False}
+    try:
+        bases = _glob.glob("/sys/class/drm/card*/device")
+        if not bases:
+            return result
+        base = bases[0]
+        result["util_percent"] = int(open(f"{base}/gpu_busy_percent").read().strip())
+        vram_used = int(open(f"{base}/mem_info_vram_used").read().strip())
+        vram_total = int(open(f"{base}/mem_info_vram_total").read().strip())
+        result["vram_used_gb"] = round(vram_used / (1024**3), 1)
+        result["vram_total_gb"] = round(vram_total / (1024**3), 1)
+        result["vram_percent"] = round(vram_used / vram_total * 100) if vram_total else 0
+        temp_paths = _glob.glob(f"{base}/hwmon/hwmon*/temp1_input")
+        if temp_paths:
+            result["temp_c"] = round(int(open(temp_paths[0]).read().strip()) / 1000, 1)
+        result["available"] = True
+    except Exception:
+        pass
+    return result
+
 def get_models():
     """Load flat model list from platform_models.json."""
     models_path = os.path.join(INSTALL_DIR, 'config', 'platform_models.json')
@@ -77,6 +100,8 @@ LOG_FILES = {
     "update": f"{LOG_DIR}/manager_update.log",
     "manager": f"{LOG_DIR}/manager.log",
 }
+
+JOURNAL_SERVICES = {"openclaw", "llama-server"}
 
 # --- Logging Configuration (Global & Robust) ---
 # Configure logging immediately so Gunicorn or Dev server both use it
@@ -830,10 +855,28 @@ def system_status():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    if has_gpu():
+        services["gpu"] = get_gpu_stats()
+
     return jsonify(services)
 
 @app.route("/api/logs/<log_target>")
 def get_logs(log_target):
+    # If target is a systemd service, read from journal
+    if log_target in JOURNAL_SERVICES:
+        try:
+            cmd = [
+                "journalctl", "-u", log_target,
+                "-n", "200", "--no-pager", "--output=short-iso"
+            ]
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=10).decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as e:
+            output = e.output.decode("utf-8", errors="replace")
+        except Exception as e:
+            output = f"[Error reading journal for {log_target}: {e}]"
+        return output
+
     # If target is in our known file list, read the file
     if log_target in LOG_FILES:
         filepath = LOG_FILES[log_target]

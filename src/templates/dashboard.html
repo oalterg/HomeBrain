@@ -322,6 +322,21 @@
                 </div>
             </div>
 
+            {% if has_gpu %}
+            <div class="card" style="border-left: 4px solid #e74c3c;">
+                <h3>🎮 GPU</h3>
+                <div class="stat-item"><span>Utilisation</span> <span id="gpu-util">—</span></div>
+                <div class="stat-item"><span>Temperature</span> <span id="gpu-temp">—</span></div>
+                <div class="stat-item" style="margin-top: 10px;"><span>VRAM</span></div>
+                <div style="margin-top: 0px;">
+                    <div class="progress-bg">
+                        <div class="progress-fill" id="gpu-vram-bar"></div>
+                        <div class="progress-text" id="gpu-vram-text">Checking...</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="card">
                 <h3>Maintenance & Updates</h3>
                 <div class="stat-item"><span>Maintenance Mode</span> <span id="st-maint">Checking...</span></div>
@@ -724,6 +739,10 @@
                         <option value="cloudflared-nc">Cloudflare (NC) Container</option>
                         <option value="cloudflared-ha">Cloudflare (HA) Container</option>
                     </optgroup>
+                    <optgroup label="AI Services">
+                        <option value="llama-server">llama-server (AI Inference)</option>
+                        <option value="openclaw">OpenClaw Agent</option>
+                    </optgroup>
                 </select>
                 <button onclick="pollLogs()">Refresh Now</button>
             </div>
@@ -849,6 +868,18 @@
                     bar.style.width = data.root_percent + '%';
                     bar.style.backgroundColor = data.root_percent > 85 ? 'var(--hb-danger)' : 'var(--hb-green)';
                     document.getElementById('root-text').innerText = data.root_percent + "% Used (" + data.root_free_gb + " GB Free)";
+                }
+
+                // GPU stats
+                if (data.gpu && data.gpu.available) {
+                    const gpuUtil = document.getElementById('gpu-util');
+                    const gpuTemp = document.getElementById('gpu-temp');
+                    const gpuVramBar = document.getElementById('gpu-vram-bar');
+                    const gpuVramText = document.getElementById('gpu-vram-text');
+                    if (gpuUtil) gpuUtil.textContent = data.gpu.util_percent + '%';
+                    if (gpuTemp && data.gpu.temp_c !== undefined) gpuTemp.textContent = data.gpu.temp_c + '°C';
+                    if (gpuVramBar) gpuVramBar.style.width = data.gpu.vram_percent + '%';
+                    if (gpuVramText) gpuVramText.textContent = data.gpu.vram_used_gb + ' / ' + data.gpu.vram_total_gb + ' GB';
                 }
 
             } catch (e) { }
