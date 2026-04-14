@@ -1,97 +1,52 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+HomeBrain is a self-hosted home automation system targeting x86_64 Ubuntu servers with AMD GPUs. It combines an OpenClaw AI assistant (backed by llama.cpp/llama-server), Nextcloud, Home Assistant, and optional Pangolin tunnel for remote access. All services run in Docker; the user interacts exclusively through a Flask dashboard — no SSH required.
 
-## What This Project Is
+## Repo Layout
 
-HomeBrain is a self-hosted private cloud server automation platform. It automates deployment of Nextcloud and Home Assistant in Docker containers, accessible via encrypted tunnels (Pangolin or Cloudflare). There is no vendor lock-in; all data stays on-device. User manages all functionality via the dashboard GUI.
-
-Two product variants share one codebase:
-- **HomeCloud** — Raspberry Pi 5 (aarch64, 8 GB RAM). AI is opt-in. Headless appliance.
-- **HomeBrain** — x86 mATX (AMD Ryzen CPU, RX 9060 XT GPU, Ubuntu Server). AI is opt-out (default-on). Runs llama-server with Vulkan GPU offload.
-
-Platform is detected at runtime (`uname -m`) and drives all downstream behavior: package lists, AI build strategy, dashboard branding, and feature guards.
-
-## Running the Application
-
-The Flask manager runs on port 8000 via Gunicorn, managed by a systemd service:
-
-```bash
-# Production (systemd)
-sudo systemctl start homebrain-manager
-
-# Direct dev run (from repo root, with venv active)
-source /opt/homebrain/venv/bin/activate
-gunicorn -w 2 -b 0.0.0.0:8000 src.app:app
+```
+scripts/           Bash scripts: provision.sh, deploy.sh, backup.sh, restore.sh, update.sh, utilities.sh, common.sh
+src/               Flask app (app.py ~1750 lines), migration.py, templates/
+config/            .env.template, platform_models.json, systemd units, udev rules
+docker-compose.yml Service definitions with profiles (pangolin, cloudflare-nc, cloudflare-ha)
+ROADMAP.md         Planned features and shipped releases
+TESTING.md         E2E verification checklist — follow this before merging
 ```
 
-There are no build steps, no transpilation, no Makefile.
+## Key Concepts
 
-## Architecture
+**`HAS_GPU`** — env var that gates the entire AI stack. Auto-detected at provision time by `detect_gpu()` in `scripts/common.sh`. When set, llama-server is installed and OpenClaw is enabled in the dashboard.
 
-### Process Model
+**Deployment modes** — set programmatically by the setup wizard, not edited by hand:
+- `DEPLOYMENT_MODE=remote` — Pangolin tunnel active, accessible from the internet
+- `DEPLOYMENT_MODE=local` — LAN only, reachable at `homebrain.local`
 
-Long-running operations (setup, backup, restore, upgrades) are launched as background subprocesses from Flask routes. Progress is tracked via a JSON status file in `/tmp` with in-memory fallback. The frontend polls `/api/task_status` to display progress.
+**AMD GPU power management** — `amdgpu.runpm=0` must remain set (via `config/99-amdgpu-runpm.rules`) to prevent VRAM eviction during inference. Do not remove or weaken this.
 
-### Flask App (`src/app.py`)
+**Process model** — long-running operations (setup, backup, restore) spawn background subprocesses. Progress is tracked via a JSON file in `/tmp`; the frontend polls `/api/task_status`.
 
-Single large Flask file (~1750 lines) containing all API routes, authentication, and system management logic. Key architectural patterns:
+**Security invariants** — never `shell=True` in subprocess calls; atomic writes (mkstemp → rename) for sensitive files; login endpoint must stay rate-limited; session cookies must be HTTPONLY + SAMESITE=Lax.
 
-- **Session auth** with rate limiting (Flask-Limiter): 2000 req/min general, 5/min on `/login`
-- **Subprocess spawning** (never `shell=True`) for Bash script execution
-- **Atomic file writes** (mkstemp + rename) and `fcntl` locking for concurrent safety
-- **One-time credential handover**: setup credentials written to a staging file, read once via `/api/setup/credentials`, then deleted
+## Branch Conventions
 
-### Docker Compose Profiles
+Active development is on `openclaw-integration`. Do not push directly to `main` — open a PR.
 
-Services are activated by profile:
-- (default/no profile) — `db`, `redis`, `nextcloud`, `homeassistant`
-- `pangolin` — Newt tunnel container
-- `cloudflare-nc`, `cloudflare-ha` — Cloudflare tunnel containers
+Commit style: [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), subject under 72 chars, imperative mood.
 
-### Bash Scripts (`scripts/`)
+## Testing
 
-- `provision.sh` — One-time device setup: installs Docker, Python venv, pulls images, writes factory config to `/boot/firmware/factory_config.txt`
-- `deploy.sh` — Starts/reconfigures the Docker stack
-- `common.sh` — Shared utilities (health checks, env loading, Docker helpers) sourced by other scripts
-- `backup.sh` / `restore.sh` — Data persistence for Nextcloud and Home Assistant
-- `update.sh` — Self-update logic for the Manager app
-- `utilities.sh` — System operations: Home Assistant admin account creation, Nextcloud cron, FTP, Zigbee
+Follow **[TESTING.md](TESTING.md)** for all E2E verification. Key rule: test on real hardware before merging anything that touches provisioning, services, the dashboard, or the AI stack.
 
-### Configuration
+## Common Tasks
 
-Environment variables live in `/opt/homebrain/.env` (generated from `config/.env.template`). Factory provisioning parameters are stored in `/boot/firmware/factory_config.txt`. Logs go to `/var/log/homebrain/`.
+```bash
+# Run the dashboard locally (venv must be active)
+source /opt/homebrain/venv/bin/activate
+gunicorn -w 2 -b 0.0.0.0:8000 src.app:app   # http://localhost:8000
 
-## Security Constraints
+# Provision a fresh device (run as root or with sudo)
+sudo bash scripts/provision.sh
 
-- Never use `shell=True` in subprocess calls — always pass commands as lists
-- File writes to sensitive paths must use atomic pattern (mkstemp → rename) with `chmod 0o600`
-- Login endpoint must remain rate-limited
-- Session cookies must remain HTTPONLY + SAMESITE=Lax
-
-## Migrations (`src/migration.py`)
-
-Runs on app startup to handle version drift (e.g., syncing the systemd service file from the repo, renaming legacy cron jobs). Add new migrations here when deployments need one-time fixups.
-
-## Contributing
-
-### Branching & PRs
-- Never commit directly to `main` — create a feature branch and merge via pull request
-- Branch names should be descriptive: `feature/openclaw-integration`, `fix/backup-timeout`
-- PRs require review before merge; keep them focused on a single concern
-
-### Commit Style
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`
-- Subject line under 72 characters, imperative mood ("add X" not "added X")
-- Body explains *why*, not *what* (the diff shows what)
-
-### Testing
-- Test on the target Raspberry Pi 5 before signing off work — the dev machine is not the deployment environment
-- Verify dashboard interactions end-to-end (button click → background task → status update)
-- For bash scripts: test both fresh-install and re-run (idempotency) paths
-
-### General
-- Aim for robustness and user-friendliness — the user should never need to SSH
-- Ask when uncertain rather than guessing
-- Think critically and give open feedback on the approach, not just the implementation
-- Maintain CLAUDE.md and TODO file, they are yours
+# Run a backup
+sudo bash scripts/backup.sh
+```
