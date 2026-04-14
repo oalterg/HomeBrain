@@ -28,7 +28,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **llamacpp fine-tuning** — Qwen3.5 35B A3B Q6K, Q8 KV cache, 130K context, MoE CPU offloading for 16 GB VRAM
-- **llamacpp update management** — pull latest GitHub release from HomeBrain dashboard
+- **#2 · Dependency version management** — Pin OpenClaw and llama.cpp to verified, tested releases. Define a freeze/upgrade workflow so the stack can be reproduced and deliberately updated with confidence.
 
 ### Medium-term
 
