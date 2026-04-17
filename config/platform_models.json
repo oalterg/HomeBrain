@@ -8,7 +8,13 @@
       "min_size_bytes": 14000000000,
       "context_window": 131072,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --fit off --jinja -fa on  --cache-type-k q4_0 --cache-type-v q4_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0 --threads 6",
+      "extra_flags": "--parallel 1 --jinja --no-kv-offload --cache-type-k q8_0 -t 6 -b 2048 -ub 512",
+      "benchmark": {
+        "tg128_ts": 6.77,
+        "pp512_ts": 235,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99, nkvo=1",
+        "notes": "Hybrid SSM+attn (16/64 attn layers). nkvo puts 6.1 GB KV+RS on CPU RAM, keeping all 13.94 GiB model on GPU. Partial GPU offload (ngl<99) drops to 2 t/s due to DeltaNet fused kernel GPU-only requirement."
+      },
       "default": true
     },
     {
