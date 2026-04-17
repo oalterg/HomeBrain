@@ -83,6 +83,8 @@ PROVISION_SCRIPT = f"{INSTALL_DIR}/scripts/provision.sh"
 VERSION_FILE = f"{INSTALL_DIR}/version.json"
 REPO_API_URL = "https://api.github.com/repos/oalterg/HomeBrain"
 SCRIPT_UPDATE = f"{INSTALL_DIR}/scripts/update.sh"
+SCRIPT_UPDATE_DEPS = f"{INSTALL_DIR}/scripts/update-deps.sh"
+VERSIONS_FILE = f"{INSTALL_DIR}/config/versions.json"
 SCRIPT_BACKUP = f"{INSTALL_DIR}/scripts/backup.sh"
 SCRIPT_RESTORE = f"{INSTALL_DIR}/scripts/restore.sh"
 SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
@@ -1572,6 +1574,15 @@ def do_manager_update():
 
     subprocess.run(["chmod", "+x", SCRIPT_UPDATE])
 
+    # Snapshot current pinned dep versions before update.sh runs the file sync.
+    # The actual bump detection and install happens inside update.sh after rsync.
+    old_versions = {}
+    try:
+        with open(VERSIONS_FILE) as f:
+            old_versions = json.load(f)
+    except Exception:
+        pass
+
     cmd = (
         f"echo 'Starting Manager Update ({shlex.quote(channel)})...' > {LOG_FILES['update']}; "
         f"{SCRIPT_UPDATE} {shlex.quote(channel)} {shlex.quote(target_ref)} >> {LOG_FILES['update']} 2>&1"
@@ -1579,10 +1590,11 @@ def do_manager_update():
 
     # Fire and forget thread, as the service will restart
     threading.Thread(target=lambda: subprocess.run(cmd, shell=True)).start()
-    
+
     return jsonify({
-        "status": "started", 
-        "message": f"Updating to {channel} {target_ref}. Interface will restart."
+        "status": "started",
+        "message": f"Updating to {channel} {target_ref}. Interface will restart.",
+        "current_versions": old_versions,
     })
 
 # --- Auto-Update Logic ---

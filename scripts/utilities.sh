@@ -5,6 +5,36 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 
+# --- Version Management ---
+
+load_versions() {
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    if ! command -v jq >/dev/null 2>&1; then
+        log_info "Installing jq..."
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y jq -qq
+    fi
+    [[ -f "$versions_file" ]] || die "versions.json not found at $versions_file"
+    LLAMA_TAG=$(jq -r '.llama_cpp.tag' "$versions_file")
+    LLAMA_URL=$(jq -r '.llama_cpp.url' "$versions_file")
+    OPENCLAW_VERSION=$(jq -r '.openclaw.version' "$versions_file")
+    export LLAMA_TAG LLAMA_URL OPENCLAW_VERSION
+}
+
+get_installed_versions_file() {
+    echo "/opt/homebrain/.installed_versions.json"
+}
+
+update_installed_version() {
+    local key="$1" value="$2"
+    local file
+    file=$(get_installed_versions_file)
+    [[ -f "$file" ]] || echo '{}' > "$file"
+    local tmp
+    tmp=$(mktemp)
+    jq --arg val "$value" "$key = \$val" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # Global Config
 VSFTPD_CONF="/etc/vsftpd.conf"
 FTP_PASSWD_FILE="/etc/vsftpd/ftppasswd"
@@ -499,6 +529,54 @@ create_ha_admin() {
 # Get the llama-server binary path for the current platform
 get_llama_bin_path() {
     echo "${HOMEBRAIN_HOME}/llama-server/llama-server"
+}
+
+# Install pinned llama.cpp release (called by update-deps.sh on version bump)
+install_llamacpp() {
+    load_versions
+    local install_dir="/opt/llama.cpp"
+    local bin_path="${install_dir}/llama-server"
+    local installed_file
+    installed_file=$(get_installed_versions_file)
+
+    local installed_tag=""
+    if [[ -f "$installed_file" ]]; then
+        installed_tag=$(jq -r '.llama_cpp.tag // empty' "$installed_file" 2>/dev/null || echo "")
+    fi
+
+    if [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
+        log_info "llama.cpp already at ${LLAMA_TAG}, skipping."
+        return 0
+    fi
+
+    log_info "Installing llama.cpp ${LLAMA_TAG}..."
+    if ! command -v unzip >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y unzip -qq
+    fi
+
+    local tmp_zip
+    tmp_zip=$(mktemp /tmp/llama-XXXXXX.zip)
+    curl -fsSL --retry 3 -o "$tmp_zip" "$LLAMA_URL" \
+        || die "Failed to download llama.cpp ${LLAMA_TAG}"
+
+    rm -rf "$install_dir"
+    mkdir -p "$install_dir"
+    unzip -q "$tmp_zip" -d "$install_dir"
+    rm -f "$tmp_zip"
+
+    # Binary may be nested — locate it and normalise to top-level
+    local found_bin
+    found_bin=$(find "$install_dir" -name "llama-server" -type f | head -1)
+    [[ -n "$found_bin" ]] || die "llama-server binary not found in ${LLAMA_TAG} release zip"
+    chmod +x "$found_bin"
+    if [[ "$found_bin" != "$bin_path" ]]; then
+        cp "$found_bin" "$bin_path"
+        chmod +x "$bin_path"
+    fi
+
+    update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
+    log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"
 }
 
 # Generate the systemd service file at runtime from model/platform config.
@@ -1004,6 +1082,13 @@ setup_openclaw() {
     log_info "=== Setting up OpenClaw AI Assistant ==="
     load_env
 
+    if [[ "${HAS_GPU:-false}" != "true" ]]; then
+        log_info "No GPU detected — skipping OpenClaw setup."
+        return 0
+    fi
+
+    load_versions  # sets OPENCLAW_VERSION
+
     # Pre-flight: warn if llama-server is not reachable
     if ! curl -sf --max-time 5 http://127.0.0.1:8001/health >/dev/null 2>&1; then
         log_warn "llama-server is not responding on port 8001. OpenClaw may not work correctly."
@@ -1013,63 +1098,62 @@ setup_openclaw() {
     local config_dest="${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
     local model_id="${AI_MODEL_ID:-}"
 
-    # --- Step 1: Fast-path if binary already installed ---
-    log_info "[1/3] Checking for existing OpenClaw installation..."
-    if command -v openclaw >/dev/null 2>&1; then
-        log_info "OpenClaw already installed ($(openclaw --version 2>/dev/null || echo 'unknown version')). Syncing config and starting..."
-        mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
-        cp "$config_src" "$config_dest"
-        patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
-        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
-        chmod 600 "$config_dest"
-        run_as_admin openclaw daemon install 2>/dev/null || true
-        run_as_admin openclaw daemon start \
-            || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
-        log_info "=== OpenClaw started (fast path) ==="
-        return 0
+    # --- [1/3] Install / upgrade to pinned version ---
+    log_info "[1/3] Checking OpenClaw version (target: ${OPENCLAW_VERSION})..."
+    local installed_file
+    installed_file=$(get_installed_versions_file)
+    local installed_oc_version=""
+    if [[ -f "$installed_file" ]]; then
+        installed_oc_version=$(jq -r '.openclaw.version // empty' "$installed_file" 2>/dev/null || echo "")
     fi
 
-    # --- Step 2: Fresh install ---
-    log_info "[2/3] Installing OpenClaw..."
-
-    if ! check_internet; then
-        die "No internet connection. Cannot install OpenClaw."
+    local needs_npm_install=true
+    if command -v openclaw >/dev/null 2>&1 \
+       && [[ "$installed_oc_version" == "$OPENCLAW_VERSION" ]]; then
+        log_info "OpenClaw already at ${OPENCLAW_VERSION}. Skipping npm install."
+        needs_npm_install=false
     fi
 
-    # OpenClaw requires Node.js 22.14+ (24 recommended)
-    local need_node=false
-    if ! command -v node >/dev/null 2>&1; then
-        need_node=true
-    else
-        local node_major
-        node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')
-        if [[ "$node_major" -lt 22 ]]; then
-            log_info "Node.js ${node_major} found but 22+ is required. Upgrading..."
-            need_node=true
+    if [[ "$needs_npm_install" == "true" ]]; then
+        if ! check_internet; then
+            die "No internet connection. Cannot install OpenClaw."
         fi
+
+        # Ensure Node.js 22+ is available
+        local need_node=false
+        if ! command -v node >/dev/null 2>&1; then
+            need_node=true
+        else
+            local node_major
+            node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')
+            if [[ "$node_major" -lt 22 ]]; then
+                log_info "Node.js ${node_major} found but 22+ is required. Upgrading..."
+                need_node=true
+            fi
+        fi
+
+        if [[ "$need_node" == "true" ]]; then
+            log_info "Installing Node.js 22 LTS via NodeSource..."
+            wait_for_apt_lock
+            export DEBIAN_FRONTEND=noninteractive
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            apt-get install -y -qq nodejs
+        fi
+
+        log_info "Node $(node --version)"
+        log_info "Installing openclaw@${OPENCLAW_VERSION}..."
+        npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit \
+            || die "OpenClaw npm install failed."
+
+        command -v openclaw >/dev/null 2>&1 \
+            || die "openclaw binary not found in PATH after install."
+
+        update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
+        log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
     fi
 
-    if [[ "$need_node" == "true" ]]; then
-        log_info "Installing Node.js 22 LTS via NodeSource..."
-        wait_for_apt_lock
-        export DEBIAN_FRONTEND=noninteractive
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-        apt-get install -y -qq nodejs
-    fi
-
-    log_info "Node $(node --version)"
-    # --no-onboard: skip interactive wizard — we manage config ourselves
-    log_info "Downloading and installing OpenClaw (this may take a minute)..."
-    curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard \
-        || die "OpenClaw install failed. See https://docs.openclaw.ai for help."
-
-    command -v openclaw >/dev/null 2>&1 \
-        || die "openclaw binary not found in PATH after install. Check the install output above."
-
-    log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
-
-    # --- Step 3: Write config and register daemon ---
-    log_info "[3/3] Writing config and registering daemon..."
+    # --- [2/3] Write config ---
+    log_info "[2/3] Writing config..."
     if [[ ! -f "$config_src" ]]; then
         die "config/openclaw.json not found at $config_src — ensure it is committed to the repository."
     fi
@@ -1080,11 +1164,11 @@ setup_openclaw() {
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
 
-    # Let openclaw install its own systemd service (runs as HomeBrain user)
-    run_as_admin openclaw daemon install \
-        || die "openclaw daemon install failed."
+    # --- [3/3] Register and start daemon ---
+    log_info "[3/3] Registering and starting daemon..."
+    run_as_admin openclaw daemon install 2>/dev/null || true
     run_as_admin openclaw daemon start \
-        || die "openclaw daemon start failed."
+        || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
 
     # Verify startup (up to 30 s)
     local retries=0
