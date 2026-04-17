@@ -6,14 +6,14 @@
       "filename": "Qwen3.5-27B-IQ4_XS.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-IQ4_XS.gguf",
       "min_size_bytes": 14000000000,
-      "context_window": 131072,
+      "context_window": 40960,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja --no-kv-offload --cache-type-k q8_0 -t 6 -b 2048 -ub 512",
+      "extra_flags": "--parallel 1 --jinja --cache-type-k q8_0 -t 6 -b 2048 -ub 512",
       "benchmark": {
-        "tg128_ts": 6.77,
-        "pp512_ts": 235,
-        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99, nkvo=1",
-        "notes": "Hybrid SSM+attn (16/64 attn layers). nkvo puts 6.1 GB KV+RS on CPU RAM, keeping all 13.94 GiB model on GPU. Partial GPU offload (ngl<99) drops to 2 t/s due to DeltaNet fused kernel GPU-only requirement."
+        "tg128_ts": 13.44,
+        "pp512_ts": 385,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). Max verified ctx=40960 (ctx=49K OOMs with vk::DeviceLost). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion."
       },
       "default": true
     },
