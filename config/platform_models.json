@@ -28,7 +28,12 @@
       "min_size_bytes": 18000000000,
       "context_window": 65536,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on --fit on -ctk q4_0 -ctv q4_0",
+      "extra_flags": "--parallel 1 --jinja -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0",
+      "benchmark": {
+        "tg128_ts": 27.12,
+        "pp512_ts": 155,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan"
+      },
       "default": false
     },
     {

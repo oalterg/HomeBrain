@@ -597,7 +597,7 @@ generate_llama_service() {
         -e "s|__LLAMA_MODEL__|${model_path}|g" \
         -e "s|__CTX_SIZE__|${ctx_size}|g" \
         -e "s|__NGL__|${ngl}|g" \
-        -e "s|__EXTRA_FLAGS__|${extra_flags}|g" \
+        -e "s@__EXTRA_FLAGS__@${extra_flags}@g" \
         -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
         "$template" > "$service_dest"
     chmod 644 "$service_dest"
