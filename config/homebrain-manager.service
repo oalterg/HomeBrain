@@ -1,6 +1,8 @@
 [Unit]
 Description=HomeBrain Manager
 After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 User=root
@@ -11,8 +13,6 @@ Restart=always
 RestartSec=10
 TimeoutStartSec=60
 TimeoutStopSec=30
-StartLimitIntervalSec=600
-StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 

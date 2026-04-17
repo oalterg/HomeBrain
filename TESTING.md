@@ -103,7 +103,7 @@ No external tunnel; access via `homebrain.local`.
 ### Always-on behaviour (HomeBrain only)
 
 - [ ] `cat /sys/bus/pci/devices/.../power/control` → `on` (GPU PM disabled)
-- [ ] Sleep inhibitor service is active: `sudo systemctl is-active homebrain-sleep-inhibitor`
+- [ ] Sleep inhibitor service is active: `sudo systemctl is-active inhibit-sleep`
 - [ ] Crash-loop protection: kill `homebrain-manager` process → systemd restarts it within configured limit
 
 ### Nextcloud
