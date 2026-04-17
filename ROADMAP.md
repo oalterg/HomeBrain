@@ -20,6 +20,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 - ✅ **Extended log viewer** — llamacpp and OpenClaw logs in dashboard (journalctl)
 - ✅ **OpenClaw backup scope** — agent workspace and config included in automated backups (opt-out)
 - ✅ **Always-on hardening** — AMD GPU runtime PM disabled (VRAM stays loaded), sleep inhibitor service, systemd crash-loop protection
+- ✅ **Dependency version pinning** — OpenClaw and llama.cpp locked to verified, tested releases; freeze/upgrade workflow defined for reproducible stack
 
 ---
 
@@ -28,7 +29,6 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **llamacpp fine-tuning** — Qwen3.5 35B A3B Q6K, Q8 KV cache, 130K context, MoE CPU offloading for 16 GB VRAM
-- **#2 · Dependency version management** — Pin OpenClaw and llama.cpp to verified, tested releases. Define a freeze/upgrade workflow so the stack can be reproduced and deliberately updated with confidence.
 
 ### Medium-term
 
