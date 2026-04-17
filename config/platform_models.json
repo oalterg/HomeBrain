@@ -26,7 +26,7 @@
       "filename": "Qwen3.5-35B-A3B-Q4_K_M.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf",
       "min_size_bytes": 18000000000,
-      "context_window": 65536,
+      "context_window": 131072,
       "ngl": 99,
       "extra_flags": "--parallel 1 --jinja -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0",
       "benchmark": {
