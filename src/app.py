@@ -148,6 +148,13 @@ app.config.update(
     SESSION_REFRESH_EACH_REQUEST=True
 )
 
+@app.context_processor
+def inject_platform():
+    arch = platform.machine()
+    if arch == "aarch64":
+        return {"platform": {"product_name": "HomeCloud", "product_suffix": "Cloud"}}
+    return {"platform": {"product_name": "HomeBrain", "product_suffix": "Brain"}}
+
 def get_factory_password():
     """Reads the factory password securely from config."""
     try:
