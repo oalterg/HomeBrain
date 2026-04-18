@@ -34,11 +34,12 @@
       "min_size_bytes": 18000000000,
       "context_window": 131072,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0",
+      "extra_flags": "--parallel 1 --jinja -fa on -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0 --cache-type-v q8_0",
       "benchmark": {
-        "tg128_ts": 27.12,
-        "pp512_ts": 155,
-        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan"
+        "tg128_ts": 28.66,
+        "pp512_ts": 165,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
+        "notes": "MoE: blk.24+ exps on CPU. fa=on + ctk/ctv q8_0 confirmed working on GFX1200/RADV. Best group (C): pp512=164.98 t/s (+7.2% vs baseline), tg128=28.66 t/s (+3.8% vs baseline). ctv q8_0 without fa fails context creation on AMD Vulkan — fa required."
       },
       "default": false
     },
