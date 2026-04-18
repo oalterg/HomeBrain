@@ -1,7 +1,7 @@
 {
   "llama_cpp": {
     "tag": "b8833",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8833/llama-b8833-bin-ubuntu-vulkan-x64.zip"
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8833/llama-b8833-bin-ubuntu-vulkan-x64.tar.gz"
   },
   "openclaw": {
     "version": "v2026.3.20"

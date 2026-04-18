@@ -552,20 +552,16 @@ install_llamacpp() {
     fi
 
     log_info "Installing llama.cpp ${LLAMA_TAG}..."
-    if ! command -v unzip >/dev/null 2>&1; then
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y unzip -qq
-    fi
 
-    local tmp_zip
-    tmp_zip=$(mktemp /tmp/llama-XXXXXX.zip)
-    curl -fsSL --retry 3 -o "$tmp_zip" "$LLAMA_URL" \
+    local tmp_archive
+    tmp_archive=$(mktemp /tmp/llama-XXXXXX.tar.gz)
+    curl -fsSL --retry 3 -o "$tmp_archive" "$LLAMA_URL" \
         || die "Failed to download llama.cpp ${LLAMA_TAG}"
 
     # Extract all files flat into install_dir so binary and .so backends are co-located
     mkdir -p "$install_dir"
-    unzip -j -q -o "$tmp_zip" -d "$install_dir"
-    rm -f "$tmp_zip"
+    tar -xzf "$tmp_archive" --strip-components=1 -C "$install_dir"
+    rm -f "$tmp_archive"
 
     [[ -x "$bin_path" ]] || chmod +x "$bin_path"
     [[ -f "$bin_path" ]] || die "llama-server binary not found after extraction at $bin_path"
