@@ -44,10 +44,7 @@
       },
       "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
-        "mode": "safeguard",
-        "reserveTokens": 4096,
-        "reserveTokensFloor": 4096,
-        "notifyUser": true
+        "mode": "safeguard"
       },
       "heartbeat": {
         "every": "60m"

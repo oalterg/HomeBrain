@@ -1030,29 +1030,11 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
-    # Token budget management: compact before llama-server ever needs to trim the KV cache slot.
-    # Hybrid-architecture Qwen models (DeltaNet SSM + attention) fail gracefully on llama_memory_seq_rm()
-    # — the recurrent state cannot be rewound — causing full prompt reprocessing on every turn once
-    # the context grows large enough.  Prevention: reset the conversation (via OpenClaw safeguard
-    # compaction) before the server needs to trim.
-    #
-    # Threshold = ctx_size − RESERVE_TOKENS.  We keep RESERVE_TOKENS = 4096 as the minimum free
-    # headroom; compaction fires and starts a fresh session before the prompt reaches that boundary.
-    #
-    # OpenClaw's Pi runner has a built-in floor of 20 000 tokens (DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR).
-    # Both reserveTokens *and* reserveTokensFloor must be set to 4096 to override that default:
-    #   targetReserveTokens = Math.max(reserveTokens, reserveTokensFloor) = Math.max(4096, 4096) = 4096
-    # contextTokens tells the runtime the exact model window so usage % and ETA are accurate.
-    local reserve_tokens=4096
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
-       --argjson reserve "$reserve_tokens" \
         "${jq_extra_args[@]}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
-        .agents.defaults.contextTokens = $ctx |
-        .agents.defaults.compaction.reserveTokens = $reserve |
-        .agents.defaults.compaction.reserveTokensFloor = $reserve |
         .agents.defaults.llm.idleTimeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
@@ -1068,7 +1050,7 @@ patch_openclaw_config() {
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
         '"$jq_token_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072}, reserve: ${reserve_tokens})"
+    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
 
 # Run a command as the HomeBrain OS user with systemd user session environment.
