@@ -1269,7 +1269,8 @@ migrate_admin_to_homebrain() {
     log_info "=== Migration complete ==="
 }
 
-# --- Main Dispatch ---
+# --- Main Dispatch (only when executed directly, not sourced) ---
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
     system_status)
         get_system_config_status
@@ -1361,3 +1362,4 @@ case "${1:-}" in
         exit 1
         ;;
 esac
+fi
