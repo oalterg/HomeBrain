@@ -8,12 +8,12 @@
       "min_size_bytes": 14000000000,
       "context_window": 40960,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja --cache-type-k q8_0 -t 6 -b 2048 -ub 512",
+      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 -t 6 -b 2048 -ub 512",
       "benchmark": {
         "tg128_ts": 13.44,
         "pp512_ts": 385,
         "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
-        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). Max verified ctx=40960 (ctx=49K OOMs with vk::DeviceLost). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion."
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). Max verified ctx=40960 (ctx=49K OOMs with vk::DeviceLost). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. fa=on confirmed safe on GFX1200/RADV: pp512 +107% at ub=128 (96→200 t/s), tg unchanged. ctv q8_0 + fa collapses pp back to baseline on this DeltaNet hybrid — fa only is optimal. ctv q8_0 without fa fails context creation on AMD Vulkan."
       },
       "default": true
     },
