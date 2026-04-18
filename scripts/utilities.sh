@@ -1039,7 +1039,7 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
-    jq --arg id "$model_id" --argjson ctx "${ctx_size:-128000}" --argjson origins "$origins" \
+    jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         "${jq_extra_args[@]}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
@@ -1059,7 +1059,7 @@ patch_openclaw_config() {
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
         '"$jq_token_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
-    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-128000})"
+    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
 
 # Run a command as the HomeBrain OS user with systemd user session environment.
