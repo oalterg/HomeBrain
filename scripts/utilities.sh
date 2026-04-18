@@ -691,6 +691,43 @@ download_model() {
     log_info "Model downloaded: $(( size / 1073741824 )) GB"
 }
 
+# Apply the Qwen3.5 chat-template guard to a freshly downloaded GGUF.
+# Without this patch, multi-turn conversations re-inject a bare
+#   <|im_start|>assistant\n<think>\n\n</think>\n\n
+# header for assistant turns that had no extended reasoning.  On DeltaNet/SSM
+# hybrid models this causes llama_memory_seq_rm() to fail, forcing full prompt
+# reprocessing on every subsequent turn.
+#
+# The patcher is idempotent (exits 2 when the old pattern is absent) and safe
+# to run on any GGUF — if the template does not contain the target string it is
+# a no-op.  A non-zero rc other than 2 is treated as a warning, not a fatal
+# error, so setup continues even if python3 is unavailable.
+apply_gguf_chat_template_patch() {
+    local model_path="$1"
+    local patcher="${INSTALL_DIR}/scripts/patch_gguf_chat_template.py"
+    # Upstream fix: guard the <think> re-injection on reasoning_content being present.
+    local old='{%- if loop.index0 > ns.last_query_index %}'
+    local new='{%- if loop.index0 > ns.last_query_index and reasoning_content %}'
+
+    if [[ ! -f "$patcher" ]]; then
+        log_warn "GGUF chat-template patcher not found at $patcher — skipping."
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_warn "python3 not available — skipping GGUF chat-template patch."
+        return 0
+    fi
+
+    log_info "Applying GGUF chat-template patch to $(basename "$model_path")..."
+    local rc=0
+    python3 "$patcher" "$model_path" "$old" "$new" || rc=$?
+    case "$rc" in
+        0) log_info "Chat-template patched successfully." ;;
+        2) log_info "Chat-template already patched or pattern not applicable — skipping." ;;
+        *) log_warn "GGUF chat-template patch exited $rc — model may still work; verify manually." ;;
+    esac
+}
+
 # Main setup orchestrator
 setup_llama_server() {
     log_info "=== Setting up llama-server ==="
@@ -736,9 +773,10 @@ setup_llama_server() {
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"
     log_info "[3/5] Binary ready: $LLAMA_BIN"
 
-    # --- [4/5] Download model ---
+    # --- [4/5] Download model and patch chat template ---
     log_info "[4/5] Downloading model..."
     download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
+    apply_gguf_chat_template_patch "$MODEL_PATH"
 
     # --- [5/5] Deploy service and start ---
     log_info "[5/5] Deploying llama-server service..."
