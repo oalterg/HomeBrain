@@ -534,8 +534,10 @@ get_llama_bin_path() {
 # Install pinned llama.cpp release (called by update-deps.sh on version bump)
 install_llamacpp() {
     load_versions
-    local install_dir="/opt/llama.cpp"
-    local bin_path="${install_dir}/llama-server"
+    local bin_path
+    bin_path=$(get_llama_bin_path)
+    local install_dir
+    install_dir=$(dirname "$bin_path")
     local installed_file
     installed_file=$(get_installed_versions_file)
 
@@ -560,20 +562,13 @@ install_llamacpp() {
     curl -fsSL --retry 3 -o "$tmp_zip" "$LLAMA_URL" \
         || die "Failed to download llama.cpp ${LLAMA_TAG}"
 
-    rm -rf "$install_dir"
+    # Extract all files flat into install_dir so binary and .so backends are co-located
     mkdir -p "$install_dir"
-    unzip -q "$tmp_zip" -d "$install_dir"
+    unzip -j -q -o "$tmp_zip" -d "$install_dir"
     rm -f "$tmp_zip"
 
-    # Binary may be nested — locate it and normalise to top-level
-    local found_bin
-    found_bin=$(find "$install_dir" -name "llama-server" -type f | head -1)
-    [[ -n "$found_bin" ]] || die "llama-server binary not found in ${LLAMA_TAG} release zip"
-    chmod +x "$found_bin"
-    if [[ "$found_bin" != "$bin_path" ]]; then
-        cp "$found_bin" "$bin_path"
-        chmod +x "$bin_path"
-    fi
+    [[ -x "$bin_path" ]] || chmod +x "$bin_path"
+    [[ -f "$bin_path" ]] || die "llama-server binary not found after extraction at $bin_path"
 
     update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
     log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"

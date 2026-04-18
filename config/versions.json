@@ -1,7 +1,7 @@
 {
   "llama_cpp": {
-    "tag": "b7146",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b7146/llama-b7146-bin-ubuntu-vulkan-x64.zip"
+    "tag": "b8833",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8833/llama-b8833-bin-ubuntu-vulkan-x64.zip"
   },
   "openclaw": {
     "version": "v2026.3.20"
