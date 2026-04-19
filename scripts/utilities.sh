@@ -1091,6 +1091,38 @@ patch_openclaw_config() {
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
 
+# Stop any openclaw-gateway processes still running as the legacy 'admin' user.
+# The admin daemon holds port 18789 and blocks the homebrain daemon from binding
+# it after migration. Must be called before starting the homebrain openclaw daemon.
+stop_legacy_admin_openclaw() {
+    id admin >/dev/null 2>&1 || return 0  # no admin user; nothing to do
+
+    local admin_uid
+    admin_uid=$(id -u admin)
+
+    # Graceful stop via openclaw CLI
+    if command -v openclaw >/dev/null 2>&1; then
+        sudo -u admin \
+            XDG_RUNTIME_DIR="/run/user/${admin_uid}" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${admin_uid}/bus" \
+            timeout 10 openclaw daemon stop 2>/dev/null || true
+    fi
+
+    # Kill any surviving openclaw-gateway processes owned by admin
+    if pkill -0 -u admin -x openclaw-gateway 2>/dev/null; then
+        log_warn "Killing stale openclaw-gateway processes owned by admin..."
+        pkill -TERM -u admin -x openclaw-gateway 2>/dev/null || true
+        local i=0
+        while pkill -0 -u admin -x openclaw-gateway 2>/dev/null && [[ $i -lt 5 ]]; do
+            sleep 1
+            ((i++))
+        done
+        pkill -KILL -u admin -x openclaw-gateway 2>/dev/null || true
+    fi
+
+    log_info "Legacy admin openclaw processes cleared."
+}
+
 # Run a command as the HomeBrain OS user with systemd user session environment.
 # Required for openclaw daemon/gateway which uses systemd user services.
 run_as_admin() {
@@ -1195,6 +1227,7 @@ setup_openclaw() {
 
     # --- [3/3] Register and start daemon ---
     log_info "[3/3] Registering and starting daemon..."
+    stop_legacy_admin_openclaw
     run_as_admin openclaw daemon install 2>/dev/null || true
     run_as_admin openclaw daemon start \
         || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
@@ -1279,7 +1312,10 @@ migrate_admin_to_homebrain() {
     loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
     loginctl disable-linger admin 2>/dev/null || true
 
-    # 5. Reload systemd so any moved service files take effect
+    # 5. Stop admin openclaw daemon so it releases port 18789 for the homebrain daemon
+    stop_legacy_admin_openclaw
+
+    # 6. Reload systemd so any moved service files take effect
     systemctl daemon-reload
 
     log_info "=== Migration complete ==="
