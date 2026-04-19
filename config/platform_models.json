@@ -8,7 +8,7 @@
       "min_size_bytes": 14000000000,
       "context_window": 65536,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 512",
+      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 512 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
       "benchmark": {
         "tg128_ts": 14.20,
         "pp512_ts": 385,
@@ -34,7 +34,7 @@
       "min_size_bytes": 18000000000,
       "context_window": 131072,
       "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0 --cache-type-v q8_0",
+      "extra_flags": "--parallel 1 --jinja -fa on -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
       "benchmark": {
         "tg128_ts": 28.66,
         "pp512_ts": 165,
