@@ -1201,14 +1201,20 @@ setup_openclaw() {
 
         log_info "Node $(node --version)"
         log_info "Installing openclaw@${OPENCLAW_VERSION}..."
-        npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit \
-            || die "OpenClaw npm install failed."
-
-        command -v openclaw >/dev/null 2>&1 \
-            || die "openclaw binary not found in PATH after install."
-
-        update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
-        log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
+        if npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit; then
+            command -v openclaw >/dev/null 2>&1 \
+                || die "openclaw binary not found in PATH after install."
+            update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
+            log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
+        else
+            # Npm install failed — continue if openclaw is already installed so that
+            # patch_openclaw_config and the daemon restart still happen (e.g. model switch).
+            if command -v openclaw >/dev/null 2>&1; then
+                log_warn "openclaw npm install failed — continuing with existing install: $(openclaw --version 2>/dev/null || echo 'unknown version')"
+            else
+                die "OpenClaw npm install failed and no existing openclaw binary found."
+            fi
+        fi
     fi
 
     # --- [2/3] Write config ---
