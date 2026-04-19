@@ -5,7 +5,7 @@
       "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
       "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-      "min_size_bytes": 18000000000,
+      "min_size_bytes": 22000000000,
       "context_window": 131072,
       "ngl": 99,
       "extra_flags": "--parallel 1 --jinja --fit on -fa 1 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --chat-template-kwargs '{\"preserve_thinking\": true}'",

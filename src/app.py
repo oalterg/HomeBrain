@@ -466,8 +466,9 @@ def update_env_var(key, value):
         quoted_val = f"'{safe_val_bash}'"
 
         if rc == 0:
-            # Use | delimiter for sed. Escape | in the quoted value.
-            sed_val = quoted_val.replace("|", "\\|")
+            # Use | delimiter for sed. Escape \ first (sed treats \X as escape
+            # sequences in replacement), then escape | delimiter.
+            sed_val = quoted_val.replace("\\", "\\\\").replace("|", "\\|")
             subprocess.run(["sed", "-i", f"s|^{key}=.*|{key}={sed_val}|", ENV_FILE])
         else:
             with open(ENV_FILE, "r+") as f:
