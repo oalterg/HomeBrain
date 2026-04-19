@@ -34,6 +34,55 @@ def has_gpu() -> bool:
     import glob
     return bool(glob.glob("/dev/dri/renderD*"))
 
+# Cache for delta-based GPU compute utilisation (avoids relying on gpu_busy_percent,
+# which reports spurious 92-100 % on GFX12/RDNA4/Navi44 hardware regardless of load).
+_gpu_fdinfo_cache: dict = {"ts": 0.0, "ns": 0, "util_pct": 0}
+
+def _amdgpu_compute_util() -> int:
+    """Return GPU compute utilisation % derived from drm-engine-compute delta (fdinfo).
+
+    On GFX12/RDNA4 (e.g. RX 9060 XT / Navi44) the sysfs gpu_busy_percent attribute is
+    stuck at ~92-100 % regardless of actual shader load.  Instead we read the cumulative
+    drm-engine-compute nanoseconds from /proc/*/fdinfo for every amdgpu client, deduplicate
+    by drm-client-id, and compare with the previous sample to derive a true utilisation %.
+    Returns 0 on the first call (no prior baseline), then accurate deltas thereafter.
+    """
+    import glob as _glob
+    global _gpu_fdinfo_cache
+    seen: set = set()
+    total_ns: int = 0
+    for fdinfo_dir in _glob.glob("/proc/[0-9]*/fdinfo"):
+        try:
+            for fd_path in _glob.glob(f"{fdinfo_dir}/*"):
+                try:
+                    data = open(fd_path).read()
+                    if "amdgpu" not in data:
+                        continue
+                    client_id = compute_ns = None
+                    for line in data.splitlines():
+                        if line.startswith("drm-client-id:"):
+                            client_id = line.split(":", 1)[1].strip()
+                        elif line.startswith("drm-engine-compute:"):
+                            compute_ns = int(line.split(":", 1)[1].strip().split()[0])
+                    if client_id and compute_ns is not None and client_id not in seen:
+                        seen.add(client_id)
+                        total_ns += compute_ns
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    now = time.monotonic()
+    prev_ts = _gpu_fdinfo_cache["ts"]
+    prev_ns = _gpu_fdinfo_cache["ns"]
+    if prev_ts > 0:
+        dt = now - prev_ts
+        dns = total_ns - prev_ns
+        if dt > 0 and dns >= 0:
+            _gpu_fdinfo_cache["util_pct"] = min(100, round(dns / (dt * 1e9) * 100))
+    _gpu_fdinfo_cache["ts"] = now
+    _gpu_fdinfo_cache["ns"] = total_ns
+    return _gpu_fdinfo_cache["util_pct"]
+
 def get_gpu_stats() -> dict:
     """Read GPU stats from sysfs — AMD amdgpu driver (no rocm-smi dependency)."""
     import glob as _glob
@@ -43,7 +92,7 @@ def get_gpu_stats() -> dict:
         if not bases:
             return result
         base = bases[0]
-        result["util_percent"] = int(open(f"{base}/gpu_busy_percent").read().strip())
+        result["util_percent"] = _amdgpu_compute_util()
         vram_used = int(open(f"{base}/mem_info_vram_used").read().strip())
         vram_total = int(open(f"{base}/mem_info_vram_total").read().strip())
         result["vram_used_gb"] = round(vram_used / (1024**3), 1)
