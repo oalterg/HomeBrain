@@ -740,6 +740,7 @@ setup_llama_server() {
     local NGL="${AI_NGL:-0}"
     local CTX_SIZE="${AI_CTX_SIZE:-8192}"
     local EXTRA_FLAGS="${AI_EXTRA_FLAGS:-}"
+    local REASONING="${AI_MODEL_REASONING:-false}"
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
     local LLAMA_BIN
     LLAMA_BIN=$(get_llama_bin_path)
@@ -1037,6 +1038,7 @@ patch_openclaw_config() {
     local config_file="$1"
     local model_id="$2"
     local ctx_size="${3:-}"
+    local reasoning="${4:-false}"
 
     if [[ -z "$model_id" ]]; then
         log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
@@ -1068,10 +1070,15 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
+    local reasoning_bool
+    reasoning_bool=$( [[ "$reasoning" == "true" ]] && echo true || echo false )
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
+        --argjson reasoning "$reasoning_bool" \
         "${jq_extra_args[@]}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
+        .models.providers.llamacpp.models[0].reasoning = $reasoning |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
         .agents.defaults.llm.idleTimeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
@@ -1220,7 +1227,7 @@ setup_openclaw() {
     fi
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     cp "$config_src" "$config_dest"
-    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
+    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}" "${AI_MODEL_REASONING:-false}"
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
