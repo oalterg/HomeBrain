@@ -1,17 +1,25 @@
 {
-  "default": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+  "default": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
   "models": [
+    {
+      "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+      "filename": "Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
+      "min_size_bytes": 27000000000,
+      "context_window": 131072,
+      "extra_flags": "--parallel 1 --jinja --fit on -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {},
+      "default": true
+    },
     {
       "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
       "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "min_size_bytes": 22000000000,
       "context_window": 131072,
-      "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja --fit on -fa 1 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --chat-template-kwargs '{\"preserve_thinking\": true}'",
-      "reasoning": true,
+      "extra_flags": "--parallel 1 --jinja --fit on -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {},
-      "default": true
+      "default": false
     },
     {
       "id": "Qwen3.5-27B-IQ4_XS",
@@ -19,8 +27,7 @@
       "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-IQ4_XS.gguf",
       "min_size_bytes": 14000000000,
       "context_window": 65536,
-      "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 512 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 512 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
       "benchmark": {
         "tg128_ts": 14.20,
         "pp512_ts": 385,
@@ -35,8 +42,7 @@
       "url": "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "min_size_bytes": 14000000000,
       "context_window": 65536,
-      "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --threads 6",
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 64 --min-p 0.0 --threads 6",
       "default": false
     },
     {
@@ -45,8 +51,7 @@
       "url": "https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-Q4_K_M.gguf",
       "min_size_bytes": 18000000000,
       "context_window": 131072,
-      "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on -ot \"blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU\" -t 6 -b 2048 -ub 128 --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
       "benchmark": {
         "tg128_ts": 28.66,
         "pp512_ts": 165,
@@ -61,13 +66,11 @@
       "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q8_K_XL.gguf",
       "min_size_bytes": 9000000000,
       "context_window": 131072,
-      "ngl": 99,
-      "extra_flags": "--parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0 --threads 6",
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0 --threads 6",
       "default": false
     }
   ],
   "llama_server": {
-    "ngl": 99,
     "ctx_size": 131072,
     "extra_flags": "--jinja -fa on"
   },

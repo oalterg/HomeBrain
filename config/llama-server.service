@@ -20,7 +20,7 @@ ExecStart=__LLAMA_BIN__ \
   --ctx-size __CTX_SIZE__ \
   --host 127.0.0.1 \
   --port 8001 \
-  -ngl __NGL__ __EXTRA_FLAGS__
+  __EXTRA_FLAGS__
 
 Restart=always
 RestartSec=10

@@ -574,7 +574,7 @@ install_llamacpp() {
 # Uses config/llama-server.service as the canonical template so the GPU-wait
 # ExecStartPre and dependency ordering are always in sync with the committed file.
 generate_llama_service() {
-    local bin_path="$1" model_path="$2" ngl="$3" ctx_size="$4" extra_flags="$5"
+    local bin_path="$1" model_path="$2" ctx_size="$3" extra_flags="$4"
     local service_dest="/etc/systemd/system/llama-server.service"
     local template="${SCRIPT_DIR}/../config/llama-server.service"
     local work_dir
@@ -587,7 +587,6 @@ generate_llama_service() {
         -e "s|__LLAMA_BIN__|${bin_path}|g" \
         -e "s|__LLAMA_MODEL__|${model_path}|g" \
         -e "s|__CTX_SIZE__|${ctx_size}|g" \
-        -e "s|__NGL__|${ngl}|g" \
         -e "s@__EXTRA_FLAGS__@${extra_flags}@g" \
         -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
         "$template" > "$service_dest"
@@ -737,10 +736,8 @@ setup_llama_server() {
     local MODEL_NAME="${AI_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_MODEL_URL:-}"
     local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
-    local NGL="${AI_NGL:-0}"
     local CTX_SIZE="${AI_CTX_SIZE:-8192}"
     local EXTRA_FLAGS="${AI_EXTRA_FLAGS:-}"
-    local REASONING="${AI_MODEL_REASONING:-false}"
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
     local LLAMA_BIN
     LLAMA_BIN=$(get_llama_bin_path)
@@ -754,7 +751,7 @@ setup_llama_server() {
     log_info "[1/5] Checking for existing llama-server installation..."
     if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
         log_info "llama-server and model already present. Syncing service and starting..."
-        generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$NGL" "$CTX_SIZE" "$EXTRA_FLAGS"
+        generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
         systemctl daemon-reload
         systemctl enable llama-server
         systemctl restart llama-server
@@ -781,7 +778,7 @@ setup_llama_server() {
 
     # --- [5/5] Deploy service and start ---
     log_info "[5/5] Deploying llama-server service..."
-    generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$NGL" "$CTX_SIZE" "$EXTRA_FLAGS"
+    generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
     systemctl daemon-reload
     systemctl enable --now llama-server
 
@@ -1038,7 +1035,6 @@ patch_openclaw_config() {
     local config_file="$1"
     local model_id="$2"
     local ctx_size="${3:-}"
-    local reasoning="${4:-false}"
 
     if [[ -z "$model_id" ]]; then
         log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
@@ -1070,15 +1066,10 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
-    local reasoning_bool
-    reasoning_bool=$( [[ "$reasoning" == "true" ]] && echo true || echo false )
-
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
-        --argjson reasoning "$reasoning_bool" \
         "${jq_extra_args[@]}" '
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
-        .models.providers.llamacpp.models[0].reasoning = $reasoning |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
         .agents.defaults.llm.idleTimeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
@@ -1227,7 +1218,7 @@ setup_openclaw() {
     fi
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     cp "$config_src" "$config_dest"
-    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}" "${AI_MODEL_REASONING:-false}"
+    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"

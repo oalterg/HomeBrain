@@ -14,9 +14,9 @@
         "api": "openai-completions",
         "models": [
           {
-            "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
-            "name": "Qwen3.6-35B-A3B-UD-Q4_K_M",
-            "reasoning": true,
+            "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+            "name": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+            "reasoning": false,
             "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 131072,
@@ -34,10 +34,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "llamacpp/Qwen3.6-35B-A3B-UD-Q4_K_M"
+        "primary": "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL"
       },
       "models": {
-        "llamacpp/Qwen3.6-35B-A3B-UD-Q4_K_M": {}
+        "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL": {}
       },
       "llm": {
         "idleTimeoutSeconds": 0
