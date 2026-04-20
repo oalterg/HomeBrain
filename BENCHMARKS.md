@@ -23,7 +23,7 @@
 |-------|-------|-------------|-----|----------|-------|----------|----------|------|-------|
 | Qwen3.5-27B | IQ4_XS | 27B/27B | 65K | q8_0/q8_0 | -ngl 99 -fa on -b 2048 -ub 512 -t 6 | 14.20 | 385 | 2026-04 | DeltaNet SSM+attn; ngl=99 required; ctx capped at 65K (ctv q8_0 saves 640 MiB) |
 | Qwen3.5-35B-A3B | Q4_K_M | 3B/35B | 131K | q8_0/q8_0 | -ngl 99 -fa on -b 2048 -ub 128 -ot blk.24+ CPU -t 6 | 28.66 | 165 | 2026-04 | MoE; blk.24+ exps on CPU; fa+ctk/ctv q8_0 confirmed on GFX1200/RADV |
-| Qwen3.6-35B-A3B | UD-Q5_K_XL | ?B/35B | 131K | q8_0/q8_0 | --fit on -fa 1 -b 4096 -ub 2048 | 16.0 | 164 | 2026-04 | GPU 10 GiB + CPU 24.8 GiB; KV 1360 MiB; RS 63 MiB; compute 3656 MiB GPU + 1056 MiB CPU |
+| Qwen3.6-35B-A3B | UD-Q5_K_XL | ?B/35B | 131K | q8_0/q8_0 | --fit on -fa 1 -b 4096 -ub 2048 | 18.7 | 169 | 2026-04 | GPU 10 GiB + CPU 24.8 GiB; KV 1360 MiB; RS 63 MiB; compute 3656 MiB GPU + 1056 MiB CPU |
 | Qwen3.6-35B-A3B | UD-Q4_K_M | ?B/35B | 131K | q8_0/q8_0 | --fit on -fa 1 -b 4096 -ub 2048 | TBD | TBD | TBD | Target: 20 t/s; preserve_thinking=true |
 
 ## Tuning Log
@@ -32,7 +32,7 @@ Track parameter experiments here. Each row is one run; keep the best result in t
 
 | Model | Run | Change vs baseline | TG (t/s) | PP (t/s) | Verdict |
 |-------|-----|--------------------|----------|----------|---------|
-| Qwen3.6-35B-A3B Q5K_XL | baseline | --fit on -fa 1 --ctk q8_0 --ctv q8_0 -b 4096 -ub 2048 | 16.0 | 164 | below 20 t/s target; heavy CPU spill (24.8 GiB) |
+| Qwen3.6-35B-A3B Q5K_XL | baseline | --fit on -fa 1 --ctk q8_0 --ctv q8_0 -b 4096 -ub 2048 | 18.7 | 169 | below 20 t/s target; heavy CPU spill (24.8 GiB) |
 | Qwen3.6-35B-A3B Q4K_M | baseline | --fit on -fa 1 --ctk q8_0 --ctv q8_0 -b 4096 -ub 2048 | TBD | TBD | -- |
 
 ## Notes
