@@ -1729,8 +1729,6 @@ def set_ai_model():
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
         update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
-        update_env_var("AI_CTX_SIZE", str(model.get("context_window", server_defaults.get("ctx_size", 8192))))
-        update_env_var("AI_EXTRA_FLAGS", model.get("extra_flags", server_defaults.get("extra_flags", "")))
         return jsonify({"status": "ok", "model": model["id"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1763,8 +1761,6 @@ def switch_ai_model():
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
         update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
-        update_env_var("AI_CTX_SIZE", str(model.get("context_window", server_defaults.get("ctx_size", 8192))))
-        update_env_var("AI_EXTRA_FLAGS", model.get("extra_flags", server_defaults.get("extra_flags", "")))
 
         cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} switch_model >> {LOG_FILES['setup']} 2>&1"
         threading.Thread(

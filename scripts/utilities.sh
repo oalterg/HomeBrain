@@ -736,8 +736,22 @@ setup_llama_server() {
     local MODEL_NAME="${AI_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_MODEL_URL:-}"
     local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
-    local CTX_SIZE="${AI_CTX_SIZE:-8192}"
-    local EXTRA_FLAGS="${AI_EXTRA_FLAGS:-}"
+    # Parse ctx_size and extra_flags from platform_models.json for the selected model
+    # (they were baked in by generate_llama_service, no need to keep in .env)
+    local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
+    local CTX_SIZE="8192"
+    local EXTRA_FLAGS=""
+    if [[ -f "$MODELS_FILE" ]] && [[ -n "$MODEL_NAME" ]]; then
+        # Derive model id from filename (strip extension)
+        local model_id
+        model_id=$(echo "$MODEL_NAME" | sed 's/\.gguf$//')
+        CTX_SIZE=$(jq -r --arg id "$model_id" \
+            '(.models[] | select(.id == $id) | .context_window) // .llama_server.ctx_size // 8192' \
+            "$MODELS_FILE" 2>/dev/null || echo "8192")
+        EXTRA_FLAGS=$(jq -r --arg id "$model_id" \
+            '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags // ""' \
+            "$MODELS_FILE" 2>/dev/null || echo "")
+    fi
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
     local LLAMA_BIN
     LLAMA_BIN=$(get_llama_bin_path)
@@ -1224,7 +1238,13 @@ setup_openclaw() {
     fi
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     cp "$config_src" "$config_dest"
-    patch_openclaw_config "$config_dest" "$model_id" "${AI_CTX_SIZE:-}"
+    # Parse ctx_size from the generated systemd service file
+    local OC_CTX_SIZE=""
+    local SERVICE_FILE="/etc/systemd/system/llama-server.service"
+    if [[ -f "$SERVICE_FILE" ]]; then
+        OC_CTX_SIZE=$(grep -oP -- '-ctx-size\s+\K[0-9]+' "$SERVICE_FILE" 2>/dev/null || echo "")
+    fi
+    patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"

@@ -158,16 +158,13 @@ auto_setup_ai() {
             default_model=$(jq -r '.models[] | select(.default == true) | .id' "$models_file" | head -1)
             if [[ -n "$default_model" ]]; then
                 log_info "Auto-selecting default model: $default_model"
-                local m_file m_url m_min m_ngl m_ctx m_extra
+                local m_file m_url m_min
                 m_file=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .filename' "$models_file")
                 m_url=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .url' "$models_file")
                 m_min=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .min_size_bytes' "$models_file")
-                m_ngl=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .ngl) // .llama_server.ngl' "$models_file")
-                m_ctx=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .context_window) // .llama_server.ctx_size' "$models_file")
-                m_extra=$(jq -r --arg id "$default_model" '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags' "$models_file")
                 local key val
                 for kv in "AI_MODEL_ID=$default_model" "AI_MODEL_FILENAME=$m_file" "AI_MODEL_URL=$m_url" \
-                          "AI_MODEL_MIN_SIZE=$m_min" "AI_NGL=$m_ngl" "AI_CTX_SIZE=$m_ctx" "AI_EXTRA_FLAGS=$m_extra"; do
+                          "AI_MODEL_MIN_SIZE=$m_min"; do
                     key="${kv%%=*}" val="${kv#*=}"
                     if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
                         sed -i "s|^${key}=.*|${key}='${val}'|" "$ENV_FILE"
