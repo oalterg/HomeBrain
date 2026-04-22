@@ -34,7 +34,7 @@
 ## Platform / Deployment
 
 ### Bugs
-- ✅ Path/user inconsistency FIXED — admin OpenClaw killed, lingering disabled, NEXTCLOUD_DATA_DIR fixed to /var/www/html/data
+- ✅ Path/user inconsistency FIXED — admin OpenClaw killed, lingering disabled, NEXTCLOUD_DATA_DIR → /opt/homebrain/nextcloud-data
        instead of `/opt/homebrain/` and user `homebrain`
        → Migrate paths; keep `homebrain` user, do not create new OS user
 
