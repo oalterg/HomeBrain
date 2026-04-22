@@ -1091,6 +1091,8 @@ patch_openclaw_config() {
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
         .browser.noSandbox = true |
         .channels.whatsapp.enabled = true |
+        .channels.whatsapp.dmPolicy = "allowlist" |
+        .channels.whatsapp.allowFrom = (.channels.whatsapp.allowFrom // []) |
         .plugins.entries.whatsapp.enabled = true |
         .gateway.controlUi.allowedOrigins = $origins |
         .tools.media.audio.enabled = true |
