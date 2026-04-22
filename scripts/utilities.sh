@@ -1132,12 +1132,26 @@ stop_legacy_admin_openclaw() {
         pkill -KILL -u admin -x openclaw-gateway 2>/dev/null || true
     fi
 
-    log_info "Legacy admin openclaw processes cleared."
+    # Remove admin's systemd user service files to prevent resurrection
+    local admin_systemd_dir="/home/admin/.config/systemd/user"
+    if [[ -d "$admin_systemd_dir" ]]; then
+        rm -f "$admin_systemd_dir"/openclaw-gateway.service "$admin_systemd_dir"/openclaw-gateway.service.bak
+        rm -f "$admin_systemd_dir/default.target.wants/openclaw-gateway.service" 2>/dev/null || true
+        log_info "Removed legacy admin OpenClaw systemd unit files."
+    fi
+
+    # Disable admin linger so systemd doesn't respawn the user session
+    loginctl disable-linger admin 2>/dev/null || true
+
+    log_info "Legacy admin openclaw processes and units cleared."
 }
 
 # Run a command as the HomeBrain OS user with systemd user session environment.
 # Required for openclaw daemon/gateway which uses systemd user services.
 run_as_admin() {
+    # Kill any leftover admin user OpenClaw processes before starting homebrain ones
+    stop_legacy_admin_openclaw
+
     local hb_uid
     hb_uid=$(id -u "${HOMEBRAIN_USER}")
     # Ensure linger is enabled (allows user services without login)
