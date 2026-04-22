@@ -242,14 +242,6 @@ configure_vsftpd() {
         cp "$VSFTPD_CONF" "${VSFTPD_CONF}.bak"
     fi
 
-    # Fix www-data home for chroot compatibility (Idempotent)
-    local www_home
-    www_home=$(getent passwd www-data | cut -d: -f6)
-    if [ "$www_home" != "$NEXTCLOUD_DATA_DIR" ]; then
-        log_info "Updating www-data home directory to $NEXTCLOUD_DATA_DIR..."
-        usermod -d "$NEXTCLOUD_DATA_DIR" www-data
-    fi
-
     # Write Config (Hardened)
     cat > "$VSFTPD_CONF" <<EOF
 listen=YES
