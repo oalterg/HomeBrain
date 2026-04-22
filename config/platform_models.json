@@ -8,7 +8,10 @@
       "min_size_bytes": 27000000000,
       "context_window": 131072,
       "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
-      "benchmark": {},
+      "benchmark": {
+        "tg128_ts": 25.0,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, Vulkan, ngl=99"
+      },
       "default": true
     },
     {
@@ -22,17 +25,17 @@
       "default": false
     },
     {
-      "id": "Qwen3.5-27B-IQ4_XS",
-      "filename": "Qwen3.5-27B-IQ4_XS.gguf",
-      "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-IQ4_XS.gguf",
+      "id": "Qwen3.6-27B-IQ4_XS",
+      "filename": "Qwen3.6-27B-IQ4_XS.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-IQ4_XS.gguf",
       "min_size_bytes": 14000000000,
       "context_window": 65536,
-      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 512 --temp 0.6 --top-k 20 --top-p 0.95 --min-p 0",
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {
-        "tg128_ts": 14.20,
+        "tg128_ts": 14.2,
         "pp512_ts": 385,
         "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
-        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. fa=on + ctk/ctv q8_0 (Group C): tg128 +6.5% (13.33→14.20 t/s), pp halved at ub=128 vs fa-only but still fast at ub=512 production setting. ctv q8_0 saves 640 MiB VRAM enabling ctx=65536 vs the 40960 cap without it. ctv q8_0 without fa fails context creation on AMD Vulkan. Real overflow errors at 53966 and 51804 tokens observed; ctx=65536 with Group C loads cleanly."
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local \u2014 nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. fa=on + ctk/ctv q8_0 (Group C): tg128 +6.5% (13.33\u219214.20 t/s), pp halved at ub=128 vs fa-only but still fast at ub=512 production setting. ctv q8_0 saves 640 MiB VRAM enabling ctx=65536 vs the 40960 cap without it. ctv q8_0 without fa fails context creation on AMD Vulkan. Real overflow errors at 53966 and 51804 tokens observed; ctx=65536 with Group C loads cleanly."
       },
       "default": false
     },
@@ -56,7 +59,7 @@
         "tg128_ts": 28.66,
         "pp512_ts": 165,
         "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
-        "notes": "MoE: blk.24+ exps on CPU. fa=on + ctk/ctv q8_0 confirmed working on GFX1200/RADV. Best group (C): pp512=164.98 t/s (+7.2% vs baseline), tg128=28.66 t/s (+3.8% vs baseline). ctv q8_0 without fa fails context creation on AMD Vulkan — fa required."
+        "notes": "MoE: blk.24+ exps on CPU. fa=on + ctk/ctv q8_0 confirmed working on GFX1200/RADV. Best group (C): pp512=164.98 t/s (+7.2% vs baseline), tg128=28.66 t/s (+3.8% vs baseline). ctv q8_0 without fa fails context creation on AMD Vulkan \u2014 fa required."
       },
       "default": false
     },
