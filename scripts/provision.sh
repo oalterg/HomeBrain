@@ -59,6 +59,9 @@ install_deps_enable_docker
 # --- 1b. Ensure admin user exists (Ubuntu Server doesn't ship with one) ---
 ensure_admin_user
 
+# --- 1bb. Ensure homebrain user is in docker/render/video groups ---
+ensure_homebrain_user
+
 # --- 1c. GPU-gated hardening (Vulkan drivers, firewall, grub tweaks) ---
 # Detect GPU before proceeding
 detect_gpu

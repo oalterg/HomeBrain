@@ -54,6 +54,24 @@ ensure_homebrain_user() {
     done
 }
 
+# --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
+ensure_admin_user() {
+    if id -u admin >/dev/null 2>&1; then
+        log_info "admin user already exists."
+        return 0
+    fi
+    log_info "Creating admin user for Ubuntu x86..."
+    useradd -m -s /bin/bash admin
+    mkdir -p /home/admin/.ssh
+    chmod 700 /home/admin/.ssh
+    # Add to render/video for GPU access, docker for container management
+    for grp in render video docker; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -aG "$grp" admin 2>/dev/null || true
+        fi
+    done
+}
+
 # --- Environment Loading ---
 load_env() {
     if [[ -f "$ENV_FILE" ]]; then
