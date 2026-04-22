@@ -29,7 +29,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **llamacpp fine-tuning** — Qwen3.6 35B A3B Q5K, Q8 KV cache, 130K context, MoE CPU offloading for 16 GB VRAM
-- **consolidate project directories** - Multiple directories like /home/admin/, /home/homebrain/ shall be consolidate to central /opt/homebrain
+- **consolidate project directories** — /home/admin/ no longer referenced; all paths consolidated.
 
 ### Medium-term
 

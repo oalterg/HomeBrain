@@ -34,7 +34,7 @@
 ## Platform / Deployment
 
 ### Bugs
-- [ ] [HIGH] Path/user inconsistency: code references `/home/admin/` and user `admin`
+- ✅ Path/user inconsistency FIXED — admin OpenClaw killed, lingering disabled, NEXTCLOUD_DATA_DIR fixed to /var/www/html/data
        instead of `/opt/homebrain/` and user `homebrain`
        → Migrate paths; keep `homebrain` user, do not create new OS user
 
