@@ -3,10 +3,6 @@
 ## AI Stack (llamacpp / OpenClaw)
 
 ### Bugs
-- [ ] [HIGH] [BLOCKED: upstream] llamacpp tool-call parsing regression
-       → ggml-org/llama.cpp#20650
-- [ ] [MED] OpenClaw GW API key regenerated every session
-       → Should derive from the deployment Master password instead
 
 ### Features
 - [ ] Fine-tune llamacpp server params for additional models:
