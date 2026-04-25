@@ -23,6 +23,7 @@
 | Model                   | Quant     | Total | Ctx  | KV     | -ot range | -b/-ub      | TG (t/s) | PP@2k (t/s) | Date       |
 |-------------------------|-----------|-------|------|--------|-----------|-------------|----------|-------------|------------|
 | **Qwen3.6-35B-A3B**     | UD-Q5_K_XL| 35B   | 131K | q8_0   | 20-39     | 4096 / 2048 | **29.67**| **574**     | 2026-04-25 |
+| Qwen3.6-35B-A3B         | UD-Q6_K_XL| 35B   | 131K | q8_0   | 16-39     | 4096 / 2048 | 25.62    | 485         | 2026-04-25 |
 | Qwen3.6-35B-A3B         | UD-Q6_K   | 35B   | 131K | q8_0   | 18-39     | 4096 / 2048 | 27.18    | 513         | 2026-04-25 |
 | Qwen3.6-35B-A3B         | UD-Q8_K_XL| 35B   | 131K | q8_0   | 14-39     | 4096 / 2048 | 18.03    | 140         | 2026-04-25 |
 | Qwen3.6-27B (DeltaNet)  | IQ4_XS    | 27B   | 64K  | q4_0   | (none)    | 2048 / 1024 | 14.90    | 437 (@600)  | 2026-04-25 |
@@ -43,11 +44,19 @@ Q5_K_XL is the production default — best TG, lowest VRAM pressure, and quality
 | Q8_K_XL   | -ot 14-39 -b 4096 -ub 2048         | 18.03 | 140    | 16,473 MB | **Best TG — kept**; below 20 t/s target |
 | Q8_K_XL   | -ot 10-39 -b 4096 -ub 2048         | 16.85 | 149    | 16,877 MB | More on CPU hurts TG |
 | Q8_K_XL   | -ot 15-39 -b 4096 -ub 2048         | 18.17 | 133    | 16,975 MB | TG matches 14-39, PP worse |
+| Q6_K_XL   | baseline (Q6_K params, -ot 18-39)  | 19.20 | 138    | 16,830 MB | VRAM 98%, throttled |
+| Q6_K_XL   | -ot 17-39 -b 4096 -ub 2048         | 25.83 | 482    | 16,904 MB | TG match, VRAM 99% (risky) |
+| Q6_K_XL   | -ot 16-39 -b 4096 -ub 2048         | 25.62 | 485    | 16,179 MB | **Kept — best PP, safer headroom** |
+| Q6_K_XL   | -ot 15-39 -b 4096 -ub 2048         | 24.68 | 466    | 16,515 MB | Worse on both axes |
 
 Tuning principles confirmed on this hardware:
 - VRAM headroom matters more than maximizing on-GPU layers. At >97% VRAM use, both TG and PP collapse from allocation thrashing — moving 1-2 more blocks to CPU recovers everything.
 - `-b 4096 -ub 2048` improves PP ~17% on long prompts vs `-b 2048 -ub 1024`, with no TG cost.
-- For Q6_K (29 GB), `-ot` must offload at least blocks 18-39 (22 of 40); for Q5_K_XL (25 GB), 20-39 (20 of 40) is enough; for Q8_K_XL (38 GB), 14-39 (26 of 40) — below 20 t/s on this CPU, so Q8 is not recommended for production.
+- Empirical -ot offload boundaries for 131K ctx + q8_0 KV cache on 16 GB VRAM:
+  - Q5_K_XL (25 GB): blk.20-39 (20 of 40 on CPU)
+  - Q6_K (29 GB): blk.18-39 (22 of 40)
+  - Q6_K_XL (32 GB): blk.16-39 (24 of 40)
+  - Q8_K_XL (38 GB): blk.14-39 (26 of 40) — drops below 20 t/s, not recommended for production
 - 27B IQ4_XS uses no `-ot` (DeltaNet hybrid — partial offload breaks fused kernel).
 
 ## Notes
