@@ -9,49 +9,49 @@
 | RAM       | DDR4-2400 |
 | Backend   | Vulkan (RADV / GFX1200) |
 | OS        | Ubuntu 24.04 (x86_64) |
+| llama.cpp | b8931 |
 
 ## Methodology
 
-- All benchmarks at **131K context** unless noted otherwise
-- **TG** = text generation throughput (tokens/sec), measured at tg128
-- **PP** = prompt processing throughput (tokens/sec), measured at pp512
-- Target throughput for production use: **20 T/s** (text generation)
+- TG = text generation throughput (tokens/sec), 256-token completion, ~26-token prompt
+- PP = prompt processing throughput (tokens/sec), measured at ~2.4k-token prompt
+- Target throughput for production use: 20 t/s (text generation)
+- Captured via `/v1/chat/completions` `timings.predicted_per_second` / `prompt_per_second`
 
 ## Results
 
-| Model | Quant | Active/Total | Ctx | KV Cache | Flags | TG (t/s) | PP (t/s) | Date | Notes |
-|-------|-------|-------------|-----|----------|-------|----------|----------|------|-------|
-| Qwen3.5-27B | IQ4_XS | 27B/27B | 65K | q8_0/q8_0 | -ngl 99 -fa on -b 2048 -ub 512 -t 6 | 14.20 | 385 | 2026-04 | DeltaNet SSM+attn; ngl=99 required; ctx capped at 65K (ctv q8_0 saves 640 MiB) |
-| Qwen3.5-35B-A3B | Q4_K_M | 3B/35B | 131K | q8_0/q8_0 | -ngl 99 -fa on -b 2048 -ub 128 -ot blk.24+ CPU -t 6 | 28.66 | 165 | 2026-04 | MoE; blk.24+ exps on CPU; fa+ctk/ctv q8_0 confirmed on GFX1200/RADV |
-| Qwen3.6-35B-A3B | UD-Q5_K_XL | ?B/35B | 131K | q8_0/q8_0 | --fit on -fa 1 -b 4096 -ub 2048 | 18.7 | 169 | 2026-04 | GPU 10 GiB + CPU 24.8 GiB; KV 1360 MiB; RS 63 MiB; compute 3656 MiB GPU + 1056 MiB CPU |
-| Qwen3.6-35B-A3B | UD-Q4_K_M | ?B/35B | 131K | q8_0/q8_0 | --fit on -fa 1 -b 4096 -ub 2048 | TBD | TBD | TBD | Target: 20 t/s; preserve_thinking=true |
+| Model                   | Quant     | Total | Ctx  | KV     | -ot range | -b/-ub      | TG (t/s) | PP@2k (t/s) | Date       |
+|-------------------------|-----------|-------|------|--------|-----------|-------------|----------|-------------|------------|
+| **Qwen3.6-35B-A3B**     | UD-Q5_K_XL| 35B   | 131K | q8_0   | 20-39     | 4096 / 2048 | **29.67**| **574**     | 2026-04-25 |
+| Qwen3.6-35B-A3B         | UD-Q6_K   | 35B   | 131K | q8_0   | 18-39     | 4096 / 2048 | 27.18    | 513         | 2026-04-25 |
+| Qwen3.6-27B (DeltaNet)  | IQ4_XS    | 27B   | 64K  | q4_0   | (none)    | 2048 / 1024 | 14.90    | 437 (@600)  | 2026-04-25 |
+
+Q5_K_XL is the production default — best TG, lowest VRAM pressure, and quality close to Q6_K.
 
 ## Tuning Log
 
-Track parameter experiments here. Each row is one run; keep the best result in the main table above.
+| Model     | Run                                | TG    | PP@2k  | VRAM used | Verdict |
+|-----------|------------------------------------|-------|--------|-----------|---------|
+| Q5_K_XL   | baseline (-ot 20-39, -b/-ub 2048/1024) | 29.85 | 491.9  | 16,541 MB | OK |
+| Q5_K_XL   | -b 4096 -ub 2048                   | 29.67 | 574.7  | ~16,500 MB| **+17% PP, TG flat — kept** |
+| Q6_K      | baseline (-ot 24-39, -b/-ub 2048/1024) | 14.60 | 138.9  | 17,010 MB | VRAM 99.5%, thrashing |
+| Q6_K      | -ot 20-39 -b 4096 -ub 2048         | 22.18 | 139.1  | 16,917 MB | Better TG, PP still throttled |
+| Q6_K      | -ot 18-39 -b 4096 -ub 2048         | 27.18 | 513.9  | 16,330 MB | **+86% TG, +270% PP — kept** |
 
-| Model | Run | Change vs baseline | TG (t/s) | PP (t/s) | Verdict |
-|-------|-----|--------------------|----------|----------|---------|
-| Qwen3.6-35B-A3B Q5K_XL | baseline | --fit on -fa 1 --ctk q8_0 --ctv q8_0 -b 4096 -ub 2048 | 18.7 | 169 | below 20 t/s target; heavy CPU spill (24.8 GiB) |
-| Qwen3.6-35B-A3B Q4K_M | baseline | --fit on -fa 1 --ctk q8_0 --ctv q8_0 -b 4096 -ub 2048 | TBD | TBD | -- |
+Tuning principles confirmed on this hardware:
+- VRAM headroom matters more than maximizing on-GPU layers. At >97% VRAM use, both TG and PP collapse from allocation thrashing — moving 1-2 more blocks to CPU recovers everything.
+- `-b 4096 -ub 2048` improves PP ~17% on long prompts vs `-b 2048 -ub 1024`, with no TG cost.
+- For Q6_K (29 GB), `-ot` must offload at least blocks 18-39 (22 of 40); for Q5_K_XL (25 GB), 20-39 (20 of 40) is enough.
+- 27B IQ4_XS uses no `-ot` (DeltaNet hybrid — partial offload breaks fused kernel).
 
 ## Notes
 
-### Qwen3.6-35B-A3B memory layout (Q5K_XL, 131K ctx, --fit on)
-- Model: Vulkan0 10,032 MiB + CPU_Mapped 24,834 MiB (41/41 layers offloaded, --fit on spills to CPU)
-- KV cache (q8_0): 1,360 MiB on Vulkan0 (K 680 MiB + V 680 MiB, 10 attn layers, 131072 cells)
-- Recurrent state: 62.8 MiB on Vulkan0 (40 DeltaNet layers)
-- Compute buffer: 3,656 MiB Vulkan0 + 1,056 MiB Vulkan_Host
-- Graph splits: 85 (bs=2048), 54 (bs=1)
-- Fused Gated Delta Net: enabled (autoregressive + chunked)
+### AMD Vulkan / GFX1200 constraints
+- `--cache-type-v q8_0` without `-fa` fails context creation on AMD Vulkan — flash attention is mandatory with quantized KV cache.
+- DeltaNet hybrids (Qwen3.6-27B) need `-ngl 99` and no expert offload — `nkvo` and partial offload break the fused kernel.
+- `amdgpu.runpm=0` (set via `config/99-amdgpu-runpm.rules`) must remain to prevent VRAM eviction during inference.
 
-### AMD Vulkan constraints
-- `ctv q8_0` without flash attention (`-fa`) fails context creation on AMD Vulkan -- fa is always required when using quantized KV cache
-- DeltaNet models (Qwen3.5-27B) require ngl=99; partial offload breaks fused kernel (output degrades to ~2 t/s)
-- `nkvo` (no KV offload) breaks DeltaNet fused kernel -- recurrent state must stay GPU-local
-- `amdgpu.runpm=0` must remain set to prevent VRAM eviction during inference
-- Qwen3.6 with `-ngl 99` (forced full GPU offload) crashes with `ErrorDeviceLost` — use `--fit on` instead to auto-split between GPU and CPU
-
-### Qwen3.5-35B-A3B MoE tuning
-- Expert offload: blk.24+ exps on CPU via `-ot "blk.(2[4-9]|[3-9][0-9]).ffn_.*exps=CPU"`
-- Group C (fa=on + ctk/ctv q8_0): pp512=165 t/s (+7.2%), tg128=28.66 t/s (+3.8% vs baseline)
+### Qwen3.6-35B-A3B MoE specifics
+- Architecture: 40 layers, 256 experts (8 active per token), n_embd=2048, n_head=16, n_head_kv=2.
+- KV cache at 131K ctx with q8_0: ~1.4 GB on GPU.
+- Q5_K_XL stays under VRAM limit at -ot 20-39; Q6_K needs 18-39 to leave ~700 MB headroom for compute buffers.
