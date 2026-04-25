@@ -54,7 +54,14 @@
         "mode": "safeguard"
       },
       "heartbeat": {
-        "every": "60m"
+        "every": "120m",
+        "target": "last",
+        "directPolicy": "allow",
+        "activeHours": {
+          "start": "08:00",
+          "end": "24:00",
+          "timezone": "Europe/Berlin"
+        }
       }
     },
     "list": [
