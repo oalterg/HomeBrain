@@ -22,6 +22,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 - ✅ **Always-on hardening** — AMD GPU runtime PM disabled (VRAM stays loaded), sleep inhibitor service, systemd crash-loop protection
 - ✅ **Dependency version pinning** — OpenClaw and llama.cpp locked to verified, tested releases; freeze/upgrade workflow defined for reproducible stack
 - ✅ **llamacpp fine-tuning** — Qwen3.6 35B A3B Q6K, benchmarked MoE CPU offloading for 16 GB VRAM
+- ✅ **Consolidated project directories** — runtime data under `/home/homebrain/{ai-runtime,models,nextcloud-data,.openclaw}`, app code stays in `/opt/homebrain/`. Idempotent migration in `utilities.sh` covers legacy `/home/admin` and earlier flat layouts.
 
 ---
 
@@ -29,7 +30,6 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### Near-term
 
-- ~~**consolidate project directories**~~ — ✅ Done. All runtime data consolidated under `/home/homebrain/`. Application code stays in `/opt/homebrain/`. Migration via `migrate-directories.sh` (local only, not upstream).
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
 
 ### Medium-term
