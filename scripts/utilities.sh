@@ -1245,7 +1245,14 @@ setup_openclaw() {
         die "config/openclaw.json not found at $config_src — ensure it is committed to the repository."
     fi
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
-    cp "$config_src" "$config_dest"
+    # Only seed from the repo template on first install. Subsequent runs
+    # (including model switches) patch the existing file in place so that
+    # user edits, runtime state written by OpenClaw, and previously-disabled
+    # plugins (e.g. bonjour) are preserved.
+    if [[ ! -f "$config_dest" ]]; then
+        cp "$config_src" "$config_dest"
+        log_info "Seeded openclaw.json from template (first install)."
+    fi
     # Parse ctx_size from the generated systemd service file
     local OC_CTX_SIZE=""
     local SERVICE_FILE="/etc/systemd/system/llama-server.service"
