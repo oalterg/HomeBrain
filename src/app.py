@@ -547,7 +547,7 @@ def start_setup():
         # Harden: Ensure file is only readable by root
         os.chmod(ENV_FILE, 0o600)
         # Set Passwords & Critical Defaults
-        update_env_var("NEXTCLOUD_DATA_DIR", os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), "nextcloud"))
+        update_env_var("NEXTCLOUD_DATA_DIR", os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), "nextcloud-data"))
         update_env_var("NEXTCLOUD_ADMIN_USER", "admin")
 
 

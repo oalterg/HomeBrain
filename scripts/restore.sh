@@ -32,7 +32,7 @@ fi
 if [[ "$ARG_FLAG" != "--no-prompt" ]]; then
     echo "⚠️ WARNING: RESTORE PROCESS INITIATED ⚠️"
     echo "Restoring: $BACKUP_FILE"
-    echo "This will WIPE ALL DATA in: ${NEXTCLOUD_DATA_DIR:-${HOMEBRAIN_HOME}/nextcloud}"
+    echo "This will WIPE ALL DATA in: ${NEXTCLOUD_DATA_DIR:-${HOMEBRAIN_HOME}/nextcloud-data}"
     read -p "Type 'wipe' to confirm: " confirm
     if [[ "$confirm" != "wipe" ]]; then
         echo "Restore aborted by user."

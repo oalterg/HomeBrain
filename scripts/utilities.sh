@@ -1205,80 +1205,278 @@ setup_openclaw() {
     return 1
 }
 
-# --- Migration: admin → homebrain ---
-# Moves AI binaries, models and OpenClaw config from /home/admin to HOMEBRAIN_HOME.
-# Called by deploy.sh on upgrade; silently no-ops on fresh installs.
-migrate_admin_to_homebrain() {
+# --- Migration: consolidate to /home/homebrain layout ---
+# Idempotent migration to the canonical layout (see ROADMAP "consolidate project
+# directories"). Safe to call on every deploy:
+#
+#   /opt/homebrain/                    immutable application code
+#   /home/homebrain/ai-runtime/        AI service binaries (llama-server, whisper-*)
+#   /home/homebrain/models/            flat model store (*.gguf, ggml-*.bin)
+#   /home/homebrain/nextcloud-data/    Nextcloud user data
+#   /home/homebrain/.openclaw/         OpenClaw runtime (CLI hardcodes ~/.openclaw)
+#
+# Handles three legacy layouts seen in the wild:
+#   A. Legacy admin user (ARM non-AI, AI x86 pre-homebrain) — data under /home/admin/.
+#   B. Flat /home/homebrain/{llama-server,whisper-server,*.gguf} from the
+#      first round of consolidation.
+#   C. Mid-state from a previous failed agent run on .58: models nested in
+#      /home/homebrain/models/{family}/.
+#
+# Returns 0 on success or no-op. Aborts on data-loss-risking failures.
+migrate_to_consolidated_layout() {
     local lock="/tmp/.hb_migration.lock"
-    local old_home="/home/admin"
+    local legacy_home="/home/admin"
+    local hb="${HOMEBRAIN_HOME}"
+    local ai_dir="${hb}/ai-runtime"
+    local models_dir="${hb}/models"
+    local nc_dir="${hb}/nextcloud-data"
+    local restart_llama=false restart_whisper=false restart_proxy=false
 
-    # Migration only relocates AI artefacts (llama-server, whisper-server,
-    # GGUF models, .openclaw config). On non-AI deployments — including ARM
-    # devices already running under the admin user — there is nothing to
-    # move and Nextcloud data is intentionally left in place.
-    if [[ "${HAS_GPU:-false}" != "true" ]]; then
-        log_info "Migration: HAS_GPU=false, no AI artefacts to relocate. Skipping."
-        return 0
-    fi
-
-    # Skip if old home doesn't exist or is already empty
-    if [[ ! -d "$old_home" ]] || [[ -z "$(ls -A "$old_home" 2>/dev/null)" ]]; then
-        log_info "Migration: /home/admin not found or empty — nothing to migrate."
-        return 0
-    fi
-
-    # Prevent concurrent runs
+    # Concurrency guard
     if ! ( set -C; echo $$ > "$lock" ) 2>/dev/null; then
         log_warn "Migration already in progress (lock: $lock). Skipping."
         return 0
     fi
     trap 'rm -f "$lock"' RETURN
 
-    log_info "=== Migrating /home/admin → ${HOMEBRAIN_HOME} ==="
+    log_info "=== Layout migration: ensuring consolidated /home/homebrain layout ==="
 
-    # 1. Move AI binary directories
-    for dir in llama-server whisper-server; do
-        if [[ -d "${old_home}/${dir}" && ! -d "${HOMEBRAIN_HOME}/${dir}" ]]; then
-            log_info "Migration: moving ${old_home}/${dir} → ${HOMEBRAIN_HOME}/${dir}"
-            mv "${old_home}/${dir}" "${HOMEBRAIN_HOME}/${dir}" \
-                || { log_error "Migration: failed to move ${dir}"; return 1; }
-            chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/${dir}"
-        fi
-    done
+    # --- 0. Create canonical target directories (idempotent) ---
+    install -d -o "${HOMEBRAIN_USER}" -g "${HOMEBRAIN_USER}" -m 0755 \
+        "${ai_dir}" "${ai_dir}/llama-server" "${ai_dir}/whisper-server" \
+        "${ai_dir}/whisper-proxy" "${models_dir}" "${nc_dir}"
 
-    # 2. Move model files (potentially huge — atomic rename within same filesystem)
-    for model in "${old_home}"/*.gguf; do
-        [[ -f "$model" ]] || continue
-        local fname
-        fname=$(basename "$model")
-        local target="${HOMEBRAIN_HOME}/${fname}"
-        if [[ ! -f "$target" ]]; then
-            log_info "Migration: moving model ${fname} → ${HOMEBRAIN_HOME}/"
-            mv "$model" "$target" \
-                || { log_error "Migration: failed to move model ${fname}"; return 1; }
-            chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$target"
-        else
-            log_info "Migration: model ${fname} already at destination — removing old copy."
-            rm -f "$model" 2>/dev/null || true
-        fi
-    done
-
-    # 3. Migrate OpenClaw config directory
-    if [[ -d "${old_home}/.openclaw" && ! -d "${HOMEBRAIN_HOME}/.openclaw" ]]; then
-        log_info "Migration: copying ${old_home}/.openclaw → ${HOMEBRAIN_HOME}/.openclaw"
-        cp -a "${old_home}/.openclaw" "${HOMEBRAIN_HOME}/.openclaw" \
-            || { log_error "Migration: failed to copy .openclaw config"; return 1; }
-        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
+    # --- 1. Stop AI services if active (so binaries can move safely) ---
+    # Track which were running so we restart at the end. If services are
+    # already stopped (fresh install) this is a no-op.
+    if systemctl list-unit-files llama-server.service &>/dev/null \
+        && systemctl is-active --quiet llama-server 2>/dev/null; then
+        restart_llama=true
+        systemctl stop llama-server 2>/dev/null || true
+    fi
+    if systemctl list-unit-files whisper-server.service &>/dev/null \
+        && systemctl is-active --quiet whisper-server 2>/dev/null; then
+        restart_whisper=true
+        systemctl stop whisper-server 2>/dev/null || true
+    fi
+    if systemctl list-unit-files whisper-proxy.service &>/dev/null \
+        && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
+        restart_proxy=true
+        systemctl stop whisper-proxy 2>/dev/null || true
     fi
 
-    # 4. Transfer systemd linger from admin to homebrain
-    loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
-    loginctl disable-linger admin 2>/dev/null || true
+    # --- 2. Phase A: legacy /home/admin → /home/homebrain ---
+    # Applies to: ARM/non-AI installs (admin was the only user), legacy AI x86
+    # installs predating the homebrain user. Non-AI installs typically have
+    # nothing to move here (no AI binaries, no .openclaw); the loop no-ops.
+    if [[ -d "${legacy_home}" ]] && [[ -n "$(ls -A "${legacy_home}" 2>/dev/null)" ]]; then
+        log_info "Migration A: legacy ${legacy_home} → ${hb}"
 
-    # 5. Reload systemd so any moved service files take effect
+        # Binary directories: admin/{llama-server,whisper-server} → ai-runtime/
+        for d in llama-server whisper-server; do
+            local src="${legacy_home}/${d}"
+            local dst="${ai_dir}/${d}"
+            if [[ -d "$src" ]] && [[ ! -L "$src" ]]; then
+                # If destination already populated, archive admin copy out of the way
+                if [[ -x "${dst}/${d}" ]]; then
+                    log_info "  ${d}: destination already populated; removing legacy copy."
+                    rm -rf "$src"
+                else
+                    log_info "  moving ${src} → ${dst}"
+                    rmdir "$dst" 2>/dev/null || true   # remove empty placeholder
+                    mv "$src" "$dst" || { log_error "  failed to move ${d}"; return 1; }
+                fi
+            fi
+        done
+
+        # whisper_proxy.py (lived inside whisper-server/ on some installs;
+        # carry it to the dedicated whisper-proxy/ dir)
+        if [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]] \
+            && [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+            mv "${ai_dir}/whisper-server/whisper_proxy.py" \
+               "${ai_dir}/whisper-proxy/whisper_proxy.py"
+        fi
+
+        # Model files: admin/*.gguf and admin/ggml-*.bin → models/ (flat)
+        shopt -s nullglob
+        for f in "${legacy_home}"/*.gguf "${legacy_home}"/ggml-*.bin; do
+            [[ -f "$f" ]] || continue
+            local fname target
+            fname=$(basename "$f")
+            target="${models_dir}/${fname}"
+            if [[ ! -e "$target" ]]; then
+                log_info "  moving model ${fname} → models/"
+                mv "$f" "$target" || { log_error "  failed to move ${fname}"; return 1; }
+            else
+                log_info "  model ${fname} already at destination — removing legacy copy."
+                rm -f "$f" 2>/dev/null || true
+            fi
+        done
+        shopt -u nullglob
+
+        # OpenClaw config (copy, not move — admin may still hold sessions until userdel)
+        if [[ -d "${legacy_home}/.openclaw" ]] && [[ ! -d "${hb}/.openclaw" ]]; then
+            log_info "  copying ${legacy_home}/.openclaw → ${hb}/.openclaw"
+            cp -a "${legacy_home}/.openclaw" "${hb}/.openclaw" \
+                || { log_error "  failed to copy .openclaw"; return 1; }
+        fi
+
+        # Linger transfer (so user-level openclaw-gateway survives logout)
+        loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
+        loginctl disable-linger admin 2>/dev/null || true
+    fi
+
+    # --- 3. Phase B: flat /home/homebrain → nested layout ---
+    # First round of consolidation moved data from /home/admin into a flat
+    # /home/homebrain/. Now group AI binaries under ai-runtime/ and models/.
+    for d in llama-server whisper-server; do
+        local src="${hb}/${d}"
+        local dst="${ai_dir}/${d}"
+        if [[ -d "$src" ]] && [[ ! -L "$src" ]] && [[ "$src" != "$dst" ]]; then
+            if [[ -x "${dst}/${d}" ]]; then
+                log_info "Migration B: ${d} already at ai-runtime/; removing flat copy."
+                rm -rf "$src"
+            else
+                log_info "Migration B: moving ${src} → ${dst}"
+                rmdir "$dst" 2>/dev/null || true
+                mv "$src" "$dst" || { log_error "  failed to move ${d}"; return 1; }
+            fi
+        fi
+    done
+
+    # Standalone whisper_proxy.py at /home/homebrain/whisper_proxy.py
+    if [[ -f "${hb}/whisper_proxy.py" ]] \
+        && [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+        mv "${hb}/whisper_proxy.py" "${ai_dir}/whisper-proxy/whisper_proxy.py"
+    elif [[ -f "${hb}/whisper_proxy.py" ]]; then
+        rm -f "${hb}/whisper_proxy.py"
+    fi
+
+    # Stray whisper_proxy.py left inside whisper-server/ after Phase B move
+    if [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]]; then
+        if [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+            mv "${ai_dir}/whisper-server/whisper_proxy.py" \
+               "${ai_dir}/whisper-proxy/whisper_proxy.py"
+        else
+            rm -f "${ai_dir}/whisper-server/whisper_proxy.py"
+        fi
+    fi
+
+    # Model files at the flat home root → models/
+    shopt -s nullglob
+    for f in "${hb}"/*.gguf "${hb}"/ggml-*.bin; do
+        [[ -f "$f" ]] && [[ ! -L "$f" ]] || continue
+        local fname target
+        fname=$(basename "$f")
+        target="${models_dir}/${fname}"
+        if [[ ! -e "$target" ]]; then
+            log_info "Migration B: moving model ${fname} → models/"
+            mv "$f" "$target" || { log_error "  failed to move ${fname}"; return 1; }
+        else
+            log_info "Migration B: model ${fname} already at destination — removing flat copy."
+            rm -f "$f" 2>/dev/null || true
+        fi
+    done
+    shopt -u nullglob
+
+    # --- 4. Phase C: flatten nested-by-family models/ ---
+    # The previous local agent run on .58 left models in models/{family}/.
+    # The codebase expects flat models/. Promote files up one level.
+    if [[ -d "${models_dir}" ]]; then
+        shopt -s nullglob
+        for sub in "${models_dir}"/*/; do
+            [[ -d "$sub" ]] || continue
+            for f in "${sub}"*.gguf "${sub}"*.bin; do
+                [[ -f "$f" ]] || continue
+                local fname target
+                fname=$(basename "$f")
+                target="${models_dir}/${fname}"
+                if [[ ! -e "$target" ]]; then
+                    log_info "Migration C: promoting ${sub}${fname} → models/${fname}"
+                    mv "$f" "$target" || { log_error "  failed to promote ${fname}"; return 1; }
+                else
+                    rm -f "$f" 2>/dev/null || true
+                fi
+            done
+            # Remove subdir if now empty
+            rmdir "$sub" 2>/dev/null || true
+        done
+        shopt -u nullglob
+    fi
+
+    # --- 5. Phase D: Nextcloud data → /home/homebrain/nextcloud-data ---
+    # docker-compose now defaults to /home/homebrain/nextcloud-data; pre-existing
+    # deployments have data under /opt/homebrain/nextcloud-data.
+    local legacy_nc="/opt/homebrain/nextcloud-data"
+    if [[ -d "$legacy_nc" ]] && [[ -n "$(ls -A "$legacy_nc" 2>/dev/null)" ]]; then
+        if [[ -z "$(ls -A "$nc_dir" 2>/dev/null)" ]]; then
+            log_info "Migration D: ${legacy_nc} → ${nc_dir}"
+            # Same filesystem (both under root) — atomic rename of contents
+            # via mv -T to preserve target dir + ownership.
+            ( shopt -s dotglob; mv "$legacy_nc"/* "$nc_dir"/ ) \
+                || { log_error "  Nextcloud data move failed"; return 1; }
+            rmdir "$legacy_nc" 2>/dev/null || true
+        else
+            log_warn "Migration D: ${nc_dir} already non-empty; leaving ${legacy_nc} in place. Investigate manually."
+        fi
+    fi
+
+    # --- 6. Cleanup: stale symlinks, ownership ---
+    find "${hb}" -maxdepth 1 -xtype l -delete 2>/dev/null || true   # broken symlinks
+    chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" \
+        "${ai_dir}" "${models_dir}" 2>/dev/null || true
+    if [[ -d "${hb}/.openclaw" ]]; then
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${hb}/.openclaw" 2>/dev/null || true
+    fi
+    # Nextcloud container runs as www-data (UID 33). The bind mount target
+    # MUST be owned by 33:33 or PHP gets EACCES on data writes.
+    chown 33:33 "${nc_dir}" 2>/dev/null || true
+
+    # --- 7. Regenerate systemd unit files for moved binaries ---
+    # If AI services existed and binaries are now at new paths, the unit files
+    # baked at /etc/systemd/system/ still reference old paths. Rewrite them.
     systemctl daemon-reload
+    if [[ -x "${ai_dir}/llama-server/llama-server" ]] \
+        && [[ -f /etc/systemd/system/llama-server.service ]]; then
+        if ! grep -q "${ai_dir}/llama-server/llama-server" /etc/systemd/system/llama-server.service; then
+            log_info "Regenerating llama-server.service for new paths..."
+            # setup_llama_server fast-paths when binary+model present: it just
+            # rewrites the unit file and restarts.
+            setup_llama_server || log_warn "  llama-server regeneration failed; manual review needed."
+            restart_llama=false   # setup already restarted
+        fi
+    fi
+    if [[ -x "${ai_dir}/whisper-server/whisper-server" ]] \
+        && [[ -f /etc/systemd/system/whisper-server.service ]]; then
+        local expected_whisper_model="${models_dir}/${AI_WHISPER_MODEL_FILENAME:-}"
+        if ! grep -q "${ai_dir}/whisper-server/whisper-server" /etc/systemd/system/whisper-server.service \
+            || ! grep -q "${ai_dir}/whisper-proxy/whisper_proxy.py" /etc/systemd/system/whisper-proxy.service 2>/dev/null \
+            || { [[ -n "${AI_WHISPER_MODEL_FILENAME:-}" ]] \
+                  && ! grep -qF -- "--model ${expected_whisper_model}" /etc/systemd/system/whisper-server.service; }; then
+            log_info "Regenerating whisper-server.service for new paths..."
+            setup_whisper_server || log_warn "  whisper-server regeneration failed; voice messages may not transcribe."
+            restart_whisper=false
+            restart_proxy=false
+        fi
+    fi
 
-    log_info "=== Migration complete ==="
+    # --- 8. Restart any services we stopped that weren't already restarted by setup_* ---
+    if [[ "$restart_llama" == "true" ]]; then
+        systemctl start llama-server 2>/dev/null || log_warn "  llama-server restart failed."
+    fi
+    if [[ "$restart_whisper" == "true" ]]; then
+        systemctl start whisper-server 2>/dev/null || log_warn "  whisper-server restart failed."
+    fi
+    if [[ "$restart_proxy" == "true" ]]; then
+        systemctl start whisper-proxy 2>/dev/null || log_warn "  whisper-proxy restart failed."
+    fi
+
+    log_info "=== Layout migration complete ==="
+}
+
+# Backwards-compatible shim — callers still invoke the old name.
+migrate_admin_to_homebrain() {
+    migrate_to_consolidated_layout
 }
 
 # --- Main Dispatch (only when executed directly, not sourced) ---
@@ -1367,7 +1565,8 @@ case "${1:-}" in
         log_info "llama-server updated and restarted."
         ;;
     migrate)
-        migrate_admin_to_homebrain
+        load_env 2>/dev/null || true   # .env may not exist on first provision
+        migrate_to_consolidated_layout
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"
