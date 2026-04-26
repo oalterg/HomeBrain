@@ -201,7 +201,7 @@ get_system_config_status() {
 
     # whisper-server + proxy (speech-to-text)
     local whisper_status="not_installed"
-    if [[ -x "${HOMEBRAIN_HOME}/whisper-server/whisper-server" ]]; then
+    if [[ -x "${HOMEBRAIN_HOME}/ai-runtime/whisper-server/whisper-server" ]]; then
         if systemctl is-active --quiet whisper-server 2>/dev/null \
            && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
             whisper_status="running"
@@ -520,7 +520,7 @@ create_ha_admin() {
 
 # Get the llama-server binary path for the current platform
 get_llama_bin_path() {
-    echo "${HOMEBRAIN_HOME}/llama-server/llama-server"
+    echo "${HOMEBRAIN_HOME}/ai-runtime/llama-server/llama-server"
 }
 
 # Install pinned llama.cpp release (called by update-deps.sh on version bump)
@@ -588,7 +588,7 @@ generate_llama_service() {
 # Install prebuilt llama-server with Vulkan GPU support (both platforms)
 install_llama_prebuilt() {
     local force="${1:-false}"
-    local LLAMA_INSTALL_DIR="${HOMEBRAIN_HOME}/llama-server"
+    local LLAMA_INSTALL_DIR="${HOMEBRAIN_HOME}/ai-runtime/llama-server"
     local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
 
     # Fast-path: binary already present (skip unless force update)
@@ -727,7 +727,7 @@ setup_llama_server() {
     # Read model config from .env (set by dashboard model selector)
     local MODEL_NAME="${AI_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_MODEL_URL:-}"
-    local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
+    local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
     # Parse ctx_size and extra_flags from platform_models.json for the selected model
     # (they were baked in by generate_llama_service, no need to keep in .env)
     local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
@@ -820,7 +820,7 @@ wait_for_llama_health() {
 
 install_whisper_server() {
     local force="${1:-false}"
-    local WHISPER_INSTALL_DIR="${HOMEBRAIN_HOME}/whisper-server"
+    local WHISPER_INSTALL_DIR="${HOMEBRAIN_HOME}/ai-runtime/whisper-server"
     local WHISPER_BIN="${WHISPER_INSTALL_DIR}/whisper-server"
 
     if [[ "$force" != "true" ]] && [[ -x "$WHISPER_BIN" ]]; then
@@ -905,7 +905,7 @@ EOF
     # --- whisper-proxy (converts OGG/Opus → WAV for whisper-server) ---
     # WhatsApp sends voice messages as OGG/Opus; whisper.cpp only accepts WAV.
     # The proxy converts via ffmpeg before forwarding to whisper-server.
-    local proxy_script="${HOMEBRAIN_HOME}/whisper-server/whisper_proxy.py"
+    local proxy_script="${HOMEBRAIN_HOME}/ai-runtime/whisper-proxy/whisper_proxy.py"
     cp "${SCRIPT_DIR}/whisper_proxy.py" "$proxy_script"
     chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$proxy_script"
 
@@ -947,7 +947,7 @@ setup_whisper_server() {
     local MODEL_NAME="${AI_WHISPER_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_WHISPER_MODEL_URL:-}"
     local MIN_SIZE="${AI_WHISPER_MODEL_MIN_SIZE:-600000000}"
-    local WHISPER_BIN="${HOMEBRAIN_HOME}/whisper-server/whisper-server"
+    local WHISPER_BIN="${HOMEBRAIN_HOME}/ai-runtime/whisper-server/whisper-server"
 
     # If no whisper model configured yet, pick the default from platform_models.json
     if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
@@ -970,7 +970,7 @@ setup_whisper_server() {
         fi
     fi
 
-    local MODEL_PATH="${HOMEBRAIN_HOME}/${MODEL_NAME}"
+    local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
 
     # --- [1/5] Fast-path: binary and model already present ---
     log_info "[1/5] Checking for existing whisper-server installation..."

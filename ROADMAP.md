@@ -29,7 +29,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### Near-term
 
-- **consolidate project directories** — one central consolidate /opt/homebrain, instead of mingled /home/admin/ and /home/homebrain/. Only one central user: homebrain
+- ~~**consolidate project directories**~~ — ✅ Done. All runtime data consolidated under `/home/homebrain/`. Application code stays in `/opt/homebrain/`. Migration via `migrate-directories.sh` (local only, not upstream).
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
 
 ### Medium-term
