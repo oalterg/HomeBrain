@@ -21,6 +21,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 - ✅ **OpenClaw backup scope** — agent workspace and config included in automated backups (opt-out)
 - ✅ **Always-on hardening** — AMD GPU runtime PM disabled (VRAM stays loaded), sleep inhibitor service, systemd crash-loop protection
 - ✅ **Dependency version pinning** — OpenClaw and llama.cpp locked to verified, tested releases; freeze/upgrade workflow defined for reproducible stack
+- ✅ **llamacpp fine-tuning** — Qwen3.6 35B A3B Q6K, benchmarked MoE CPU offloading for 16 GB VRAM
 
 ---
 
@@ -28,7 +29,6 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### Near-term
 
-- **llamacpp fine-tuning** — Qwen3.6 35B A3B Q6K, Benchmark MoE CPU offloading for 16 GB VRAM
 - **consolidate project directories** — one central consolidate /opt/homebrain, instead of mingled /home/admin/ and /home/homebrain/. Only one central user: homebrain
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
 
