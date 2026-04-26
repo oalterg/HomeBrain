@@ -165,8 +165,9 @@ if [[ "$_GENERATED_PASS" == "true" ]]; then
     log_warn "═══════════════════════════════════════════════════════════"
 fi
 
-# Store HAS_GPU for later use
-update_env_var "HAS_GPU" "$HAS_GPU"
+# HAS_GPU is re-detected on every common.sh source (detect_gpu), and app.py
+# probes /dev/dri as fallback — no need to persist it in .env. Writing it here
+# would create .env before the setup wizard runs and prevent the template copy.
 
 # --- 3. Setup Python Environment ---
 echo "Provisioning HomeBrain Manager..."
