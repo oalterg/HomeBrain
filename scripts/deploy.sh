@@ -180,6 +180,6 @@ auto_setup_ai() {
         || log_warn "AI stack auto-setup failed (non-fatal). Install manually from the dashboard."
 }
 
-if [[ "$HB_AI_DEFAULT" == "opt-out" ]]; then
+if [[ "$HAS_GPU" == "true" && "${HB_AI_DEFAULT:-}" == "opt-out" ]]; then
     auto_setup_ai &
 fi

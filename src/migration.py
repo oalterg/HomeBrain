@@ -2,7 +2,6 @@ import os
 import shutil
 import logging
 import subprocess
-import platform
 
 # Configuration Constants
 INSTALL_DIR = "/opt/homebrain"
@@ -100,28 +99,3 @@ def run_migrations():
         except Exception as e:
             logging.error(f"Migration: Failed to rename backup cron: {e}")
 
-    # --- Migration 3: ROCm to Vulkan transition cleanup ---
-    # Removes ROCm apt repo, old llama binaries, and stops llama-server for Vulkan reinstall
-    rocm_list = "/etc/apt/sources.list.d/rocm.list"
-    rocm_gpg = "/etc/apt/keyrings/rocm.gpg"
-    old_source_build = "/home/admin/llama.cpp"
-    old_prebuilt_dir = "/home/admin/llama-server"
-
-    if os.path.exists(rocm_list) or os.path.exists(old_source_build):
-        logging.info("Migration: Cleaning up ROCm artifacts for Vulkan transition...")
-        try:
-            for f in [rocm_list, rocm_gpg]:
-                if os.path.exists(f):
-                    os.remove(f)
-                    logging.info(f"Migration: Removed {f}")
-            if os.path.exists(old_source_build):
-                shutil.rmtree(old_source_build, ignore_errors=True)
-                logging.info("Migration: Removed old source build directory")
-            if os.path.exists(old_prebuilt_dir):
-                shutil.rmtree(old_prebuilt_dir, ignore_errors=True)
-                logging.info("Migration: Removed old prebuilt directory (will reinstall with Vulkan)")
-            subprocess.run(["systemctl", "stop", "llama-server"], capture_output=True)
-            subprocess.run(["systemctl", "disable", "llama-server"], capture_output=True)
-            logging.info("Migration: ROCm cleanup complete. AI stack will reinstall with Vulkan on next enable.")
-        except Exception as e:
-            logging.error(f"Migration: ROCm cleanup failed: {e}")

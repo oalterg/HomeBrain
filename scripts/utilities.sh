@@ -682,43 +682,6 @@ download_model() {
     log_info "Model downloaded: $(( size / 1073741824 )) GB"
 }
 
-# Apply the Qwen3.5 chat-template guard to a freshly downloaded GGUF.
-# Without this patch, multi-turn conversations re-inject a bare
-#   <|im_start|>assistant\n<think>\n\n</think>\n\n
-# header for assistant turns that had no extended reasoning.  On DeltaNet/SSM
-# hybrid models this causes llama_memory_seq_rm() to fail, forcing full prompt
-# reprocessing on every subsequent turn.
-#
-# The patcher is idempotent (exits 2 when the old pattern is absent) and safe
-# to run on any GGUF — if the template does not contain the target string it is
-# a no-op.  A non-zero rc other than 2 is treated as a warning, not a fatal
-# error, so setup continues even if python3 is unavailable.
-apply_gguf_chat_template_patch() {
-    local model_path="$1"
-    local patcher="${INSTALL_DIR}/scripts/patch_gguf_chat_template.py"
-    # Upstream fix: guard the <think> re-injection on reasoning_content being present.
-    local old='{%- if loop.index0 > ns.last_query_index %}'
-    local new='{%- if loop.index0 > ns.last_query_index and reasoning_content %}'
-
-    if [[ ! -f "$patcher" ]]; then
-        log_warn "GGUF chat-template patcher not found at $patcher — skipping."
-        return 0
-    fi
-    if ! command -v python3 >/dev/null 2>&1; then
-        log_warn "python3 not available — skipping GGUF chat-template patch."
-        return 0
-    fi
-
-    log_info "Applying GGUF chat-template patch to $(basename "$model_path")..."
-    local rc=0
-    python3 "$patcher" "$model_path" "$old" "$new" || rc=$?
-    case "$rc" in
-        0) log_info "Chat-template patched successfully." ;;
-        2) log_info "Chat-template already patched or pattern not applicable — skipping." ;;
-        *) log_warn "GGUF chat-template patch exited $rc — model may still work; verify manually." ;;
-    esac
-}
-
 # Main setup orchestrator
 setup_llama_server() {
     log_info "=== Setting up llama-server ==="
@@ -777,10 +740,9 @@ setup_llama_server() {
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"
     log_info "[3/5] Binary ready: $LLAMA_BIN"
 
-    # --- [4/5] Download model and patch chat template ---
+    # --- [4/5] Download model ---
     log_info "[4/5] Downloading model..."
     download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
-    apply_gguf_chat_template_patch "$MODEL_PATH"
 
     # --- [5/5] Deploy service and start ---
     log_info "[5/5] Deploying llama-server service..."
@@ -1097,55 +1059,9 @@ patch_openclaw_config() {
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
 
-# Stop any openclaw-gateway processes still running as the legacy 'admin' user.
-# The admin daemon holds port 18789 and blocks the homebrain daemon from binding
-# it after migration. Must be called before starting the homebrain openclaw daemon.
-stop_legacy_admin_openclaw() {
-    id admin >/dev/null 2>&1 || return 0  # no admin user; nothing to do
-
-    local admin_uid
-    admin_uid=$(id -u admin)
-
-    # Graceful stop via openclaw CLI
-    if command -v openclaw >/dev/null 2>&1; then
-        sudo -u admin \
-            XDG_RUNTIME_DIR="/run/user/${admin_uid}" \
-            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${admin_uid}/bus" \
-            timeout 10 openclaw daemon stop 2>/dev/null || true
-    fi
-
-    # Kill any surviving openclaw-gateway processes owned by admin
-    if pkill -0 -u admin -x openclaw-gateway 2>/dev/null; then
-        log_warn "Killing stale openclaw-gateway processes owned by admin..."
-        pkill -TERM -u admin -x openclaw-gateway 2>/dev/null || true
-        local i=0
-        while pkill -0 -u admin -x openclaw-gateway 2>/dev/null && [[ $i -lt 5 ]]; do
-            sleep 1
-            ((i++))
-        done
-        pkill -KILL -u admin -x openclaw-gateway 2>/dev/null || true
-    fi
-
-    # Remove admin's systemd user service files to prevent resurrection
-    local admin_systemd_dir="/home/admin/.config/systemd/user"
-    if [[ -d "$admin_systemd_dir" ]]; then
-        rm -f "$admin_systemd_dir"/openclaw-gateway.service "$admin_systemd_dir"/openclaw-gateway.service.bak
-        rm -f "$admin_systemd_dir/default.target.wants/openclaw-gateway.service" 2>/dev/null || true
-        log_info "Removed legacy admin OpenClaw systemd unit files."
-    fi
-
-    # Disable admin linger so systemd doesn't respawn the user session
-    loginctl disable-linger admin 2>/dev/null || true
-
-    log_info "Legacy admin openclaw processes and units cleared."
-}
-
 # Run a command as the HomeBrain OS user with systemd user session environment.
 # Required for openclaw daemon/gateway which uses systemd user services.
 run_as_admin() {
-    # Kill any leftover admin user OpenClaw processes before starting homebrain ones
-    stop_legacy_admin_openclaw
-
     local hb_uid
     hb_uid=$(id -u "${HOMEBRAIN_USER}")
     # Ensure linger is enabled (allows user services without login)
@@ -1266,7 +1182,6 @@ setup_openclaw() {
 
     # --- [3/3] Register and start daemon ---
     log_info "[3/3] Registering and starting daemon..."
-    stop_legacy_admin_openclaw
     run_as_admin openclaw daemon install 2>/dev/null || true
     run_as_admin openclaw daemon start \
         || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
@@ -1296,6 +1211,15 @@ setup_openclaw() {
 migrate_admin_to_homebrain() {
     local lock="/tmp/.hb_migration.lock"
     local old_home="/home/admin"
+
+    # Migration only relocates AI artefacts (llama-server, whisper-server,
+    # GGUF models, .openclaw config). On non-AI deployments — including ARM
+    # devices already running under the admin user — there is nothing to
+    # move and Nextcloud data is intentionally left in place.
+    if [[ "${HAS_GPU:-false}" != "true" ]]; then
+        log_info "Migration: HAS_GPU=false, no AI artefacts to relocate. Skipping."
+        return 0
+    fi
 
     # Skip if old home doesn't exist or is already empty
     if [[ ! -d "$old_home" ]] || [[ -z "$(ls -A "$old_home" 2>/dev/null)" ]]; then
@@ -1351,10 +1275,7 @@ migrate_admin_to_homebrain() {
     loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
     loginctl disable-linger admin 2>/dev/null || true
 
-    # 5. Stop admin openclaw daemon so it releases port 18789 for the homebrain daemon
-    stop_legacy_admin_openclaw
-
-    # 6. Reload systemd so any moved service files take effect
+    # 5. Reload systemd so any moved service files take effect
     systemctl daemon-reload
 
     log_info "=== Migration complete ==="

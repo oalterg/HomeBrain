@@ -114,17 +114,56 @@ if [[ "$HAS_GPU" == "true" ]]; then
 fi
 
 # --- 2. Write Factory Config ---
+# Preserve any pre-existing values from a properly-imaged device. CLI args
+# (when provided) take precedence; missing fields fall back to existing file
+# contents. This makes re-running provision.sh idempotent — it never wipes
+# the factory password baked into the OS image.
 echo "Writing factory configuration (mode: ${PROVISION_MODE})..."
+declare -A _FC=( [NEWT_ID]="" [NEWT_SECRET]="" [PANGOLIN_DOMAIN]="" \
+                 [PANGOLIN_ENDPOINT]="" [FACTORY_PASSWORD]="" \
+                 [REGISTRAR_URL]="" [REGISTRAR_SECRET]="" )
+if [[ -f "$BOOT_CONFIG" ]]; then
+    while IFS='=' read -r _k _v; do
+        [[ -n "$_k" && "$_k" != \#* ]] && _FC[$_k]="$_v"
+    done < "$BOOT_CONFIG"
+fi
+[[ -n "$PROV_NEWT_ID"           ]] && _FC[NEWT_ID]="$PROV_NEWT_ID"
+[[ -n "$PROV_NEWT_SECRET"       ]] && _FC[NEWT_SECRET]="$PROV_NEWT_SECRET"
+[[ -n "$PROV_PANGOLIN_DOMAIN"   ]] && _FC[PANGOLIN_DOMAIN]="$PROV_PANGOLIN_DOMAIN"
+[[ -n "$PROV_PANGOLIN_ENDPOINT" ]] && _FC[PANGOLIN_ENDPOINT]="$PROV_PANGOLIN_ENDPOINT"
+[[ -n "$PROV_FACTORY_PASS"      ]] && _FC[FACTORY_PASSWORD]="$PROV_FACTORY_PASS"
+[[ -n "$PROV_REGISTRAR_URL"     ]] && _FC[REGISTRAR_URL]="$PROV_REGISTRAR_URL"
+[[ -n "$PROV_REGISTRAR_SECRET"  ]] && _FC[REGISTRAR_SECRET]="$PROV_REGISTRAR_SECRET"
+
+# Without a factory password the device is unreachable. Generate one if missing
+# and surface it prominently so the operator can record it on the device label.
+_GENERATED_PASS=false
+if [[ -z "${_FC[FACTORY_PASSWORD]}" ]]; then
+    if command -v pwgen >/dev/null 2>&1; then
+        _FC[FACTORY_PASSWORD]="$(pwgen -s 16 1)"
+    else
+        _FC[FACTORY_PASSWORD]="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+    fi
+    _GENERATED_PASS=true
+fi
+
 cat > "$BOOT_CONFIG" <<EOF
-NEWT_ID=${PROV_NEWT_ID}
-NEWT_SECRET=${PROV_NEWT_SECRET}
-PANGOLIN_DOMAIN=${PROV_PANGOLIN_DOMAIN}
-PANGOLIN_ENDPOINT=${PROV_PANGOLIN_ENDPOINT}
-FACTORY_PASSWORD=${PROV_FACTORY_PASS}
-REGISTRAR_URL=${PROV_REGISTRAR_URL}
-REGISTRAR_SECRET=${PROV_REGISTRAR_SECRET}
+NEWT_ID=${_FC[NEWT_ID]}
+NEWT_SECRET=${_FC[NEWT_SECRET]}
+PANGOLIN_DOMAIN=${_FC[PANGOLIN_DOMAIN]}
+PANGOLIN_ENDPOINT=${_FC[PANGOLIN_ENDPOINT]}
+FACTORY_PASSWORD=${_FC[FACTORY_PASSWORD]}
+REGISTRAR_URL=${_FC[REGISTRAR_URL]}
+REGISTRAR_SECRET=${_FC[REGISTRAR_SECRET]}
 EOF
 chmod 600 "$BOOT_CONFIG"
+
+if [[ "$_GENERATED_PASS" == "true" ]]; then
+    log_warn "═══════════════════════════════════════════════════════════"
+    log_warn "GENERATED FACTORY PASSWORD: ${_FC[FACTORY_PASSWORD]}"
+    log_warn "Record this on the device label — it cannot be recovered."
+    log_warn "═══════════════════════════════════════════════════════════"
+fi
 
 # Store HAS_GPU for later use
 update_env_var "HAS_GPU" "$HAS_GPU"

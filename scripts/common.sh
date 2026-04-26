@@ -22,16 +22,20 @@ log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
 
 # --- GPU Detection ---
+# HomeBrain's AI stack (llama-server) targets x86_64 with AMD/Nvidia/Intel GPU.
+# aarch64 targets (HomeCloud/RPi) are always treated as no-GPU — their on-die
+# video engines (e.g. RPi VideoCore) expose DRM render nodes but cannot run
+# llama-server inference.
 detect_gpu() {
-  # Layer 1: DRM render node (works for AMD/Nvidia/Intel on Linux)
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    HAS_GPU=false; export HAS_GPU; return 0
+  fi
   if ls /dev/dri/renderD* &>/dev/null 2>&1; then
     HAS_GPU=true; export HAS_GPU; return 0
   fi
-  # Layer 2: sysfs DRM
   if ls /sys/class/drm/render* &>/dev/null 2>&1; then
     HAS_GPU=true; export HAS_GPU; return 0
   fi
-  # Layer 3: lspci VGA/3D/Display controller
   if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qiE "VGA|3D|Display"; then
     HAS_GPU=true; export HAS_GPU; return 0
   fi
@@ -40,13 +44,24 @@ detect_gpu() {
 detect_gpu
 
 # --- User Management ---
-# Verify the homebrain system user exists and is in the required groups.
-# The user is pre-provisioned on the OS image; this function is a guard only.
+# Ensure the homebrain system user exists and is in the required groups.
+# Idempotent: a properly-built OS image already has this user, in which case
+# this is a no-op. Generic Debian/Ubuntu installs (e.g. plain Raspberry Pi OS)
+# do not, so create it here with sudo + a locked password (key-based login only).
 ensure_homebrain_user() {
     if ! id -u "${HOMEBRAIN_USER}" >/dev/null 2>&1; then
-        die "System user '${HOMEBRAIN_USER}' does not exist. Please provision the OS image correctly."
+        log_info "Creating system user '${HOMEBRAIN_USER}'..."
+        useradd -m -s /bin/bash "${HOMEBRAIN_USER}"
+        # Locked password: SSH key-based access only, but sudo via NOPASSWD is
+        # NOT granted here — admin still drives privileged ops.
+        passwd -l "${HOMEBRAIN_USER}" >/dev/null 2>&1 || true
+        if getent group sudo >/dev/null 2>&1; then
+            usermod -aG sudo "${HOMEBRAIN_USER}" 2>/dev/null || true
+        fi
+        mkdir -p "${HOMEBRAIN_HOME}/.ssh"
+        chmod 700 "${HOMEBRAIN_HOME}/.ssh"
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.ssh"
     fi
-    # Ensure homebrain is in required groups (idempotent)
     for grp in docker render video; do
         if getent group "$grp" >/dev/null 2>&1; then
             usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
@@ -412,10 +427,16 @@ configure_nc_ha_proxy_settings() {
                 docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 5 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || true
             fi
         else
-            # Remote mode: HTTPS via tunnel, use configured domain
+            # Remote mode: HTTPS via tunnel + LAN access via homebrain.local / LAN IP
+            local lan_ip
+            lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
             docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
             docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://${NEXTCLOUD_TRUSTED_DOMAINS}" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || true
+            if [[ -n "$lan_ip" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || true
+            fi
         fi
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 0 --value="$TRUSTED_PROXIES_0" || die "Failed to set trusted_proxies 0."
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 1 --value="$TRUSTED_PROXIES_1" || die "Failed to set trusted_proxies 1."
