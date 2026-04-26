@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import shutil
 import secrets
@@ -10,6 +11,7 @@ import hashlib
 import logging
 import shlex
 import tempfile
+import platform
 import requests
 import fcntl
 from datetime import timedelta
@@ -20,8 +22,100 @@ from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
 
+# --- GPU Detection ---
+def has_gpu() -> bool:
+    """Check if a GPU is available. Reads HAS_GPU from env, falls back to /dev/dri probe."""
+    val = os.environ.get("HAS_GPU", "").lower()
+    if val in ("true", "1", "yes"):
+        return True
+    if val in ("false", "0", "no"):
+        return False
+    # Fallback: probe /dev/dri directly (for existing installs without HAS_GPU in .env)
+    import glob
+    return bool(glob.glob("/dev/dri/renderD*"))
+
+# Cache for delta-based GPU compute utilisation (avoids relying on gpu_busy_percent,
+# which reports spurious 92-100 % on GFX12/RDNA4/Navi44 hardware regardless of load).
+_gpu_fdinfo_cache: dict = {"ts": 0.0, "ns": 0, "util_pct": 0}
+
+def _amdgpu_compute_util() -> int:
+    """Return GPU compute utilisation % derived from drm-engine-compute delta (fdinfo).
+
+    On GFX12/RDNA4 (e.g. RX 9060 XT / Navi44) the sysfs gpu_busy_percent attribute is
+    stuck at ~92-100 % regardless of actual shader load.  Instead we read the cumulative
+    drm-engine-compute nanoseconds from /proc/*/fdinfo for every amdgpu client, deduplicate
+    by drm-client-id, and compare with the previous sample to derive a true utilisation %.
+    Returns 0 on the first call (no prior baseline), then accurate deltas thereafter.
+    """
+    import glob as _glob
+    global _gpu_fdinfo_cache
+    seen: set = set()
+    total_ns: int = 0
+    for fdinfo_dir in _glob.glob("/proc/[0-9]*/fdinfo"):
+        try:
+            for fd_path in _glob.glob(f"{fdinfo_dir}/*"):
+                try:
+                    data = open(fd_path).read()
+                    if "amdgpu" not in data:
+                        continue
+                    client_id = compute_ns = None
+                    for line in data.splitlines():
+                        if line.startswith("drm-client-id:"):
+                            client_id = line.split(":", 1)[1].strip()
+                        elif line.startswith("drm-engine-compute:"):
+                            compute_ns = int(line.split(":", 1)[1].strip().split()[0])
+                    if client_id and compute_ns is not None and client_id not in seen:
+                        seen.add(client_id)
+                        total_ns += compute_ns
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    now = time.monotonic()
+    prev_ts = _gpu_fdinfo_cache["ts"]
+    prev_ns = _gpu_fdinfo_cache["ns"]
+    if prev_ts > 0:
+        dt = now - prev_ts
+        dns = total_ns - prev_ns
+        if dt > 0 and dns >= 0:
+            _gpu_fdinfo_cache["util_pct"] = min(100, round(dns / (dt * 1e9) * 100))
+    _gpu_fdinfo_cache["ts"] = now
+    _gpu_fdinfo_cache["ns"] = total_ns
+    return _gpu_fdinfo_cache["util_pct"]
+
+def get_gpu_stats() -> dict:
+    """Read GPU stats from sysfs — AMD amdgpu driver (no rocm-smi dependency)."""
+    import glob as _glob
+    result = {"available": False}
+    try:
+        bases = _glob.glob("/sys/class/drm/card*/device")
+        if not bases:
+            return result
+        base = bases[0]
+        result["util_percent"] = _amdgpu_compute_util()
+        vram_used = int(open(f"{base}/mem_info_vram_used").read().strip())
+        vram_total = int(open(f"{base}/mem_info_vram_total").read().strip())
+        result["vram_used_gb"] = round(vram_used / (1024**3), 1)
+        result["vram_total_gb"] = round(vram_total / (1024**3), 1)
+        result["vram_percent"] = round(vram_used / vram_total * 100) if vram_total else 0
+        temp_paths = _glob.glob(f"{base}/hwmon/hwmon*/temp1_input")
+        if temp_paths:
+            result["temp_c"] = round(int(open(temp_paths[0]).read().strip()) / 1000, 1)
+        result["available"] = True
+    except Exception:
+        pass
+    return result
+
+def get_models():
+    """Load flat model list from platform_models.json."""
+    models_path = os.path.join(INSTALL_DIR, 'config', 'platform_models.json')
+    with open(models_path) as f:
+        data = json.load(f)
+    return data.get("models", []), data.get("default", "")
+
 # --- Configuration & Constants ---
-FACTORY_CONFIG = "/boot/firmware/factory_config.txt"
+# Boot config path detection (filesystem-based)
+FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/firmware") else "/opt/homebrain/factory_config.txt"
 HOMEBRAIN_ROOT = "/opt/homebrain"
 INSTALL_DIR = HOMEBRAIN_ROOT # Alias for backward compatibility if needed
 SETUP_STARTED_MARKER = f"{INSTALL_DIR}/.setup_started"
@@ -38,6 +132,8 @@ PROVISION_SCRIPT = f"{INSTALL_DIR}/scripts/provision.sh"
 VERSION_FILE = f"{INSTALL_DIR}/version.json"
 REPO_API_URL = "https://api.github.com/repos/oalterg/HomeBrain"
 SCRIPT_UPDATE = f"{INSTALL_DIR}/scripts/update.sh"
+SCRIPT_UPDATE_DEPS = f"{INSTALL_DIR}/scripts/update-deps.sh"
+VERSIONS_FILE = f"{INSTALL_DIR}/config/versions.json"
 SCRIPT_BACKUP = f"{INSTALL_DIR}/scripts/backup.sh"
 SCRIPT_RESTORE = f"{INSTALL_DIR}/scripts/restore.sh"
 SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
@@ -55,6 +151,8 @@ LOG_FILES = {
     "update": f"{LOG_DIR}/manager_update.log",
     "manager": f"{LOG_DIR}/manager.log",
 }
+
+JOURNAL_SERVICES = {"openclaw", "llama-server"}
 
 # --- Logging Configuration (Global & Robust) ---
 # Configure logging immediately so Gunicorn or Dev server both use it
@@ -98,6 +196,13 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=7),
     SESSION_REFRESH_EACH_REQUEST=True
 )
+
+@app.context_processor
+def inject_platform():
+    arch = platform.machine()
+    if arch == "aarch64":
+        return {"platform": {"product_name": "HomeCloud", "product_suffix": "Cloud"}}
+    return {"platform": {"product_name": "HomeBrain", "product_suffix": "Brain"}}
 
 def get_factory_password():
     """Reads the factory password securely from config."""
@@ -361,8 +466,9 @@ def update_env_var(key, value):
         quoted_val = f"'{safe_val_bash}'"
 
         if rc == 0:
-            # Use | delimiter for sed. Escape | in the quoted value.
-            sed_val = quoted_val.replace("|", "\\|")
+            # Use | delimiter for sed. Escape \ first (sed treats \X as escape
+            # sequences in replacement), then escape | delimiter.
+            sed_val = quoted_val.replace("\\", "\\\\").replace("|", "\\|")
             subprocess.run(["sed", "-i", f"s|^{key}=.*|{key}={sed_val}|", ENV_FILE])
         else:
             with open(ENV_FILE, "r+") as f:
@@ -383,6 +489,32 @@ def is_setup_complete():
 
 def is_setup_started():
     return os.path.exists(SETUP_STARTED_MARKER)
+
+
+def is_local_mode():
+    """Returns True when running in LAN-only mode.
+    Local if Pangolin credentials are absent, or if user explicitly set DEPLOYMENT_MODE=local.
+    When credentials are present, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
+    """
+    env = get_env_config()
+    # No Pangolin credentials — always local
+    if not all(env.get(k) for k in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"]):
+        return True
+    # Credentials present but user opted out
+    return env.get("DEPLOYMENT_MODE", "remote") == "local"
+
+
+def get_lan_ip():
+    """Returns the primary LAN IP of this machine."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
 
 
 def calculate_sha256(filepath):
@@ -415,22 +547,33 @@ def start_setup():
         # Harden: Ensure file is only readable by root
         os.chmod(ENV_FILE, 0o600)
         # Set Passwords & Critical Defaults
-        update_env_var("NEXTCLOUD_DATA_DIR", "/home/admin/nextcloud")
+        update_env_var("NEXTCLOUD_DATA_DIR", os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), "nextcloud-data"))
         update_env_var("NEXTCLOUD_ADMIN_USER", "admin")
 
 
-    # Map Factory Config to Environment Variables
+    # Write deployment mode chosen in the setup wizard
+    data = request.get_json(silent=True) or {}
+    deployment_mode = data.get("deployment_mode", "local")
+    update_env_var("DEPLOYMENT_MODE", deployment_mode)
+
+    # Map credentials: prefer form submission, fall back to factory config
     factory = get_factory_config()
-    for key in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_ENDPOINT"]:
-        if key in factory: update_env_var(key, factory[key])
-    
-    # Domain Logic: Main Domain -> Subdomains
-    if "PANGOLIN_DOMAIN" in factory:
-        main_dom = factory["PANGOLIN_DOMAIN"]
-        update_env_var("PANGOLIN_DOMAIN", main_dom)
-        update_env_var("MANAGER_DOMAIN", main_dom)
-        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
-        update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
+
+    if deployment_mode == "remote":
+        newt_id       = data.get("pangolin_id")       or factory.get("NEWT_ID", "")
+        newt_secret   = data.get("pangolin_secret")   or factory.get("NEWT_SECRET", "")
+        pan_endpoint  = data.get("pangolin_endpoint") or factory.get("PANGOLIN_ENDPOINT", "")
+        pan_domain    = data.get("pangolin_domain")   or factory.get("PANGOLIN_DOMAIN", "")
+
+        update_env_var("NEWT_ID",           newt_id)
+        update_env_var("NEWT_SECRET",       newt_secret)
+        update_env_var("PANGOLIN_ENDPOINT", pan_endpoint)
+
+        if pan_domain:
+            update_env_var("PANGOLIN_DOMAIN",            pan_domain)
+            update_env_var("MANAGER_DOMAIN",             pan_domain)
+            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS",  f"nc.{pan_domain}")
+            update_env_var("HA_TRUSTED_DOMAINS",         f"ha.{pan_domain}")
 
     env_config = get_env_config()
     
@@ -524,56 +667,57 @@ def mount_drive():
     if not drive_path or "mmcblk" in drive_path:
         return jsonify({"error": "Invalid drive"}), 400
 
-    # Use absolute paths for system tools
-    blkid_path = shutil.which("blkid") or "/usr/sbin/blkid"
-    lsblk_path = shutil.which("lsblk") or "/usr/bin/lsblk"
-
-    # 1. Robustly determine the target partition
-    # If user selected /dev/sda, find the first child partition (e.g. /dev/sda1)
+    # 1. Determine the actual device/partition path to use
     target_path = drive_path
-    try:
-        # Ask lsblk for the first child partition of the selected device
-        child_part = subprocess.check_output(
-            [lsblk_path, "-no", "NAME", "-n", "-l", drive_path], 
-            text=True
-        ).strip().split('\n')
+    
+    # Check if this is a whole disk device (e.g., /dev/sda)
+    # If it is a whole disk, append '1' to check the first partition (e.g., /dev/sda1)
+    # This is a common convention, though 'p1' for NVMe/MMC can also occur.
+    # The lsblk output in list_drives provides only whole disk paths, so we check for common partition suffixes.
+    if not drive_path.endswith(('0','1','2','3','4','5','6','7','8','9')) and not drive_path.endswith('p'):
+        # Try appending '1'
+        target_path = drive_path + '1'
         
-        # If there are children, the first one after the parent is usually the partition
-        if len(child_part) > 1:
-            target_path = f"/dev/{child_part[1].strip()}"
-    except Exception as e:
-        logging.warning(f"lsblk partition detection failed: {e}")
-
+        # Verify if the partition actually exists
+        if not os.path.exists(target_path):
+             # For some systems (e.g., NVMe/MMC), the partition might be /dev/nvme0n1p1.
+             # We rely on the user selecting the whole disk, so if /dev/sdX1 doesn't exist, we fallback
+             # to trying the original whole-disk path, as it *might* have been formatted without partitions.
+             target_path = drive_path
              
     # 2. Get UUID and FSType from the target path
     try:
-        # We use -o export for blkid as it is easier to parse and more reliable
-        output = subprocess.check_output([blkid_path, "-p", "-o", "export", target_path], text=True)
-        info = dict(line.split("=", 1) for line in output.strip().split("\n") if "=" in line)
-        
-        uuid = info.get("UUID")
-        fstype = info.get("TYPE")
+        # Check UUID/FSType of the identified partition/device
+        uuid_cmd = f"blkid -o value -s UUID {shlex.quote(target_path)}"
+        fstype_cmd = f"blkid -o value -s TYPE {shlex.quote(target_path)}"
+
+        uuid = subprocess.check_output(uuid_cmd, shell=True).decode().strip()
+        fstype = subprocess.check_output(fstype_cmd, shell=True).decode().strip()
+
+        if not uuid:
+            # Fallback to the original whole-disk path if the partition check failed
+            if target_path != drive_path:
+                uuid = subprocess.check_output(f"blkid -o value -s UUID {shlex.quote(drive_path)}", shell=True).decode().strip()
+                fstype = subprocess.check_output(f"blkid -o value -s TYPE {shlex.quote(drive_path)}", shell=True).decode().strip()
+                if uuid:
+                     target_path = drive_path # Use the whole disk path if it has a UUID
+            
         if not uuid:
             # If still no UUID, it means the disk or its first partition is unformatted.
             return jsonify({"error": "No UUID found. Drive is likely unformatted or partitioned incorrectly."}), 400
 
         if fstype not in ["ext4", "ext3", "xfs"]:
             return jsonify({"error": f"Unsupported filesystem ({fstype})"}), 400
+    except:
+        return jsonify({"error": "Could not read drive info (blkid failed)"}), 500
 
-    except subprocess.CalledProcessError as e:
-        logging.error(f"blkid failed on {target_path}: {e}")
-        return jsonify({"error": f"Could not read drive info (blkid exit {e.returncode})"}), 500
-    except Exception as e:
-        logging.error(f"Unexpected mount error: {str(e)}")
-        return jsonify({"error": f"System error: {str(e)}"}), 500
-    
     # 3. Use the discovered UUID and FSType to update fstab
     # We use target_path for unmounting but UUID for fstab entry.
     cmd = (
         f"umount {shlex.quote(target_path)} || true; "
         f"mkdir -p {BACKUP_DIR}; "
         # Remove any existing entry for the backup dir to avoid conflicts
-        f"sed -i '\|{BACKUP_DIR}|d' /etc/fstab; "
+        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab; "
         # Add new entry using the validated UUID
         f'echo "UUID={uuid} {BACKUP_DIR} {fstype} defaults,nofail 0 2" >> /etc/fstab; '
         f"mount -a"
@@ -592,16 +736,29 @@ def index():
     # We MUST show the installing/success view so the user can claim them,
     # even if the setup is marked as complete.
     if os.path.exists(INSTALL_CREDS_PATH):
-        return render_template("installing.html", handover_ready=True)
+        return render_template("installing.html", handover_ready=True, has_gpu=has_gpu())
 
     if not is_setup_complete():
         # If setup is running, show progress (No auth required for this specific view state)
         if is_setup_started():
-            return render_template("installing.html")
-        return render_template("welcome.html", config=get_factory_config())
+            return render_template("installing.html", has_gpu=has_gpu())
+        return render_template("welcome.html", config=get_factory_config(), has_gpu=has_gpu())
 
     factory = get_factory_config()
     env = get_env_config()
+
+    # Deployment mode
+    local = is_local_mode()
+    deployment_mode = "local" if local else "remote"
+
+    # Compute service URLs based on mode
+    if local:
+        lan_ip = get_lan_ip()
+        nc_url = f"http://{lan_ip}:8080"
+        ha_url = f"http://{lan_ip}:8123"
+    else:
+        nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
+        ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
 
     # Determine Tunnel Provider Mode
     # If any CF token exists, we are in Cloudflare mode
@@ -620,6 +777,9 @@ def index():
 
     return render_template(
         "dashboard.html",
+        deployment_mode=deployment_mode,
+        nc_url=nc_url,
+        ha_url=ha_url,
         main_domain=env.get("PANGOLIN_DOMAIN"),
         nc_domain=env.get("NEXTCLOUD_TRUSTED_DOMAINS"),
         ha_domain=env.get("HA_TRUSTED_DOMAINS"),
@@ -631,8 +791,21 @@ def index():
             "is_custom_pangolin": is_custom_pangolin,
         },
         cloud_enabled=cloud_enabled,
-        cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"}
+        cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"},
+        has_gpu=has_gpu()
     )
+
+
+# --- Routes: Deployment Mode ---
+@app.route("/api/deployment-mode")
+def deployment_mode_api():
+    """Returns current deployment mode and tunnel domain (if any)."""
+    env = get_env_config()
+    local = is_local_mode()
+    tunnel_domain = None
+    if not local:
+        tunnel_domain = env.get("PANGOLIN_DOMAIN") or env.get("NEXTCLOUD_TRUSTED_DOMAINS") or None
+    return jsonify({"mode": "local" if local else "remote", "tunnelDomain": tunnel_domain})
 
 
 # --- Routes: API Status ---
@@ -741,10 +914,28 @@ def system_status():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    if has_gpu():
+        services["gpu"] = get_gpu_stats()
+
     return jsonify(services)
 
 @app.route("/api/logs/<log_target>")
 def get_logs(log_target):
+    # If target is a systemd service, read from journal
+    if log_target in JOURNAL_SERVICES:
+        try:
+            cmd = [
+                "journalctl", "-u", log_target,
+                "-n", "200", "--no-pager", "--output=short-iso"
+            ]
+            output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=10).decode("utf-8", errors="replace")
+        except subprocess.CalledProcessError as e:
+            output = e.output.decode("utf-8", errors="replace")
+        except Exception as e:
+            output = f"[Error reading journal for {log_target}: {e}]"
+        return output
+
     # If target is in our known file list, read the file
     if log_target in LOG_FILES:
         filepath = LOG_FILES[log_target]
@@ -794,13 +985,13 @@ def list_drives():
             .decode()
             .strip()
         )
-        if "mmcblk" in root_dev:
-            root_disk = root_dev.split("p")[0]
-        else:
-            root_disk = root_dev.strip("0123456789")
+        # Layer 1: Robustly strip partition suffix to get the whole-disk name.
+        # re.sub handles NVMe (nvme0n1p7→nvme0n1), SATA (sda3→sda), eMMC (mmcblk0p1→mmcblk0).
+        root_disk = re.sub(r'p?\d+$', '', root_dev)
 
+        # Include children (partitions) so we can inspect their mount points.
         output = subprocess.check_output(
-            "lsblk -J -d -o NAME,SIZE,TYPE,MODEL,RM", shell=True
+            "lsblk -J -o NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT", shell=True
         ).decode()
         data = json.loads(output)
 
@@ -818,17 +1009,31 @@ def list_drives():
         except:
             pass
 
+        system_mounts = {'/', '/boot', '/boot/efi', '/opt/homebrain'}
+
         candidates = []
         for dev in data["blockdevices"]:
             dev_name = f"/dev/{dev['name']}"
-            
+
             # Filter out system pseudo-devices (zram, loop, ram)
             if dev["type"] != "disk":
                 continue
             if dev_name.startswith("/dev/zram") or dev_name.startswith("/dev/loop") or dev_name.startswith("/dev/ram"):
                 continue
-                
-            if dev_name in root_disk or root_disk in dev_name:
+
+            # Layer 2: Skip non-removable drives (RM=0) — internal NVMe/SATA are never removable.
+            rm = str(dev.get("rm", "0")).strip()
+            if rm != "1":
+                continue
+
+            # Layer 1 (continued): Skip the disk that contains the root filesystem.
+            if dev_name == root_disk or root_disk.startswith(dev_name):
+                continue
+
+            # Layer 3: Skip any disk whose partitions host critical system mount points.
+            # Belt-and-suspenders safety net in case RM or name matching ever misses.
+            child_mounts = {c.get("mountpoint") for c in dev.get("children", []) if c.get("mountpoint")}
+            if child_mounts & system_mounts:
                 continue
 
             # Robust check: Is this drive (or a partition on it) mounted at /mnt/backup?
@@ -852,101 +1057,32 @@ def list_drives():
 
 @app.route("/api/drives/format", methods=["POST"])
 @limiter.limit("3 per minute")
-def format_backup_drive():
-    # Dynamically find the path to the tools, or fallback to standard locations
-    wipefs_path = shutil.which("wipefs") or "/usr/sbin/wipefs"
-    parted_path = shutil.which("parted") or "/usr/sbin/parted"
-    mkfs_path = shutil.which("mkfs.ext4") or "/sbin/mkfs.ext4"
-    partprobe_path = shutil.which("partprobe") or "/usr/sbin/partprobe"
-    umount_path = shutil.which("umount") or "/bin/umount"
-    udevadm_path = shutil.which("udevadm") or "/bin/udevadm"
-
+def format_drive():
     if current_task_status["status"] == "running":
         return jsonify({"error": "Task running"}), 409
 
-    device_path = request.json.get("path")
-    if not device_path:
-        return jsonify({"error": "No drive path provided"}), 400
+    drive_path = request.json.get("path")
+    if not drive_path or "mmcblk" in drive_path:
+        return jsonify({"error": "Invalid drive"}), 400
 
-    logging.info(f"Initiating format sequence for {device_path}")
-    
-    # Safety Check: Never format the boot drive (nvme0n1 in your case)
-    if "nvme" in device_path or "mmcblk" in device_path:
-        error_msg = f"Refusing to format potential system drive: {device_path}"
-        logging.error(error_msg)
-        return jsonify({"error": error_msg}), 400
+    # Quote drive path to prevent command injection
+    safe_path = shlex.quote(drive_path)
+    cmd = (
+        f"umount {safe_path}* || true; "
+        f"wipefs -a {safe_path}; "
+        f"mkfs.ext4 -F -L 'NextcloudBackup' {safe_path}; "
+        f"mkdir -p {BACKUP_DIR}; "
+        f"UUID=$(blkid -o value -s UUID {safe_path}); "
+        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab; "
+        f'echo "UUID=$UUID {BACKUP_DIR} ext4 defaults,nofail 0 2" >> /etc/fstab; '
+        f"mount -a;"
+    )
 
-    def format_task():
-        try:
-            # 1. Unmount any existing partitions silently using absolute path
-            # We use '|| true' because if nothing is mounted, umount returns an error code we want to ignore.
-            subprocess.run(f"{umount_path} {device_path}* 2>/dev/null || true", shell=True)
+    threading.Thread(
+        target=run_background_task, args=("Format Drive", cmd, "setup")
+    ).start()
+    return jsonify({"status": "started"})
 
-            # 2. Wipe existing partition tables and signatures
-            logging.info(f"Wiping existing signatures on {device_path}...")
-            subprocess.run(
-                [wipefs_path, "-a", device_path], 
-                capture_output=True, text=True, check=True
-            )
-
-            # 3. Create a fresh GPT label and a single primary partition taking up 100% of the space
-            logging.info("Creating new GPT partition table...")
-            subprocess.run(
-                [parted_path, "-s", device_path, "mklabel", "gpt", "mkpart", "primary", "ext4", "0%", "100%"], 
-                capture_output=True, text=True, check=True
-            )
-            
-            # 4. Force kernel re-read and wait for system to settle
-            # This is much more stable than a simple sleep.
-            subprocess.run([partprobe_path, device_path], capture_output=True)
-            subprocess.run([udevadm_path, "settle"], timeout=10, capture_output=True)
-
-            # 5. Robust Partition Naming
-            # Standard drives: /dev/sda -> /dev/sda1
-            # NVMe/eMMC/Loop: /dev/nvme0n1 -> /dev/nvme0n1p1
-            partition_path = f"{device_path}1"
-            if device_path[-1].isdigit():
-                partition_path = f"{device_path}p1"
-
-            # 6. Format the newly created partition
-            logging.info(f"Formatting {partition_path} to ext4...")
-            mkfs_result = subprocess.run(
-                [mkfs_path, "-F", partition_path], 
-                capture_output=True, text=True, check=True
-            )
-            
-            logging.info(f"Format complete. mkfs output: {mkfs_result.stdout}")
-            write_status({
-                "status": "success",
-                "message": f"Successfully formatted {partition_path}. You can now mount it.",
-                "log_type": "setup"
-            })
-            
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command '{' '.join(e.cmd)}' failed (Code {e.returncode}). Error: {e.stderr.strip()}"
-            logging.error(f"Format Drive Error: {error_msg}")
-            write_status({
-                "status": "error",
-                "message": f"Format failed: {error_msg}",
-                "log_type": "setup"
-            })
-            
-        except Exception as e:
-            logging.error(f"Unexpected system error during format of {device_path}: {str(e)}")
-            write_status({
-                "status": "error",
-                "message": f"Unexpected error: {str(e)}",
-                "log_type": "setup"
-            })
-
-    write_status({
-        "status": "running",
-        "message": f"Formatting {device_path}...",
-        "log_type": "setup"
-    })
-    threading.Thread(target=format_task).start()
-    
-    return jsonify({"status": "started", "message": f"Format process started for {device_path}"})
 
 # --- Routes: Backup Config & Stats ---
 @app.route("/api/backup/stats")
@@ -1098,6 +1234,54 @@ def trigger_restore():
         target=run_background_task, args=(task_name, cmd, "restore")
     ).start()
     return jsonify({"status": "started"})
+
+
+@app.route('/api/openclaw/backup-status')
+def openclaw_backup_status():
+    """Return OpenClaw backup configuration and workspace stats."""
+    openclaw_dir = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), ".openclaw")
+    config_path = os.path.join(openclaw_dir, "openclaw.json")
+    workspace_path = os.path.join(openclaw_dir, "workspace")
+
+    config_present = os.path.isfile(config_path)
+
+    workspace_size_mb = None
+    if os.path.isdir(workspace_path):
+        try:
+            result = subprocess.check_output(
+                ["du", "-sm", workspace_path], stderr=subprocess.DEVNULL
+            )
+            workspace_size_mb = int(result.decode().split()[0])
+        except Exception:
+            pass
+
+    warn_threshold = int(os.environ.get("BACKUP_OPENCLAW_SIZE_WARN_MB", "500"))
+
+    return jsonify({
+        "config_present": config_present,
+        "workspace_size_mb": workspace_size_mb,
+        "workspace_size_warning": (
+            workspace_size_mb is not None and workspace_size_mb > warn_threshold
+        ),
+        "warn_threshold_mb": warn_threshold,
+        "backup_workspace": os.environ.get("BACKUP_OPENCLAW_WORKSPACE", "true").lower() == "true",
+        "exclude_caches": os.environ.get("BACKUP_OPENCLAW_EXCLUDE_CACHES", "false").lower() == "true",
+    })
+
+
+@app.route('/api/backup/openclaw-settings', methods=['POST'])
+def update_openclaw_backup_settings():
+    """Update OpenClaw backup settings."""
+    data = request.get_json(silent=True) or {}
+    if "include_workspace" in data:
+        val = "true" if data["include_workspace"] else "false"
+        update_env_var("BACKUP_OPENCLAW_WORKSPACE", val)
+        os.environ["BACKUP_OPENCLAW_WORKSPACE"] = val
+    if "exclude_caches" in data:
+        val = "true" if data["exclude_caches"] else "false"
+        update_env_var("BACKUP_OPENCLAW_EXCLUDE_CACHES", val)
+        os.environ["BACKUP_OPENCLAW_EXCLUDE_CACHES"] = val
+    return jsonify({"success": True})
 
 
 # --- Routes: Tunnel Management ---
@@ -1447,6 +1631,15 @@ def do_manager_update():
 
     subprocess.run(["chmod", "+x", SCRIPT_UPDATE])
 
+    # Snapshot current pinned dep versions before update.sh runs the file sync.
+    # The actual bump detection and install happens inside update.sh after rsync.
+    old_versions = {}
+    try:
+        with open(VERSIONS_FILE) as f:
+            old_versions = json.load(f)
+    except Exception:
+        pass
+
     cmd = (
         f"echo 'Starting Manager Update ({shlex.quote(channel)})...' > {LOG_FILES['update']}; "
         f"{SCRIPT_UPDATE} {shlex.quote(channel)} {shlex.quote(target_ref)} >> {LOG_FILES['update']} 2>&1"
@@ -1454,10 +1647,11 @@ def do_manager_update():
 
     # Fire and forget thread, as the service will restart
     threading.Thread(target=lambda: subprocess.run(cmd, shell=True)).start()
-    
+
     return jsonify({
-        "status": "started", 
-        "message": f"Updating to {channel} {target_ref}. Interface will restart."
+        "status": "started",
+        "message": f"Updating to {channel} {target_ref}. Interface will restart.",
+        "current_versions": old_versions,
     })
 
 # --- Auto-Update Logic ---
@@ -1490,6 +1684,99 @@ def perform_first_boot_update():
     except Exception as e:
         logging.error(f"First boot update skipped (No Network?): {e}")
 
+@app.route("/api/ai/models", methods=["GET"])
+@limiter.limit("30 per minute")
+def get_ai_models():
+    """Returns available AI models (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
+    try:
+        models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
+        with open(models_file, "r") as f:
+            data = json.load(f)
+        return jsonify({
+            "models": data.get("models", []),
+            "llama_server": data.get("llama_server", {}),
+            "whisper_models": data.get("whisper", {}).get("models", [])
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ai/model", methods=["POST"])
+@limiter.limit("5 per minute")
+def set_ai_model():
+    """Persist the user's model selection to .env for the AI setup scripts (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
+
+    data = request.json
+    model_id = data.get("model_id")
+    if not model_id:
+        return jsonify({"error": "model_id required"}), 400
+
+    # Look up model in registry
+    models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
+    try:
+        with open(models_file, "r") as f:
+            all_models = json.load(f)
+        models = all_models.get("models", [])
+        model = next((m for m in models if m["id"] == model_id), None)
+        if not model:
+            return jsonify({"error": f"Unknown model: {model_id}"}), 400
+
+        server_defaults = all_models.get("llama_server", {})
+        update_env_var("AI_MODEL_ID", model["id"])
+        update_env_var("AI_MODEL_FILENAME", model["filename"])
+        update_env_var("AI_MODEL_URL", model["url"])
+        update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
+        return jsonify({"status": "ok", "model": model["id"]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ai/model/switch", methods=["POST"])
+@limiter.limit("3 per minute")
+def switch_ai_model():
+    """Switch to a different AI model (updates .env, restarts services) (GPU-gated)."""
+    if not has_gpu():
+        return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "A task is already running"}), 409
+
+    data = request.json
+    model_id = data.get("model_id")
+    if not model_id:
+        return jsonify({"error": "model_id required"}), 400
+
+    models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
+    try:
+        with open(models_file, "r") as f:
+            all_models = json.load(f)
+        models = all_models.get("models", [])
+        model = next((m for m in models if m["id"] == model_id), None)
+        if not model:
+            return jsonify({"error": f"Unknown model: {model_id}"}), 400
+
+        server_defaults = all_models.get("llama_server", {})
+        update_env_var("AI_MODEL_ID", model["id"])
+        update_env_var("AI_MODEL_FILENAME", model["filename"])
+        update_env_var("AI_MODEL_URL", model["url"])
+        update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
+
+        cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} switch_model >> {LOG_FILES['setup']} 2>&1"
+        threading.Thread(
+            target=run_background_task, args=(f"Switch AI model to {model_id}", cmd, "setup")
+        ).start()
+
+        return jsonify({"status": "started", "model": model_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/system/capabilities", methods=["GET"])
+@limiter.limit("30 per minute")
+def system_capabilities():
+    """Returns system capabilities (GPU availability, AI features, etc.)."""
+    return jsonify({"has_gpu": has_gpu(), "ai_enabled": has_gpu()})
+
 @app.route("/api/system/config", methods=["GET"])
 @limiter.limit("30 per minute")
 def get_system_config():
@@ -1512,12 +1799,16 @@ def update_system_config():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
-    feature = data.get("feature") # watchdog, cron, pci
+    feature = data.get("feature") # watchdog, cron, pci, openclaw
     action = data.get("action")   # enable/disable or gen3/gen2
 
     # Whitelist features and actions
     if feature not in ["watchdog", "cron", "pci", "openclaw"]:
         return jsonify({"error": "Invalid feature"}), 400
+
+    # Pi-only features (check by boot config path existence)
+    if feature in ["watchdog", "pci"] and not os.path.isdir("/boot/firmware"):
+        return jsonify({"error": f"{feature} is only available on Raspberry Pi"}), 400
 
     safe_action = shlex.quote(action) if action else ""
 
@@ -1538,26 +1829,13 @@ def update_system_config():
         cmd = f"bash {SCRIPT_UTILITIES} pci {target}"
         label = f"Configure PCIe ({target})"
     elif feature == "openclaw":
-        target_val = "true" if action == "enable" else "false"
-        # Update .env immediately so scripts see the new state
-        update_env_var("ENABLE_OPENCLAW", target_val)
-
-        selected_model = data.get("model", "llama3.2")
-        
-        safe_env = shlex.quote(ENV_FILE)
-        
-        # Use subshell to ensure environment is re-evaluated
-        cmd_script = f"source {shlex.quote(INSTALL_DIR)}/scripts/common.sh\n"
-        cmd_script += f"profiles=\"$(get_compose_args) $(get_tunnel_profiles)\"\n"
-        cmd_script += f"docker compose --env-file {safe_env} $profiles up -d --remove-orphans\n"
-        
+        update_env_var("ENABLE_OPENCLAW", "true" if action == "enable" else "false")
         if action == "enable":
-            cmd_script += f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai {shlex.quote(selected_model)}\n"
-            label = "Install & Start OpenClaw AI"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} setup_ai"
+            label = "Install & Start AI Stack"
         else:
-            label = "Disable OpenClaw AI"
-            
-        cmd = f"bash -c {shlex.quote(cmd_script)}"
+            cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} stop_ai"
+            label = "Disable AI Stack"
 
     # Execute
     cmd += f" >> {LOG_FILES['setup']} 2>&1"
@@ -1566,6 +1844,21 @@ def update_system_config():
     ).start()
     
     return jsonify({"status": "started"})
+
+@app.route("/api/ai/whatsapp/link-token")
+def whatsapp_link_token():
+    """Return the OpenClaw gateway token + port for WhatsApp WebSocket linking."""
+    try:
+        config_path = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), ".openclaw/openclaw.json")
+        if not os.path.exists(config_path):
+            return jsonify({"error": "OpenClaw not configured"}), 404
+        with open(config_path) as f:
+            oc_config = json.load(f)
+        token = oc_config.get("gateway", {}).get("auth", {}).get("token", "")
+        port = oc_config.get("gateway", {}).get("port", 18789)
+        return jsonify({"token": token, "port": port})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/redis/status")
 def redis_status():

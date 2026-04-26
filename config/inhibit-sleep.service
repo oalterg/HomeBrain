@@ -1,0 +1,20 @@
+[Unit]
+Description=HomeBrain Sleep Inhibitor
+Documentation=https://github.com/homebrain
+After=multi-user.target
+ConditionVirtualization=!container
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/systemd-inhibit \
+  --what=sleep:handle-lid-switch:handle-power-key \
+  --who=homebrain \
+  --why="HomeBrain inference server must remain always-on" \
+  --mode=block \
+  /bin/sleep infinity
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

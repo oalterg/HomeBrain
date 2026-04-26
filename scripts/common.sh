@@ -8,6 +8,10 @@ export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 export OVERRIDE_FILE="$INSTALL_DIR/docker-compose.override.yml"
 export BACKUP_MOUNTDIR="/mnt/backup"
 
+# --- Canonical HomeBrain OS User ---
+export HOMEBRAIN_USER="homebrain"
+export HOMEBRAIN_HOME="/home/${HOMEBRAIN_USER}"
+
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
@@ -16,6 +20,72 @@ log_info() { echo "[INFO] $1" >&2; }
 log_warn() { echo "[WARN] $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
+
+# --- GPU Detection ---
+# HomeBrain's AI stack (llama-server) targets x86_64 with AMD/Nvidia/Intel GPU.
+# aarch64 targets (HomeCloud/RPi) are always treated as no-GPU — their on-die
+# video engines (e.g. RPi VideoCore) expose DRM render nodes but cannot run
+# llama-server inference.
+detect_gpu() {
+  if [[ "$(uname -m)" != "x86_64" ]]; then
+    HAS_GPU=false; export HAS_GPU; return 0
+  fi
+  if ls /dev/dri/renderD* &>/dev/null 2>&1; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  if ls /sys/class/drm/render* &>/dev/null 2>&1; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qiE "VGA|3D|Display"; then
+    HAS_GPU=true; export HAS_GPU; return 0
+  fi
+  HAS_GPU=false; export HAS_GPU
+}
+detect_gpu
+
+# --- User Management ---
+# Ensure the homebrain system user exists and is in the required groups.
+# Idempotent: a properly-built OS image already has this user, in which case
+# this is a no-op. Generic Debian/Ubuntu installs (e.g. plain Raspberry Pi OS)
+# do not, so create it here with sudo + a locked password (key-based login only).
+ensure_homebrain_user() {
+    if ! id -u "${HOMEBRAIN_USER}" >/dev/null 2>&1; then
+        log_info "Creating system user '${HOMEBRAIN_USER}'..."
+        useradd -m -s /bin/bash "${HOMEBRAIN_USER}"
+        # Locked password: SSH key-based access only, but sudo via NOPASSWD is
+        # NOT granted here — admin still drives privileged ops.
+        passwd -l "${HOMEBRAIN_USER}" >/dev/null 2>&1 || true
+        if getent group sudo >/dev/null 2>&1; then
+            usermod -aG sudo "${HOMEBRAIN_USER}" 2>/dev/null || true
+        fi
+        mkdir -p "${HOMEBRAIN_HOME}/.ssh"
+        chmod 700 "${HOMEBRAIN_HOME}/.ssh"
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.ssh"
+    fi
+    for grp in docker render video; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
+        fi
+    done
+}
+
+# --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
+ensure_admin_user() {
+    if id -u admin >/dev/null 2>&1; then
+        log_info "admin user already exists."
+        return 0
+    fi
+    log_info "Creating admin user for Ubuntu x86..."
+    useradd -m -s /bin/bash admin
+    mkdir -p /home/admin/.ssh
+    chmod 700 /home/admin/.ssh
+    # Add to render/video for GPU access, docker for container management
+    for grp in render video docker; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            usermod -aG "$grp" admin 2>/dev/null || true
+        fi
+    done
+}
 
 # --- Environment Loading ---
 load_env() {
@@ -63,14 +133,14 @@ update_env_var() {
             # Escape value for sed (basic safety for URLs/domains)
             local safe_val
             safe_val=$(printf '%s\n' "$value" | sed -e 's/[\/&]/\\&/g')
-            sed -i "s|^${key}=.*|${key}=${safe_val}|" "$ENV_FILE"
+            sed -i "s|^${key}=.*|${key}='${safe_val}'|" "$ENV_FILE"
         else
             # If key missing, append it
-            echo "${key}=${value}" >> "$ENV_FILE"
+            echo "${key}='${value}'" >> "$ENV_FILE"
         fi
     else
         log_warn ".env file not found, creating new one."
-        echo "${key}=${value}" > "$ENV_FILE"
+        echo "${key}='${value}'" > "$ENV_FILE"
     fi
 }
 
@@ -135,13 +205,19 @@ get_tunnel_profiles() {
     # Trim leading space if any
     profiles="${profiles#" "}"
 
-    # --- AI Profile ---
-    local enable_ai="${ENABLE_OPENCLAW:-false}"
-    if [[ "$enable_ai" == "true" ]]; then
-        profiles="${profiles} --profile ai"
-    fi
-
     echo "${profiles}"
+}
+
+# Returns 0 (true) when running in local/LAN-only mode.
+# Logic: local if Pangolin not provisioned (credentials absent), OR if user explicitly
+# set DEPLOYMENT_MODE=local to opt out despite having credentials.
+# When Pangolin IS provisioned, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
+is_local_mode() {
+    # No Pangolin credentials at all — always local regardless of DEPLOYMENT_MODE
+    [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
+    # Credentials present but user explicitly opted out
+    [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
+    return 1
 }
 
 wait_for_healthy() {
@@ -200,14 +276,35 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
-    apt-get install -y -qq ca-certificates gnupg lsb-release cron gpg rsync initramfs-tools python3-flask python3-dotenv python3-requests python3-pip jq moreutils pwgen git parted rfkill
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted"
+    apt-get install -y -qq $common_pkgs
+
+    # Install Google Chrome for OpenClaw browser tool (x86 only, non-fatal)
+    # Uses deb package instead of snap to avoid confinement issues on headless servers
+    if [[ "$HAS_GPU" == "true" ]]; then
+        if ! command -v google-chrome-stable >/dev/null 2>&1; then
+            log_info "Installing Google Chrome for headless browsing..."
+            wget -q -O /tmp/google-chrome.deb \
+                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
+                && apt-get install -y -qq /tmp/google-chrome.deb \
+                && rm -f /tmp/google-chrome.deb \
+                || log_warn "Chrome install failed. OpenClaw browser tool may not work."
+        fi
+        if command -v google-chrome-stable >/dev/null 2>&1; then
+            log_info "Chrome available for headless browsing."
+        else
+            log_warn "Chrome not available. OpenClaw browser tool will not work."
+        fi
+    fi
     apt-get update -qq
 
     # Docker setup
     if ! [ -f /etc/apt/keyrings/docker.gpg ]; then
         mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+        local os_id
+        os_id=$(. /etc/os-release && echo "$ID")  # "debian" or "ubuntu"
+        curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${os_id} $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
         apt-get update -y -qq
     fi
     
@@ -313,11 +410,36 @@ configure_nc_ha_proxy_settings() {
 
     # 1. Update Nextcloud Trusted Proxies
     if [[ -n "$nc_cid" ]]; then
-        # Nextcloud HTTPS & Proxy Config
-        docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
+        if is_local_mode; then
+            # Local mode: HTTP only, trust LAN addresses, no tunnel domain required
+            local lan_ip
+            lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=http || die "Failed to set overwriteprotocol."
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="http://homebrain.local:8080" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="localhost" || die "Failed to set trusted_domains localhost."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || die "Failed to set trusted_domains homebrain.local."
+            if [[ -n "$lan_ip" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || die "Failed to set trusted_domains LAN IP."
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="${lan_ip}:8080" || true
+            fi
+            # If an explicit trusted domain was set anyway, honour it at slot 5
+            if [[ -n "${NEXTCLOUD_TRUSTED_DOMAINS:-}" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 5 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || true
+            fi
+        else
+            # Remote mode: HTTPS via tunnel + LAN access via homebrain.local / LAN IP
+            local lan_ip
+            lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://${NEXTCLOUD_TRUSTED_DOMAINS}" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || true
+            if [[ -n "$lan_ip" ]]; then
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || true
+            fi
+        fi
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 0 --value="$TRUSTED_PROXIES_0" || die "Failed to set trusted_proxies 0."
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 1 --value="$TRUSTED_PROXIES_1" || die "Failed to set trusted_proxies 1."
-        docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
         # Use index 10 to avoid conflict with existing static ones
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 10 --value="$subnet" || die "Failed to set trusted_proxies 10."
         # Also ensure localhost is trusted

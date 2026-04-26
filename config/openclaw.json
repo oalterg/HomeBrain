@@ -1,0 +1,161 @@
+{
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true,
+    "executablePath": "/usr/bin/google-chrome-stable"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "llamacpp": {
+        "baseUrl": "http://127.0.0.1:8001/v1",
+        "apiKey": "1234",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+            "name": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      },
+      "openai": {
+        "apiKey": "dummy-local-whisper",
+        "baseUrl": "http://127.0.0.1:8002/v1",
+        "models": []
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL"
+      },
+      "models": {
+        "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL": {}
+      },
+      "llm": {
+        "idleTimeoutSeconds": 0
+      },
+      "workspace": "/home/homebrain/.openclaw/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "heartbeat": {
+        "every": "120m",
+        "target": "last",
+        "directPolicy": "allow",
+        "activeHours": {
+          "start": "08:00",
+          "end": "24:00",
+          "timezone": "Europe/Berlin"
+        }
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "profile": "full",
+          "alsoAllow": [
+            "browser"
+          ]
+        }
+      }
+    ]
+  },
+  "tools": {
+    "profile": "coding",
+    "media": {
+      "audio": {
+        "enabled": true,
+        "scope": {
+          "default": "allow"
+        },
+        "models": [
+          {
+            "capabilities": [
+              "audio"
+            ],
+            "baseUrl": "http://127.0.0.1:8002/v1",
+            "timeoutSeconds": 30
+          }
+        ]
+      }
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "selfChatMode": true,
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [],
+      "dangerouslyAllowHostHeaderOriginFallback": true,
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "auth": {
+      "mode": "token",
+      "token": ""
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send"
+      ]
+    }
+  },
+  "plugins": {
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      },
+      "browser": {
+        "enabled": true
+      },
+      "bonjour": {
+        "enabled": false
+      }
+    }
+  }
+}

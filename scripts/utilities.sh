@@ -5,16 +5,56 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 
+# --- Version Management ---
+
+load_versions() {
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    if ! command -v jq >/dev/null 2>&1; then
+        log_info "Installing jq..."
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install -y jq -qq
+    fi
+    [[ -f "$versions_file" ]] || die "versions.json not found at $versions_file"
+    LLAMA_TAG=$(jq -r '.llama_cpp.tag' "$versions_file")
+    LLAMA_URL=$(jq -r '.llama_cpp.url' "$versions_file")
+    OPENCLAW_VERSION=$(jq -r '.openclaw.version' "$versions_file")
+    export LLAMA_TAG LLAMA_URL OPENCLAW_VERSION
+}
+
+get_installed_versions_file() {
+    echo "/opt/homebrain/.installed_versions.json"
+}
+
+update_installed_version() {
+    local key="$1" value="$2"
+    local file
+    file=$(get_installed_versions_file)
+    [[ -f "$file" ]] || echo '{}' > "$file"
+    local tmp
+    tmp=$(mktemp)
+    jq --arg val "$value" "$key = \$val" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
 # Global Config
 VSFTPD_CONF="/etc/vsftpd.conf"
 FTP_PASSWD_FILE="/etc/vsftpd/ftppasswd"
 USER_CONFIG_DIR="/etc/vsftpd/user_conf"
-BOOT_CONFIG="/boot/firmware/config.txt"
+# Boot config path detection (filesystem-based)
+if [[ -d "/boot/firmware" ]]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+else
+    BOOT_CONFIG=""
+fi
 WATCHDOG_CONF="/etc/watchdog.conf"
 NC_CRON_FILE="/etc/cron.d/nextcloud-cron"
 
-# --- Helper: Configure Watchdog ---
+# --- Helper: Configure Watchdog (Pi 5 only) ---
 configure_watchdog() {
+    if [[ ! -f "$BOOT_CONFIG" ]]; then
+        log_info "Watchdog configuration is Pi-specific. Skipping on non-Pi platform."
+        return 0
+    fi
+
     local action="$1" # enable | disable
 
     if [[ "$action" == "enable" ]]; then
@@ -77,10 +117,15 @@ EOF
     log_info "Nextcloud cron configured."
 }
 
-# --- Helper: Configure PCIe Speed ---
+# --- Helper: Configure PCIe Speed (Pi 5 only) ---
 configure_pci_speed() {
+    if [[ ! -f "$BOOT_CONFIG" ]]; then
+        log_info "PCIe configuration is Pi-specific. Skipping on non-Pi platform."
+        return 0
+    fi
+
     local speed="$1" # gen2 | gen3
-    
+
     if [[ "$speed" == "gen3" ]]; then
         log_info "Enabling PCIe Gen 3.0 speeds..."
         if ! grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG"; then
@@ -97,13 +142,15 @@ configure_pci_speed() {
 get_system_config_status() {
     load_env
 
-    # Watchdog
-    local wd_status="disabled"
-    if systemctl is-active --quiet watchdog; then wd_status="enabled"; fi
-
-    # PCIe
-    local pci_status="gen2"
-    if grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG"; then pci_status="gen3"; fi
+    # Watchdog & PCIe (Pi-only)
+    local wd_status="unsupported"
+    local pci_status="unsupported"
+    if [[ -f "$BOOT_CONFIG" ]]; then
+        wd_status="disabled"
+        if systemctl is-active --quiet watchdog; then wd_status="enabled"; fi
+        pci_status="gen2"
+        if grep -q "^dtparam=pciex1_gen=3" "$BOOT_CONFIG" 2>/dev/null; then pci_status="gen3"; fi
+    fi
 
     # NC Cron
     local cron_status="unknown"
@@ -112,18 +159,59 @@ get_system_config_status() {
         cron_status=$(docker exec -u www-data "$nc_cid" php occ config:app:get core backgroundjobs_mode 2>/dev/null || echo "unknown")
     fi
 
-    # OpenClaw AI
-    local ai_status="disabled"
-    if [[ "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
-        local ai_cid=$(docker compose $(get_compose_args) ps -q openclaw 2>/dev/null || true)
-        if [[ -n "$ai_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ai_cid" 2>/dev/null) == "true" ]]; then
-            ai_status="running"
+    # llama-server (inference engine) — platform-aware binary path
+    local llama_status="not_installed"
+    local llama_bin
+    llama_bin=$(get_llama_bin_path)
+    if [[ -f "$llama_bin" ]]; then
+        if systemctl is-active --quiet llama-server 2>/dev/null; then
+            if curl -sf --max-time 3 http://127.0.0.1:8001/health >/dev/null 2>&1; then
+                llama_status="running"
+            else
+                llama_status="starting"
+            fi
         else
-            ai_status="starting"
+            llama_status="disabled"
         fi
     fi
 
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"openclaw\": \"$ai_status\"}"
+    # OpenClaw AI (system service managed by openclaw daemon)
+    local ai_status="not_installed"
+    if command -v openclaw >/dev/null 2>&1; then
+        local oc_output
+        oc_output=$(run_as_admin timeout 15 openclaw gateway status 2>/dev/null || true)
+        if echo "$oc_output" | grep -qi "running\|active\|online"; then
+            ai_status="running"
+        else
+            ai_status="disabled"
+        fi
+    fi
+
+    # WhatsApp channel link status
+    local wa_status="disabled"
+    if command -v openclaw >/dev/null 2>&1 && [[ "$ai_status" != "not_installed" ]]; then
+        local wa_output
+        wa_output=$(run_as_admin timeout 10 openclaw channels status --probe 2>/dev/null || true)
+        if echo "$wa_output" | grep -qi "whatsapp.*not linked\|whatsapp.*disconnected\|whatsapp.*logged out"; then
+            wa_status="not_linked"
+        elif echo "$wa_output" | grep -qi "whatsapp.*linked\|whatsapp.*connected"; then
+            wa_status="linked"
+        fi
+    fi
+
+    # whisper-server + proxy (speech-to-text)
+    local whisper_status="not_installed"
+    if [[ -x "${HOMEBRAIN_HOME}/ai-runtime/whisper-server/whisper-server" ]]; then
+        if systemctl is-active --quiet whisper-server 2>/dev/null \
+           && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
+            whisper_status="running"
+        else
+            whisper_status="stopped"
+        fi
+    fi
+
+    local current_model="${AI_MODEL_ID:-}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"whisper\": \"$whisper_status\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
@@ -152,14 +240,6 @@ configure_vsftpd() {
     # Backup original if not done
     if [ ! -f "${VSFTPD_CONF}.bak" ]; then
         cp "$VSFTPD_CONF" "${VSFTPD_CONF}.bak"
-    fi
-
-    # Fix www-data home for chroot compatibility (Idempotent)
-    local www_home
-    www_home=$(getent passwd www-data | cut -d: -f6)
-    if [ "$www_home" != "$NEXTCLOUD_DATA_DIR" ]; then
-        log_info "Updating www-data home directory to $NEXTCLOUD_DATA_DIR..."
-        usermod -d "$NEXTCLOUD_DATA_DIR" www-data
     fi
 
     # Write Config (Hardened)
@@ -436,81 +516,1018 @@ create_ha_admin() {
     return 0
 }
 
-# --- Helper: Setup AI Assistant ---
-setup_openclaw() {
-    log_info "Setting up OpenClaw AI Assistant..."
+# --- Helper: Setup llama-server (llama.cpp inference engine) ---
 
-    local requested_model="${1:-llama3.2}"
-    local ai_pull_name="llama3.2:3b"
-    local ai_model_custom="llama3.2-highctx"
-    local display_name="Llama 3.2 3B (16k)"
-
-    if [[ "$requested_model" == "nanbeige" ]]; then
-        ai_pull_name="fauxpaslife/nanbeige4.1"
-        ai_model_custom="nanbeige4.1-tools"
-        display_name="Nanbeige 4.1 (Tools)"
-    fi
-    
-    # Update environment so docker-compose targets the correct model on restart
-    update_env_var "OPENCLAW_PRIMARY_MODEL" "localollama/$ai_model_custom"
-
-   
-    # Wait for container to exist (it might be pulling the image)
-    local retry=0
-    while [[ -z $(docker compose $(get_compose_args) ps -q ollama 2>/dev/null) ]] && [[ $retry -lt 30 ]]; do
-        sleep 2
-        retry=$((retry+1))
-    done
-
-    log_info "Waiting for Ollama engine to initialize..."
-    wait_for_healthy "ollama" 300 || { log_error "Ollama failed to start."; return 1; }
-
-    local ollama_cid=$(docker compose $(get_compose_args) ps -q ollama 2>/dev/null)
-    log_info "Pulling $ai_pull_name base model..."
-    docker exec "$ollama_cid" ollama pull "$ai_pull_name"
-    log_info "Model pulled successfully."
-    
-    log_info "Configuring model for 16k context..."
-    docker exec "$ollama_cid" sh -c "echo 'FROM $ai_pull_name' > /tmp/Modelfile && echo 'PARAMETER num_ctx 16384' >> /tmp/Modelfile && echo 'PARAMETER temperature 0.7' >> /tmp/Modelfile && ollama create $ai_model_custom -f /tmp/Modelfile"
-    
-    log_info "Injecting OpenClaw provider configuration..."
-    # Dynamically find the compose volume name to be 100% robust
-    local vol_name=$(docker volume ls -q | grep "_openclaw_data" | head -n 1)
-    if [ -n "$vol_name" ]; then
-        docker run --rm -v "${vol_name}:/data" alpine sh -c '
-            apk add --no-cache jq &&
-            mkdir -p /data/.openclaw &&
-            touch /data/.openclaw/openclaw.json &&
-            (grep -q "{" /data/.openclaw/openclaw.json || echo "{}" > /data/.openclaw/openclaw.json) &&
-            jq ".models.providers.localollama = {
-                \"api\": \"openai-completions\",
-                \"baseUrl\": \"http://ollama:11434/v1\",
-                \"apiKey\": \"ollama-local\",
-                \"timeoutMs\": 1800000,
-                \"models\": [{
-                    \"id\": \"'"$ai_model_custom"'\",
-                    \"name\": \"'"$display_name"'\",
-                    \"contextWindow\": 16384,
-                    \"supportsTools\": true
-                }]
-            } | 
-            .agents.defaults.timeout = 1800 |
-            .agents.defaults.timeoutSeconds = 1800 |
-            .gateway.trustedProxies = [\"127.0.0.1\"] |
-            .gateway.controlUi.allowedOrigins = [\"http://192.168.178.43:8081\", \"http://homebrain.local:8081\", \"http://localhost:8081\", \"http://127.0.0.1:8081\"] |
-            .gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true |
-            .gateway.controlUi.allowInsecureAuth = true |
-            .gateway.controlUi.dangerouslyDisableDeviceAuth = true
-            " /data/.openclaw/openclaw.json > /tmp/tmp.json && mv /tmp/tmp.json /data/.openclaw/openclaw.json
-        '
-        log_info "Restarting OpenClaw to apply settings..."
-        docker compose $(get_compose_args) restart openclaw
-    else
-        log_error "Could not find openclaw_data volume to configure."
-    fi
+# Get the llama-server binary path for the current platform
+get_llama_bin_path() {
+    echo "${HOMEBRAIN_HOME}/ai-runtime/llama-server/llama-server"
 }
 
-# --- Main Dispatch ---
+# Install pinned llama.cpp release (called by update-deps.sh on version bump)
+install_llamacpp() {
+    load_versions
+    local bin_path
+    bin_path=$(get_llama_bin_path)
+    local install_dir
+    install_dir=$(dirname "$bin_path")
+    local installed_file
+    installed_file=$(get_installed_versions_file)
+
+    local installed_tag=""
+    if [[ -f "$installed_file" ]]; then
+        installed_tag=$(jq -r '.llama_cpp.tag // empty' "$installed_file" 2>/dev/null || echo "")
+    fi
+
+    if [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
+        log_info "llama.cpp already at ${LLAMA_TAG}, skipping."
+        return 0
+    fi
+
+    log_info "Installing llama.cpp ${LLAMA_TAG}..."
+
+    local tmp_archive
+    tmp_archive=$(mktemp /tmp/llama-XXXXXX.tar.gz)
+    curl -fsSL --retry 3 -o "$tmp_archive" "$LLAMA_URL" \
+        || die "Failed to download llama.cpp ${LLAMA_TAG}"
+
+    # Extract all files flat into install_dir so binary and .so backends are co-located
+    mkdir -p "$install_dir"
+    tar -xzf "$tmp_archive" --strip-components=1 -C "$install_dir"
+    rm -f "$tmp_archive"
+
+    [[ -x "$bin_path" ]] || chmod +x "$bin_path"
+    [[ -f "$bin_path" ]] || die "llama-server binary not found after extraction at $bin_path"
+
+    update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
+    log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"
+}
+
+# Generate the systemd service file at runtime from model/platform config.
+# Uses config/llama-server.service as the canonical template so the GPU-wait
+# ExecStartPre and dependency ordering are always in sync with the committed file.
+generate_llama_service() {
+    local bin_path="$1" model_path="$2" ctx_size="$3" extra_flags="$4"
+    local service_dest="/etc/systemd/system/llama-server.service"
+    local template="${SCRIPT_DIR}/../config/llama-server.service"
+    local work_dir
+    work_dir=$(dirname "$bin_path")
+
+    [[ -f "$template" ]] || die "llama-server service template not found at $template"
+
+    sed \
+        -e "s|__WORKDIR__|${work_dir}|g" \
+        -e "s|__LLAMA_BIN__|${bin_path}|g" \
+        -e "s|__LLAMA_MODEL__|${model_path}|g" \
+        -e "s|__CTX_SIZE__|${ctx_size}|g" \
+        -e "s@__EXTRA_FLAGS__@${extra_flags}@g" \
+        -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
+        "$template" > "$service_dest"
+    chmod 644 "$service_dest"
+}
+
+# Install prebuilt llama-server with Vulkan GPU support (both platforms)
+install_llama_prebuilt() {
+    local force="${1:-false}"
+    local LLAMA_INSTALL_DIR="${HOMEBRAIN_HOME}/ai-runtime/llama-server"
+    local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
+
+    # Fast-path: binary already present (skip unless force update)
+    if [[ "$force" != "true" ]] && [[ -x "$LLAMA_BIN" ]]; then
+        log_info "llama-server binary already present at $LLAMA_BIN."
+        return 0
+    fi
+
+    # Install Vulkan runtime (RADV for AMD, same packages for both archs)
+    log_info "Installing Vulkan runtime..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
+        || log_warn "Vulkan driver install returned non-zero. GPU offload may not work."
+
+    # Map architecture to release asset suffix
+    local arch_suffix
+    local machine_arch
+    machine_arch=$(uname -m)
+    if [[ "$machine_arch" == "x86_64" ]]; then
+        arch_suffix="x64"
+    else
+        arch_suffix="arm64"
+    fi
+
+    log_info "Fetching latest llama.cpp release..."
+    local latest_tag
+    latest_tag=$(curl -sLf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
+        | jq -r '.tag_name') || die "Failed to query llama.cpp releases."
+
+    local asset_url
+    asset_url=$(curl -sLf "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${latest_tag}" \
+        | jq -r --arg suffix "$arch_suffix" \
+          '.assets[] | select(.name | test("ubuntu.*vulkan.*" + $suffix)) | .browser_download_url' \
+        | head -1)
+
+    if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+        die "No prebuilt Vulkan binary found for ${latest_tag} (${arch_suffix}). Check https://github.com/ggml-org/llama.cpp/releases"
+    fi
+
+    log_info "Downloading prebuilt llama-server ${latest_tag} (Vulkan ${arch_suffix})..."
+    mkdir -p "$LLAMA_INSTALL_DIR"
+    local tmp_archive="/tmp/llama-release.tar.gz"
+    wget -O "$tmp_archive" "$asset_url" \
+        || die "Failed to download llama-server release."
+    tar -xzf "$tmp_archive" -C "$LLAMA_INSTALL_DIR" --strip-components=1
+    rm -f "$tmp_archive"
+
+    [[ -x "$LLAMA_BIN" ]] || chmod +x "$LLAMA_BIN"
+    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after extraction at $LLAMA_BIN"
+    log_info "Installed prebuilt llama-server: $LLAMA_BIN"
+}
+
+# Download model file with resume support
+download_model() {
+    local MODEL_NAME="$1" MODEL_URL="$2" MODEL_PATH="$3" MIN_SIZE="$4"
+
+    log_info "Downloading model: ${MODEL_NAME}..."
+
+    # Pre-flight disk space check
+    local avail_kb
+    avail_kb=$(df --output=avail /home | tail -1 | tr -d ' ')
+    local need_kb=$(( MIN_SIZE / 1024 + 5000000 ))  # model size + 5 GB headroom
+    if [[ "$avail_kb" -lt "$need_kb" ]]; then
+        die "Insufficient disk space: $(( avail_kb / 1048576 )) GB available, need at least $(( need_kb / 1048576 )) GB."
+    fi
+
+    if [[ -f "$MODEL_PATH" ]]; then
+        local size
+        size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+        if [[ "$size" -gt "$MIN_SIZE" ]]; then
+            log_info "Model already downloaded ($(( size / 1073741824 )) GB). Skipping."
+            return 0
+        else
+            log_warn "Model file exists but appears truncated (${size} bytes). Re-downloading..."
+            rm -f "$MODEL_PATH"
+        fi
+    fi
+
+    log_info "Downloading $(( MIN_SIZE / 1073741824 )) GB+ model. This will take a while..."
+    sudo -u "${HOMEBRAIN_USER}" wget --continue --progress=dot:giga \
+        -O "$MODEL_PATH" "$MODEL_URL" \
+        || die "Model download failed. Re-run to resume (wget supports resume)."
+
+    local size
+    size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+    if [[ "$size" -lt "$MIN_SIZE" ]]; then
+        die "Downloaded model is too small (${size} bytes). File may be truncated or URL may be wrong."
+    fi
+    log_info "Model downloaded: $(( size / 1073741824 )) GB"
+}
+
+# Main setup orchestrator
+setup_llama_server() {
+    log_info "=== Setting up llama-server ==="
+    load_env
+
+    # Read model config from .env (set by dashboard model selector)
+    local MODEL_NAME="${AI_MODEL_FILENAME:-}"
+    local MODEL_URL="${AI_MODEL_URL:-}"
+    local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
+    # Parse ctx_size and extra_flags from platform_models.json for the selected model
+    # (they were baked in by generate_llama_service, no need to keep in .env)
+    local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
+    local CTX_SIZE="8192"
+    local EXTRA_FLAGS=""
+    if [[ -f "$MODELS_FILE" ]] && [[ -n "$MODEL_NAME" ]]; then
+        # Derive model id from filename (strip extension)
+        local model_id
+        model_id=$(echo "$MODEL_NAME" | sed 's/\.gguf$//')
+        CTX_SIZE=$(jq -r --arg id "$model_id" \
+            '(.models[] | select(.id == $id) | .context_window) // .llama_server.ctx_size // 8192' \
+            "$MODELS_FILE" 2>/dev/null || echo "8192")
+        EXTRA_FLAGS=$(jq -r --arg id "$model_id" \
+            '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags // ""' \
+            "$MODELS_FILE" 2>/dev/null || echo "")
+    fi
+    local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
+    local LLAMA_BIN
+    LLAMA_BIN=$(get_llama_bin_path)
+    local HEALTH_URL="http://127.0.0.1:8001/health"
+
+    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
+        die "No AI model configured. Please select a model in the dashboard before installing."
+    fi
+
+    # --- [1/5] Fast-path: binary and model already present ---
+    log_info "[1/5] Checking for existing llama-server installation..."
+    if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+        log_info "llama-server and model already present. Syncing service and starting..."
+        generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
+        systemctl daemon-reload
+        systemctl enable llama-server
+        systemctl restart llama-server
+        wait_for_llama_health "$HEALTH_URL" 600
+        return $?
+    fi
+
+    # --- [2/5] & [3/5] Install binary (platform-specific) ---
+    if ! check_internet; then
+        die "No internet connection. Cannot install llama-server."
+    fi
+
+    log_info "[2/5] Installing prebuilt llama-server (Vulkan)..."
+    install_llama_prebuilt
+
+    LLAMA_BIN=$(get_llama_bin_path)
+    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"
+    log_info "[3/5] Binary ready: $LLAMA_BIN"
+
+    # --- [4/5] Download model ---
+    log_info "[4/5] Downloading model..."
+    download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
+
+    # --- [5/5] Deploy service and start ---
+    log_info "[5/5] Deploying llama-server service..."
+    generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
+    systemctl daemon-reload
+    systemctl enable --now llama-server
+
+    wait_for_llama_health "$HEALTH_URL" 600
+    return $?
+}
+
+# Helper: poll llama-server health endpoint
+wait_for_llama_health() {
+    local url="$1"
+    local timeout="$2"
+    local elapsed=0
+
+    log_info "Waiting for llama-server to load model (up to ${timeout}s)..."
+    while [[ $elapsed -lt $timeout ]]; do
+        if curl -sf --max-time 3 "$url" >/dev/null 2>&1; then
+            log_info "llama-server is healthy on port 8001."
+            return 0
+        fi
+        sleep 10
+        elapsed=$((elapsed + 10))
+        if (( elapsed % 60 == 0 )); then
+            log_info "Still loading model... (${elapsed}s/${timeout}s)"
+        fi
+    done
+
+    log_error "llama-server did not pass health check within ${timeout}s."
+    log_error "Check: journalctl -u llama-server -n 50"
+    return 1
+}
+
+# --- Helper: Setup whisper-server (speech-to-text) ---
+
+install_whisper_server() {
+    local force="${1:-false}"
+    local WHISPER_INSTALL_DIR="${HOMEBRAIN_HOME}/ai-runtime/whisper-server"
+    local WHISPER_BIN="${WHISPER_INSTALL_DIR}/whisper-server"
+
+    if [[ "$force" != "true" ]] && [[ -x "$WHISPER_BIN" ]]; then
+        log_info "whisper-server binary already present at $WHISPER_BIN."
+        return 0
+    fi
+
+    # whisper.cpp has no prebuilt Linux binaries — build from source
+    log_info "Installing build dependencies for whisper.cpp..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq cmake g++ git ffmpeg \
+        mesa-vulkan-drivers libvulkan1 vulkan-tools glslc 2>/dev/null \
+        || log_warn "Some dependency installs returned non-zero."
+
+    local src_dir="/tmp/whisper.cpp"
+    if [[ -d "$src_dir/.git" ]]; then
+        log_info "Updating existing whisper.cpp source..."
+        git -C "$src_dir" pull --ff-only 2>/dev/null || true
+    else
+        log_info "Cloning whisper.cpp..."
+        rm -rf "$src_dir"
+        git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git "$src_dir" \
+            || die "Failed to clone whisper.cpp"
+    fi
+
+    log_info "Building whisper-server with Vulkan GPU support..."
+    cd "$src_dir"
+    rm -rf build
+    cmake -B build \
+        -DGGML_VULKAN=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        || die "CMake configure failed"
+    cmake --build build --target whisper-server -j"$(nproc)" \
+        || die "whisper-server build failed"
+
+    mkdir -p "$WHISPER_INSTALL_DIR"
+    cp build/bin/whisper-server "$WHISPER_BIN"
+    chmod +x "$WHISPER_BIN"
+    [[ -x "$WHISPER_BIN" ]] || die "whisper-server binary not found after build"
+    log_info "Installed whisper-server: $WHISPER_BIN"
+}
+
+generate_whisper_services() {
+    local bin_path="$1" model_path="$2"
+    local internal_port=8003   # whisper-server listens here (WAV only)
+    local proxy_port=8002      # proxy listens here (any format → WAV)
+
+    # --- whisper-server (internal, WAV-only) ---
+    cat > /etc/systemd/system/whisper-server.service <<EOF
+[Unit]
+Description=whisper.cpp speech-to-text server
+After=network.target
+
+[Service]
+Type=simple
+User=${HOMEBRAIN_USER}
+Group=${HOMEBRAIN_USER}
+WorkingDirectory=$(dirname "$bin_path")
+Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
+Environment="GGML_VK_DEVICE=0"
+ExecStart=${bin_path} \\
+  --model ${model_path} \\
+  --host 127.0.0.1 \\
+  --port ${internal_port} \\
+  --inference-path /v1/audio/transcriptions
+
+Restart=always
+RestartSec=10
+TimeoutStartSec=120
+OOMScoreAdjust=-300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/whisper-server.service
+
+    # --- whisper-proxy (converts OGG/Opus → WAV for whisper-server) ---
+    # WhatsApp sends voice messages as OGG/Opus; whisper.cpp only accepts WAV.
+    # The proxy converts via ffmpeg before forwarding to whisper-server.
+    local proxy_script="${HOMEBRAIN_HOME}/ai-runtime/whisper-proxy/whisper_proxy.py"
+    cp "${SCRIPT_DIR}/whisper_proxy.py" "$proxy_script"
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$proxy_script"
+
+    cat > /etc/systemd/system/whisper-proxy.service <<EOF
+[Unit]
+Description=Whisper audio format proxy (OGG->WAV)
+After=whisper-server.service
+Requires=whisper-server.service
+
+[Service]
+Type=simple
+User=${HOMEBRAIN_USER}
+Group=${HOMEBRAIN_USER}
+Environment="WHISPER_UPSTREAM=http://127.0.0.1:${internal_port}"
+Environment="WHISPER_PROXY_PORT=${proxy_port}"
+ExecStart=/usr/bin/python3 ${proxy_script}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 /etc/systemd/system/whisper-proxy.service
+}
+
+setup_whisper_server() {
+    log_info "=== Setting up whisper-server (speech-to-text) ==="
+    load_env
+
+    # GPU-only feature
+    if [[ "$HAS_GPU" != "true" ]]; then
+        log_info "Whisper STT requires a compatible GPU. Skipping."
+        return 0
+    fi
+
+    # Read whisper model config from .env (or defaults from platform_models.json)
+    local MODEL_NAME="${AI_WHISPER_MODEL_FILENAME:-}"
+    local MODEL_URL="${AI_WHISPER_MODEL_URL:-}"
+    local MIN_SIZE="${AI_WHISPER_MODEL_MIN_SIZE:-600000000}"
+    local WHISPER_BIN="${HOMEBRAIN_HOME}/ai-runtime/whisper-server/whisper-server"
+
+    # If no whisper model configured yet, pick the default from platform_models.json
+    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
+        local pm_file="${SCRIPT_DIR}/../config/platform_models.json"
+        if [[ -f "$pm_file" ]] && command -v jq >/dev/null 2>&1; then
+            MODEL_NAME=$(jq -r '.whisper.models[] | select(.default==true) | .filename' "$pm_file")
+            MODEL_URL=$(jq -r '.whisper.models[] | select(.default==true) | .url' "$pm_file")
+            MIN_SIZE=$(jq -r '.whisper.models[] | select(.default==true) | .min_size_bytes' "$pm_file")
+            local MODEL_ID
+            MODEL_ID=$(jq -r '.whisper.models[] | select(.default==true) | .id' "$pm_file")
+
+            # Persist defaults to .env for future fast-path
+            update_env_var "AI_WHISPER_MODEL_ID" "$MODEL_ID"
+            update_env_var "AI_WHISPER_MODEL_FILENAME" "$MODEL_NAME"
+            update_env_var "AI_WHISPER_MODEL_URL" "$MODEL_URL"
+            update_env_var "AI_WHISPER_MODEL_MIN_SIZE" "$MIN_SIZE"
+        else
+            log_warn "No whisper model configured and cannot read defaults. Skipping."
+            return 0
+        fi
+    fi
+
+    local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
+
+    # --- [1/5] Fast-path: binary and model already present ---
+    log_info "[1/5] Checking for existing whisper-server installation..."
+    if [[ -x "$WHISPER_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+        log_info "whisper-server and model already present. Syncing services and starting..."
+        generate_whisper_services "$WHISPER_BIN" "$MODEL_PATH"
+        systemctl daemon-reload
+        systemctl enable whisper-server whisper-proxy
+        systemctl restart whisper-server
+        systemctl restart whisper-proxy
+        wait_for_whisper_health 8002 120
+        return $?
+    fi
+
+    if ! check_internet; then
+        die "No internet connection. Cannot install whisper-server."
+    fi
+
+    # --- [2/5] Install ffmpeg (needed by proxy for OGG→WAV conversion) ---
+    log_info "[2/5] Installing ffmpeg..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y -qq ffmpeg 2>/dev/null || log_warn "ffmpeg install returned non-zero."
+
+    # --- [3/5] Build whisper-server from source ---
+    log_info "[3/5] Building whisper-server (Vulkan)..."
+    install_whisper_server
+
+    # --- [4/5] Download model ---
+    log_info "[4/5] Downloading whisper model..."
+    download_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$MIN_SIZE"
+
+    # --- [5/5] Deploy services and start ---
+    log_info "[5/5] Deploying whisper-server + proxy services..."
+    generate_whisper_services "$WHISPER_BIN" "$MODEL_PATH"
+    systemctl daemon-reload
+    systemctl enable --now whisper-server
+    systemctl enable --now whisper-proxy
+
+    wait_for_whisper_health 8002 120
+    return $?
+}
+
+wait_for_whisper_health() {
+    local port="$1"
+    local timeout="$2"
+    local elapsed=0
+
+    log_info "Waiting for whisper-server to become ready (up to ${timeout}s)..."
+    while [[ $elapsed -lt $timeout ]]; do
+        if curl -sf --max-time 3 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+            log_info "whisper-server is healthy on port ${port}."
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+
+    log_error "whisper-server did not pass health check within ${timeout}s."
+    log_error "Check: journalctl -u whisper-server -n 50"
+    return 1
+}
+
+# --- Helper: Setup OpenClaw AI Agent (system service) ---
+
+# Patch openclaw.json model references to match the selected AI model
+patch_openclaw_config() {
+    local config_file="$1"
+    local model_id="$2"
+    local ctx_size="${3:-}"
+
+    if [[ -z "$model_id" ]]; then
+        log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
+        return 0
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq not found. Cannot patch openclaw config model references."
+        return 0
+    fi
+
+    # Build allowed origins for cross-origin WebSocket from HomeBrain dashboard
+    local lan_ip
+    lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    local origins="[\"http://${lan_ip}\", \"http://${lan_ip}:80\", \"http://localhost\", \"http://127.0.0.1\"]"
+
+    # Derive a stable gateway token from MASTER_PASSWORD so it survives redeployment
+    local gw_token=""
+    if [[ -n "${MASTER_PASSWORD:-}" ]]; then
+        gw_token=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
+    else
+        log_warn "MASTER_PASSWORD is unset — skipping gateway token derivation; token will remain empty"
+    fi
+
+    local jq_extra_args=()
+    local jq_token_patch=""
+    if [[ -n "$gw_token" ]]; then
+        jq_extra_args=(--arg gw_token "$gw_token")
+        jq_token_patch='| .gateway.auth.token = $gw_token'
+    fi
+
+    jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
+        "${jq_extra_args[@]}" '
+        .models.providers.llamacpp.models[0].id = $id |
+        .models.providers.llamacpp.models[0].name = $id |
+        .models.providers.llamacpp.models[0].contextWindow = $ctx |
+        .agents.defaults.llm.idleTimeoutSeconds = 0 |
+        .agents.defaults.model.primary = ("llamacpp/" + $id) |
+        .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        .browser.executablePath = "/usr/bin/google-chrome-stable" |
+        .browser.noSandbox = true |
+        .channels.whatsapp.enabled = true |
+        .channels.whatsapp.dmPolicy = "allowlist" |
+        .channels.whatsapp.allowFrom = (.channels.whatsapp.allowFrom // []) |
+        .plugins.entries.whatsapp.enabled = true |
+        .gateway.controlUi.allowedOrigins = $origins |
+        .tools.media.audio.enabled = true |
+        .tools.media.audio.scope.default = "allow" |
+        .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
+        .tools.media.audio.models[0].timeoutSeconds = 30 |
+        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
+        '"$jq_token_patch"'
+    ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
+    log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
+}
+
+# Run a command as the HomeBrain OS user with systemd user session environment.
+# Required for openclaw daemon/gateway which uses systemd user services.
+run_as_admin() {
+    local hb_uid
+    hb_uid=$(id -u "${HOMEBRAIN_USER}")
+    # Ensure linger is enabled (allows user services without login)
+    loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
+    # Ensure runtime dir exists
+    mkdir -p "/run/user/${hb_uid}" 2>/dev/null || true
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "/run/user/${hb_uid}" 2>/dev/null || true
+    sudo -u "${HOMEBRAIN_USER}" \
+        XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
+        "$@"
+}
+
+setup_openclaw() {
+    log_info "=== Setting up OpenClaw AI Assistant ==="
+    load_env
+
+    if [[ "${HAS_GPU:-false}" != "true" ]]; then
+        log_info "No GPU detected — skipping OpenClaw setup."
+        return 0
+    fi
+
+    load_versions  # sets OPENCLAW_VERSION
+
+    # Pre-flight: warn if llama-server is not reachable
+    if ! curl -sf --max-time 5 http://127.0.0.1:8001/health >/dev/null 2>&1; then
+        log_warn "llama-server is not responding on port 8001. OpenClaw may not work correctly."
+    fi
+
+    local config_src="${SCRIPT_DIR}/../config/openclaw.json"
+    local config_dest="${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
+    local model_id="${AI_MODEL_ID:-}"
+
+    # --- [1/3] Install / upgrade to pinned version ---
+    log_info "[1/3] Checking OpenClaw version (target: ${OPENCLAW_VERSION})..."
+    local installed_file
+    installed_file=$(get_installed_versions_file)
+    local installed_oc_version=""
+    if [[ -f "$installed_file" ]]; then
+        installed_oc_version=$(jq -r '.openclaw.version // empty' "$installed_file" 2>/dev/null || echo "")
+    fi
+
+    local needs_npm_install=true
+    if command -v openclaw >/dev/null 2>&1 \
+       && [[ "$installed_oc_version" == "$OPENCLAW_VERSION" ]]; then
+        log_info "OpenClaw already at ${OPENCLAW_VERSION}. Skipping npm install."
+        needs_npm_install=false
+    fi
+
+    if [[ "$needs_npm_install" == "true" ]]; then
+        if ! check_internet; then
+            die "No internet connection. Cannot install OpenClaw."
+        fi
+
+        # Ensure Node.js 22+ is available
+        local need_node=false
+        if ! command -v node >/dev/null 2>&1; then
+            need_node=true
+        else
+            local node_major
+            node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')
+            if [[ "$node_major" -lt 22 ]]; then
+                log_info "Node.js ${node_major} found but 22+ is required. Upgrading..."
+                need_node=true
+            fi
+        fi
+
+        if [[ "$need_node" == "true" ]]; then
+            log_info "Installing Node.js 22 LTS via NodeSource..."
+            wait_for_apt_lock
+            export DEBIAN_FRONTEND=noninteractive
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            apt-get install -y -qq nodejs
+        fi
+
+        log_info "Node $(node --version)"
+        log_info "Installing openclaw@${OPENCLAW_VERSION}..."
+        if npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit; then
+            command -v openclaw >/dev/null 2>&1 \
+                || die "openclaw binary not found in PATH after install."
+            update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
+            log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
+        else
+            # Npm install failed — continue if openclaw is already installed so that
+            # patch_openclaw_config and the daemon restart still happen (e.g. model switch).
+            if command -v openclaw >/dev/null 2>&1; then
+                log_warn "openclaw npm install failed — continuing with existing install: $(openclaw --version 2>/dev/null || echo 'unknown version')"
+            else
+                die "OpenClaw npm install failed and no existing openclaw binary found."
+            fi
+        fi
+    fi
+
+    # --- [2/3] Write config ---
+    log_info "[2/3] Writing config..."
+    if [[ ! -f "$config_src" ]]; then
+        die "config/openclaw.json not found at $config_src — ensure it is committed to the repository."
+    fi
+    mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
+    # Only seed from the repo template on first install. Subsequent runs
+    # (including model switches) patch the existing file in place so that
+    # user edits, runtime state written by OpenClaw, and previously-disabled
+    # plugins (e.g. bonjour) are preserved.
+    if [[ ! -f "$config_dest" ]]; then
+        cp "$config_src" "$config_dest"
+        log_info "Seeded openclaw.json from template (first install)."
+    fi
+    # Parse ctx_size from the generated systemd service file
+    local OC_CTX_SIZE=""
+    local SERVICE_FILE="/etc/systemd/system/llama-server.service"
+    if [[ -f "$SERVICE_FILE" ]]; then
+        OC_CTX_SIZE=$(grep -oP -- '-ctx-size\s+\K[0-9]+' "$SERVICE_FILE" 2>/dev/null || echo "")
+    fi
+    patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
+    chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
+    chmod 600 "$config_dest"
+    log_info "Config written to $config_dest"
+
+    # --- [3/3] Register and start daemon ---
+    log_info "[3/3] Registering and starting daemon..."
+    run_as_admin openclaw daemon install 2>/dev/null || true
+    run_as_admin openclaw daemon start \
+        || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
+
+    # Verify startup (up to 30 s)
+    local retries=0
+    while [[ $retries -lt 15 ]]; do
+        if run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+            local ip
+            ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+            log_info "OpenClaw is running. Access at http://${ip}:18789"
+            log_info "=== OpenClaw setup complete ==="
+            return 0
+        fi
+        sleep 2
+        ((retries++))
+    done
+
+    log_error "OpenClaw did not report as running within 30 s."
+    log_error "Check status with: sudo -u ${HOMEBRAIN_USER} openclaw gateway status"
+    return 1
+}
+
+# --- Migration: consolidate to /home/homebrain layout ---
+# Idempotent migration to the canonical layout (see ROADMAP "consolidate project
+# directories"). Safe to call on every deploy:
+#
+#   /opt/homebrain/                    immutable application code
+#   /home/homebrain/ai-runtime/        AI service binaries (llama-server, whisper-*)
+#   /home/homebrain/models/            flat model store (*.gguf, ggml-*.bin)
+#   /home/homebrain/nextcloud-data/    Nextcloud user data
+#   /home/homebrain/.openclaw/         OpenClaw runtime (CLI hardcodes ~/.openclaw)
+#
+# Handles three legacy layouts seen in the wild:
+#   A. Legacy admin user (ARM non-AI, AI x86 pre-homebrain) — data under /home/admin/.
+#   B. Flat /home/homebrain/{llama-server,whisper-server,*.gguf} from the
+#      first round of consolidation.
+#   C. Mid-state from a previous failed agent run on .58: models nested in
+#      /home/homebrain/models/{family}/.
+#
+# Returns 0 on success or no-op. Aborts on data-loss-risking failures.
+migrate_to_consolidated_layout() {
+    local lock="/tmp/.hb_migration.lock"
+    local legacy_home="/home/admin"
+    local hb="${HOMEBRAIN_HOME}"
+    local ai_dir="${hb}/ai-runtime"
+    local models_dir="${hb}/models"
+    local nc_dir="${hb}/nextcloud-data"
+    local restart_llama=false restart_whisper=false restart_proxy=false
+
+    # Concurrency guard
+    if ! ( set -C; echo $$ > "$lock" ) 2>/dev/null; then
+        log_warn "Migration already in progress (lock: $lock). Skipping."
+        return 0
+    fi
+    trap 'rm -f "$lock"' RETURN
+
+    # --- 0. Detect whether any data move is actually needed ---
+    # On a healthy, already-consolidated target this stays false and we skip
+    # the AI-service stop/restart cycle entirely. setup_*_server (Phase 7)
+    # does its own stop/restart only if unit files have drifted.
+    local needs_data_move=false
+    _detect_migration_work() {
+        # Phase A: legacy /home/admin
+        if [[ -d "${legacy_home}" ]] && [[ -n "$(ls -A "${legacy_home}" 2>/dev/null)" ]]; then
+            [[ -d "${legacy_home}/llama-server" ]] && return 0
+            [[ -d "${legacy_home}/whisper-server" ]] && return 0
+            [[ -d "${legacy_home}/.openclaw" && ! -d "${hb}/.openclaw" ]] && return 0
+            compgen -G "${legacy_home}/*.gguf" >/dev/null && return 0
+            compgen -G "${legacy_home}/ggml-*.bin" >/dev/null && return 0
+        fi
+        # Phase B: flat /home/homebrain
+        [[ -d "${hb}/llama-server" ]] && [[ ! -L "${hb}/llama-server" ]] \
+            && [[ "${hb}/llama-server" != "${ai_dir}/llama-server" ]] && return 0
+        [[ -d "${hb}/whisper-server" ]] && [[ ! -L "${hb}/whisper-server" ]] \
+            && [[ "${hb}/whisper-server" != "${ai_dir}/whisper-server" ]] && return 0
+        [[ -f "${hb}/whisper_proxy.py" ]] && return 0
+        [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]] && return 0
+        compgen -G "${hb}/*.gguf" >/dev/null && return 0
+        compgen -G "${hb}/ggml-*.bin" >/dev/null && return 0
+        # Phase C: nested model subdirs
+        if [[ -d "${models_dir}" ]]; then
+            local sub
+            for sub in "${models_dir}"/*/; do
+                [[ -d "$sub" ]] && return 0
+            done
+        fi
+        # Phase D: nextcloud data still at legacy /opt path
+        if [[ -d /opt/homebrain/nextcloud-data ]] \
+            && [[ -n "$(ls -A /opt/homebrain/nextcloud-data 2>/dev/null)" ]] \
+            && [[ -z "$(ls -A "${nc_dir}" 2>/dev/null || true)" ]]; then
+            return 0
+        fi
+        return 1
+    }
+    if _detect_migration_work; then needs_data_move=true; fi
+    unset -f _detect_migration_work
+
+    # --- 1. Create canonical target directories (idempotent, harmless) ---
+    install -d -o "${HOMEBRAIN_USER}" -g "${HOMEBRAIN_USER}" -m 0755 \
+        "${ai_dir}" "${ai_dir}/llama-server" "${ai_dir}/whisper-server" \
+        "${ai_dir}/whisper-proxy" "${models_dir}" "${nc_dir}"
+
+    if [[ "$needs_data_move" != "true" ]]; then
+        log_info "Layout already consolidated; skipping data-move phases."
+    else
+        log_info "=== Layout migration: data move required ==="
+
+        # Stop AI services so we can move binaries/models safely.
+        if systemctl list-unit-files llama-server.service &>/dev/null \
+            && systemctl is-active --quiet llama-server 2>/dev/null; then
+            restart_llama=true
+            systemctl stop llama-server 2>/dev/null || true
+        fi
+        if systemctl list-unit-files whisper-server.service &>/dev/null \
+            && systemctl is-active --quiet whisper-server 2>/dev/null; then
+            restart_whisper=true
+            systemctl stop whisper-server 2>/dev/null || true
+        fi
+        if systemctl list-unit-files whisper-proxy.service &>/dev/null \
+            && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
+            restart_proxy=true
+            systemctl stop whisper-proxy 2>/dev/null || true
+        fi
+    fi
+
+    # The data-move phases themselves are idempotent and cheap to re-enter
+    # when needs_data_move=false (every conditional inside short-circuits),
+    # so we run them unconditionally to keep one source of truth.
+
+    # --- 2. Phase A: legacy /home/admin → /home/homebrain ---
+    # Applies to: ARM/non-AI installs (admin was the only user), legacy AI x86
+    # installs predating the homebrain user. Non-AI installs typically have
+    # nothing to move here (no AI binaries, no .openclaw); the loop no-ops.
+    if [[ -d "${legacy_home}" ]] && [[ -n "$(ls -A "${legacy_home}" 2>/dev/null)" ]]; then
+        log_info "Migration A: legacy ${legacy_home} → ${hb}"
+
+        # Binary directories: admin/{llama-server,whisper-server} → ai-runtime/
+        for d in llama-server whisper-server; do
+            local src="${legacy_home}/${d}"
+            local dst="${ai_dir}/${d}"
+            if [[ -d "$src" ]] && [[ ! -L "$src" ]]; then
+                # If destination already populated, archive admin copy out of the way
+                if [[ -x "${dst}/${d}" ]]; then
+                    log_info "  ${d}: destination already populated; removing legacy copy."
+                    rm -rf "$src"
+                else
+                    log_info "  moving ${src} → ${dst}"
+                    rmdir "$dst" 2>/dev/null || true   # remove empty placeholder
+                    mv "$src" "$dst" || { log_error "  failed to move ${d}"; return 1; }
+                fi
+            fi
+        done
+
+        # whisper_proxy.py (lived inside whisper-server/ on some installs;
+        # carry it to the dedicated whisper-proxy/ dir)
+        if [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]] \
+            && [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+            mv "${ai_dir}/whisper-server/whisper_proxy.py" \
+               "${ai_dir}/whisper-proxy/whisper_proxy.py"
+        fi
+
+        # Model files: admin/*.gguf and admin/ggml-*.bin → models/ (flat)
+        shopt -s nullglob
+        for f in "${legacy_home}"/*.gguf "${legacy_home}"/ggml-*.bin; do
+            [[ -f "$f" ]] || continue
+            local fname target
+            fname=$(basename "$f")
+            target="${models_dir}/${fname}"
+            if [[ ! -e "$target" ]]; then
+                log_info "  moving model ${fname} → models/"
+                mv "$f" "$target" || { log_error "  failed to move ${fname}"; return 1; }
+            else
+                log_info "  model ${fname} already at destination — removing legacy copy."
+                rm -f "$f" 2>/dev/null || true
+            fi
+        done
+        shopt -u nullglob
+
+        # OpenClaw config (copy, not move — admin may still hold sessions until userdel)
+        if [[ -d "${legacy_home}/.openclaw" ]] && [[ ! -d "${hb}/.openclaw" ]]; then
+            log_info "  copying ${legacy_home}/.openclaw → ${hb}/.openclaw"
+            cp -a "${legacy_home}/.openclaw" "${hb}/.openclaw" \
+                || { log_error "  failed to copy .openclaw"; return 1; }
+        fi
+
+        # Linger transfer (so user-level openclaw-gateway survives logout)
+        loginctl enable-linger "${HOMEBRAIN_USER}" 2>/dev/null || true
+        loginctl disable-linger admin 2>/dev/null || true
+    fi
+
+    # --- 3. Phase B: flat /home/homebrain → nested layout ---
+    # First round of consolidation moved data from /home/admin into a flat
+    # /home/homebrain/. Now group AI binaries under ai-runtime/ and models/.
+    for d in llama-server whisper-server; do
+        local src="${hb}/${d}"
+        local dst="${ai_dir}/${d}"
+        if [[ -d "$src" ]] && [[ ! -L "$src" ]] && [[ "$src" != "$dst" ]]; then
+            if [[ -x "${dst}/${d}" ]]; then
+                log_info "Migration B: ${d} already at ai-runtime/; removing flat copy."
+                rm -rf "$src"
+            else
+                log_info "Migration B: moving ${src} → ${dst}"
+                rmdir "$dst" 2>/dev/null || true
+                mv "$src" "$dst" || { log_error "  failed to move ${d}"; return 1; }
+            fi
+        fi
+    done
+
+    # Standalone whisper_proxy.py at /home/homebrain/whisper_proxy.py
+    if [[ -f "${hb}/whisper_proxy.py" ]] \
+        && [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+        mv "${hb}/whisper_proxy.py" "${ai_dir}/whisper-proxy/whisper_proxy.py"
+    elif [[ -f "${hb}/whisper_proxy.py" ]]; then
+        rm -f "${hb}/whisper_proxy.py"
+    fi
+
+    # Stray whisper_proxy.py left inside whisper-server/ after Phase B move
+    if [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]]; then
+        if [[ ! -f "${ai_dir}/whisper-proxy/whisper_proxy.py" ]]; then
+            mv "${ai_dir}/whisper-server/whisper_proxy.py" \
+               "${ai_dir}/whisper-proxy/whisper_proxy.py"
+        else
+            rm -f "${ai_dir}/whisper-server/whisper_proxy.py"
+        fi
+    fi
+
+    # Model files at the flat home root → models/
+    shopt -s nullglob
+    for f in "${hb}"/*.gguf "${hb}"/ggml-*.bin; do
+        [[ -f "$f" ]] && [[ ! -L "$f" ]] || continue
+        local fname target
+        fname=$(basename "$f")
+        target="${models_dir}/${fname}"
+        if [[ ! -e "$target" ]]; then
+            log_info "Migration B: moving model ${fname} → models/"
+            mv "$f" "$target" || { log_error "  failed to move ${fname}"; return 1; }
+        else
+            log_info "Migration B: model ${fname} already at destination — removing flat copy."
+            rm -f "$f" 2>/dev/null || true
+        fi
+    done
+    shopt -u nullglob
+
+    # --- 4. Phase C: flatten nested-by-family models/ ---
+    # The previous local agent run on .58 left models in models/{family}/.
+    # The codebase expects flat models/. Promote files up one level.
+    if [[ -d "${models_dir}" ]]; then
+        shopt -s nullglob
+        for sub in "${models_dir}"/*/; do
+            [[ -d "$sub" ]] || continue
+            for f in "${sub}"*.gguf "${sub}"*.bin; do
+                [[ -f "$f" ]] || continue
+                local fname target
+                fname=$(basename "$f")
+                target="${models_dir}/${fname}"
+                if [[ ! -e "$target" ]]; then
+                    log_info "Migration C: promoting ${sub}${fname} → models/${fname}"
+                    mv "$f" "$target" || { log_error "  failed to promote ${fname}"; return 1; }
+                else
+                    rm -f "$f" 2>/dev/null || true
+                fi
+            done
+            # Remove subdir if now empty
+            rmdir "$sub" 2>/dev/null || true
+        done
+        shopt -u nullglob
+    fi
+
+    # --- 5. Phase D: Nextcloud data → /home/homebrain/nextcloud-data ---
+    # docker-compose now defaults to /home/homebrain/nextcloud-data; pre-existing
+    # deployments have data under /opt/homebrain/nextcloud-data.
+    local legacy_nc="/opt/homebrain/nextcloud-data"
+    if [[ -d "$legacy_nc" ]] && [[ -n "$(ls -A "$legacy_nc" 2>/dev/null)" ]]; then
+        if [[ -z "$(ls -A "$nc_dir" 2>/dev/null)" ]]; then
+            log_info "Migration D: ${legacy_nc} → ${nc_dir}"
+            # Same filesystem (both under root) — atomic rename of contents
+            # via mv -T to preserve target dir + ownership.
+            ( shopt -s dotglob; mv "$legacy_nc"/* "$nc_dir"/ ) \
+                || { log_error "  Nextcloud data move failed"; return 1; }
+            rmdir "$legacy_nc" 2>/dev/null || true
+        else
+            log_warn "Migration D: ${nc_dir} already non-empty; leaving ${legacy_nc} in place. Investigate manually."
+        fi
+    fi
+
+    # --- 6. Cleanup: stale symlinks, ownership ---
+    find "${hb}" -maxdepth 1 -xtype l -delete 2>/dev/null || true   # broken symlinks
+    chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" \
+        "${ai_dir}" "${models_dir}" 2>/dev/null || true
+    if [[ -d "${hb}/.openclaw" ]]; then
+        chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${hb}/.openclaw" 2>/dev/null || true
+    fi
+    # Nextcloud container runs as www-data (UID 33). The bind mount target
+    # MUST be owned by 33:33 or PHP gets EACCES on data writes.
+    chown 33:33 "${nc_dir}" 2>/dev/null || true
+
+    # --- 7. Regenerate systemd unit files for moved binaries ---
+    # If AI services existed and binaries are now at new paths, the unit files
+    # baked at /etc/systemd/system/ still reference old paths. Rewrite them.
+    systemctl daemon-reload
+    if [[ -x "${ai_dir}/llama-server/llama-server" ]] \
+        && [[ -f /etc/systemd/system/llama-server.service ]]; then
+        if ! grep -q "${ai_dir}/llama-server/llama-server" /etc/systemd/system/llama-server.service; then
+            log_info "Regenerating llama-server.service for new paths..."
+            # setup_llama_server fast-paths when binary+model present: it just
+            # rewrites the unit file and restarts.
+            setup_llama_server || log_warn "  llama-server regeneration failed; manual review needed."
+            restart_llama=false   # setup already restarted
+        fi
+    fi
+    if [[ -x "${ai_dir}/whisper-server/whisper-server" ]] \
+        && [[ -f /etc/systemd/system/whisper-server.service ]]; then
+        local expected_whisper_model="${models_dir}/${AI_WHISPER_MODEL_FILENAME:-}"
+        if ! grep -q "${ai_dir}/whisper-server/whisper-server" /etc/systemd/system/whisper-server.service \
+            || ! grep -q "${ai_dir}/whisper-proxy/whisper_proxy.py" /etc/systemd/system/whisper-proxy.service 2>/dev/null \
+            || { [[ -n "${AI_WHISPER_MODEL_FILENAME:-}" ]] \
+                  && ! grep -qF -- "--model ${expected_whisper_model}" /etc/systemd/system/whisper-server.service; }; then
+            log_info "Regenerating whisper-server.service for new paths..."
+            setup_whisper_server || log_warn "  whisper-server regeneration failed; voice messages may not transcribe."
+            restart_whisper=false
+            restart_proxy=false
+        fi
+    fi
+
+    # --- 8. Restart any services we stopped that weren't already restarted by setup_* ---
+    if [[ "$restart_llama" == "true" ]]; then
+        systemctl start llama-server 2>/dev/null || log_warn "  llama-server restart failed."
+    fi
+    if [[ "$restart_whisper" == "true" ]]; then
+        systemctl start whisper-server 2>/dev/null || log_warn "  whisper-server restart failed."
+    fi
+    if [[ "$restart_proxy" == "true" ]]; then
+        systemctl start whisper-proxy 2>/dev/null || log_warn "  whisper-proxy restart failed."
+    fi
+
+    log_info "=== Layout migration complete ==="
+}
+
+# Backwards-compatible shim — callers still invoke the old name.
+migrate_admin_to_homebrain() {
+    migrate_to_consolidated_layout
+}
+
+# --- Main Dispatch (only when executed directly, not sourced) ---
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
     system_status)
         get_system_config_status
@@ -557,10 +1574,50 @@ case "${1:-}" in
         create_ha_admin "${2:-}"
         ;;
     setup_ai)
+        setup_llama_server || { log_error "llama-server setup failed. Aborting AI stack install."; exit 1; }
+        setup_whisper_server || log_warn "whisper-server setup failed. Voice messages will not be transcribed."
         setup_openclaw
+        ;;
+    stop_ai)
+        run_as_admin openclaw daemon stop 2>/dev/null || true
+        log_info "OpenClaw stopped."
+        systemctl disable --now llama-server 2>/dev/null || true
+        log_info "llama-server stopped and disabled."
+        systemctl disable --now whisper-proxy 2>/dev/null || true
+        systemctl disable --now whisper-server 2>/dev/null || true
+        log_info "whisper-server and proxy stopped and disabled."
+        ;;
+    switch_model)
+        log_info "=== Switching AI model ==="
+        # Stop running services
+        run_as_admin openclaw daemon stop 2>/dev/null || true
+        systemctl stop llama-server 2>/dev/null || true
+        systemctl stop whisper-server 2>/dev/null || true
+        log_info "Stopped AI services."
+
+        # Re-run full setup (downloads new model if needed, regenerates service, starts)
+        # Previously-downloaded models are kept on disk for faster switching.
+        setup_llama_server || { log_error "Model switch failed during llama-server setup."; exit 1; }
+        setup_whisper_server || log_warn "whisper-server restart failed."
+        setup_openclaw
+
+        log_info "Model switch complete."
+        ;;
+    update_llama)
+        log_info "=== Updating llama-server to latest release ==="
+        load_env
+        systemctl stop llama-server 2>/dev/null || true
+        install_llama_prebuilt "true"
+        setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
+        log_info "llama-server updated and restarted."
+        ;;
+    migrate)
+        load_env 2>/dev/null || true   # .env may not exist on first provision
+        migrate_to_consolidated_layout
         ;;
     *)
         echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"
         exit 1
         ;;
 esac
+fi

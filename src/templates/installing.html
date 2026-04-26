@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Installing HomeBrain...</title>
+    <title>Installing {{ platform.product_name }}...</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
     <style>
@@ -67,7 +67,7 @@
     </style>
 </head>
 <body>
-    <div class="logo">Home<span>Brain</span></div>
+    <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
     <h2 id="status-title" style="font-weight: 300;">System Installation in Progress</h2>
     <p id="status-sub" style="color:#aaa;">Please do not unplug. This can take about 15 minutes.</p>
     
@@ -122,7 +122,7 @@
                 .catch(e => {
                     console.error(e);
                     document.body.innerHTML = `
-                        <div class="logo">Home<span>Brain</span></div>
+                        <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
                         <h1>Installation Finished</h1>
                         <p><p>System is ready, but credentials could not be loaded.</p>
                         <button onclick="location.reload()">Go to Login</button>
@@ -141,7 +141,7 @@
         function showSuccess(data) {
             document.body.innerHTML = `
                 <div style="max-width: 500px; margin: 0 auto; padding: 20px;">
-                    <div class="logo">Home<span>Brain</span></div>
+                    <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
                     
                     <div class="success-box">
                         <h2 style="margin-top:0; color: #2ecc71; border-bottom: 1px solid #444; padding-bottom: 15px;">Setup Complete</h2>

@@ -1,0 +1,4 @@
+# HomeBrain: Disable AMD GPU runtime power management to prevent VRAM eviction
+# This keeps model weights in VRAM between inference requests (no reload latency)
+SUBSYSTEM=="pci", ATTRS{class}=="0x030000", ATTRS{vendor}=="0x1002", ATTR{power/control}="on"
+SUBSYSTEM=="pci", ATTRS{class}=="0x030200", ATTRS{vendor}=="0x1002", ATTR{power/control}="on"

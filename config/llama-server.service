@@ -1,0 +1,36 @@
+[Unit]
+Description=llama.cpp inference server
+After=network.target multi-user.target
+Wants=multi-user.target
+StartLimitIntervalSec=600
+
+[Service]
+Type=simple
+User=__HOMEBRAIN_USER__
+Group=__HOMEBRAIN_USER__
+WorkingDirectory=__WORKDIR__
+Environment="LD_LIBRARY_PATH=__WORKDIR__"
+Environment="GGML_VK_DEVICE=0"
+
+# Wait for GPU device node before starting inference (30 second timeout)
+ExecStartPre=/bin/sh -c 'i=0; until [ -e /dev/dri/renderD128 ] || [ -e /dev/dri/card0 ]; do sleep 1; i=$((i+1)); [ $i -ge 30 ] && exit 1; done'
+
+ExecStart=__LLAMA_BIN__ \
+  --model __LLAMA_MODEL__ \
+  --ctx-size __CTX_SIZE__ \
+  --host 127.0.0.1 \
+  --port 8001 \
+  __EXTRA_FLAGS__
+
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+StartLimitIntervalSec=600
+StartLimitBurst=5
+TimeoutStartSec=600
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

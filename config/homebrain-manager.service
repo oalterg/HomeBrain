@@ -1,6 +1,8 @@
 [Unit]
 Description=HomeBrain Manager
 After=network.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 User=root
@@ -9,6 +11,10 @@ Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 ExecStart=/opt/homebrain/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:80 --timeout 30 app:app
 Restart=always
 RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

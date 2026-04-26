@@ -69,8 +69,6 @@ fi
 log_info "Downloading from $URL..."
 curl -L -f -s --max-time 60 --retry 3 --retry-delay 5 "$URL" -o "$TEMP_DIR/update.tar.gz" || { log_error "Download failed"; exit 1; }
 
-# Todo: Add checksum verification
-
 # 3. Extract
 log_info "Extracting..."
 mkdir -p "$TEMP_DIR/extract"
@@ -78,6 +76,14 @@ tar -xzf "$TEMP_DIR/update.tar.gz" --strip-components=1 -C "$TEMP_DIR/extract" |
 
 # 4. Atomic File Sync
 log_info "Applying file updates, preserving configuration..."
+
+# Capture pinned dep versions before sync so we can detect bumps afterward
+old_llama_tag=""
+old_openclaw_ver=""
+if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]; then
+    old_llama_tag=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    old_openclaw_ver=$(jq -r '.openclaw.version // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+fi
 
 # Back up the docker-compose.yml just in case
 cp "$INSTALL_DIR/docker-compose.yml" "$TEMP_DIR/extract/docker-compose.yml.backup"
@@ -90,6 +96,24 @@ rsync -a --delete \
 --exclude='.git' \
 --exclude='version.json' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
+
+# Update pinned deps when versions.json changed in this release
+if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]; then
+    new_llama_tag=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    new_openclaw_ver=$(jq -r '.openclaw.version // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    UPDATE_DEPS_SCRIPT="$SCRIPT_DIR/update-deps.sh"
+    if [[ -f "$UPDATE_DEPS_SCRIPT" ]] && [[ "${HAS_GPU:-false}" == "true" ]]; then
+        if [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]]; then
+            log_info "llama.cpp: ${old_llama_tag} → ${new_llama_tag}. Updating binary..."
+            bash "$UPDATE_DEPS_SCRIPT" llama_cpp || log_warn "llama.cpp update failed — check logs."
+            systemctl restart llama-server 2>/dev/null || true
+        fi
+        if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]]; then
+            log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
+            bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
+        fi
+    fi
+fi
 
 # 5. Dependency Management
 log_info "Updating Python dependencies..."

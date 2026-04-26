@@ -6,7 +6,8 @@ import subprocess
 # Configuration Constants
 INSTALL_DIR = "/opt/homebrain"
 ENV_FILE = os.path.join(INSTALL_DIR, ".env")
-FACTORY_CONFIG = "/boot/firmware/factory_config.txt"
+# Boot config path detection (filesystem-based, not platform-based)
+FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/firmware") else "/opt/homebrain/factory_config.txt"
 SERVICE_TEMPLATE = os.path.join(INSTALL_DIR, "config/homebrain-manager.service")
 
 def get_env_map():
@@ -97,3 +98,4 @@ def run_migrations():
             os.rename(legacy_cron, new_cron)
         except Exception as e:
             logging.error(f"Migration: Failed to rename backup cron: {e}")
+

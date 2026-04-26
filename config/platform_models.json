@@ -1,0 +1,102 @@
+{
+  "default": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+  "models": [
+    {
+      "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+      "filename": "Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
+      "min_size_bytes": 27000000000,
+      "context_window": 131072,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg_ts": 29.67,
+        "pp_ts": 574,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, Vulkan, llama.cpp b8931"
+      },
+      "default": true
+    },
+    {
+      "id": "Qwen3.6-35B-A3B-UD-Q6_K",
+      "filename": "Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "min_size_bytes": 29000000000,
+      "context_window": 131072,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(1[8-9]|2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg_ts": 27.18,
+        "pp_ts": 513,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, Vulkan, llama.cpp b8931"
+      },
+      "default": false
+    },
+    {
+      "id": "Qwen3.6-35B-A3B-UD-Q6_K_XL",
+      "filename": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
+      "min_size_bytes": 31000000000,
+      "context_window": 131072,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(1[6-9]|2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg_ts": 25.62,
+        "pp_ts": 485,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, Vulkan, llama.cpp b8931"
+      },
+      "default": false
+    },
+    {
+      "id": "Qwen3.6-35B-A3B-UD-Q8_K_XL",
+      "filename": "Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf",
+      "min_size_bytes": 38000000000,
+      "context_window": 131072,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(1[4-9]|2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg_ts": 18.03,
+        "pp_ts": 140,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, Vulkan, llama.cpp b8931"
+      },
+      "default": false
+    },
+    {
+      "id": "Qwen3.6-27B-IQ4_XS",
+      "filename": "Qwen3.6-27B-IQ4_XS.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-IQ4_XS.gguf",
+      "min_size_bytes": 14000000000,
+      "context_window": 65536,
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg128_ts": 14.2,
+        "pp512_ts": 385,
+        "measured_on": "AMD RX 9060 XT, i5 6-core, DDR4-2400, Vulkan, ngl=99",
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local \u2014 nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. fa=on + ctk/ctv q8_0 (Group C): tg128 +6.5% (13.33\u219214.20 t/s), pp halved at ub=128 vs fa-only but still fast at ub=512 production setting. ctv q8_0 saves 640 MiB VRAM enabling ctx=65536 vs the 40960 cap without it. ctv q8_0 without fa fails context creation on AMD Vulkan. Real overflow errors at 53966 and 51804 tokens observed; ctx=65536 with Group C loads cleanly."
+      },
+      "default": false
+    }
+  ],
+  "llama_server": {
+    "ctx_size": 131072,
+    "extra_flags": "--jinja -fa on"
+  },
+  "whisper": {
+    "models": [
+      {
+        "id": "large-v3-turbo-q5_0",
+        "filename": "ggml-large-v3-turbo-q5_0.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        "min_size_bytes": 600000000,
+        "default": true
+      },
+      {
+        "id": "base.en",
+        "filename": "ggml-base.en.bin",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+        "min_size_bytes": 140000000,
+        "default": false
+      }
+    ],
+    "server": {
+      "port": 8002,
+      "host": "127.0.0.1"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>HomeBrain Dashboard</title>
+    <title>{{ platform.product_name }} Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
     <style>
@@ -272,10 +272,16 @@
 
 <body>
     <div class="header">
-        <h1 class="logo">Home<span>Brain</span><small>Private Cloud Manager</small></h1>
+        <h1 class="logo">Home<span>{{ platform.product_suffix }}</span><small>Private Cloud Manager</small></h1>
         <div class="header-status">
             <div id="global-status" class="global-status">System Active</div>
-            <div class="provider-mode">Tunnel: {{ tunnel.mode.upper() }}</div>
+            <div class="provider-mode">
+                {% if deployment_mode == 'local' %}
+                <span style="background:rgba(46,204,113,0.12); border:1px solid var(--hb-green); color:var(--hb-green); padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Local Network</span>
+                {% else %}
+                <span style="background:rgba(52,152,219,0.12); border:1px solid #3498db; color:#3498db; padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Remote Access</span>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -297,8 +303,8 @@
                 <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="status-badge status-unknown">...</span></div>
                 
                 <div style="margin-top:25px; display:flex; gap:15px;">
-                    <a href="https://{{ nc_domain }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Nextcloud</button></a>
-                    <a href="https://{{ ha_domain }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Home Assistant</button></a>
+                    <a href="{{ nc_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Nextcloud</button></a>
+                    <a href="{{ ha_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Home Assistant</button></a>
                 </div>
             </div>
 
@@ -315,6 +321,21 @@
                     </div>
                 </div>
             </div>
+
+            {% if has_gpu %}
+            <div class="card" style="border-left: 4px solid #e74c3c;">
+                <h3>🎮 GPU</h3>
+                <div class="stat-item"><span>Utilisation</span> <span id="gpu-util">—</span></div>
+                <div class="stat-item"><span>Temperature</span> <span id="gpu-temp">—</span></div>
+                <div class="stat-item" style="margin-top: 10px;"><span>VRAM</span></div>
+                <div style="margin-top: 0px;">
+                    <div class="progress-bg">
+                        <div class="progress-fill" id="gpu-vram-bar"></div>
+                        <div class="progress-text" id="gpu-vram-text">Checking...</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
 
             <div class="card">
                 <h3>Maintenance & Updates</h3>
@@ -422,12 +443,46 @@
                 <button class="btn-danger" onclick="confirmRestore()">Restore Selected</button>
             </div>
         </div>
+
+        {% if has_gpu %}
+        <div class="card" style="margin-top: 16px;">
+          <div class="card-header">
+            <h3 class="card-title">🤖 OpenClaw AI Assistant</h3>
+          </div>
+          <div class="card-body">
+            <div class="stat-row">
+              <span class="stat-label">Config file</span>
+              <span id="oc-backup-config-status" class="badge badge-muted">Checking...</span>
+            </div>
+            <div class="stat-row" style="margin-top: 8px;">
+              <span class="stat-label">Workspace size</span>
+              <span id="oc-backup-workspace-size">—</span>
+              <span id="oc-backup-size-warning" style="display:none; color:#e74c3c; margin-left:8px;">⚠ Large workspace</span>
+            </div>
+            <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 10px;">
+              <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                <input type="checkbox" id="oc-backup-include-workspace" checked
+                       onchange="updateOpenClawBackupSetting('include_workspace', this.checked)">
+                <span>Include agent workspace in backups</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                <input type="checkbox" id="oc-backup-exclude-caches"
+                       onchange="updateOpenClawBackupSetting('exclude_caches', this.checked)">
+                <span>Exclude model caches (reduces backup size)</span>
+              </label>
+            </div>
+            <p style="margin-top: 12px; font-size: 0.8em; color: var(--text-muted, #888);">
+              ⚠ Workspace contains conversation history and agent memory. Backups are stored unencrypted.
+            </p>
+          </div>
+        </div>
+        {% endif %}
     </div>
 
     <div id="connectivity" class="tab-content">
         <div class="card" style="border-left: 4px solid var(--hb-green);">
              <h3 style="border-bottom:none; margin-bottom:10px;">Authentication</h3>
-             <p style="margin-bottom:0;">The <strong>Master Admin Password</strong> controls access to HomeBrain Manager, Nextcloud, and Home Assistant.</p>
+             <p style="margin-bottom:0;">The <strong>Master Admin Password</strong> controls access to {{ platform.product_name }} Manager, Nextcloud, and Home Assistant.</p>
         </div>
 
         {% if cloud_enabled %}
@@ -452,8 +507,12 @@
         </div>
         {% endif %}
 
-        <div class="card">
-            <h3>Tunnel Configuration</h3>
+        <div class="card" {% if deployment_mode == 'local' %}style="opacity:0.45; pointer-events:none;" title="Tunnel configuration is not available in Local Network mode"{% endif %}>
+            <h3>Tunnel Configuration
+                {% if deployment_mode == 'local' %}
+                <span style="font-size:0.6em; font-weight:400; color:var(--hb-text-dim); margin-left:8px;">— not used in Local Network mode</span>
+                {% endif %}
+            </h3>
 
             {% if tunnel.mode == 'pangolin' %}
             <div style="background:rgba(46, 204, 113, 0.1); border:1px solid var(--hb-green); padding:15px; border-radius:6px; margin-bottom:20px;">
@@ -557,7 +616,7 @@
                 <p>Advanced hardware and task management.</p>
 
                 <table style="margin-top:10px;">
-                    <tr>
+                    <tr id="watchdog-row" style="display:none;">
                         <td>
                             <strong>Hardware Watchdog</strong><br>
                             <small style="color:var(--hb-text-dim);">Auto-reboots system if frozen.</small>
@@ -577,7 +636,7 @@
                             <button onclick="toggleSystem('cron')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Enforce</button>
                         </td>
                     </tr>
-                    <tr>
+                    <tr id="pci-row" style="display:none;">
                         <td>
                             <strong>PCIe Speed</strong><br>
                             <small style="color:var(--hb-text-dim);">Gen 3.0 (Experimental).</small>
@@ -599,27 +658,63 @@
                     </tr>
                 </table>
             </div>
-            
+
+            {% if has_gpu %}
             <div class="card" style="border-left: 4px solid #9b59b6;">
                 <h3>Personal AI Assistant <span class="status-badge status-starting" style="background:#9b59b622; color:#d2b4de; border-color:#9b59b6;">Experimental</span></h3>
-                <p>Run OpenClaw with Nanbeige4.1-3B entirely locally on your machine for a private, autonomous AI assistant.</p>
+                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
                 <table style="margin-top:10px;">
                     <tr>
+                        <td><strong>Inference Engine</strong> <small style="color:var(--hb-text-dim);">(llama-server :8001)</small></td>
+                        <td style="text-align:right;"><span id="sys-llama-status" class="status-badge status-unknown">...</span></td>
+                    </tr>
+                    <tr>
                         <td>
-                            <strong>OpenClaw AI</strong><br>
-                            <select id="openclaw-model" style="margin-top:5px; width:auto; font-size:0.8em; padding:2px 5px; background:#111; border:1px solid #444;">
-                                <option value="llama3.2">Llama 3.2 (3B)</option>
-                                <option value="nanbeige">Nanbeige 4.1 (3B)</option>
-                            </select><br>
-                            <small style="color:var(--hb-text-dim);">Requires ~4GB RAM for the 3B model.</small>
+                            <strong>AI Agent</strong> <small style="color:var(--hb-text-dim);">(OpenClaw)</small><br>
+                            <small id="openclaw-link" style="display:none; margin-top:4px;">
+                                <a id="openclaw-link-anchor" href="#" target="_blank" style="color:var(--hb-green);">Open OpenClaw &rarr;</a>
+                            </small>
                         </td>
-                        <td style="text-align:right; vertical-align:top;">
-                            <span id="sys-openclaw-status" class="status-badge status-unknown">...</span>
-                            <button onclick="toggleSystem('openclaw')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
+                        <td style="text-align:right;"><span id="sys-openclaw-status" class="status-badge status-unknown">...</span></td>
+                    </tr>
+                    <tr id="whatsapp-row" style="display:none;">
+                        <td>
+                            <strong>WhatsApp</strong> <small style="color:var(--hb-text-dim);">(Chat Channel)</small><br>
+                            <small id="whatsapp-link-action" style="display:none; margin-top:4px;">
+                                <a href="#" onclick="startWhatsAppLink(); return false;" style="color:var(--hb-green);">Link WhatsApp &rarr;</a>
+                            </small>
+                        </td>
+                        <td style="text-align:right;">
+                            <span id="sys-whatsapp-status" class="status-badge status-unknown">...</span>
+                        </td>
+                    </tr>
+                    <tr id="whisper-row" style="display:none;">
+                        <td>
+                            <strong>Speech-to-Text</strong> <small style="color:var(--hb-text-dim);">(Whisper)</small>
+                        </td>
+                        <td style="text-align:right;">
+                            <span id="sys-whisper-status" class="status-badge status-unknown">...</span>
                         </td>
                     </tr>
                 </table>
+                <div id="ai-model-selector" style="margin-top:10px; display:none;">
+                    <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
+                    <select id="ai-model-select" onchange="onModelSelectChange()" style="width:100%; padding:6px; margin-top:4px; font-size:0.85em; background:var(--hb-card-bg); color:var(--hb-text); border:1px solid var(--hb-border); border-radius:4px;"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none; margin-top:6px; padding:4px 14px; font-size:0.8em;">Switch Model</button>
+                </div>
+                <div style="text-align:right; margin-top:10px;">
+                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
+                </div>
             </div>
+            {% else %}
+            <div class="card" style="border-left: 4px solid #9b59b6; opacity: 0.45; pointer-events: none;">
+                <h3>Personal AI Assistant <span class="status-badge" style="background:#95a5a622; color:#bdc3c7; border-color:#95a5a6;">GPU Required</span></h3>
+                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
+                <p style="color:var(--hb-text-dim); font-size:0.9em; margin-top:10px;">
+                    This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
+                </p>
+            </div>
+            {% endif %}
             
             <div class="card">
                 <h3>FTP Server (Camera Uploads)</h3>
@@ -677,6 +772,10 @@
                         <option value="newt">Pangolin (Newt) Container</option>
                         <option value="cloudflared-nc">Cloudflare (NC) Container</option>
                         <option value="cloudflared-ha">Cloudflare (HA) Container</option>
+                    </optgroup>
+                    <optgroup label="AI Services">
+                        <option value="llama-server">llama-server (AI Inference)</option>
+                        <option value="openclaw">OpenClaw Agent</option>
                     </optgroup>
                 </select>
                 <button onclick="pollLogs()">Refresh Now</button>
@@ -764,6 +863,7 @@
                 loadBackups();
                 loadBackupConfig();
                 loadDiskStats();
+                loadOpenClawBackupStatus();
             }
             if (id === 'logs') {
                 pollLogs();
@@ -803,6 +903,18 @@
                     bar.style.width = data.root_percent + '%';
                     bar.style.backgroundColor = data.root_percent > 85 ? 'var(--hb-danger)' : 'var(--hb-green)';
                     document.getElementById('root-text').innerText = data.root_percent + "% Used (" + data.root_free_gb + " GB Free)";
+                }
+
+                // GPU stats
+                if (data.gpu && data.gpu.available) {
+                    const gpuUtil = document.getElementById('gpu-util');
+                    const gpuTemp = document.getElementById('gpu-temp');
+                    const gpuVramBar = document.getElementById('gpu-vram-bar');
+                    const gpuVramText = document.getElementById('gpu-vram-text');
+                    if (gpuUtil) gpuUtil.textContent = data.gpu.util_percent + '%';
+                    if (gpuTemp && data.gpu.temp_c !== undefined) gpuTemp.textContent = data.gpu.temp_c + '°C';
+                    if (gpuVramBar) gpuVramBar.style.width = data.gpu.vram_percent + '%';
+                    if (gpuVramText) gpuVramText.textContent = data.gpu.vram_used_gb + ' / ' + data.gpu.vram_total_gb + ' GB';
                 }
 
             } catch (e) { }
@@ -910,14 +1022,197 @@
                     el.dataset.val = val;
                 };
 
-                updateBadge('sys-wd-status', data.watchdog, 'enabled');
+                // Watchdog (Pi-only, visible only if supported)
+                const wdEl = document.getElementById('sys-wd-status');
+                const wdRow = document.getElementById('watchdog-row');
+                if (data.watchdog !== 'unsupported') {
+                    if (wdRow) wdRow.style.display = 'table-row';
+                    if (wdEl) updateBadge('sys-wd-status', data.watchdog, 'enabled');
+                }
+
                 updateBadge('sys-cron-status', data.cron, 'cron'); // cron enabled = 'cron'
-                updateBadge('sys-pci-status', data.pci, 'gen3');
-                updateBadge('sys-openclaw-status', data.openclaw || 'disabled', 'running');
+
+                // PCIe (Pi-only, visible only if supported)
+                const pciEl = document.getElementById('sys-pci-status');
+                const pciRow = document.getElementById('pci-row');
+                if (data.pci !== 'unsupported') {
+                    if (pciRow) pciRow.style.display = 'table-row';
+                    if (pciEl) updateBadge('sys-pci-status', data.pci, 'gen3');
+                }
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled', data.whisper || 'not_installed');
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
+        }
+
+        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus, whisperStatus) {
+            const badgeMap = {
+                running:       ['status-running',  'RUNNING'],
+                starting:      ['status-starting', 'LOADING MODEL...'],
+                disabled:      ['status-stopped',  'STOPPED'],
+                not_installed: ['status-unknown',  'NOT INSTALLED']
+            };
+
+            // llama-server badge
+            const llamaEl = document.getElementById('sys-llama-status');
+            const [lCls, lTxt] = badgeMap[llamaStatus] || badgeMap.not_installed;
+            llamaEl.className = 'status-badge ' + lCls;
+            llamaEl.innerText = lTxt;
+            llamaEl.dataset.val = llamaStatus;
+
+            // OpenClaw badge
+            const ocEl = document.getElementById('sys-openclaw-status');
+            const [oCls, oTxt] = badgeMap[openclawStatus] || badgeMap.not_installed;
+            ocEl.className = 'status-badge ' + oCls;
+            ocEl.innerText = openclawStatus === 'starting' ? 'STARTING' : oTxt;
+            ocEl.dataset.val = openclawStatus;
+
+            // OpenClaw link (only when running)
+            const linkWrap = document.getElementById('openclaw-link');
+            const linkAnchor = document.getElementById('openclaw-link-anchor');
+            if (openclawStatus === 'running') {
+                // Pre-authenticate the link via URL fragment so the token is never
+                // sent to the server in logs. OpenClaw 2026.3.7+ uses `#token=`.
+                // Older versions don't support fragments — user will be prompted
+                // to enter the token manually in that case.
+                fetch('/api/ai/whatsapp/link-token')
+                    .then(r => r.ok ? r.json() : Promise.reject())
+                    .then(data => {
+                        const port = data.port || 18789;
+                        const base = `http://${location.hostname}:${port}/`;
+                        linkAnchor.href = data.token ? `${base}#token=${encodeURIComponent(data.token)}` : base;
+                    })
+                    .catch(() => {
+                        linkAnchor.href = `http://${location.hostname}:18789`;
+                    });
+                linkAnchor.innerText = `Open OpenClaw \u2192 :18789`;
+                linkWrap.style.display = 'block';
+            } else {
+                linkWrap.style.display = 'none';
+            }
+
+            // Model selector (show when not installed or when running/disabled)
+            const modelSelector = document.getElementById('ai-model-selector');
+            if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
+                modelSelector.style.display = 'block';
+                loadAIModels();
+            } else if (llamaStatus === 'running' || llamaStatus === 'disabled') {
+                modelSelector.style.display = 'block';
+                loadAIModels(currentModelId);
+            } else {
+                modelSelector.style.display = 'none';
+            }
+
+            // Unified button
+            const btn = document.getElementById('btn-ai-toggle');
+            btn.disabled = false;
+            if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
+                btn.innerText = 'Install';
+            } else if (llamaStatus === 'running' && openclawStatus === 'running') {
+                btn.innerText = 'Disable';
+            } else if (llamaStatus === 'starting' || openclawStatus === 'starting') {
+                btn.innerText = 'Starting...';
+                btn.disabled = true;
+            } else {
+                btn.innerText = 'Enable';
+            }
+
+            // WhatsApp status row
+            const waRow = document.getElementById('whatsapp-row');
+            const waEl = document.getElementById('sys-whatsapp-status');
+            const waAction = document.getElementById('whatsapp-link-action');
+            if (waStatus && waStatus !== 'disabled' && openclawStatus === 'running') {
+                waRow.style.display = '';
+                if (waStatus === 'linked') {
+                    waEl.className = 'status-badge status-running';
+                    waEl.innerText = 'LINKED';
+                    waAction.style.display = 'none';
+                } else {
+                    waEl.className = 'status-badge status-stopped';
+                    waEl.innerText = 'NOT LINKED';
+                    waAction.style.display = 'block';
+                }
+            } else {
+                waRow.style.display = 'none';
+            }
+
+            // Whisper STT status row
+            const whisperRow = document.getElementById('whisper-row');
+            const whisperEl = document.getElementById('sys-whisper-status');
+            if (whisperStatus && whisperStatus !== 'not_installed') {
+                whisperRow.style.display = '';
+                if (whisperStatus === 'running') {
+                    whisperEl.className = 'status-badge status-running';
+                    whisperEl.innerText = 'RUNNING';
+                } else {
+                    whisperEl.className = 'status-badge status-stopped';
+                    whisperEl.innerText = 'STOPPED';
+                }
+            } else {
+                whisperRow.style.display = 'none';
+            }
+        }
+
+        let aiModelsLoaded = false;
+        async function loadAIModels(currentModelId) {
+            const select = document.getElementById('ai-model-select');
+            if (aiModelsLoaded) {
+                if (currentModelId) {
+                    select.value = currentModelId;
+                    select.dataset.currentModel = currentModelId;
+                }
+                return;
+            }
+            try {
+                const res = await fetch('/api/ai/models', { credentials: 'include' });
+                const data = await res.json();
+                select.innerHTML = '';
+                (data.models || []).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.id + ' (' + (m.min_size_bytes / 1073741824).toFixed(0) + ' GB)';
+                    if (currentModelId ? m.id === currentModelId : m.default) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                if (currentModelId) select.dataset.currentModel = currentModelId;
+                aiModelsLoaded = true;
+            } catch(e) { console.error("Failed to load AI models", e); }
+        }
+
+        function onModelSelectChange() {
+            const btn = document.getElementById('btn-switch-model');
+            const select = document.getElementById('ai-model-select');
+            const llamaStatus = document.getElementById('sys-llama-status')?.dataset?.val;
+            if (llamaStatus && llamaStatus !== 'not_installed' && select.dataset.currentModel && select.value !== select.dataset.currentModel) {
+                btn.style.display = 'inline-block';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        async function switchModel() {
+            const modelId = document.getElementById('ai-model-select').value;
+            const msg = `Switch AI model to ${modelId}?\n\nThis will stop the AI services, download the new model if needed, and restart. The AI assistant will be unavailable during the switch.`;
+            if (!confirm(msg)) return;
+            try {
+                const res = await fetch('/api/ai/model/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ model_id: modelId })
+                });
+                if (res.ok) {
+                    currentLogSource = 'setup';
+                    document.getElementById('log-selector').value = 'setup';
+                    openTab('logs');
+                    document.getElementById('btn-switch-model').style.display = 'none';
+                    setTimeout(loadSystemConfig, 5000);
+                } else {
+                    const err = await res.json();
+                    alert(err.error || 'Failed to switch model');
+                }
+            } catch(e) { alert("Failed to start model switch: " + e); }
         }
 
         async function toggleSystem(feature) {
@@ -926,17 +1221,45 @@
             let current = "";
 
             if (feature === 'openclaw') {
-                current = document.getElementById('sys-openclaw-status').dataset.val;
-                action = current === 'running' || current === 'starting' ? 'disable' : 'enable';
-                const model = document.getElementById('openclaw-model').value;
-                const modelName = model === 'llama3.2' ? 'Llama 3.2 3B' : 'Nanbeige 4.1 3B';
-                confirmMsg = action === 'enable' ? `Install and Start OpenClaw AI with ${modelName}? This will download the model (~2GB) and start local LLM services.` : "Disable OpenClaw AI and stop local LLM services?";
-                
-                if (confirm(confirmMsg)) {
-                    triggerAction('/api/system/config', 'System Config', { feature: feature, action: action, model: model });
-                    setTimeout(loadSystemConfig, 3000);
+                const llamaState = document.getElementById('sys-llama-status').dataset.val;
+                const ocState = document.getElementById('sys-openclaw-status').dataset.val;
+                const bothRunning = llamaState === 'running' && ocState === 'running';
+                const neitherInstalled = llamaState === 'not_installed' && ocState === 'not_installed';
+                const action = bothRunning ? 'disable' : 'enable';
+
+                let confirmMsg;
+                if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
+                    const selectedModel = document.getElementById('ai-model-select')?.value || 'default';
+                    const buildNote = "This will download a prebuilt llama-server, the model, and install OpenClaw.";
+                    confirmMsg = `Install the AI stack (${selectedModel})?\n\n${buildNote}\n\nProgress will be shown in the Setup Log.`;
+                } else if (action === 'enable') {
+                    confirmMsg = "Start the AI services?\n\nllama-server takes a few minutes to load the model into memory.";
+                } else {
+                    confirmMsg = "Stop both AI services (llama-server and OpenClaw)?";
                 }
-                return; // Early return to bypass the default toggle logic
+
+                if (confirm(confirmMsg)) {
+                    // Persist model selection before triggering install
+                    if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
+                        const modelId = document.getElementById('ai-model-select')?.value;
+                        if (modelId) {
+                            await fetch('/api/ai/model', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                credentials: 'include',
+                                body: JSON.stringify({ model_id: modelId })
+                            });
+                        }
+                    }
+                    triggerAction('/api/system/config', 'AI Stack', { feature: feature, action: action });
+                    if (action === 'enable') {
+                        currentLogSource = 'setup';
+                        document.getElementById('log-selector').value = 'setup';
+                        openTab('logs');
+                    }
+                    setTimeout(loadSystemConfig, 5000);
+                }
+                return;
             } else {
                const el = document.getElementById(feature === 'watchdog' ? 'sys-wd-status' : (feature === 'cron' ? 'sys-cron-status' : 'sys-pci-status'));
                current = el.dataset.val;
@@ -1239,6 +1562,39 @@
             }
         }
 
+        function loadOpenClawBackupStatus() {
+            fetch('/api/openclaw/backup-status')
+                .then(r => r.json())
+                .then(data => {
+                    const configEl = document.getElementById('oc-backup-config-status');
+                    if (configEl) {
+                        configEl.textContent = data.config_present ? 'Present' : 'Missing';
+                        configEl.className = 'badge ' + (data.config_present ? 'badge-success' : 'badge-danger');
+                    }
+                    const sizeEl = document.getElementById('oc-backup-workspace-size');
+                    if (sizeEl) {
+                        sizeEl.textContent = data.workspace_size_mb !== null
+                            ? data.workspace_size_mb + ' MB'
+                            : 'Not found';
+                    }
+                    const warnEl = document.getElementById('oc-backup-size-warning');
+                    if (warnEl) warnEl.style.display = data.workspace_size_warning ? 'inline' : 'none';
+                    const inclEl = document.getElementById('oc-backup-include-workspace');
+                    if (inclEl) inclEl.checked = data.backup_workspace;
+                    const exclEl = document.getElementById('oc-backup-exclude-caches');
+                    if (exclEl) exclEl.checked = data.exclude_caches;
+                })
+                .catch(() => {});
+        }
+
+        function updateOpenClawBackupSetting(key, value) {
+            fetch('/api/backup/openclaw-settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({[key]: value})
+            }).catch(() => {});
+        }
+
         async function triggerAction(endpoint, name, body = {}) {
             try {
                 const res = await fetch(endpoint, {
@@ -1310,7 +1666,7 @@
  
         async function doManagerUpdate() {
             const channel = document.getElementById('update-channel').value;
-            if (!confirm(`Update HomeBrain Manager to ${channel} ${pendingUpdateTarget}? The interface will restart.`)) return;
+            if (!confirm(`Update {{ platform.product_name }} Manager to ${channel} ${pendingUpdateTarget}? The interface will restart.`)) return;
             
             const res = await fetch('/api/manager/update', { 
                 method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1402,7 +1758,145 @@
                 .replace(/'/g, "&#039;");
         }
 
+        // --- WhatsApp QR Linking ---
+        let waSocket = null;
+
+        function startWhatsAppLink() {
+            const modal = document.getElementById('whatsapp-qr-modal');
+            modal.style.display = 'flex';
+            const msgEl = document.getElementById('whatsapp-qr-message');
+            const imgEl = document.getElementById('whatsapp-qr-img');
+            msgEl.textContent = 'Connecting to gateway...';
+            imgEl.style.display = 'none';
+
+            fetch('/api/ai/whatsapp/link-token', { credentials: 'include' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) { msgEl.textContent = data.error; return; }
+                    connectWhatsAppWs(data.token, data.port);
+                })
+                .catch(() => { msgEl.textContent = 'Failed to get gateway token.'; });
+        }
+
+        function connectWhatsAppWs(token, port) {
+            const host = window.location.hostname;
+            const msgEl = document.getElementById('whatsapp-qr-message');
+            const imgEl = document.getElementById('whatsapp-qr-img');
+
+            waSocket = new WebSocket('ws://' + host + ':' + port);
+            let reqId = 0;
+            let authenticated = false;
+            let connectTimer = null;
+
+            function genId() {
+                // Match OpenClaw's ID format: 8 hex chars
+                var s = '';
+                for (var i = 0; i < 8; i++) s += Math.floor(Math.random()*16).toString(16);
+                return s;
+            }
+
+            function send(method, params) {
+                var id = genId();
+                // OpenClaw gateway uses {type:"req"} framing, NOT JSON-RPC 2.0
+                waSocket.send(JSON.stringify({ type: 'req', id: id, method: method, params: params || {} }));
+                return id;
+            }
+
+            function sendConnect() {
+                if (authenticated) return;
+                send('connect', {
+                    minProtocol: 3, maxProtocol: 3,
+                    client: { id: 'openclaw-control-ui', version: 'control-ui', platform: 'web', mode: 'webchat' },
+                    role: 'operator', scopes: ['operator.admin'],
+                    auth: { token: token },
+                    caps: [],
+                    userAgent: navigator.userAgent,
+                    locale: navigator.language
+                });
+            }
+
+            waSocket.onopen = function() {
+                msgEl.textContent = 'Authenticating with gateway...';
+                // Gateway may or may not send connect.challenge; send connect after 750ms fallback
+                connectTimer = setTimeout(function() { sendConnect(); }, 750);
+            };
+
+            waSocket.onmessage = function(ev) {
+                try {
+                    var msg = JSON.parse(ev.data);
+                    var payload = msg.payload || {};
+
+                    // Handle connect.challenge event
+                    if (msg.type === 'event' && msg.event === 'connect.challenge') {
+                        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+                        sendConnect();
+                        return;
+                    }
+
+                    // Skip other events (health, tick, etc.)
+                    if (msg.type === 'event') return;
+
+                    // Handle connect response (type: "res", ok: true, payload.type: "hello-ok")
+                    if (msg.type === 'res' && !authenticated) {
+                        if (msg.ok && payload.protocol) {
+                            authenticated = true;
+                            msgEl.textContent = 'Requesting QR code...';
+                            send('web.login.start', { force: true, timeoutMs: 60000 });
+                        } else {
+                            msgEl.textContent = 'Gateway auth failed: ' + (payload.message || payload.reason || JSON.stringify(payload));
+                        }
+                        return;
+                    }
+
+                    // Handle QR code response
+                    if (msg.type === 'res' && payload.qrDataUrl) {
+                        imgEl.src = payload.qrDataUrl;
+                        imgEl.style.display = 'block';
+                        msgEl.textContent = 'Scan this QR code with WhatsApp';
+                        send('web.login.wait', { timeoutMs: 120000 });
+                        return;
+                    }
+
+                    // Handle successful link
+                    if (msg.type === 'res' && payload.connected) {
+                        imgEl.style.display = 'none';
+                        msgEl.textContent = 'WhatsApp linked successfully!';
+                        setTimeout(closeWhatsAppModal, 2000);
+                        return;
+                    }
+
+                    // Handle errors
+                    if (msg.type === 'res' && !msg.ok) {
+                        msgEl.textContent = payload.message || 'Linking failed.';
+                    }
+                } catch(e) { /* ignore parse errors */ }
+            };
+
+            waSocket.onerror = function() { msgEl.textContent = 'WebSocket connection failed.'; };
+            waSocket.onclose = function() { waSocket = null; if (connectTimer) clearTimeout(connectTimer); };
+        }
+
+        function closeWhatsAppModal() {
+            document.getElementById('whatsapp-qr-modal').style.display = 'none';
+            if (waSocket) { waSocket.close(); waSocket = null; }
+        }
+
         init();
     </script>
+
+    <div id="whatsapp-qr-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+        background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:var(--hb-card-bg); border:1px solid var(--hb-border); border-radius:8px; padding:24px; max-width:400px; text-align:center;">
+            <h3 style="margin-top:0;">Link WhatsApp</h3>
+            <p id="whatsapp-qr-message" style="color:var(--hb-text-dim); font-size:0.9em;">Connecting...</p>
+            <div id="whatsapp-qr-container" style="margin:16px auto;">
+                <img id="whatsapp-qr-img" style="display:none; max-width:280px; border-radius:4px;" />
+            </div>
+            <p style="font-size:0.8em; color:var(--hb-text-dim);">
+                Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Scan QR code
+            </p>
+            <button onclick="closeWhatsAppModal()" style="margin-top:12px; padding:6px 18px;">Close</button>
+        </div>
+    </div>
 </body>
 </html>
