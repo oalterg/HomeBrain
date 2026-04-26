@@ -1239,31 +1239,78 @@ migrate_to_consolidated_layout() {
     fi
     trap 'rm -f "$lock"' RETURN
 
-    log_info "=== Layout migration: ensuring consolidated /home/homebrain layout ==="
+    # --- 0. Detect whether any data move is actually needed ---
+    # On a healthy, already-consolidated target this stays false and we skip
+    # the AI-service stop/restart cycle entirely. setup_*_server (Phase 7)
+    # does its own stop/restart only if unit files have drifted.
+    local needs_data_move=false
+    _detect_migration_work() {
+        # Phase A: legacy /home/admin
+        if [[ -d "${legacy_home}" ]] && [[ -n "$(ls -A "${legacy_home}" 2>/dev/null)" ]]; then
+            [[ -d "${legacy_home}/llama-server" ]] && return 0
+            [[ -d "${legacy_home}/whisper-server" ]] && return 0
+            [[ -d "${legacy_home}/.openclaw" && ! -d "${hb}/.openclaw" ]] && return 0
+            compgen -G "${legacy_home}/*.gguf" >/dev/null && return 0
+            compgen -G "${legacy_home}/ggml-*.bin" >/dev/null && return 0
+        fi
+        # Phase B: flat /home/homebrain
+        [[ -d "${hb}/llama-server" ]] && [[ ! -L "${hb}/llama-server" ]] \
+            && [[ "${hb}/llama-server" != "${ai_dir}/llama-server" ]] && return 0
+        [[ -d "${hb}/whisper-server" ]] && [[ ! -L "${hb}/whisper-server" ]] \
+            && [[ "${hb}/whisper-server" != "${ai_dir}/whisper-server" ]] && return 0
+        [[ -f "${hb}/whisper_proxy.py" ]] && return 0
+        [[ -f "${ai_dir}/whisper-server/whisper_proxy.py" ]] && return 0
+        compgen -G "${hb}/*.gguf" >/dev/null && return 0
+        compgen -G "${hb}/ggml-*.bin" >/dev/null && return 0
+        # Phase C: nested model subdirs
+        if [[ -d "${models_dir}" ]]; then
+            local sub
+            for sub in "${models_dir}"/*/; do
+                [[ -d "$sub" ]] && return 0
+            done
+        fi
+        # Phase D: nextcloud data still at legacy /opt path
+        if [[ -d /opt/homebrain/nextcloud-data ]] \
+            && [[ -n "$(ls -A /opt/homebrain/nextcloud-data 2>/dev/null)" ]] \
+            && [[ -z "$(ls -A "${nc_dir}" 2>/dev/null || true)" ]]; then
+            return 0
+        fi
+        return 1
+    }
+    if _detect_migration_work; then needs_data_move=true; fi
+    unset -f _detect_migration_work
 
-    # --- 0. Create canonical target directories (idempotent) ---
+    # --- 1. Create canonical target directories (idempotent, harmless) ---
     install -d -o "${HOMEBRAIN_USER}" -g "${HOMEBRAIN_USER}" -m 0755 \
         "${ai_dir}" "${ai_dir}/llama-server" "${ai_dir}/whisper-server" \
         "${ai_dir}/whisper-proxy" "${models_dir}" "${nc_dir}"
 
-    # --- 1. Stop AI services if active (so binaries can move safely) ---
-    # Track which were running so we restart at the end. If services are
-    # already stopped (fresh install) this is a no-op.
-    if systemctl list-unit-files llama-server.service &>/dev/null \
-        && systemctl is-active --quiet llama-server 2>/dev/null; then
-        restart_llama=true
-        systemctl stop llama-server 2>/dev/null || true
+    if [[ "$needs_data_move" != "true" ]]; then
+        log_info "Layout already consolidated; skipping data-move phases."
+    else
+        log_info "=== Layout migration: data move required ==="
+
+        # Stop AI services so we can move binaries/models safely.
+        if systemctl list-unit-files llama-server.service &>/dev/null \
+            && systemctl is-active --quiet llama-server 2>/dev/null; then
+            restart_llama=true
+            systemctl stop llama-server 2>/dev/null || true
+        fi
+        if systemctl list-unit-files whisper-server.service &>/dev/null \
+            && systemctl is-active --quiet whisper-server 2>/dev/null; then
+            restart_whisper=true
+            systemctl stop whisper-server 2>/dev/null || true
+        fi
+        if systemctl list-unit-files whisper-proxy.service &>/dev/null \
+            && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
+            restart_proxy=true
+            systemctl stop whisper-proxy 2>/dev/null || true
+        fi
     fi
-    if systemctl list-unit-files whisper-server.service &>/dev/null \
-        && systemctl is-active --quiet whisper-server 2>/dev/null; then
-        restart_whisper=true
-        systemctl stop whisper-server 2>/dev/null || true
-    fi
-    if systemctl list-unit-files whisper-proxy.service &>/dev/null \
-        && systemctl is-active --quiet whisper-proxy 2>/dev/null; then
-        restart_proxy=true
-        systemctl stop whisper-proxy 2>/dev/null || true
-    fi
+
+    # The data-move phases themselves are idempotent and cheap to re-enter
+    # when needs_data_move=false (every conditional inside short-circuits),
+    # so we run them unconditionally to keep one source of truth.
 
     # --- 2. Phase A: legacy /home/admin → /home/homebrain ---
     # Applies to: ARM/non-AI installs (admin was the only user), legacy AI x86
