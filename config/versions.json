@@ -4,6 +4,6 @@
     "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8931/llama-b8931-bin-ubuntu-vulkan-x64.tar.gz"
   },
   "openclaw": {
-    "version": "2026.4.15"
+    "version": "2026.4.24"
   }
 }
