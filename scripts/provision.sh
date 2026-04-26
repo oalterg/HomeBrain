@@ -186,13 +186,18 @@ if ! systemctl is-active --quiet docker; then
     sleep 5
 fi
 
-# Generate temporary .env to satisfy Compose variable substitution during pull
-cat > "$INSTALL_DIR/.env" <<EOF
+# Generate temporary .env to satisfy Compose variable substitution during pull,
+# but only if a real .env doesn't already exist (idempotent re-runs).
+_TEMP_ENV_CREATED=false
+if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+    cat > "$INSTALL_DIR/.env" <<EOF
 # Temp Factory Env
 NEXTCLOUD_DATA_DIR=/var/www/html
 MASTER_PASSWORD=placeholder
 PANGOLIN_DOMAIN=example.com
 EOF
+    _TEMP_ENV_CREATED=true
+fi
 
 # Pull images — include Pangolin profile only in remote mode
 if [[ "$PROVISION_MODE" == "remote" ]]; then
@@ -202,8 +207,10 @@ else
     docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
 fi
 
-# Cleanup temp env so User Setup generates a fresh secure one
-rm "$INSTALL_DIR/.env"
+# Cleanup temp env only if we created it; preserve a real one across re-runs
+if [[ "$_TEMP_ENV_CREATED" == "true" ]]; then
+    rm "$INSTALL_DIR/.env"
+fi
 
 # --- 5. Install Service ---
 echo "Configuring Systemd Service..."
