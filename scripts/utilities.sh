@@ -1282,6 +1282,16 @@ migrate_to_consolidated_layout() {
             && [[ -z "$(ls -A "${nc_dir}" 2>/dev/null || true)" ]]; then
             return 0
         fi
+        # Phase E: NEXTCLOUD_DATA_DIR pointing to a non-canonical, populated
+        # path (e.g. legacy /home/admin/nextcloud on non-AI ARM installs, or
+        # any custom location set by an earlier provision).
+        if [[ -n "${NEXTCLOUD_DATA_DIR:-}" ]] \
+            && [[ "${NEXTCLOUD_DATA_DIR}" != "${nc_dir}" ]] \
+            && [[ -d "${NEXTCLOUD_DATA_DIR}" ]] \
+            && [[ -n "$(ls -A "${NEXTCLOUD_DATA_DIR}" 2>/dev/null)" ]] \
+            && [[ -z "$(ls -A "${nc_dir}" 2>/dev/null || true)" ]]; then
+            return 0
+        fi
         return 1
     }
     if _detect_migration_work; then needs_data_move=true; fi
@@ -1472,6 +1482,72 @@ migrate_to_consolidated_layout() {
             rmdir "$legacy_nc" 2>/dev/null || true
         else
             log_warn "Migration D: ${nc_dir} already non-empty; leaving ${legacy_nc} in place. Investigate manually."
+        fi
+    fi
+
+    # --- 5b. Phase E: any non-canonical NEXTCLOUD_DATA_DIR → ${nc_dir} ---
+    # Catches non-AI/legacy deployments where NEXTCLOUD_DATA_DIR points to
+    # /home/admin/nextcloud or any other path. After move: rewrites .env so
+    # docker-compose remounts the canonical path on the next 'up'.
+    #
+    # Idempotent: if .env already points to ${nc_dir}, or source==target, or
+    # source is empty, the block no-ops. If target is non-empty we refuse to
+    # merge and log a warning rather than risk masking data.
+    local current_nc_path="${NEXTCLOUD_DATA_DIR:-}"
+    if [[ -n "$current_nc_path" ]] \
+        && [[ "$current_nc_path" != "$nc_dir" ]] \
+        && [[ -d "$current_nc_path" ]] \
+        && [[ -n "$(ls -A "$current_nc_path" 2>/dev/null)" ]]; then
+        if [[ -n "$(ls -A "$nc_dir" 2>/dev/null || true)" ]]; then
+            log_warn "Migration E: ${nc_dir} already non-empty; leaving ${current_nc_path} in place. Investigate manually."
+        else
+            # Same-filesystem check — only same-FS guarantees atomic mv. A
+            # cross-FS copy would be slow and could leave partial state.
+            local src_dev tgt_dev
+            src_dev=$(stat -c %d "$current_nc_path" 2>/dev/null || echo "")
+            tgt_dev=$(stat -c %d "$(dirname "$nc_dir")" 2>/dev/null || echo "")
+            if [[ -n "$src_dev" ]] && [[ -n "$tgt_dev" ]] && [[ "$src_dev" != "$tgt_dev" ]]; then
+                log_warn "Migration E: ${current_nc_path} and ${nc_dir} are on different filesystems. Skipping auto-move; manual migration required."
+            else
+                log_info "Migration E: Nextcloud data ${current_nc_path} → ${nc_dir}"
+
+                # Stop the container so no in-flight writes occur during move.
+                local nc_container_was_running=false
+                if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'homebrain-nextcloud-1'; then
+                    nc_container_was_running=true
+                    log_info "  Stopping homebrain-nextcloud-1 for safe data move..."
+                    docker stop homebrain-nextcloud-1 >/dev/null 2>&1 \
+                        || log_warn "  docker stop failed; mv on same FS is still atomic, continuing."
+                fi
+
+                # Atomic same-FS move of contents into pre-created target dir
+                # (Phase 1 created it; Phase 6 will chown it 33:33).
+                if ! ( shopt -s dotglob nullglob; mv "$current_nc_path"/* "$nc_dir"/ ); then
+                    log_error "  Nextcloud data move failed. NEXTCLOUD_DATA_DIR=${current_nc_path} unchanged."
+                    if [[ "$nc_container_was_running" == "true" ]]; then
+                        docker start homebrain-nextcloud-1 >/dev/null 2>&1 || true
+                    fi
+                    return 1
+                fi
+                rmdir "$current_nc_path" 2>/dev/null || true
+
+                # Persist new path to .env so docker-compose picks it up.
+                update_env_var "NEXTCLOUD_DATA_DIR" "${nc_dir}"
+                log_info "  .env updated: NEXTCLOUD_DATA_DIR=${nc_dir}"
+
+                # Match container UID immediately so a quick restart doesn't EACCES.
+                chown 33:33 "${nc_dir}" 2>/dev/null || true
+
+                # Bring the container back with the new mount. Update.sh will
+                # also do `docker compose up -d` later, but starting here means
+                # standalone callers (utilities.sh migrate, dashboard manual
+                # migrate) leave the system healthy without a follow-up step.
+                if [[ "$nc_container_was_running" == "true" ]]; then
+                    log_info "  Restarting homebrain-nextcloud-1 with new mount..."
+                    ( cd "${INSTALL_DIR}" && docker compose --env-file "${ENV_FILE}" $(get_compose_args) up -d nextcloud ) \
+                        >/dev/null 2>&1 || log_warn "  Nextcloud restart failed; next 'docker compose up' will recover."
+                fi
+            fi
         fi
     fi
 

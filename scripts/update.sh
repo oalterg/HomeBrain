@@ -143,6 +143,21 @@ else
 fi
 
 
+# 6b. Layout Migration (idempotent — _detect_migration_work probes first;
+# no-op on already-consolidated targets, so this is safe to run every update).
+# Runs AFTER rsync (so the latest migrate_to_consolidated_layout is in place)
+# and BEFORE docker compose pull/up (so any data move + .env rewrite is
+# reflected in the next mount).
+if [[ -x "$SCRIPT_DIR/utilities.sh" ]]; then
+    log_info "Running directory consolidation migration..."
+    if ! bash "$SCRIPT_DIR/utilities.sh" migrate; then
+        log_warn "Migration reported issues; continuing — see /var/log/homebrain for details."
+    fi
+    # Migration may have rewritten NEXTCLOUD_DATA_DIR; reload so the
+    # docker compose step below sees the canonical path.
+    load_env
+fi
+
 # 6. Docker Stack Update
 log_info "Updating Docker Stack..."
 cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
