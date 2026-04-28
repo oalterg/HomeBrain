@@ -664,8 +664,10 @@ download_model() {
             log_info "Model already downloaded ($(( size / 1073741824 )) GB). Skipping."
             return 0
         else
-            log_warn "Model file exists but appears truncated (${size} bytes). Re-downloading..."
-            rm -f "$MODEL_PATH"
+            # Keep the partial file — wget --continue below will resume from this offset
+            # rather than re-downloading the whole 25-30 GB. Deleting here turned an
+            # interrupted install into hours of repeat work.
+            log_warn "Model file is below MIN_SIZE (${size} bytes). Resuming with wget --continue..."
         fi
     fi
 
