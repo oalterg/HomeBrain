@@ -96,11 +96,25 @@ load_env() {
     else
         die "Environment file ($ENV_FILE) not found."
     fi
+    # HAS_GPU is intentionally not persisted to .env (provision sets it in the
+    # running shell only). The .env.template ships an empty HAS_GPU= line, which
+    # the source above would happily clobber any detected value with. Re-detect
+    # whenever it comes back empty so downstream gates (auto AI setup, backup
+    # AI snapshots, llama updates) see the correct value.
+    if [[ -z "${HAS_GPU:-}" ]]; then
+        detect_gpu
+    fi
 }
 
 # --- Resilience Helpers ---
 check_internet() {
-    ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1
+    # Some networks rate-limit ICMP to specific hosts (we've seen 8.8.8.8 silently
+    # dropped while 1.1.1.1 succeeds), and root vs unprivileged ping take different
+    # socket paths. Try a couple of hosts, then fall back to TCP/HTTPS to GitHub —
+    # which is what we'll actually need for downloads anyway.
+    ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 \
+        || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1 \
+        || curl -sf --max-time 5 -o /dev/null https://github.com
 }
 
 wait_for_time_sync() {

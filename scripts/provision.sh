@@ -111,6 +111,14 @@ if [[ "$HAS_GPU" == "true" ]]; then
     cp "${SCRIPT_DIR}/../config/99-amdgpu-runpm.rules" /etc/udev/rules.d/
     udevadm control --reload-rules 2>/dev/null || true
     log_info "Deployed AMD GPU udev rule to /etc/udev/rules.d/"
+
+    # Deploy modprobe config to mask VCN/JPEG IP blocks (Navi 44 init bug — see config file).
+    # The driver was probing fine until linux-firmware 20250901 / kernel 6.17 exposed a
+    # VCN ring-test timeout that takes the whole probe down. We don't need video decode,
+    # so masking those blocks gets gfx + compute back online for llama.cpp.
+    cp "${SCRIPT_DIR}/../config/homebrain-amdgpu.conf" /etc/modprobe.d/
+    update-initramfs -u 2>/dev/null || true
+    log_info "Deployed amdgpu modprobe config (VCN/JPEG masked) to /etc/modprobe.d/"
 fi
 
 # --- 2. Write Factory Config ---

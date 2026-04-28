@@ -393,12 +393,18 @@ def run_background_task(task_name, command, log_type):
     write_status(status)
 
     try:
-        # Redirect stderr to stdout to capture errors in logs
-        subprocess.run(command, shell=True, check=True)
+        result = subprocess.run(
+            command, shell=True, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        if result.stdout:
+            app.logger.info(f"[{task_name}] {result.stdout}")
         status["status"] = "success"
         status["message"] = f"{task_name} completed successfully."
         write_status(status)
     except subprocess.CalledProcessError as e:
+        if e.output:
+            app.logger.error(f"[{task_name} failed] {e.output}")
         status["status"] = "error"
         status["message"] = f"{task_name} failed. Check logs."
         write_status(status)
@@ -1069,15 +1075,20 @@ def format_drive():
 
     # Quote drive path to prevent command injection
     safe_path = shlex.quote(drive_path)
+    # Use && so any failed step aborts the chain (mkfs, blkid, mount). udevadm settle
+    # ensures the kernel has published the new UUID before we read it.
     cmd = (
-        f"umount {safe_path}* || true; "
-        f"wipefs -a {safe_path}; "
-        f"mkfs.ext4 -F -L 'NextcloudBackup' {safe_path}; "
-        f"mkdir -p {BACKUP_DIR}; "
-        f"UUID=$(blkid -o value -s UUID {safe_path}); "
-        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab; "
-        f'echo "UUID=$UUID {BACKUP_DIR} ext4 defaults,nofail 0 2" >> /etc/fstab; '
-        f"mount -a;"
+        f"set -e; "
+        f"umount {safe_path}* 2>/dev/null || true; "
+        f"wipefs -a {safe_path} && "
+        f"mkfs.ext4 -F -L 'NextcloudBackup' {safe_path} && "
+        f"udevadm settle && "
+        f"mkdir -p {BACKUP_DIR} && "
+        f"UUID=$(blkid -o value -s UUID {safe_path}) && "
+        f'[ -n "$UUID" ] && '
+        f"sed -i '\\|{BACKUP_DIR}|d' /etc/fstab && "
+        f'echo "UUID=$UUID {BACKUP_DIR} ext4 defaults,nofail 0 2" >> /etc/fstab && '
+        f"mount -a"
     )
 
     threading.Thread(
