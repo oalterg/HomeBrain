@@ -718,9 +718,14 @@ setup_llama_server() {
         die "No AI model configured. Please select a model in the dashboard before installing."
     fi
 
-    # --- [1/5] Fast-path: binary and model already present ---
+    # --- [1/5] Fast-path: binary and complete model already present ---
+    # Size check matters: a partial download (file exists but < MIN_SIZE) would
+    # otherwise short-circuit straight to llama-server start, which would then
+    # hang for the full health timeout trying to load a truncated GGUF.
     log_info "[1/5] Checking for existing llama-server installation..."
-    if [[ -x "$LLAMA_BIN" ]] && [[ -f "$MODEL_PATH" ]]; then
+    local existing_size=0
+    [[ -f "$MODEL_PATH" ]] && existing_size=$(stat --format=%s "$MODEL_PATH" 2>/dev/null || echo 0)
+    if [[ -x "$LLAMA_BIN" ]] && [[ "$existing_size" -gt "$MIN_SIZE" ]]; then
         log_info "llama-server and model already present. Syncing service and starting..."
         generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
         systemctl daemon-reload
