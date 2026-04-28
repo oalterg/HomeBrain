@@ -1022,8 +1022,10 @@ def list_drives():
                 continue
 
             # Layer 2: Skip non-removable drives (RM=0) — internal NVMe/SATA are never removable.
-            rm = str(dev.get("rm", "0")).strip()
-            if rm != "1":
+            # lsblk -J emits `rm` as a JSON bool (true/false) on util-linux >= 2.37
+            # and as a string ("0"/"1") on older versions; accept both.
+            rm = dev.get("rm")
+            if rm not in (True, 1, "1"):
                 continue
 
             # Layer 1 (continued): Skip the disk that contains the root filesystem.
