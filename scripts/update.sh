@@ -148,14 +148,22 @@ fi
 # Runs AFTER rsync (so the latest migrate_to_consolidated_layout is in place)
 # and BEFORE docker compose pull/up (so any data move + .env rewrite is
 # reflected in the next mount).
-if [[ -x "$SCRIPT_DIR/utilities.sh" ]]; then
+#
+# Resolve from INSTALL_DIR, not SCRIPT_DIR: when self-reload exec'd the new
+# update.sh from /tmp/homebrain_self_update, $SCRIPT_DIR points there — and
+# only update.sh + common.sh are downloaded into that dir, so utilities.sh
+# would be missing and migration would silently skip.
+INSTALLED_UTILS="$INSTALL_DIR/scripts/utilities.sh"
+if [[ -x "$INSTALLED_UTILS" ]]; then
     log_info "Running directory consolidation migration..."
-    if ! bash "$SCRIPT_DIR/utilities.sh" migrate; then
+    if ! bash "$INSTALLED_UTILS" migrate; then
         log_warn "Migration reported issues; continuing — see /var/log/homebrain for details."
     fi
     # Migration may have rewritten NEXTCLOUD_DATA_DIR; reload so the
     # docker compose step below sees the canonical path.
     load_env
+else
+    log_warn "utilities.sh missing at $INSTALLED_UTILS — skipping migration."
 fi
 
 # 6. Docker Stack Update
