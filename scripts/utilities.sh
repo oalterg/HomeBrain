@@ -1298,6 +1298,10 @@ migrate_to_consolidated_layout() {
     unset -f _detect_migration_work
 
     # --- 1. Create canonical target directories (idempotent, harmless) ---
+    # Legacy non-AI ARM installs may still be on the 'admin' user with no
+    # 'homebrain' user yet. Phase 1's `install -d -o homebrain` would fail
+    # with "invalid user" — ensure the user exists first.
+    ensure_homebrain_user
     install -d -o "${HOMEBRAIN_USER}" -g "${HOMEBRAIN_USER}" -m 0755 \
         "${ai_dir}" "${ai_dir}/llama-server" "${ai_dir}/whisper-server" \
         "${ai_dir}/whisper-proxy" "${models_dir}" "${nc_dir}"
@@ -1542,10 +1546,15 @@ migrate_to_consolidated_layout() {
                 # also do `docker compose up -d` later, but starting here means
                 # standalone callers (utilities.sh migrate, dashboard manual
                 # migrate) leave the system healthy without a follow-up step.
+                #
+                # --force-recreate is required: a bare `up -d` reuses the
+                # existing container's bind-mount config and ignores the
+                # rewritten NEXTCLOUD_DATA_DIR, leaving the container mounted
+                # on the now-empty old path.
                 if [[ "$nc_container_was_running" == "true" ]]; then
-                    log_info "  Restarting homebrain-nextcloud-1 with new mount..."
-                    ( cd "${INSTALL_DIR}" && docker compose --env-file "${ENV_FILE}" $(get_compose_args) up -d nextcloud ) \
-                        >/dev/null 2>&1 || log_warn "  Nextcloud restart failed; next 'docker compose up' will recover."
+                    log_info "  Recreating homebrain-nextcloud-1 with new mount..."
+                    ( cd "${INSTALL_DIR}" && docker compose --env-file "${ENV_FILE}" $(get_compose_args) up -d --force-recreate nextcloud ) \
+                        >/dev/null 2>&1 || log_warn "  Nextcloud recreate failed; next 'docker compose up --force-recreate' will recover."
                 fi
             fi
         fi

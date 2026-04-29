@@ -62,6 +62,11 @@ ensure_homebrain_user() {
         chmod 700 "${HOMEBRAIN_HOME}/.ssh"
         chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.ssh"
     fi
+    # On modern Ubuntu, useradd -m creates $HOME with mode 0700, which blocks
+    # other UIDs (notably www-data UID 33 inside the Nextcloud container) from
+    # traversing into bind-mounted subdirs like ${HOME}/nextcloud-data. 0755
+    # exposes only directory traversal; .ssh stays 0700 by its own perms.
+    chmod 0755 "${HOMEBRAIN_HOME}" 2>/dev/null || true
     for grp in docker render video; do
         if getent group "$grp" >/dev/null 2>&1; then
             usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
