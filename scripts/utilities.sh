@@ -1298,6 +1298,10 @@ migrate_to_consolidated_layout() {
     unset -f _detect_migration_work
 
     # --- 1. Create canonical target directories (idempotent, harmless) ---
+    # Legacy non-AI ARM installs may still be on the 'admin' user with no
+    # 'homebrain' user yet. Phase 1's `install -d -o homebrain` would fail
+    # with "invalid user" — ensure the user exists first.
+    ensure_homebrain_user
     install -d -o "${HOMEBRAIN_USER}" -g "${HOMEBRAIN_USER}" -m 0755 \
         "${ai_dir}" "${ai_dir}/llama-server" "${ai_dir}/whisper-server" \
         "${ai_dir}/whisper-proxy" "${models_dir}" "${nc_dir}"
