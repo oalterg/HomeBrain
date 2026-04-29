@@ -86,12 +86,18 @@ def _amdgpu_compute_util() -> int:
 def get_gpu_stats() -> dict:
     """Read GPU stats from sysfs — AMD amdgpu driver (no rocm-smi dependency)."""
     import glob as _glob
+    import re as _re
     result = {"available": False}
     try:
-        bases = _glob.glob("/sys/class/drm/card*/device")
-        if not bases:
+        # /sys/class/drm/card* also matches connector subdirs like card0-HDMI-A-1
+        # which expose a `device` symlink but lack the amdgpu mem_info_* attrs.
+        # Match only top-level card nodes (cardN) and pick the first one that
+        # actually exposes VRAM info.
+        card_re = _re.compile(r"/sys/class/drm/card\d+/device$")
+        bases = [b for b in _glob.glob("/sys/class/drm/card*/device") if card_re.match(b)]
+        base = next((b for b in bases if os.path.exists(f"{b}/mem_info_vram_total")), None)
+        if not base:
             return result
-        base = bases[0]
         result["util_percent"] = _amdgpu_compute_util()
         vram_used = int(open(f"{base}/mem_info_vram_used").read().strip())
         vram_total = int(open(f"{base}/mem_info_vram_total").read().strip())
