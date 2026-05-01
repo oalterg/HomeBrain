@@ -9,7 +9,10 @@
 | RAM       | 32 GB DDR4 |
 | Backend   | Vulkan (RADV / GFX1200) |
 | OS        | Ubuntu 24.04 (x86_64) |
-| llama.cpp | b8951 |
+| llama.cpp | b8996 (upgraded from b8951; non-Q5_K_XL/Q4 rows in this table still measured on b8951) |
+| RADV env  | `RADV_PERFTEST=rm_kq=1` (set via systemd drop-in) |
+| Mesa      | 25.2.8 (Ubuntu 25.10) |
+| Kernel    | Linux 6.17 |
 
 ## Methodology
 
@@ -23,9 +26,9 @@
 
 | Model                   | Quant      | Size  | Ctx  | KV   | -ot range | -b/-ub      | TG (t/s) | PP@2k (t/s) | VRAM     | Date       |
 |-------------------------|------------|-------|------|------|-----------|-------------|----------|-------------|----------|------------|
-| Qwen3.6-35B-A3B         | UD-Q4_K_M  | 21 GB | 131K | q8_0 | 23-39     | 4096 / 4096 | **34.41**| **802**     | ~15.0 GB | 2026-05-01 |
+| Qwen3.6-35B-A3B         | UD-Q4_K_M  | 21 GB | 131K | q8_0 | 23-39     | 4096 / 4096 | **34.13**| **866**     | ~15.3 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q5_K_M  | 25 GB | 131K | q8_0 | 20-39     | 4096 / 4096 | 29.09    | 760         | 15.0 GB  | 2026-05-01 |
-| **Qwen3.6-35B-A3B**     | UD-Q5_K_XL | 26 GB | 131K | q8_0 | 20-39     | 4096 / 4096 | 29.23    | 751         | ~15.0 GB | 2026-05-01 |
+| **Qwen3.6-35B-A3B**     | UD-Q5_K_XL | 26 GB | 131K | q8_0 | 20-39     | 4096 / 4096 | 29.20    | 751         | ~15.0 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q6_K    | 29 GB | 131K | q8_0 | 18-39     | 4096 / 4096 | 27.18    | 689         | ~15.6 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q6_K_XL | 32 GB | 131K | q8_0 | 16-39     | 4096 / 4096 | 25.38    | 643         | ~15.8 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q8_K_XL | 38 GB | 131K | q8_0 | 14-39     | 4096 / 2048 | 17.96    | 140         | ~15.9 GB | 2026-05-01 |
@@ -78,6 +81,27 @@ Tuning principles confirmed on this hardware:
   - Q6_K_XL (32 GB): blk.16-39 (24 of 40)
   - Q8_K_XL (38 GB): blk.14-39 (26 of 40) — drops below 20 t/s, not recommended for production
 - 27B IQ4_XS uses no `-ot` (DeltaNet hybrid — partial expert offload breaks the fused kernel).
+
+## Upgrade sweep — b8951 → b8996 (2026-05-01)
+
+Same hardware, same model files, same flags. Bench harness identical run-to-run. Tested whether the b8951 → b8996 upgrade and the documented `RADV_PERFTEST=rm_kq=1` / PCIe-ASPM-performance levers were worth applying.
+
+| Run                                      | TG    | PP    | Δ TG   | Δ PP   |
+|------------------------------------------|-------|-------|--------|--------|
+| Q5_K_XL b8951 (baseline)                 | 29.23 | 748.9 | —      | —      |
+| Q5_K_XL b8996 vanilla                    | 29.14 | 690.0 |  −0.3% |  −7.9% |
+| Q5_K_XL b8996 + `rm_kq=1`                | 29.29 | 748.8 |  +0.2% |   0.0% |
+| Q5_K_XL b8996 + `rm_kq=1` + ASPM perf    | 29.20 | 751.4 |  −0.1% |  +0.3% |
+| Q4_K_M  b8951 (baseline)                 | 34.41 | 802   | —      | —      |
+| Q4_K_M  b8996 + `rm_kq=1`                | 34.13 | 866   |  −0.8% | **+8.0%** |
+
+Findings:
+- **b8996 alone regresses PP −7.9%** on Q5_K_XL. `RADV_PERFTEST=rm_kq=1` recovers it (the new build apparently relies on RADV's faster KQ matmul path being enabled).
+- With `rm_kq=1` set, the upgrade is **net-positive on Q4_K_M (+8% PP)** and neutral on Q5_K_XL. TG is flat across all configurations (within ±1%).
+- **PCIe ASPM=performance** is noise on this workload. Not worth a system-level change. (Documented in the literature as +10–14% on R9700 / gfx1201 with Mesa 25.3-devel; this rig runs Mesa 25.2.8 / gfx1200.)
+- Production switched to b8996 with `RADV_PERFTEST=rm_kq=1` set via systemd drop-in (`/etc/systemd/system/llama-server.service.d/10-radv-perftest.conf`). Old binary preserved at `/home/homebrain/ai-runtime/llama-server.b8951.bak` for rollback.
+
+ROCm backend was investigated but not benchmarked: llama.cpp issue [#21376](https://github.com/ggml-org/llama.cpp/issues/21376) (open) reproduces a hard OOM on RX 9060 XT when KV cache approaches the VRAM ceiling — exactly our 35B + q8_0 KV + `-ub 4096` regime. Comparative benchmarks on RDNA4 (RX 9070 XT, gfx1201) currently show Vulkan ~30% ahead of ROCm for dense Qwen3. Re-evaluate after #21376 fixes and ROCm 7.1+ gfx1200 tuning lands.
 
 ## Notes
 
