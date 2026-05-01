@@ -11,6 +11,10 @@ Group=__HOMEBRAIN_USER__
 WorkingDirectory=__WORKDIR__
 Environment="LD_LIBRARY_PATH=__WORKDIR__"
 Environment="GGML_VK_DEVICE=0"
+# RADV fast KQ matmul path. Required for llama.cpp b8996+ on RADV/GFX1200 to
+# avoid a -7.9% PP regression; also nets +8% PP on Q4_K_M MoE quants. See
+# BENCHMARKS.md upgrade sweep (2026-05-01).
+Environment="RADV_PERFTEST=rm_kq=1"
 
 # Wait for GPU device node before starting inference (30 second timeout)
 ExecStartPre=/bin/sh -c 'i=0; until [ -e /dev/dri/renderD128 ] || [ -e /dev/dri/card0 ]; do sleep 1; i=$((i+1)); [ $i -ge 30 ] && exit 1; done'
