@@ -1,76 +1,168 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="light">
 <head>
     <title>Installing {{ platform.product_name }}...</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+    {% include '_theme.html' %}
     <style>
         body {
             max-width: 800px;
             margin: 0 auto;
             padding: 40px 20px;
             text-align: center;
-            background-color: #121212;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: #eee;
         }
         .logo {
             font-size: 2.5em;
-            font-weight: bold;
-            color: #fff;
-            margin-bottom: 20px;
+            font-weight: 300;
+            color: var(--text-strong);
+            margin-bottom: 16px;
             letter-spacing: -1px;
         }
-        .logo span { color: #2ecc71; }
-        
-        #logs {
-            background: #000;
-            color: #2ecc71;
-            padding: 15px;
-            height: 400px;
-            overflow: auto;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            border-radius: 8px;
-            border: 1px solid #333;
-            text-align: left;
-            box-shadow: inset 0 0 10px #000;
+        .logo span { color: var(--accent); font-weight: 700; }
+
+        h2 { font-weight: 300; color: var(--text-strong); margin-bottom: 6px; }
+
+        .progress-meta {
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
+        .progress-meta::before { content: "› "; color: var(--accent); }
+
+        #logs {
+            background: var(--console-bg);
+            color: var(--console-fg);
+            padding: 16px 18px;
+            height: 420px;
+            overflow: auto;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            border-radius: var(--radius-card);
+            border: 1px solid var(--console-border);
+            text-align: left;
+            box-shadow: var(--console-shadow);
+            line-height: 1.45;
+            position: relative;
+        }
+        #log-container { margin-top: 24px; position: relative; }
+        #log-container::before {
+            content: "● ● ●";
+            position: absolute;
+            top: -6px; left: 14px;
+            background: var(--surface);
+            color: var(--text-faint);
+            padding: 0 8px;
+            font-family: var(--font-mono);
+            font-size: 0.7em;
+            letter-spacing: 6px;
+            border-radius: 4px;
+            z-index: 1;
+        }
+
         .success-box {
-            background: #1e1e1e;
+            background: var(--surface);
             padding: 30px;
-            border-radius: 12px;
-            border: 2px solid #2ecc71;
-            box-shadow: 0 0 30px rgba(46, 204, 113, 0.15);
+            border-radius: var(--radius-card);
+            border: 1px solid var(--accent);
+            box-shadow: var(--accent-glow), var(--shadow-pop);
             text-align: left;
             animation: fadeIn 0.5s;
         }
         @keyframes fadeIn { from { opacity:0; transform: translateY(20px); } to { opacity:1; transform: translateY(0); } }
 
         button {
-            background-color: #2ecc71;
-            color: #000;
-            font-weight: bold;
-            font-size: 1.1em;
-            padding: 15px 30px;
+            background: var(--accent);
+            color: var(--text-on-accent);
+            font-weight: 700;
+            font-size: 1.05em;
+            padding: 14px 28px;
             border: none;
-            border-radius: 50px;
+            border-radius: var(--radius-pill);
             cursor: pointer;
-            transition: transform 0.2s, background-color 0.2s;
+            transition: transform 0.18s, background-color 0.18s, box-shadow 0.18s;
             width: 100%;
+            box-shadow: var(--accent-glow);
         }
-        button:hover {
-            transform: scale(1.02);
-            background-color: #27ae60;
+        button:hover { transform: translateY(-1px); background: var(--accent-hover); }
+        button:disabled { background: var(--neutral-soft); color: var(--text-faint); box-shadow: none; }
+
+        .creds-block {
+            background: var(--surface-2);
+            padding: 20px;
+            border-radius: var(--radius-input);
+            margin: 25px 0;
+            border: 1px solid var(--border);
         }
+        .creds-label {
+            color: var(--text-dim);
+            display: block;
+            font-size: 0.72em;
+            text-transform: uppercase;
+            letter-spacing: 1.4px;
+            font-family: var(--font-mono);
+        }
+        .creds-value {
+            font-size: 1.2em;
+            color: var(--text-strong);
+        }
+        .creds-password {
+            font-family: var(--font-mono);
+            font-size: 1.55em;
+            color: var(--warning);
+            word-break: break-all;
+            margin-top: 6px;
+            padding: 8px 10px;
+            background: var(--bg);
+            border: 1px dashed var(--border-strong);
+            border-radius: 6px;
+        }
+
+        .activate-card {
+            background: var(--accent-soft);
+            border: 1px solid var(--accent);
+            padding: 20px;
+            border-radius: var(--radius-input);
+            margin-bottom: 25px;
+        }
+        .activate-card h3 {
+            margin-top:0;
+            color: var(--accent);
+            font-size: 1.05em;
+            font-family: var(--font-mono);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .activate-card input[type=email] {
+            padding: 12px;
+            border-radius: 6px;
+            flex-grow: 1;
+            outline: none;
+        }
+        .activate-card .activate-row { display:flex; gap:10px; align-items: center; }
+        .activate-card button { width:auto; padding:10px 22px; font-size:0.9em; margin:0; }
+        .activate-msg { margin-bottom:0; font-size:0.85em; margin-top:10px; min-height:1.2em; }
+
+        .confirm-gate {
+            display:none;
+            margin-top:15px;
+            background: var(--surface);
+            padding: 12px 14px;
+            border-radius: 6px;
+            border: 1px dashed var(--border-strong);
+        }
+        .confirm-gate label { display:flex; align-items:center; gap:10px; cursor:pointer; color: var(--text); }
     </style>
 </head>
 <body>
+    {% include '_theme_toggle.html' with context %}
+
     <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
-    <h2 id="status-title" style="font-weight: 300;">System Installation in Progress</h2>
-    <p id="status-sub" style="color:#aaa;">Please do not unplug. This can take about 15 minutes.</p>
-    
+    <h2 id="status-title">System Installation in Progress</h2>
+    <p id="status-sub" class="progress-meta">Please do not unplug. This can take about 15 minutes.</p>
+
     <div id="log-container">
         <pre id="logs">Connecting to log stream...</pre>
     </div>
@@ -83,9 +175,9 @@
             if (finished) return;
 
             fetch('/api/logs/setup').then(r => {
-                if (r.status === 401) { 
-                    console.log("Session refreshed"); 
-                    location.reload(); return null; 
+                if (r.status === 401) {
+                    console.log("Session refreshed");
+                    location.reload(); return null;
                 }
                 return r.text();
             }).then(t => {
@@ -106,7 +198,6 @@
             fetch('/api/setup/credentials', { cache: "no-store" })
                  .then(res => {
                     if (!res.ok && retries > 0) {
-                        // If file isn't ready yet (404), wait and retry
                         console.log("Credentials not ready, retrying...");
                         setTimeout(() => fetchCredentials(retries - 1), 2000);
                         return null;
@@ -115,23 +206,20 @@
                     return res.json();
                 })
                 .then(data => {
-                    if (!data) return; // Retrying...
+                    if (!data) return;
                     showSuccess(data);
-                    // NOTE: We do NOT cleanup here. We wait for user confirmation.
                 })
                 .catch(e => {
                     console.error(e);
                     document.body.innerHTML = `
                         <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
                         <h1>Installation Finished</h1>
-                        <p><p>System is ready, but credentials could not be loaded.</p>
+                        <p>System is ready, but credentials could not be loaded.</p>
                         <button onclick="location.reload()">Go to Login</button>
                     `;
                 });
         }
 
-        // If the backend tells us the handover is ready (e.g. after a reboot),
-        // skip log polling and fetch credentials immediately.
         if (handoverReady) {
             finished = true;
             logsEl.innerText = "Resuming session... Retrieving credentials...";
@@ -140,43 +228,41 @@
 
         function showSuccess(data) {
             document.body.innerHTML = `
-                <div style="max-width: 500px; margin: 0 auto; padding: 20px;">
+                <div style="max-width: 520px; margin: 0 auto; padding: 20px;">
                     <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
-                    
+
                     <div class="success-box">
-                        <h2 style="margin-top:0; color: #2ecc71; border-bottom: 1px solid #444; padding-bottom: 15px;">Setup Complete</h2>
-                        <p style="color:#ddd;">Your private cloud is ready. Save these credentials immediately.</p>
-                        
-                        <div style="background: #252525; padding: 20px; border-radius: 8px; margin: 25px 0;">
-                            <div style="margin-bottom: 15px;">
-                                <span style="color:#888; display:block; font-size:0.75em; text-transform:uppercase; letter-spacing:1px;">Master Username</span>
-                                <span style="font-size:1.2em; color:#fff;">admin</span>
+                        <h2 style="margin-top:0; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 15px;">Setup Complete</h2>
+                        <p style="color: var(--text);">Your private cloud is ready. Save these credentials immediately.</p>
+
+                        <div class="creds-block">
+                            <div style="margin-bottom: 16px;">
+                                <span class="creds-label">Master Username</span>
+                                <span class="creds-value">admin</span>
                             </div>
                             <div>
-                                <span style="color:#888; display:block; font-size:0.75em; text-transform:uppercase; letter-spacing:1px;">Master Password</span>
-                                <div style="font-family: 'Consolas', monospace; font-size: 1.6em; color: #f39c12; word-break: break-all; margin-top:5px;">
-                                    ${data.password}
-                                </div>
+                                <span class="creds-label">Master Password</span>
+                                <div class="creds-password">${data.password}</div>
                             </div>
                         </div>
-                        
-                        <p style="font-size: 0.9em; color: #aaa; margin-bottom: 25px;">
+
+                        <p style="font-size: 0.9em; color: var(--text-dim); margin-bottom: 25px;">
                             This password provides full administrative access to your Dashboard, Nextcloud, and Home Assistant.
                         </p>
                         ${data.cloud_enabled ? `
-                        <div style="background: rgba(46, 204, 113, 0.05); border: 1px solid #2ecc71; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
-                            <h3 style="margin-top:0; color: #2ecc71; font-size:1.1em;">Activate Remote Access (Required)</h3>
-                            <p style="font-size:0.9em; color:#ccc; margin-bottom:15px;">
+                        <div class="activate-card">
+                            <h3>// Activate Remote Access (Required)</h3>
+                            <p style="font-size:0.9em; color: var(--text); margin-bottom:15px;">
                                 You must register your device to enable remote access and finish setup.
                             </p>
-                            <div style="display:flex; gap:10px;">
-                                <input type="email" id="cloud-email" placeholder="Enter your email address" style="padding:12px; border-radius:4px; border:1px solid #444; background:#111; color:#fff; flex-grow:1; outline:none;" required>
-                                <button onclick="registerCloud()" id="btn-cloud" style="width:auto; padding:10px 25px; font-size:0.9em; margin:0;">Activate</button>
+                            <div class="activate-row">
+                                <input type="email" id="cloud-email" placeholder="Enter your email address" required>
+                                <button onclick="registerCloud()" id="btn-cloud">Activate</button>
                             </div>
-                            <p id="cloud-msg" style="margin-bottom:0; font-size:0.85em; margin-top:10px; min-height:1.2em;"></p>
-                            
-                            <div id="confirmation-gate" style="display:none; margin-top:15px; background:#1e1e1e; padding:10px; border-radius:4px; border:1px dashed #666;">
-                                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; color:#fff;">
+                            <p id="cloud-msg" class="activate-msg"></p>
+
+                            <div id="confirmation-gate" class="confirm-gate">
+                                <label>
                                     <input type="checkbox" id="chk-confirm" onchange="toggleLoginBtn()">
                                     <span>I have received the email and set my password.</span>
                                 </label>
@@ -197,10 +283,10 @@
             const email = document.getElementById('cloud-email').value;
             const btn = document.getElementById('btn-cloud');
             const msg = document.getElementById('cloud-msg');
-            
+
             if (!email.includes('@')) {
                 msg.innerText = "Please enter a valid email.";
-                msg.style.color = "#e74c3c";
+                msg.style.color = "var(--danger)";
                 return;
             }
 
@@ -218,24 +304,20 @@
             .then(data => {
                 if (data.status === 'success') {
                     msg.innerText = data.message;
-                    msg.style.color = "#2ecc71";
+                    msg.style.color = "var(--accent)";
                     btn.innerText = "Activated";
-                    
-                    // Show Confirmation Checkbox instead of auto-unlocking
                     document.getElementById('login-section').style.display = 'block';
                     document.getElementById('confirmation-gate').style.display = 'block';
-                    // Button remains disabled until checkbox is checked
-                    document.getElementById('login-section').style.display = 'block';
                 } else {
                     msg.innerText = data.error || "Failed to send.";
-                    msg.style.color = "#e74c3c";
+                    msg.style.color = "var(--danger)";
                     btn.disabled = false;
                     btn.innerText = "Send Invite";
                 }
             })
             .catch(e => {
                 msg.innerText = "Connection error.";
-                msg.style.color = "#e74c3c";
+                msg.style.color = "var(--danger)";
                 btn.disabled = false;
                 document.getElementById('cloud-email').disabled = false;
                 btn.innerText = "Send Invite";
@@ -257,16 +339,9 @@
         }
 
         function confirmAndLogin() {
-            // 1. Signal backend to delete the credential file
             fetch('/api/setup/cleanup_credentials', {method: 'POST'})
-                .then(() => {
-                    // 2. Reload page to trigger auth prompt
-                    window.location.href = "/";
-                })
-                .catch(err => {
-                    // Fallback if server unreachable, just reload
-                    window.location.href = "/";
-                });
+                .then(() => { window.location.href = "/"; })
+                .catch(err => { window.location.href = "/"; });
         }
     </script>
 </body>

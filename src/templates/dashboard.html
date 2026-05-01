@@ -1,30 +1,15 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="light">
 <head>
     <title>{{ platform.product_name }} Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+    {% include '_theme.html' %}
     <style>
-        :root {
-            --hb-green: #2ecc71;
-            --hb-green-hover: #27ae60;
-            --hb-bg: #121212;
-            --hb-card: #1e1e1e;
-            --hb-border: #333;
-            --hb-text-main: #eee;
-            --hb-text-dim: #aaa;
-            --hb-danger: #c0392b;
-            --hb-danger-hover: #e74c3c;
-            --hb-warning: #f39c12;
-        }
-
         body {
             max-width: 1100px;
             margin: 0 auto;
             padding: 20px;
-            background-color: var(--hb-bg);
-            color: var(--hb-text-main);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
         }
 
@@ -33,32 +18,60 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid var(--hb-border);
+            border-bottom: 1px solid var(--border);
             padding-bottom: 20px;
             margin-bottom: 30px;
+            gap: 16px;
         }
 
         .logo {
             font-size: 2em;
             font-weight: 300;
             letter-spacing: -1px;
-            color: #fff;
+            color: var(--text-strong);
             margin: 0;
             line-height: 1;
         }
-        .logo span { color: var(--hb-green); font-weight: 700; }
-        .logo small { font-size: 0.4em; color: var(--hb-text-dim); font-weight: 400; letter-spacing: 0; display: block; margin-top: 4px; }
+        .logo span { color: var(--accent); font-weight: 700; }
+        .logo small {
+            font-size: 0.4em;
+            color: var(--text-dim);
+            font-weight: 400;
+            letter-spacing: 1px;
+            display: block;
+            margin-top: 4px;
+            font-family: var(--font-mono);
+            text-transform: uppercase;
+        }
 
-        .header-status { text-align: right; }
-        .global-status { font-weight: bold; color: var(--hb-green); font-size: 1.1em; }
-        .provider-mode { font-size: 0.85em; color: var(--hb-text-dim); margin-top: 4px; }
+        .header-status { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+        .header-actions { display: flex; align-items: center; gap: 12px; }
+        .global-status {
+            font-weight: 500;
+            color: var(--text-dim);
+            font-size: 0.9em;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .global-status::before {
+            content: "";
+            width: 8px; height: 8px;
+            border-radius: 999px;
+            background: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+        .global-status[data-state="busy"]::before { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); animation: hb-pulse 1.4s ease-in-out infinite; }
+        .global-status[data-state="error"]::before { background: var(--danger);  box-shadow: 0 0 0 3px var(--danger-soft); }
+        @keyframes hb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+        .provider-mode { font-size: 0.8em; color: var(--text-faint); }
 
         /* --- Navigation Tabs --- */
         .tabs {
             display: flex;
-            gap: 15px;
+            gap: 6px;
             margin-bottom: 25px;
-            border-bottom: 1px solid var(--hb-border);
+            border-bottom: 1px solid var(--border);
             padding-bottom: 0;
             flex-wrap: wrap;
         }
@@ -66,23 +79,23 @@
         .tab-btn {
             background: transparent;
             border: none;
-            padding: 12px 20px;
+            padding: 12px 18px;
             cursor: pointer;
-            color: var(--hb-text-dim);
-            font-weight: 600;
-            font-size: 1em;
-            transition: all 0.2s ease;
+            color: var(--text-dim);
+            font-weight: 500;
+            font-size: 0.95em;
+            transition: color 0.18s ease, border-color 0.18s ease;
             position: relative;
             top: 1px;
-            border-bottom: 3px solid transparent;
-            border-radius: 4px 4px 0 0;
+            border-bottom: 2px solid transparent;
+            font-family: var(--font-ui);
         }
 
-        .tab-btn:hover { color: #fff; background: rgba(255,255,255,0.05); }
+        .tab-btn:hover { color: var(--text-strong); }
         .tab-btn.active {
-            color: var(--hb-green);
-            border-bottom: 3px solid var(--hb-green);
-            background: linear-gradient(to top, rgba(46, 204, 113, 0.1), transparent);
+            color: var(--text-strong);
+            border-bottom: 2px solid var(--accent);
+            font-weight: 600;
         }
 
         .tab-content { display: none; animation: fadeIn 0.4s ease-out; }
@@ -92,180 +105,345 @@
         /* --- Cards & Grid --- */
         .grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-            gap: 25px;
+            grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+            gap: 22px;
         }
 
         .card {
-            background: var(--hb-card);
+            background: var(--surface);
             padding: 25px;
-            border-radius: 12px;
-            border: 1px solid #2a2a2a;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-            transition: transform 0.2s;
+            border-radius: var(--radius-card);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-card);
+            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
         }
-        .card:hover { border-color: #444; }
+        .card:hover { border-color: var(--border-strong); }
 
         .card h3 {
             margin-top: 0;
-            margin-bottom: 20px;
-            font-size: 1.3em;
-            color: #fff;
+            margin-bottom: 18px;
+            font-size: 1.05em;
+            color: var(--text-strong);
             font-weight: 600;
-            border-bottom: 1px solid #333;
-            padding-bottom: 12px;
+            padding-bottom: 0;
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 10px;
+            font-family: var(--font-ui);
+            letter-spacing: -0.1px;
         }
 
-        .card p { font-size: 0.95em; color: #ccc; margin-bottom: 15px; }
+        .card p { font-size: 0.95em; color: var(--text); margin-bottom: 15px; }
 
         /* --- Buttons & Inputs --- */
         button {
-            background-color: #333;
-            color: #fff;
-            border: 1px solid #444;
-            padding: 10px 18px;
-            border-radius: 6px;
+            background-color: var(--btn-bg);
+            color: var(--btn-fg);
+            border: 1px solid var(--btn-border);
+            padding: 9px 16px;
+            border-radius: var(--radius-input);
             cursor: pointer;
             font-weight: 500;
-            transition: all 0.2s;
+            transition: background-color 0.18s, border-color 0.18s, transform 0.18s, box-shadow 0.18s, color 0.18s;
             font-size: 0.9em;
+            font-family: var(--font-ui);
         }
-        button:hover { background-color: #444; border-color: #666; transform: translateY(-1px); }
+        button:hover { background-color: var(--btn-bg-hover); border-color: var(--accent); transform: translateY(-1px); }
         button:active { transform: translateY(0); }
-        button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 
         .btn-primary {
-            background-color: var(--hb-green);
-            color: #000;
+            background-color: var(--accent);
+            color: var(--text-on-accent);
             font-weight: 700;
-            border: none;
-            box-shadow: 0 2px 10px rgba(46, 204, 113, 0.2);
+            border: 1px solid var(--accent);
+            box-shadow: var(--accent-glow);
         }
-        .btn-primary:hover { background-color: var(--hb-green-hover); box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3); }
+        .btn-primary:hover { background-color: var(--accent-hover); border-color: var(--accent-hover); color: var(--text-on-accent); box-shadow: 0 6px 22px var(--accent-ring); }
 
-        .btn-danger { background-color: var(--hb-danger); color: white; border: none; }
-        .btn-danger:hover { background-color: var(--hb-danger-hover); }
+        .btn-danger { background-color: var(--danger); color: var(--danger-fg); border: 1px solid var(--danger); }
+        .btn-danger:hover { background-color: var(--danger); filter: brightness(1.1); border-color: var(--danger); color: var(--danger-fg); }
 
-        .btn-warning { background-color: rgba(243, 156, 18, 0.2); color: var(--hb-warning); border: 1px solid var(--hb-warning); }
-        .btn-warning:hover { background-color: var(--hb-warning); color: #121212; }
+        .btn-warning { background-color: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
+        .btn-warning:hover { background-color: var(--warning); color: #fff; border-color: var(--warning); }
 
-        input, select {
-            background: #2a2a2a;
-            color: #fff;
-            border: 1px solid #444;
-            padding: 10px;
-            border-radius: 6px;
+        input, select, textarea {
+            padding: 10px 12px;
+            border-radius: var(--radius-input);
             width: 100%;
             margin-bottom: 15px;
             font-size: 0.95em;
-            box-sizing: border-box; /* Fix width issues */
+            box-sizing: border-box;
+            border: 1px solid var(--border-strong);
+            font-family: var(--font-ui);
         }
-        input:focus, select:focus { border-color: var(--hb-green); outline: none; }
 
         label {
-            color: var(--hb-text-dim);
+            color: var(--text-dim);
             font-size: 0.85em;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-weight: 500;
             margin-bottom: 6px;
             display: block;
+            font-family: var(--font-ui);
         }
 
         /* --- Specific UI Elements --- */
         .status-badge {
-            padding: 4px 10px;
-            border-radius: 50px;
-            font-weight: 700;
-            text-transform: uppercase;
-            font-size: 0.7em;
-            letter-spacing: 1px;
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            font-weight: 500;
+            font-size: 0.78em;
             display: inline-block;
+            font-family: var(--font-ui);
         }
-        .status-running { background: rgba(46, 204, 113, 0.15); color: var(--hb-green); border: 1px solid rgba(46, 204, 113, 0.3); }
-        .status-stopped { background: rgba(231, 76, 60, 0.15); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }
-        .status-unknown { background: #333; color: #aaa; border: 1px solid #444; }
-        .status-starting { background: rgba(243, 156, 18, 0.15); color: var(--hb-warning); border: 1px solid rgba(243, 156, 18, 0.3); }
+        .status-running  { background: var(--accent-soft);  color: var(--accent);  border: 1px solid var(--accent-ring); }
+        .status-stopped  { background: var(--danger-soft);  color: var(--danger);  border: 1px solid var(--danger); }
+        .status-unknown  { background: var(--neutral-soft); color: var(--text-dim);border: 1px solid var(--border-strong); }
+        .status-starting { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
 
         .progress-bg {
-            background: #2a2a2a;
-            height: 24px;
+            background: var(--surface-sunken);
+            height: 22px;
             border-radius: 12px;
             overflow: hidden;
             margin-top: 8px;
             position: relative;
-            box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+            border: 1px solid var(--hairline);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,0.06);
         }
         .progress-fill {
-            background: var(--hb-green);
+            background: linear-gradient(90deg, var(--accent), var(--accent-hover));
             height: 100%;
             width: 0%;
-            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s;
         }
         .progress-text {
             position: absolute;
             width: 100%;
             text-align: center;
             top: 0;
-            font-size: 0.8em;
-            font-weight: bold;
-            line-height: 24px;
-            color: #fff;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+            font-size: 0.78em;
+            font-weight: 700;
+            line-height: 22px;
+            color: var(--text-strong);
+            text-shadow:
+                0 0 2px var(--surface),
+                0 0 6px var(--surface);
             z-index: 2;
+            font-family: var(--font-mono);
+            letter-spacing: 0.5px;
         }
 
         .log-box {
-            background: #000;
-            color: #aaddaa;
-            font-family: 'Consolas', 'Monaco', monospace;
+            background: var(--console-bg);
+            color: var(--console-fg);
+            font-family: var(--font-mono);
             height: 400px;
             overflow-y: scroll;
             padding: 15px;
-            border-radius: 8px;
+            border-radius: var(--radius-card);
             font-size: 13px;
-            border: 1px solid #333;
-            box-shadow: inset 0 0 15px rgba(0,0,0,0.5);
-            line-height: 1.4;
+            border: 1px solid var(--console-border);
+            box-shadow: var(--console-shadow);
+            line-height: 1.45;
         }
 
         .log-line { margin-bottom: 2px; }
-        .log-error { color: #ff6b6b; font-weight: bold; }
-        .log-warning { color: #feca57; }
-        .log-info { color: #aaddaa; }
-        .log-debug { color: #54a0ff; }
+        .log-error { color: #ff8a8a; font-weight: bold; }
+        .log-warning { color: #f5d76e; }
+        .log-info { color: var(--console-fg); }
+        .log-debug { color: #82b6ff; }
 
         .stat-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 8px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
+            border-bottom: 1px solid var(--hairline);
         }
         .stat-item:last-child { border-bottom: none; }
-        .stat-item span:first-child { color: var(--hb-text-dim); }
-        .stat-item span:last-child { font-family: 'Consolas', monospace; color: #fff; }
+        .stat-item span:first-child { color: var(--text-dim); }
+        .stat-item span:last-child { font-family: var(--font-mono); color: var(--text-strong); font-size: 0.95em; }
 
-        table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-        th { text-align: left; padding: 10px; color: var(--hb-text-dim); border-bottom: 2px solid #333; font-weight: 600; text-transform: uppercase; font-size: 0.8em;}
-        td { padding: 12px 10px; border-bottom: 1px solid #333; vertical-align: middle; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; background: transparent; }
+        tr, thead, tbody { background: transparent; }
+        th { text-align: left; padding: 10px; color: var(--text-dim); border-bottom: 1px solid var(--border); font-weight: 500; font-size: 0.85em; background: transparent; }
+        td { padding: 12px 10px; border-bottom: 1px solid var(--hairline); vertical-align: middle; color: var(--text); background: transparent; }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: rgba(255,255,255,0.02); }
+        tr:hover td { background: var(--accent-soft); }
 
-        hr { border: 0; height: 1px; background: #333; margin: 20px 0; }
+        hr { border: 0; height: 1px; background: var(--border); margin: 20px 0; }
 
         .drive-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: #2a2a2a;
-            padding: 15px;
+            background: var(--surface-2);
+            padding: 14px 16px;
             margin-bottom: 10px;
-            border-radius: 8px;
-            border: 1px solid #333;
+            border-radius: var(--radius-input);
+            border: 1px solid var(--border);
+        }
+
+        /* Inline notices */
+        .notice {
+            padding: 12px 14px;
+            border-radius: var(--radius-input);
+            font-size: 0.92em;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            color: var(--text);
+        }
+        .notice-danger { border-left-color: var(--danger); background: var(--danger-soft); }
+        .notice-danger strong { color: var(--danger); }
+        .notice-warning { border-left-color: var(--warning); background: var(--warning-soft); }
+        .notice-warning strong { color: var(--warning); }
+
+        /* Tunnel/preview info panel */
+        .info-panel {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            padding: 14px 16px;
+            border-radius: var(--radius-input);
+            font-family: var(--font-mono);
+            font-size: 0.86em;
+            color: var(--text);
+        }
+
+        /* Provider/active mode chips reused via inline style — keep CSS classes too */
+        .chip {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 0.78em;
+            font-family: var(--font-mono);
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
+        .chip-local { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent); }
+        .chip-remote{ background: var(--info-soft);   border: 1px solid var(--info);   color: var(--info); }
+
+        /* Side-by-side rows inside a wide card */
+        .updates-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 22px;
+        }
+        @media (max-width: 720px) {
+            .updates-row { grid-template-columns: 1fr; }
+        }
+
+        .ftp-row {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 30px;
+            align-items: start;
+        }
+        @media (max-width: 880px) {
+            .ftp-row { grid-template-columns: 1fr; }
+        }
+
+        /* Compact list rows used in cards (replaces 2-col tables for status lists) */
+        .row-list { display: flex; flex-direction: column; }
+        .row-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--hairline);
+        }
+        .row-item:last-child { border-bottom: none; }
+        .row-main {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+        .row-main strong {
+            color: var(--text-strong);
+            font-weight: 600;
+            font-size: 0.95em;
+        }
+        .row-meta {
+            font-size: 0.82em;
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+        }
+
+        /* External-launch link buttons (low emphasis vs .btn-primary) */
+        .link-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 18px;
+            flex-wrap: wrap;
+        }
+        .link-out {
+            flex: 1 1 0;
+            min-width: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-input);
+            color: var(--text-strong);
+            font-weight: 500;
+            font-size: 0.92em;
+            text-decoration: none;
+            transition: border-color 0.18s, color 0.18s, transform 0.18s, background 0.18s;
+        }
+        .link-out:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-soft);
+            transform: translateY(-1px);
+        }
+        .link-out span { color: var(--text-faint); transition: color 0.18s, transform 0.18s; font-size: 1.1em; }
+        .link-out:hover span { color: var(--accent); transform: translate(2px, -2px); }
+
+        /* Generic badge classes used by OpenClaw card */
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            font-size: 0.78em;
+            font-weight: 500;
+        }
+        .badge-muted   { background: var(--neutral-soft); color: var(--text-dim); border: 1px solid var(--border-strong); }
+        .badge-success { background: var(--accent-soft);  color: var(--accent);   border: 1px solid var(--accent); }
+        .badge-danger  { background: var(--danger-soft);  color: var(--danger);   border: 1px solid var(--danger); }
+        .stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; }
+        .stat-label { color: var(--text-dim); }
+        .card-header { margin-bottom: 12px; }
+        .card-title { margin: 0; color: var(--text-strong); font-size: 1.1em; }
+
+        /* WhatsApp modal */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.55);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            padding: 26px;
+            max-width: 420px;
+            text-align: center;
+            box-shadow: var(--shadow-pop);
+            color: var(--text);
         }
     </style>
 </head>
@@ -274,13 +452,12 @@
     <div class="header">
         <h1 class="logo">Home<span>{{ platform.product_suffix }}</span><small>Private Cloud Manager</small></h1>
         <div class="header-status">
-            <div id="global-status" class="global-status">System Active</div>
+            <div class="header-actions">
+                <div id="global-status" class="global-status">System Active</div>
+                {% include '_theme_toggle.html' with context %}
+            </div>
             <div class="provider-mode">
-                {% if deployment_mode == 'local' %}
-                <span style="background:rgba(46,204,113,0.12); border:1px solid var(--hb-green); color:var(--hb-green); padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Local Network</span>
-                {% else %}
-                <span style="background:rgba(52,152,219,0.12); border:1px solid #3498db; color:#3498db; padding:2px 10px; border-radius:20px; font-size:0.85em; white-space:nowrap;">Remote Access</span>
-                {% endif %}
+                {% if deployment_mode == 'local' %}Local Network{% else %}Remote Access{% endif %}
             </div>
         </div>
     </div>
@@ -297,21 +474,22 @@
         <div class="grid">
             <div class="card">
                 <h3>Services</h3>
-                <div class="stat-item"><span>Nextcloud</span> <span id="st-nc" class="status-badge status-unknown">...</span></div>
-                <div class="stat-item"><span>Database</span> <span id="st-db" class="status-badge status-unknown">...</span></div>
-                <div class="stat-item"><span>Home Assistant</span> <span id="st-ha" class="status-badge status-unknown">...</span></div>
-                <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="status-badge status-unknown">...</span></div>
+                <div class="stat-item"><span>Nextcloud</span> <span id="st-nc" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>Database</span> <span id="st-db" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>Home Assistant</span> <span id="st-ha" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="skeleton sk-mid"></span></div>
                 
-                <div style="margin-top:25px; display:flex; gap:15px;">
-                    <a href="{{ nc_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Nextcloud</button></a>
-                    <a href="{{ ha_url }}" target="_blank" style="flex:1"><button class="btn-primary" style="width:100%">Open Home Assistant</button></a>
+                <div class="link-row">
+                    <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
+                    <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
+                    <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
                 </div>
             </div>
 
             <div class="card">
                 <h3>System Resources</h3>
-                <div class="stat-item"><span>CPU Load</span> <span id="sys-cpu">...</span></div>
-                <div class="stat-item"><span>RAM Usage</span> <span id="sys-ram">...</span></div>
+                <div class="stat-item"><span>CPU Load</span> <span id="sys-cpu" class="skeleton sk-small"></span></div>
+                <div class="stat-item"><span>RAM Usage</span> <span id="sys-ram" class="skeleton sk-wide"></span></div>
 
                 <div style="margin-top: 20px;">
                     <label>Root Filesystem</label>
@@ -323,10 +501,10 @@
             </div>
 
             {% if has_gpu %}
-            <div class="card" style="border-left: 4px solid #e74c3c;">
-                <h3>🎮 GPU</h3>
-                <div class="stat-item"><span>Utilisation</span> <span id="gpu-util">—</span></div>
-                <div class="stat-item"><span>Temperature</span> <span id="gpu-temp">—</span></div>
+            <div class="card">
+                <h3>GPU</h3>
+                <div class="stat-item"><span>Utilisation</span> <span id="gpu-util" class="skeleton sk-small"></span></div>
+                <div class="stat-item"><span>Temperature</span> <span id="gpu-temp" class="skeleton sk-small"></span></div>
                 <div class="stat-item" style="margin-top: 10px;"><span>VRAM</span></div>
                 <div style="margin-top: 0px;">
                     <div class="progress-bg">
@@ -335,31 +513,66 @@
                     </div>
                 </div>
             </div>
+
+            <div class="card">
+                <h3>AI Assistant</h3>
+                <div class="row-list">
+                    <div class="row-item">
+                        <div class="row-main"><strong>Inference Engine</strong><span class="row-meta">llama-server · :8001</span></div>
+                        <span id="sys-llama-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item">
+                        <div class="row-main"><strong>AI Agent</strong><span class="row-meta">OpenClaw</span></div>
+                        <span id="sys-openclaw-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item" id="whatsapp-row" style="display:none;">
+                        <div class="row-main">
+                            <strong>WhatsApp</strong><span class="row-meta">Chat channel</span>
+                            <small id="whatsapp-link-action" style="display:none; margin-top:4px;">
+                                <a href="#" onclick="startWhatsAppLink(); return false;" style="color:var(--accent);">Link WhatsApp &rarr;</a>
+                            </small>
+                        </div>
+                        <span id="sys-whatsapp-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item" id="whisper-row" style="display:none;">
+                        <div class="row-main"><strong>Speech-to-Text</strong><span class="row-meta">Whisper</span></div>
+                        <span id="sys-whisper-status" class="skeleton sk-mid"></span>
+                    </div>
+                </div>
+            </div>
             {% endif %}
 
             <div class="card">
-                <h3>Maintenance & Updates</h3>
-                <div class="stat-item"><span>Maintenance Mode</span> <span id="st-maint">Checking...</span></div>
-                <div style="display:flex; gap:10px; margin-top:10px;">
+                <h3>Maintenance Mode</h3>
+                <p style="margin-bottom:14px;">Pause services to perform safe maintenance. Reversible at any time.</p>
+                <div class="stat-item" style="margin-bottom:14px;"><span>Status</span> <span id="st-maint" class="skeleton sk-mid"></span></div>
+                <div style="display:flex; gap:10px;">
                     <button onclick="toggleMaintenance('on')" style="flex:1">Enable</button>
                     <button onclick="toggleMaintenance('off')" style="flex:1">Disable</button>
                 </div>
-                
-                <hr>
-                
-                <label>System Update Channel</label>
-                <div style="display:flex; gap:10px;">
-                    <select id="update-channel" onchange="resetUpdateUI()" style="margin-bottom:0; flex:2;">
-                        <option value="stable">Stable (Releases)</option>
-                        <option value="beta">Beta (Main Branch)</option>
-                    </select>
-                    <button onclick="triggerAction('/api/upgrade', 'System Upgrade')" style="flex:1;">OS Upgrade</button>
-                </div>
+            </div>
 
-                <div style="margin-top: 15px; display:flex; align-items:center; gap:10px;">
-                    <button id="btn-check-update" onclick="checkManagerUpdate()">Check App Update</button>
-                    <button id="btn-do-update" class="btn-primary" onclick="doManagerUpdate()" style="display:none;">Update Now</button>
-                    <span id="update-msg" style="font-size: 0.85em; color:var(--hb-text-dim);"></span>
+            <div class="card" style="grid-column: 1 / -1;">
+                <h3>Updates</h3>
+                <div class="updates-row">
+                    <div>
+                        <label>App update</label>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <button id="btn-check-update" onclick="checkManagerUpdate()" style="flex-shrink:0;">Check now</button>
+                            <button id="btn-do-update" class="btn-primary" onclick="doManagerUpdate()" style="display:none;">Install update</button>
+                            <span id="update-msg" style="font-size: 0.88em; color:var(--text-dim);"></span>
+                        </div>
+                    </div>
+                    <div>
+                        <label>System update channel</label>
+                        <div style="display:flex; gap:10px;">
+                            <select id="update-channel" onchange="resetUpdateUI()" style="margin-bottom:0; flex:2;">
+                                <option value="stable">Stable (Releases)</option>
+                                <option value="beta">Beta (Main Branch)</option>
+                            </select>
+                            <button onclick="triggerAction('/api/upgrade', 'System Upgrade')" style="flex:1;">Run OS upgrade</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -435,19 +648,21 @@
             </div>
         </div>
 
-        <div class="card" style="margin-top:25px;">
-            <h3>Restore Data</h3>
-            <p>Select a backup file to restore. <strong style="color:var(--hb-danger)">Warning: This overwrites current data!</strong></p>
+        <div class="card" style="margin-top:22px;">
+            <h3>Restore from backup</h3>
+            <div class="notice notice-danger" style="margin-bottom:16px;">
+                <strong>Heads up:</strong> Restoring overwrites all current data with the selected snapshot. This cannot be undone.
+            </div>
             <div style="display:flex; gap:10px; align-items:center;">
                 <select id="backup-list" style="margin-bottom:0; flex-grow:1;"></select>
-                <button class="btn-danger" onclick="confirmRestore()">Restore Selected</button>
+                <button class="btn-danger" onclick="confirmRestore()">Restore</button>
             </div>
         </div>
 
         {% if has_gpu %}
         <div class="card" style="margin-top: 16px;">
           <div class="card-header">
-            <h3 class="card-title">🤖 OpenClaw AI Assistant</h3>
+            <h3 class="card-title">OpenClaw AI Assistant</h3>
           </div>
           <div class="card-body">
             <div class="stat-row">
@@ -457,7 +672,7 @@
             <div class="stat-row" style="margin-top: 8px;">
               <span class="stat-label">Workspace size</span>
               <span id="oc-backup-workspace-size">—</span>
-              <span id="oc-backup-size-warning" style="display:none; color:#e74c3c; margin-left:8px;">⚠ Large workspace</span>
+              <span id="oc-backup-size-warning" style="display:none; color:var(--danger); margin-left:8px;">⚠ Large workspace</span>
             </div>
             <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 10px;">
               <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
@@ -471,8 +686,8 @@
                 <span>Exclude model caches (reduces backup size)</span>
               </label>
             </div>
-            <p style="margin-top: 12px; font-size: 0.8em; color: var(--text-muted, #888);">
-              ⚠ Workspace contains conversation history and agent memory. Backups are stored unencrypted.
+            <p style="margin-top: 12px; font-size: 0.85em; color: var(--text-dim);">
+              Workspace contains conversation history and agent memory. Backups are stored unencrypted.
             </p>
           </div>
         </div>
@@ -480,45 +695,50 @@
     </div>
 
     <div id="connectivity" class="tab-content">
-        <div class="card" style="border-left: 4px solid var(--hb-green);">
-             <h3 style="border-bottom:none; margin-bottom:10px;">Authentication</h3>
-             <p style="margin-bottom:0;">The <strong>Master Admin Password</strong> controls access to {{ platform.product_name }} Manager, Nextcloud, and Home Assistant.</p>
+        <div class="notice" style="margin-bottom:22px;">
+             <strong>Authentication.</strong> The Master Admin Password controls access to {{ platform.product_name }} Manager, Nextcloud, and Home Assistant.
         </div>
 
         {% if cloud_enabled %}
         <div class="card">
              <h3>Cloud Account</h3>
              {% if cloud_account.email %}
-             <div style="display:flex; justify-content:space-between; border-bottom:1px solid #333; padding-bottom:10px; margin-bottom:10px;">
-                <span style="color:var(--hb-text-dim);">Registered Email</span>
+             <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--hairline); padding-bottom:10px; margin-bottom:10px;">
+                <span style="color:var(--text-dim);">Registered Email</span>
                 <div style="text-align:right;">
-                    <span style="color:#fff; font-weight:bold; display:block;">{{ cloud_account.email }}</span>
-                    <a href="#" onclick="changeCloudEmail('{{ cloud_account.email }}')" style="font-size:0.8em; color:var(--hb-green);">Update Email</a>
+                    <span style="color:var(--text-strong); font-weight:bold; display:block;">{{ cloud_account.email }}</span>
+                    <a href="#" onclick="changeCloudEmail('{{ cloud_account.email }}')" style="font-size:0.8em; color:var(--accent);">Update Email</a>
                 </div>
              </div>
              <div style="display:flex; justify-content:space-between;">
-                <span style="color:var(--hb-text-dim);">Subscription Plan</span>
+                <span style="color:var(--text-dim);">Subscription Plan</span>
                 <span class="status-badge status-running">{{ cloud_account.tier }}</span>
              </div>
              {% else %}
-             <p style="color:#888; margin-bottom:15px;">No cloud account registered locally.</p>
+             <p style="color:var(--text-dim); margin-bottom:15px;">No cloud account registered locally.</p>
              <button onclick="changeCloudEmail('')">Register Account</button>
              {% endif %}
         </div>
         {% endif %}
 
-        <div class="card" {% if deployment_mode == 'local' %}style="opacity:0.45; pointer-events:none;" title="Tunnel configuration is not available in Local Network mode"{% endif %}>
-            <h3>Tunnel Configuration
-                {% if deployment_mode == 'local' %}
-                <span style="font-size:0.6em; font-weight:400; color:var(--hb-text-dim); margin-left:8px;">— not used in Local Network mode</span>
-                {% endif %}
+        <div class="card">
+            <h3>
+                <span>Tunnel Configuration{% if deployment_mode != 'local' %}{% if tunnel.mode == 'pangolin' %} <span class="status-badge status-running" style="margin-left:6px;">Pangolin{% if tunnel.is_custom_pangolin %} · Custom{% endif %}</span>{% else %} <span class="status-badge status-starting" style="margin-left:6px;">Cloudflare</span>{% endif %}{% endif %}</span>
             </h3>
 
-            {% if tunnel.mode == 'pangolin' %}
-            <div style="background:rgba(46, 204, 113, 0.1); border:1px solid var(--hb-green); padding:15px; border-radius:6px; margin-bottom:20px;">
-                <span style="color:var(--hb-green); font-weight:bold;">Active Provider: Pangolin</span>
-                {% if tunnel.is_custom_pangolin %}<span style="font-size:0.8em; margin-left:10px; opacity:0.7;">(Customized)</span>{% endif %}
+            {% if deployment_mode == 'local' %}
+            <div class="empty-state">
+                <span class="empty-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 17H7a5 5 0 0 1 0-10h2"/>
+                        <path d="M15 7h2a5 5 0 0 1 4.546 7.071"/>
+                        <path d="M3 3l18 18"/>
+                    </svg>
+                </span>
+                <h4>Tunnel inactive</h4>
+                <p>This device is in Local Network mode. Switch to Remote Access during setup to expose services through a tunnel.</p>
             </div>
+            {% elif tunnel.mode == 'pangolin' %}
 
             <form onsubmit="updatePangolin(event)">
                 <div class="grid" style="grid-template-columns: 1fr 1fr; gap:15px;">
@@ -532,11 +752,11 @@
                 <label>Main Domain (e.g. myserver.homebrain.com)</label>
                 <input type="text" id="tun-main-domain" value="{{ main_domain }}">
                 
-                <div style="font-size: 0.85em; color: var(--hb-text-dim); padding: 10px; background: #222; border-radius: 4px; margin-bottom:15px;">
-                    <strong>Subdomain Preview:</strong><br>
-                    Manager: <span id="preview-mgr" style="color:#fff">{{ main_domain }}</span><br>
-                    Nextcloud: nc.<span id="preview-nc" style="color:#fff">{{ main_domain }}</span><br>
-                    Home Assistant: ha.<span id="preview-ha" style="color:#fff">{{ main_domain }}</span>
+                <div class="info-panel" style="margin-bottom:15px;">
+                    <strong style="color:var(--text-strong);">Subdomain Preview</strong><br>
+                    Manager: <span id="preview-mgr" style="color:var(--text-strong)">{{ main_domain }}</span><br>
+                    Nextcloud: nc.<span id="preview-nc" style="color:var(--text-strong)">{{ main_domain }}</span><br>
+                    Home Assistant: ha.<span id="preview-ha" style="color:var(--text-strong)">{{ main_domain }}</span>
                 </div>
 
                 <button type="submit">Update Connection Settings</button>
@@ -554,8 +774,8 @@
             <p>You can switch to Cloudflare Tunnel if you have your own domain.</p>
             <button class="btn-warning" onclick="showCloudflareForm()">Switch to Cloudflare</button>
 
-            <div id="cf-form-container" style="display:none; margin-top:20px; background: #222; padding: 20px; border-radius: 8px; border:1px solid #444;">
-                <h4 style="margin-top:0; color:var(--hb-warning)">Cloudflare Setup</h4>
+            <div id="cf-form-container" style="display:none; margin-top:20px; background: var(--surface-2); padding: 20px; border-radius: 8px; border:1px solid var(--border);">
+                <h4 style="margin-top:0; color:var(--warning)">Cloudflare setup</h4>
                 <p style="font-size:0.9em;">Configure public hostnames in Cloudflare Dashboard pointing to <code>http://nextcloud:80</code> and <code>http://homeassistant:8123</code>.</p>
                 <form onsubmit="updateCloudflare(event, 'switch')">
                     <label>Service</label>
@@ -572,20 +792,16 @@
             </div>
 
             {% else %}
-            <div style="background:rgba(243, 156, 18, 0.1); border:1px solid var(--hb-warning); padding:15px; border-radius:6px; margin-bottom:20px;">
-                <span style="color:var(--hb-warning); font-weight:bold;">Active Provider: Cloudflare</span>
-            </div>
-
             <div style="margin-bottom:20px;">
                 <label>Active Tunnels</label>
-                <ul style="list-style:none; padding:0; margin:0; font-size:0.9em; color:#ccc;">
-                    <li style="padding:5px 0; border-bottom:1px solid #333;">
-                        <strong>Nextcloud:</strong> 
-                        {% if tunnel.current.CF_TOKEN_NC %}<span style="color:var(--hb-green)">Configured</span>{% else %}<span style="color:#666">Inactive</span>{% endif %}
+                <ul style="list-style:none; padding:0; margin:0; font-size:0.9em; color:var(--text);">
+                    <li style="padding:5px 0; border-bottom:1px solid var(--hairline);">
+                        <strong>Nextcloud:</strong>
+                        {% if tunnel.current.CF_TOKEN_NC %}<span style="color:var(--accent)">Configured</span>{% else %}<span style="color:var(--text-faint)">Inactive</span>{% endif %}
                     </li>
                     <li style="padding:5px 0;">
-                        <strong>Home Assistant:</strong> 
-                        {% if tunnel.current.CF_TOKEN_HA %}<span style="color:var(--hb-green)">Configured</span>{% else %}<span style="color:#666">Inactive</span>{% endif %}
+                        <strong>Home Assistant:</strong>
+                        {% if tunnel.current.CF_TOKEN_HA %}<span style="color:var(--accent)">Configured</span>{% else %}<span style="color:var(--text-faint)">Inactive</span>{% endif %}
                     </li>
                 </ul>
             </div>
@@ -622,7 +838,7 @@
                             <small style="color:var(--hb-text-dim);">Auto-reboots system if frozen.</small>
                         </td>
                         <td style="text-align:right;">
-                            <span id="sys-wd-status" class="status-badge status-unknown">...</span>
+                            <span id="sys-wd-status" class="skeleton sk-mid"></span>
                             <button onclick="toggleSystem('watchdog')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
@@ -632,7 +848,7 @@
                             <small style="color:var(--hb-text-dim);">Use system cron (Reliable).</small>
                         </td>
                         <td style="text-align:right;">
-                            <span id="sys-cron-status" class="status-badge status-unknown">...</span>
+                            <span id="sys-cron-status" class="skeleton sk-mid"></span>
                             <button onclick="toggleSystem('cron')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Enforce</button>
                         </td>
                     </tr>
@@ -642,7 +858,7 @@
                             <small style="color:var(--hb-text-dim);">Gen 3.0 (Experimental).</small>
                         </td>
                         <td style="text-align:right;">
-                            <span id="sys-pci-status" class="status-badge status-unknown">...</span>
+                            <span id="sys-pci-status" class="skeleton sk-mid"></span>
                             <button onclick="toggleSystem('pci')" style="margin-left:10px; padding:4px 10px; font-size:0.8em;">Toggle</button>
                         </td>
                     </tr>
@@ -652,7 +868,7 @@
                             <small style="color:var(--hb-text-dim);">High-performance memory caching.</small>
                         </td>
                         <td style="text-align:right;">
-                            <span id="sys-redis-status" class="status-badge status-unknown">...</span>
+                            <span id="sys-redis-status" class="skeleton sk-mid"></span>
                             <button id="btn-redis-fix" onclick="configureRedis()" style="margin-left:10px; padding:4px 10px; font-size:0.8em; display:none;" class="btn-warning">Fix Config</button>
                         </td>
                     </tr>
@@ -660,55 +876,24 @@
             </div>
 
             {% if has_gpu %}
-            <div class="card" style="border-left: 4px solid #9b59b6;">
-                <h3>Personal AI Assistant <span class="status-badge status-starting" style="background:#9b59b622; color:#d2b4de; border-color:#9b59b6;">Experimental</span></h3>
-                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
-                <table style="margin-top:10px;">
-                    <tr>
-                        <td><strong>Inference Engine</strong> <small style="color:var(--hb-text-dim);">(llama-server :8001)</small></td>
-                        <td style="text-align:right;"><span id="sys-llama-status" class="status-badge status-unknown">...</span></td>
-                    </tr>
-                    <tr>
-                        <td>
-                            <strong>AI Agent</strong> <small style="color:var(--hb-text-dim);">(OpenClaw)</small><br>
-                            <small id="openclaw-link" style="display:none; margin-top:4px;">
-                                <a id="openclaw-link-anchor" href="#" target="_blank" style="color:var(--hb-green);">Open OpenClaw &rarr;</a>
-                            </small>
-                        </td>
-                        <td style="text-align:right;"><span id="sys-openclaw-status" class="status-badge status-unknown">...</span></td>
-                    </tr>
-                    <tr id="whatsapp-row" style="display:none;">
-                        <td>
-                            <strong>WhatsApp</strong> <small style="color:var(--hb-text-dim);">(Chat Channel)</small><br>
-                            <small id="whatsapp-link-action" style="display:none; margin-top:4px;">
-                                <a href="#" onclick="startWhatsAppLink(); return false;" style="color:var(--hb-green);">Link WhatsApp &rarr;</a>
-                            </small>
-                        </td>
-                        <td style="text-align:right;">
-                            <span id="sys-whatsapp-status" class="status-badge status-unknown">...</span>
-                        </td>
-                    </tr>
-                    <tr id="whisper-row" style="display:none;">
-                        <td>
-                            <strong>Speech-to-Text</strong> <small style="color:var(--hb-text-dim);">(Whisper)</small>
-                        </td>
-                        <td style="text-align:right;">
-                            <span id="sys-whisper-status" class="status-badge status-unknown">...</span>
-                        </td>
-                    </tr>
-                </table>
-                <div id="ai-model-selector" style="margin-top:10px; display:none;">
-                    <label for="ai-model-select" style="font-size:0.85em; color:var(--hb-text-dim);">AI Model:</label>
-                    <select id="ai-model-select" onchange="onModelSelectChange()" style="width:100%; padding:6px; margin-top:4px; font-size:0.85em; background:var(--hb-card-bg); color:var(--hb-text); border:1px solid var(--hb-border); border-radius:4px;"></select>
-                    <button id="btn-switch-model" onclick="switchModel()" style="display:none; margin-top:6px; padding:4px 14px; font-size:0.8em;">Switch Model</button>
+            <div class="card">
+                <h3>Personal AI Assistant</h3>
+                <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local. Live status appears on the Status tab.</p>
+
+                <div id="ai-model-selector" style="display:none;">
+                    <label>AI model</label>
+                    <select id="ai-model-select" onchange="onModelSelectChange()" style="margin-bottom:10px;"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
                 </div>
-                <div style="text-align:right; margin-top:10px;">
-                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" style="padding:6px 18px; font-size:0.9em;">...</button>
+
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px;">
+                    <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
+                    <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
                 </div>
             </div>
             {% else %}
-            <div class="card" style="border-left: 4px solid #9b59b6; opacity: 0.45; pointer-events: none;">
-                <h3>Personal AI Assistant <span class="status-badge" style="background:#95a5a622; color:#bdc3c7; border-color:#95a5a6;">GPU Required</span></h3>
+            <div class="card" style="opacity: 0.55; pointer-events: none;">
+                <h3>Personal AI Assistant <span class="status-badge status-unknown">GPU Required</span></h3>
                 <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
                 <p style="color:var(--hb-text-dim); font-size:0.9em; margin-top:10px;">
                     This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
@@ -716,24 +901,28 @@
             </div>
             {% endif %}
             
-            <div class="card">
-                <h3>FTP Server (Camera Uploads)</h3>
-                <p>Create dedicated FTP accounts mapping to Nextcloud.</p>
-                
-                <form onsubmit="setupFtp(event)">
-                    <div class="grid" style="grid-template-columns: 1fr 1fr; gap:15px;">
-                        <div><label>NC User</label><input type="text" id="ftp-nc-user" placeholder="admin"></div>
-                        <div><label>FTP User</label><input type="text" id="ftp-user" placeholder="camera1"></div>
+            <div class="card" style="grid-column: 1 / -1;">
+                <h3>FTP Server <span style="font-weight:400; color:var(--text-dim); font-size:0.85em;">— for camera uploads</span></h3>
+                <p style="margin-bottom:18px;">Create dedicated FTP accounts that map to Nextcloud users.</p>
+
+                <div class="ftp-row">
+                    <form onsubmit="setupFtp(event)" class="ftp-form">
+                        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; align-items:end;">
+                            <div><label>NC User</label><input type="text" id="ftp-nc-user" placeholder="admin" style="margin-bottom:0;"></div>
+                            <div><label>FTP User</label><input type="text" id="ftp-user" placeholder="camera1" style="margin-bottom:0;"></div>
+                            <div><label>FTP Password</label><input type="password" id="ftp-pass" style="margin-bottom:0;"></div>
+                        </div>
+                        <button type="submit" class="btn-primary" style="margin-top:14px;">Create or update user</button>
+                    </form>
+
+                    <div class="ftp-list">
+                        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                            <label style="margin-bottom:0;">Active users</label>
+                            <button onclick="loadFtpUsers()" style="font-size:0.8em; padding:4px 10px;">Refresh</button>
+                        </div>
+                        <div id="ftp-user-list" style="min-height:50px;">Loading...</div>
                     </div>
-                    <label>FTP Password</label><input type="password" id="ftp-pass">
-                    
-                    <button type="submit" class="btn-primary" style="width:100%; margin-top:5px;">Create / Update User</button>
-                </form>
-        
-                <hr>
-                <label>Active FTP Users</label>
-                <div id="ftp-user-list" style="min-height:50px;">Loading...</div>
-                <button onclick="loadFtpUsers()" style="margin-top:10px; font-size:0.8em; padding:6px 12px;">Refresh List</button>
+                </div>
             </div>
 
             {% if ha_domain %}
@@ -781,14 +970,14 @@
                 <button onclick="pollLogs()">Refresh Now</button>
             </div>
             
-            <div style="display:flex; gap:15px; margin-bottom:10px; font-size:0.9em; align-items:center; background:#111; padding:8px; border-radius:4px; border:1px solid #333;">
-                <span style="color:#888; font-weight:bold;">FILTERS:</span>
-                <label style="display:inline; margin:0; cursor:pointer;"><input type="checkbox" id="chk-error" checked onchange="renderLogs()"> Errors</label>
-                <label style="display:inline; margin:0; cursor:pointer;"><input type="checkbox" id="chk-warn" checked onchange="renderLogs()"> Warnings</label>
-                <label style="display:inline; margin:0; cursor:pointer;"><input type="checkbox" id="chk-info" checked onchange="renderLogs()"> Info</label>
-                <label style="display:inline; margin:0; cursor:pointer;"><input type="checkbox" id="chk-debug" onchange="renderLogs()"> Debug/Raw</label>
+            <div style="display:flex; gap:15px; margin-bottom:10px; font-size:0.85em; align-items:center; background:var(--surface-2); padding:10px 14px; border-radius:var(--radius-input); border:1px solid var(--border); font-family:var(--font-mono);">
+                <span style="color:var(--text-dim); font-weight:bold; letter-spacing:1px; text-transform:uppercase; font-size:0.75em;">Filters</span>
+                <label style="display:inline; margin:0; cursor:pointer; color:var(--text); text-transform:none; letter-spacing:0; font-size:0.92em; font-family:var(--font-ui);"><input type="checkbox" id="chk-error" checked onchange="renderLogs()"> Errors</label>
+                <label style="display:inline; margin:0; cursor:pointer; color:var(--text); text-transform:none; letter-spacing:0; font-size:0.92em; font-family:var(--font-ui);"><input type="checkbox" id="chk-warn" checked onchange="renderLogs()"> Warnings</label>
+                <label style="display:inline; margin:0; cursor:pointer; color:var(--text); text-transform:none; letter-spacing:0; font-size:0.92em; font-family:var(--font-ui);"><input type="checkbox" id="chk-info" checked onchange="renderLogs()"> Info</label>
+                <label style="display:inline; margin:0; cursor:pointer; color:var(--text); text-transform:none; letter-spacing:0; font-size:0.92em; font-family:var(--font-ui);"><input type="checkbox" id="chk-debug" onchange="renderLogs()"> Debug/Raw</label>
                 <div style="flex-grow:1; text-align:right;">
-                    <small style="color:#666;" id="log-status">Ready</small>
+                    <small style="color:var(--text-faint);" id="log-status">Ready</small>
                 </div>
             </div>
 
@@ -890,12 +1079,21 @@
                     if (el) setStatus(el, data[k === 'nc' ? 'nextcloud' : (k === 'tunnel' ? 'tunnel' : (k === 'ha' ? 'homeassistant' : 'db'))]);
                 });
                 
-                if (document.getElementById('st-maint')) 
-                    document.getElementById('st-maint').innerText = (data.maintenance_mode || 'unknown').toUpperCase();
+                if (document.getElementById('st-maint')) {
+                    const mEl = document.getElementById('st-maint');
+                    mEl.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    mEl.innerText = (data.maintenance_mode || 'unknown').toUpperCase();
+                }
 
                 // Stats
-                if (data.cpu_load !== undefined) document.getElementById('sys-cpu').innerText = data.cpu_load + "%";
-                if (data.ram_text !== undefined) document.getElementById('sys-ram').innerText = data.ram_text + " (" + data.ram_percent + "%)";
+                const fillStat = (id, txt) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    el.innerText = txt;
+                };
+                if (data.cpu_load !== undefined) fillStat('sys-cpu', data.cpu_load + "%");
+                if (data.ram_text !== undefined) fillStat('sys-ram', data.ram_text + " (" + data.ram_percent + "%)");
 
                 // Root Disk
                 if (data.root_percent !== undefined) {
@@ -911,8 +1109,8 @@
                     const gpuTemp = document.getElementById('gpu-temp');
                     const gpuVramBar = document.getElementById('gpu-vram-bar');
                     const gpuVramText = document.getElementById('gpu-vram-text');
-                    if (gpuUtil) gpuUtil.textContent = data.gpu.util_percent + '%';
-                    if (gpuTemp && data.gpu.temp_c !== undefined) gpuTemp.textContent = data.gpu.temp_c + '°C';
+                    if (gpuUtil) { gpuUtil.classList.remove('skeleton','sk-mid','sk-wide','sk-small'); gpuUtil.textContent = data.gpu.util_percent + '%'; }
+                    if (gpuTemp && data.gpu.temp_c !== undefined) { gpuTemp.classList.remove('skeleton','sk-mid','sk-wide','sk-small'); gpuTemp.textContent = data.gpu.temp_c + '°C'; }
                     if (gpuVramBar) gpuVramBar.style.width = data.gpu.vram_percent + '%';
                     if (gpuVramText) gpuVramText.textContent = data.gpu.vram_used_gb + ' / ' + data.gpu.vram_total_gb + ' GB';
                 }
@@ -934,15 +1132,16 @@
                 
                 if(data.status === 'idle') {
                     banner.innerText = 'System Active';
-                    banner.style.color = 'var(--hb-green)';
+                    banner.removeAttribute('data-state');
                 } else if (data.status === 'running') {
                     banner.innerText = data.message;
-                    banner.style.color = 'var(--hb-warning)';
+                    banner.dataset.state = 'busy';
                 } else if (data.status === 'error') {
                     banner.innerText = 'Error: ' + data.message;
-                    banner.style.color = 'var(--hb-danger)';
+                    banner.dataset.state = 'error';
                 } else {
                     banner.innerText = data.message;
+                    banner.removeAttribute('data-state');
                 }
 
                 // Auto switch log view if setup/update is running
@@ -958,12 +1157,15 @@
             document.getElementById('cf-form-container').style.display = 'block';
         }
 
-        document.getElementById('tun-main-domain').addEventListener('input', function(e) {
-            const val = e.target.value || '...';
-            document.getElementById('preview-mgr').innerText = val;
-            document.getElementById('preview-nc').innerText = val;
-            document.getElementById('preview-ha').innerText = val;
-        });
+        const tunDomainEl = document.getElementById('tun-main-domain');
+        if (tunDomainEl) {
+            tunDomainEl.addEventListener('input', function(e) {
+                const val = e.target.value || '...';
+                document.getElementById('preview-mgr').innerText = val;
+                document.getElementById('preview-nc').innerText = val;
+                document.getElementById('preview-ha').innerText = val;
+            });
+        }
 
         async function updatePangolin(e) {
             e.preventDefault();
@@ -1068,9 +1270,9 @@
             ocEl.innerText = openclawStatus === 'starting' ? 'STARTING' : oTxt;
             ocEl.dataset.val = openclawStatus;
 
-            // OpenClaw link (only when running)
-            const linkWrap = document.getElementById('openclaw-link');
+            // OpenClaw link (only when running) — used in Settings card and Status quick-launch row
             const linkAnchor = document.getElementById('openclaw-link-anchor');
+            const launchAnchor = document.getElementById('openclaw-launch');
             if (openclawStatus === 'running') {
                 // Pre-authenticate the link via URL fragment so the token is never
                 // sent to the server in logs. OpenClaw 2026.3.7+ uses `#token=`.
@@ -1081,15 +1283,20 @@
                     .then(data => {
                         const port = data.port || 18789;
                         const base = `http://${location.hostname}:${port}/`;
-                        linkAnchor.href = data.token ? `${base}#token=${encodeURIComponent(data.token)}` : base;
+                        const href = data.token ? `${base}#token=${encodeURIComponent(data.token)}` : base;
+                        if (linkAnchor) linkAnchor.href = href;
+                        if (launchAnchor) launchAnchor.href = href;
                     })
                     .catch(() => {
-                        linkAnchor.href = `http://${location.hostname}:18789`;
+                        const fallback = `http://${location.hostname}:18789`;
+                        if (linkAnchor) linkAnchor.href = fallback;
+                        if (launchAnchor) launchAnchor.href = fallback;
                     });
-                linkAnchor.innerText = `Open OpenClaw \u2192 :18789`;
-                linkWrap.style.display = 'block';
+                if (linkAnchor) linkAnchor.style.display = '';
+                if (launchAnchor) launchAnchor.style.display = '';
             } else {
-                linkWrap.style.display = 'none';
+                if (linkAnchor) linkAnchor.style.display = 'none';
+                if (launchAnchor) launchAnchor.style.display = 'none';
             }
 
             // Model selector (show when not installed or when running/disabled)
@@ -1107,6 +1314,7 @@
             // Unified button
             const btn = document.getElementById('btn-ai-toggle');
             btn.disabled = false;
+            btn.style.opacity = '';
             if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') {
                 btn.innerText = 'Install';
             } else if (llamaStatus === 'running' && openclawStatus === 'running') {
@@ -1340,7 +1548,7 @@
                 const users = await res.json();
                 
                 if (users.length === 0) {
-                    el.innerHTML = '<em style="color:#666;">No FTP users configured.</em>';
+                    el.innerHTML = '<em style="color:var(--text-faint);">No FTP users configured.</em>';
                     return;
                 }
                 
@@ -1425,7 +1633,7 @@
                     const div = document.createElement('div');
                     div.className = 'drive-row';
                     
-                    let html = `<div><strong>${d.path}</strong> <span style="color:#aaa">(${d.size})</span> <small>${d.model}</small></div>`;
+                    let html = `<div><strong>${d.path}</strong> <span style="color:var(--text-dim)">(${d.size})</span> <small>${d.model}</small></div>`;
                     
                     if (d.is_backup) {
                         html += '<span class="status-badge status-running">Backup Drive</span>';
@@ -1653,7 +1861,7 @@
                    doBtn.innerText = `Install ${data.target_ref}`;
                } else {
                    msg.innerText = data.message;
-                   msg.style.color = "#ccc";
+                   msg.style.color = "var(--text-dim)";
                }
             } catch (e) {
                 msg.innerText = "Check failed.";
@@ -1884,15 +2092,14 @@
         init();
     </script>
 
-    <div id="whatsapp-qr-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-        background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
-        <div style="background:var(--hb-card-bg); border:1px solid var(--hb-border); border-radius:8px; padding:24px; max-width:400px; text-align:center;">
-            <h3 style="margin-top:0;">Link WhatsApp</h3>
-            <p id="whatsapp-qr-message" style="color:var(--hb-text-dim); font-size:0.9em;">Connecting...</p>
-            <div id="whatsapp-qr-container" style="margin:16px auto;">
+    <div id="whatsapp-qr-modal" class="modal-backdrop">
+        <div class="modal-card">
+            <h3 style="margin-top:0; color:var(--text-strong);">Link WhatsApp</h3>
+            <p id="whatsapp-qr-message" style="color:var(--text-dim); font-size:0.9em;">Connecting...</p>
+            <div id="whatsapp-qr-container" style="margin:16px auto; padding: 12px; background:#fff; display:inline-block; border-radius:6px;">
                 <img id="whatsapp-qr-img" style="display:none; max-width:280px; border-radius:4px;" />
             </div>
-            <p style="font-size:0.8em; color:var(--hb-text-dim);">
+            <p style="font-size:0.82em; color:var(--text-dim);">
                 Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Scan QR code
             </p>
             <button onclick="closeWhatsAppModal()" style="margin-top:12px; padding:6px 18px;">Close</button>
