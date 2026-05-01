@@ -37,10 +37,10 @@ Inference runs on Vulkan via Mesa RADV — no ROCm install required. See [BENCHM
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| Board | Raspberry Pi 4 (4 GB) | Raspberry Pi 5 (8 GB) — or any x86_64 mini-PC |
+| Board | Raspberry Pi 4 (8 GB) | Raspberry Pi 5 (8 GB) — or any x86_64 mini-PC |
 | OS | Raspberry Pi OS 64-bit (Bookworm) or Ubuntu Server 24.04 (arm64/x86_64) | same |
-| RAM | 4 GB | 8 GB |
-| Storage | 32 GB microSD/SSD | 256 GB SSD/NVMe over USB 3 or PCIe |
+| RAM | 8 GB | 8 GB |
+| Storage | 64 GB microSD/SSD | 256 GB SSD/NVMe over USB 3 or PCIe |
 | Network | Ethernet | Ethernet (Gigabit) |
 
 Architecture is auto-detected: any non-x86_64 host is treated as no-GPU and the AI stack is skipped. The dashboard, backups, and Pangolin tunnel all behave identically to the full edition.
@@ -91,10 +91,31 @@ No tunnel. Services available on the local network at `homebrain.local` (mDNS) o
 
 ## Installation
 
+The flow is **bootstrap → provision → reboot**. The bootstrapper drops the repo into `/opt/homebrain` and stages the provision script; provisioning then sets up users, services, the Docker stack, and (on x86 + GPU) the AI runtime.
+
 ### 1. Bootstrap
 
+On a freshly installed host (Ubuntu 24.04+ on x86_64, Raspberry Pi OS 64-bit / Ubuntu Server arm64 on a Pi 4/5), run:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oalterg/homebrain/main/install | sudo bash
+curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | sudo bash
+```
+
+This single-shot bootstrapper:
+
+- installs `curl`, `tar`, `gzip` if missing
+- downloads the latest `main` tarball into `/opt/homebrain` (override with `REPO_URL=...` for a tag/branch)
+- creates `/var/log/homebrain` for logs
+- marks `scripts/provision.sh` executable
+
+It does **not** install Docker, Nextcloud, or anything privileged beyond unpacking the repo — that all happens in step 2 where you can review and re-run safely.
+
+If you'd rather inspect before piping to `bash`:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/oalterg/HomeBrain/main/install
+less install
+sudo bash install
 ```
 
 ### 2. Provision
