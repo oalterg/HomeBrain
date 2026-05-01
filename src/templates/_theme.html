@@ -1,0 +1,341 @@
+{# HomeBrain shared theme — light (default) + dark mode tokens.
+   Include in <head> of every page. Provides:
+     - FOUC-safe inline init script that reads localStorage('hb-theme')
+     - Semantic CSS custom properties for both modes
+     - Backwards-compat aliases for the legacy --hb-* names
+     - Polished theme toggle (rendered via theme_toggle macro below)
+#}
+<script>
+  // FOUC-safe theme bootstrap. Runs before stylesheet to set data-theme.
+  (function () {
+    try {
+      var stored = localStorage.getItem('hb-theme');
+      var theme = (stored === 'dark' || stored === 'light') ? stored : 'light';
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
+
+<style>
+  /* =====================================================================
+     HomeBrain Theme Tokens
+     Light = default, Dark = opt-in via [data-theme="dark"]
+     ===================================================================== */
+
+  :root,
+  :root[data-theme="light"] {
+    /* Surfaces */
+    --bg:            #f4f6f3;       /* page background, warm off-white */
+    --bg-grid:       rgba(15, 24, 19, 0.04);  /* subtle scanline overlay */
+    --surface:       #ffffff;       /* card surface */
+    --surface-2:     #f1f4ee;       /* nested panel (preview boxes, drive rows) */
+    --surface-sunken:#fbfcf9;       /* inputs, selects */
+    --console-bg:    #0c100e;       /* log/console — stays dark for techy vibe */
+    --console-fg:    #7eebab;       /* phosphor green */
+    --console-border:#1d2522;
+    --console-shadow:inset 0 0 18px rgba(0, 0, 0, 0.65);
+
+    /* Text */
+    --text:          #0f1813;
+    --text-strong:   #000000;
+    --text-dim:      #5b6660;
+    --text-faint:    #8a948e;
+    --text-on-accent:#08130d;
+
+    /* Lines */
+    --border:        #d6dbd3;
+    --border-strong: #b9c0b6;
+    --border-soft:   #e3e7df;
+    --hairline:      rgba(15, 24, 19, 0.08);
+
+    /* Accent (HomeBrain green) */
+    --accent:        #16a34a;
+    --accent-hover:  #128039;
+    --accent-soft:   rgba(22, 163, 74, 0.10);
+    --accent-ring:   rgba(22, 163, 74, 0.28);
+    --accent-glow:   0 4px 18px rgba(22, 163, 74, 0.18);
+
+    /* Status palette */
+    --danger:        #b91c1c;
+    --danger-fg:     #ffffff;
+    --danger-soft:   rgba(185, 28, 28, 0.10);
+    --warning:       #b45309;
+    --warning-soft:  rgba(180, 83, 9, 0.12);
+    --info:          #1d4ed8;
+    --info-soft:     rgba(29, 78, 216, 0.10);
+    --neutral:       #5b6660;
+    --neutral-soft:  rgba(91, 102, 96, 0.12);
+
+    /* Buttons */
+    --btn-bg:        #ffffff;
+    --btn-bg-hover:  #f1f3ee;
+    --btn-border:    #c8cdc3;
+    --btn-fg:        #1a221d;
+
+    /* Effects */
+    --shadow-card:   0 1px 0 rgba(15,24,19,0.02), 0 6px 24px rgba(15,24,19,0.06);
+    --shadow-pop:    0 1px 0 rgba(15,24,19,0.04), 0 12px 36px rgba(15,24,19,0.10);
+    --radius-card:   12px;
+    --radius-input:  8px;
+    --radius-pill:   999px;
+
+    /* Fonts */
+    --font-ui:       'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    --font-mono:     'JetBrains Mono', 'SF Mono', 'Consolas', 'Monaco', ui-monospace, monospace;
+
+    color-scheme: light;
+  }
+
+  :root[data-theme="dark"] {
+    --bg:            #0e1311;
+    --bg-grid:       rgba(255, 255, 255, 0.025);
+    --surface:       #181d1a;
+    --surface-2:     #202622;
+    --surface-sunken:#262d29;
+    --console-bg:    #05080a;
+    --console-fg:    #8df0b0;
+    --console-border:#1b211e;
+    --console-shadow:inset 0 0 18px rgba(0, 0, 0, 0.85);
+
+    --text:          #e8ede9;
+    --text-strong:   #ffffff;
+    --text-dim:      #9aa39d;
+    --text-faint:    #6e7872;
+    --text-on-accent:#06120a;
+
+    --border:        #2a3128;
+    --border-strong: #3b433f;
+    --border-soft:   #232a27;
+    --hairline:      rgba(255, 255, 255, 0.06);
+
+    --accent:        #2ecc71;
+    --accent-hover:  #27b765;
+    --accent-soft:   rgba(46, 204, 113, 0.12);
+    --accent-ring:   rgba(46, 204, 113, 0.32);
+    --accent-glow:   0 4px 22px rgba(46, 204, 113, 0.22);
+
+    --danger:        #ef4444;
+    --danger-fg:     #ffffff;
+    --danger-soft:   rgba(239, 68, 68, 0.12);
+    --warning:       #f59e0b;
+    --warning-soft:  rgba(245, 158, 11, 0.14);
+    --info:          #60a5fa;
+    --info-soft:     rgba(96, 165, 250, 0.14);
+    --neutral:       #9aa39d;
+    --neutral-soft:  rgba(154, 163, 157, 0.14);
+
+    --btn-bg:        #232925;
+    --btn-bg-hover:  #2c332e;
+    --btn-border:    #3a423d;
+    --btn-fg:        #e8ede9;
+
+    --shadow-card:   0 1px 0 rgba(0,0,0,0.20), 0 8px 28px rgba(0,0,0,0.45);
+    --shadow-pop:    0 1px 0 rgba(0,0,0,0.30), 0 16px 48px rgba(0,0,0,0.55);
+
+    color-scheme: dark;
+  }
+
+  /* ---- Legacy aliases (preserve --hb-* references already in templates) ---- */
+  :root {
+    --hb-green:        var(--accent);
+    --hb-green-hover:  var(--accent-hover);
+    --hb-bg:           var(--bg);
+    --hb-card:         var(--surface);
+    --hb-card-bg:      var(--surface);
+    --hb-border:       var(--border);
+    --hb-text:         var(--text);
+    --hb-text-main:    var(--text);
+    --hb-text-dim:     var(--text-dim);
+    --hb-danger:       var(--danger);
+    --hb-danger-hover: var(--danger);
+    --hb-warning:      var(--warning);
+    --text-muted:      var(--text-dim);
+
+    /* Pin water.css variables so the OS prefers-color-scheme cannot bleed in */
+    --background-body: var(--bg);
+    --background:      var(--surface);
+    --background-alt:  var(--surface-2);
+    --text-main:       var(--text);
+    --text-bright:     var(--text-strong);
+    --links:           var(--accent);
+    --focus:           var(--accent-ring);
+    --border:          var(--border);
+    --code:            var(--accent);
+    --button-base:     var(--btn-bg);
+    --button-hover:    var(--btn-bg-hover);
+    --form-placeholder:var(--text-faint);
+    --form-text:       var(--text);
+    --variable:        var(--accent);
+    --highlight:       var(--warning-soft);
+    --select-text:     var(--text-strong);
+    --select-bg:       var(--accent-soft);
+    --scrollbar-thumb: var(--border-strong);
+    --scrollbar-thumb-hover: var(--text-faint);
+  }
+
+  /* =====================================================================
+     Global base
+     ===================================================================== */
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  body {
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition: background-color 220ms ease, color 220ms ease;
+  }
+
+  /* Smooth-but-snappy theme cross-fade on token-driven elements */
+  body, .card, .surface, .drive-row, button, input, select, textarea, .status-badge, .log-box, .progress-bg {
+    transition: background-color 220ms ease, color 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
+  }
+
+  ::selection { background: var(--accent-soft); color: var(--text-strong); }
+
+  /* =====================================================================
+     Theme toggle (pill switch in headers)
+     ===================================================================== */
+  .theme-toggle {
+    --t-h: 30px;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: var(--t-h);
+    padding: 0 4px 0 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+    box-shadow: var(--shadow-card);
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    user-select: none;
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+  .theme-toggle:hover { border-color: var(--accent); box-shadow: var(--accent-glow); }
+  .theme-toggle:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
+
+  .theme-toggle .tt-icon {
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 999px;
+    color: var(--text-faint);
+    transition: color 200ms ease, background 200ms ease, transform 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .theme-toggle .tt-icon svg { width: 14px; height: 14px; }
+  :root[data-theme="light"] .theme-toggle .tt-sun { color: var(--accent); background: var(--accent-soft); }
+  :root[data-theme="dark"]  .theme-toggle .tt-moon { color: var(--accent); background: var(--accent-soft); }
+  :root[data-theme="dark"]  .theme-toggle .tt-sun  { transform: rotate(-30deg); }
+  :root[data-theme="light"] .theme-toggle .tt-moon { transform: rotate( 30deg); }
+
+  /* Floating variant — used on welcome/installing where there's no header */
+  .theme-toggle.floating {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 100;
+  }
+
+  /* =====================================================================
+     Form controls in light mode look correct
+     ===================================================================== */
+  input, select, textarea {
+    background: var(--surface-sunken);
+    color: var(--text);
+    border-color: var(--border-strong);
+  }
+  input::placeholder, textarea::placeholder { color: var(--text-faint); }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+    outline: 0;
+    box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+
+  /* Override water.css link/heading colors for both modes */
+  a { color: var(--accent); }
+  a:hover { color: var(--accent-hover); }
+  h1, h2, h3, h4, h5, h6 { color: var(--text-strong); }
+  hr { border: 0; height: 1px; background: var(--border); }
+
+  /* Code-ish */
+  code, pre, kbd, samp { font-family: var(--font-mono); }
+
+  /* Custom checkbox accent */
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+  /* =====================================================================
+     Skeleton loaders — replace literal "..." placeholders
+     ===================================================================== */
+  @keyframes hb-shimmer {
+    0%   { background-position: -200px 0; }
+    100% { background-position: 200px 0; }
+  }
+  .skeleton {
+    display: inline-block;
+    height: 0.9em;
+    width: 64px;
+    border-radius: 4px;
+    vertical-align: middle;
+    background: linear-gradient(90deg, var(--surface-sunken) 0%, var(--surface-2) 50%, var(--surface-sunken) 100%);
+    background-size: 400px 100%;
+    animation: hb-shimmer 1.4s ease-in-out infinite;
+  }
+  .skeleton.sk-wide  { width: 110px; }
+  .skeleton.sk-mid   { width: 80px; }
+  .skeleton.sk-small { width: 48px; height: 0.8em; }
+
+  /* =====================================================================
+     Empty state — used for inactive sections
+     ===================================================================== */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 36px 20px;
+    color: var(--text-dim);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-input);
+    background: var(--surface-2);
+    gap: 10px;
+  }
+  .empty-state .empty-icon {
+    width: 38px; height: 38px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-faint);
+  }
+  .empty-state .empty-icon svg { width: 20px; height: 20px; }
+  .empty-state h4 {
+    margin: 0;
+    color: var(--text-strong);
+    font-weight: 600;
+    font-size: 1em;
+  }
+  .empty-state p {
+    margin: 0;
+    font-size: 0.9em;
+    max-width: 38ch;
+  }
+</style>
+
+<script>
+  function hbToggleTheme() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'light';
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('hb-theme', next); } catch (e) {}
+  }
+</script>

@@ -1,41 +1,51 @@
 <!DOCTYPE html>
-<html>
+<html data-theme="light">
 <head>
     <title>{{ platform.product_name }} Setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+    {% include '_theme.html' %}
     <style>
         body {
             max-width: 800px;
             margin: 0 auto;
             padding: 40px 20px;
             text-align: center;
-            background-color: #121212;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
         .logo {
             font-size: 2.5em;
-            font-weight: bold;
-            color: #fff;
+            font-weight: 300;
+            color: var(--text-strong);
             margin-bottom: 10px;
             letter-spacing: -1px;
         }
-        .logo span { color: #2ecc71; }
+        .logo span { color: var(--accent); font-weight: 700; }
+
+        .tagline {
+            color: var(--text-dim);
+            font-family: var(--font-mono);
+            font-size: 0.85em;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-top: 0;
+        }
+        .tagline::before { content: "// "; color: var(--accent); }
+        .tagline::after  { content: " //"; color: var(--accent); }
 
         .card {
-            background: #1e1e1e;
+            background: var(--surface);
             padding: 30px;
-            border-radius: 12px;
+            border-radius: var(--radius-card);
             text-align: left;
-            margin-top: 30px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-            border: 1px solid #333;
+            margin-top: 24px;
+            box-shadow: var(--shadow-card);
+            border: 1px solid var(--border);
         }
 
-        h1 { font-weight: 300; color: #eee; }
+        h1 { font-weight: 300; color: var(--text-strong); margin-bottom: 6px; }
 
         ul { list-style: none; padding: 0; }
-        li { padding: 10px 0; border-bottom: 1px solid #333; color: #ccc; }
+        li { padding: 10px 0; border-bottom: 1px solid var(--hairline); color: var(--text); }
         li:last-child { border-bottom: none; }
 
         /* Mode selector cards */
@@ -46,67 +56,120 @@
             margin: 20px 0;
         }
         .mode-option {
-            border: 2px solid #333;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
             border-radius: 10px;
             padding: 20px;
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition: border-color 0.18s, background 0.18s, transform 0.18s, box-shadow 0.18s;
             text-align: left;
+            position: relative;
         }
-        .mode-option:hover { border-color: #555; background: #252525; }
+        .mode-option:hover {
+            border-color: var(--border-strong);
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-card);
+        }
         .mode-option.selected {
-            border-color: #2ecc71;
-            background: rgba(46, 204, 113, 0.08);
+            border-color: var(--accent);
+            background: var(--accent-soft);
+            box-shadow: var(--accent-glow);
+        }
+        .mode-option.selected::after {
+            content: "✓";
+            position: absolute;
+            top: 12px; right: 14px;
+            color: var(--accent);
+            font-weight: 700;
         }
         .mode-option input[type=radio] { display: none; }
         .mode-option .mode-title {
             font-size: 1.05em;
             font-weight: 600;
-            color: #fff;
+            color: var(--text-strong);
             margin-bottom: 6px;
         }
         .mode-option .mode-desc {
             font-size: 0.85em;
-            color: #999;
+            color: var(--text-dim);
             line-height: 1.4;
         }
 
         #pangolin-fields { display: none; margin-top: 20px; }
-        #pangolin-fields label { font-size: 0.9em; color: #bbb; display: block; margin-bottom: 4px; margin-top: 14px; }
+        #pangolin-fields label {
+            font-size: 0.85em;
+            color: var(--text-dim);
+            display: block;
+            margin-bottom: 4px;
+            margin-top: 14px;
+            font-family: var(--font-mono);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
         #pangolin-fields input {
             width: 100%;
             box-sizing: border-box;
-            background: #252525;
-            border: 1px solid #444;
-            color: #eee;
-            border-radius: 6px;
+            border-radius: var(--radius-input);
             padding: 9px 12px;
             font-size: 0.95em;
+            font-family: var(--font-mono);
         }
 
         button.btn-main {
-            background-color: #2ecc71;
-            color: #000;
-            font-weight: bold;
-            font-size: 1.1em;
-            padding: 18px 40px;
-            margin-top: 30px;
+            background: var(--accent);
+            color: var(--text-on-accent);
+            font-weight: 700;
+            font-size: 1.05em;
+            padding: 16px 40px;
+            margin-top: 28px;
             border: none;
-            border-radius: 50px;
+            border-radius: var(--radius-pill);
             cursor: pointer;
-            transition: transform 0.2s, background-color 0.2s;
+            box-shadow: var(--accent-glow);
+            transition: transform 0.18s, background-color 0.18s, box-shadow 0.18s;
+            letter-spacing: 0.3px;
         }
-        button.btn-main:hover { transform: scale(1.05); background-color: #27ae60; }
-        button.btn-main:disabled { background-color: #555; color: #888; transform: none; cursor: not-allowed; }
+        button.btn-main:hover { transform: translateY(-1px); background: var(--accent-hover); }
+        button.btn-main:disabled { background: var(--neutral-soft); color: var(--text-faint); transform: none; cursor: not-allowed; box-shadow: none; }
+
+        .notice {
+            margin-top: 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: var(--radius-input);
+            padding: 14px 16px;
+            text-align: left;
+            font-size: 0.92em;
+            color: var(--text);
+        }
+        .notice strong { color: var(--text-strong); }
+
+        .factory-card {
+            border-color: var(--accent);
+            box-shadow: var(--accent-glow);
+        }
+        .factory-card h3 {
+            color: var(--accent);
+            margin-top: 0;
+            font-family: var(--font-mono);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.95em;
+        }
+
+        #msg { color: var(--text-dim); margin-top: 18px; font-size: 0.9em; min-height: 1.3em; }
     </style>
 </head>
 <body>
+    {% include '_theme_toggle.html' with context %}
+
     <div class="logo">Home<span>{{ platform.product_suffix }}</span></div>
-    <h1>Private Cloud Setup</h1>
-    <p style="color: #aaa;">Choose how you want to access your {{ platform.product_name }}</p>
+    <p class="tagline">Private Cloud Setup</p>
+    <p style="color: var(--text-dim);">Choose how you want to access your {{ platform.product_name }}</p>
 
     <div class="card">
-        <h3 style="margin-top:0; color:#2ecc71;">Access Mode</h3>
+        <h3 style="margin-top:0; color:var(--accent); font-family:var(--font-mono); text-transform:uppercase; letter-spacing:1px; font-size:0.95em;">Access Mode</h3>
 
         <div class="mode-grid">
             <label class="mode-option selected" id="opt-local" onclick="selectMode('local')">
@@ -134,24 +197,24 @@
     </div>
 
     {% if config.NEWT_ID %}
-    <div class="card" style="border-color:#2ecc71; margin-top:15px;">
-        <h3 style="margin-top:0; color:#2ecc71;">Factory Provisioned Device</h3>
+    <div class="card factory-card">
+        <h3>// Factory Provisioned Device</h3>
         <ul>
             <li><strong>Device ID:</strong> {{ config.NEWT_ID }}</li>
             <li><strong>Main Domain:</strong> {{ config.PANGOLIN_DOMAIN }}</li>
-            <li><strong>Status:</strong> <span style="color:#2ecc71">Online & Ready</span></li>
+            <li><strong>Status:</strong> <span style="color:var(--accent)">Online &amp; Ready</span></li>
         </ul>
-        <p style="font-size:0.85em; color:#888; margin-bottom:0;">Tunnel credentials are pre-provisioned. Select Remote Access to use them.</p>
+        <p style="font-size:0.85em; color:var(--text-dim); margin-bottom:0;">Tunnel credentials are pre-provisioned. Select Remote Access to use them.</p>
     </div>
     {% endif %}
 
-    <div class="notice notice-info" style="margin-top: 16px;">
+    <div class="notice">
       <strong>📋 Hardware checklist</strong>
-      <p style="margin-top: 8px; font-size: 0.9em;">For a true always-on server, set your BIOS to <strong>"Restore on AC Power Loss → Power On"</strong> so HomeBrain restarts automatically after a power outage. This is found in BIOS under Power Management → AC Power Recovery.</p>
+      <p style="margin-top: 8px; font-size: 0.92em;">For a true always-on server, set your BIOS to <strong>"Restore on AC Power Loss → Power On"</strong> so HomeBrain restarts automatically after a power outage. This is found in BIOS under Power Management → AC Power Recovery.</p>
     </div>
 
     <button class="btn-main" onclick="startSetup()" id="btn">Initialize System</button>
-    <p id="msg" style="color: #888; margin-top: 20px; font-size: 0.9em;"></p>
+    <p id="msg"></p>
 
     <script>
         var selectedMode = 'local';
