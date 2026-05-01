@@ -1,7 +1,10 @@
 {
   "llama_cpp": {
-    "tag": "b8931",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8931/llama-b8931-bin-ubuntu-vulkan-x64.tar.gz"
+    "tag": "b8996",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8996/llama-b8996-bin-ubuntu-vulkan-x64.tar.gz"
+  },
+  "whisper_cpp": {
+    "git_ref": "v1.8.4"
   },
   "openclaw": {
     "version": "2026.4.24"

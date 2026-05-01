@@ -17,8 +17,9 @@ load_versions() {
     [[ -f "$versions_file" ]] || die "versions.json not found at $versions_file"
     LLAMA_TAG=$(jq -r '.llama_cpp.tag' "$versions_file")
     LLAMA_URL=$(jq -r '.llama_cpp.url' "$versions_file")
+    WHISPER_GIT_REF=$(jq -r '.whisper_cpp.git_ref // "master"' "$versions_file")
     OPENCLAW_VERSION=$(jq -r '.openclaw.version' "$versions_file")
-    export LLAMA_TAG LLAMA_URL OPENCLAW_VERSION
+    export LLAMA_TAG LLAMA_URL WHISPER_GIT_REF OPENCLAW_VERSION
 }
 
 get_installed_versions_file() {
@@ -538,6 +539,11 @@ install_llamacpp() {
         installed_tag=$(jq -r '.llama_cpp.tag // empty' "$installed_file" 2>/dev/null || echo "")
     fi
 
+    # Always (re)apply the RADV drop-in so existing devices pick it up on the
+    # first dashboard update after this change, even when the binary itself is
+    # already current and the install short-circuits below.
+    _install_llama_radv_dropin
+
     if [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
         log_info "llama.cpp already at ${LLAMA_TAG}, skipping."
         return 0
@@ -560,6 +566,22 @@ install_llamacpp() {
 
     update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
     log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"
+}
+
+# Apply RADV_PERFTEST=rm_kq=1 via systemd drop-in. b8996+ on RADV/GFX1200
+# regresses prompt-processing -7.9% without this; with it, +8% on Q4_K_M.
+# Idempotent: overwrite each upgrade; daemon-reload picks up changes for
+# the next restart performed by the caller (update.sh).
+_install_llama_radv_dropin() {
+    local dropin_dir="/etc/systemd/system/llama-server.service.d"
+    local dropin_file="${dropin_dir}/10-radv-perftest.conf"
+    mkdir -p "$dropin_dir"
+    cat > "$dropin_file" <<'EOF'
+[Service]
+Environment="RADV_PERFTEST=rm_kq=1"
+EOF
+    chmod 644 "$dropin_file"
+    systemctl daemon-reload 2>/dev/null || true
 }
 
 # Generate the systemd service file at runtime from model/platform config.
@@ -797,7 +819,14 @@ install_whisper_server() {
         return 0
     fi
 
-    # whisper.cpp has no prebuilt Linux binaries — build from source
+    # Pin to a known-good whisper.cpp tag from versions.json. Build is from
+    # source (upstream ships no Linux prebuilts) and runs only at provision
+    # time — not on dashboard update — to keep updates fast and avoid
+    # compile-time failures (apt drift, header skew) breaking voice control
+    # on existing devices. Bumping git_ref affects fresh installs only.
+    load_versions
+    local whisper_ref="${WHISPER_GIT_REF:-master}"
+
     log_info "Installing build dependencies for whisper.cpp..."
     wait_for_apt_lock
     export DEBIAN_FRONTEND=noninteractive
@@ -808,13 +837,15 @@ install_whisper_server() {
 
     local src_dir="/tmp/whisper.cpp"
     if [[ -d "$src_dir/.git" ]]; then
-        log_info "Updating existing whisper.cpp source..."
-        git -C "$src_dir" pull --ff-only 2>/dev/null || true
+        log_info "Updating existing whisper.cpp source to ${whisper_ref}..."
+        git -C "$src_dir" fetch --depth 1 origin "$whisper_ref" 2>/dev/null || true
+        git -C "$src_dir" checkout -q "$whisper_ref" 2>/dev/null || true
     else
-        log_info "Cloning whisper.cpp..."
+        log_info "Cloning whisper.cpp at ${whisper_ref}..."
         rm -rf "$src_dir"
-        git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git "$src_dir" \
-            || die "Failed to clone whisper.cpp"
+        git clone --depth 1 --branch "$whisper_ref" \
+            https://github.com/ggml-org/whisper.cpp.git "$src_dir" \
+            || die "Failed to clone whisper.cpp at ${whisper_ref}"
     fi
 
     log_info "Building whisper-server with Vulkan GPU support..."
