@@ -103,6 +103,15 @@ Findings:
 
 ROCm backend was investigated but not benchmarked: llama.cpp issue [#21376](https://github.com/ggml-org/llama.cpp/issues/21376) (open) reproduces a hard OOM on RX 9060 XT when KV cache approaches the VRAM ceiling — exactly our 35B + q8_0 KV + `-ub 4096` regime. Comparative benchmarks on RDNA4 (RX 9070 XT, gfx1201) currently show Vulkan ~30% ahead of ROCm for dense Qwen3. Re-evaluate after #21376 fixes and ROCm 7.1+ gfx1200 tuning lands.
 
+## Sampler tuning — `presence_penalty` and `reasoning_budget` for A3B
+
+All 35B-A3B entries in `platform_models.json` carry `--presence-penalty 1.5 --reasoning-budget 8192` in addition to the model card's `temp=1.0 / top_p=0.95 / top_k=20 / min_p=0`. Rationale:
+
+- The Qwen3.6-35B-A3B model card explicitly recommends `presence_penalty=1.5` for thinking mode — the dense Qwen3.6-27B card recommends `0`. The A3B MoE variants are documented to fall into infinite `<think>` loops on tool-call failures (HF discussions #19, #20 on `Qwen/Qwen3.6-35B-A3B`; QwenLM/Qwen3.6 #145; ollama #14421/#14493). Without `presence_penalty=1.5` the model can spend its entire context budget retrying the same failed tool call.
+- `--reasoning-budget 8192` is a hard cap on think tokens; on overflow llama-server appends `</think>` and forces the assistant turn. Prevents a single bad turn from burning the 131K context window. Per-request override via `thinking_budget_tokens` in the JSON body.
+- The 27B IQ4_XS entry (DeltaNet hybrid, dense Qwen3.6-27B) is left at `presence_penalty=0` per its own model card.
+- Do not lower `temperature` to fight loops — Qwen explicitly warns greedy / low-temp causes more repetition on these models, not less.
+
 ## Notes
 
 ### AMD Vulkan / GFX1200 constraints
