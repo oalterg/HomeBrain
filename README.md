@@ -1,22 +1,49 @@
 # HomeBrain
 
-A private cloud + AI assistant in a box. One Ubuntu machine, one provisioning command, no SaaS dependencies.
+A private cloud + AI assistant in a box. One machine, one provisioning command, no SaaS dependencies.
 
-HomeBrain bundles **Nextcloud** (file sync), **Home Assistant** (smart home), and **OpenClaw** (local AI assistant on WhatsApp, backed by Qwen3.6 via llama.cpp) into a single stack. Reach it from anywhere over a self-hosted **Pangolin** tunnel, or keep it on the LAN with no tunnel at all.
+HomeBrain bundles **Nextcloud** (file sync), **Home Assistant** (smart home), and — when a GPU is present — **OpenClaw** (local AI assistant on WhatsApp, backed by Qwen3.6 via llama.cpp) into a single stack. Reach it from anywhere over a self-hosted **Pangolin** tunnel, or keep it on the LAN with no tunnel at all.
+
+---
+
+## Editions
+
+The same codebase ships in two flavors, picked automatically by the architecture detector at provision time — no flag to set:
+
+| Edition | Target | What runs | Best for |
+|---|---|---|---|
+| **HomeBrain** (full) | x86_64 + AMD GPU | Nextcloud · Home Assistant · llama.cpp · whisper.cpp · OpenClaw | Households that want a private LLM and voice control alongside file sync and home automation |
+| **HomeCloud** (AI-disabled) | aarch64 (Raspberry Pi 4 / 5) or any x86_64 box without a GPU | Nextcloud · Home Assistant · (optional) Pangolin tunnel | A quiet, low-power family cloud and smart-home hub with optional internet access through your own tunnel |
+
+The Pangolin remote-access tunnel is available in both editions; the AI stack only ships on x86_64 + AMD GPU.
 
 ---
 
 ## Hardware Requirements
+
+### HomeBrain (full)
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
 | OS | Ubuntu 24.04 LTS (x86_64) | Ubuntu 24.04 LTS or 25.10 |
 | RAM | 16 GB | 32 GB |
 | Storage | 64 GB SSD | 512 GB NVMe (model files alone are ~25 GB) |
-| GPU | — (AI features disabled) | AMD Radeon RX 6000-series or newer, **16 GB VRAM** |
+| GPU | AMD Radeon RX 6000-series, 8 GB VRAM | AMD Radeon RX 9060 XT or newer, **16 GB VRAM** |
 | Network | Ethernet | Ethernet (Gigabit) |
 
-**GPU note:** The AI stack (llama.cpp inference + OpenClaw assistant) auto-enables when a compatible AMD GPU is present. Inference runs on Vulkan via Mesa RADV — no ROCm install required. Without a GPU, HomeBrain runs as a privacy-first Nextcloud + Home Assistant server with the AI features disabled. See [BENCHMARKS.md](BENCHMARKS.md) for measured throughput across quantizations on a Radeon RX 9060 XT.
+Inference runs on Vulkan via Mesa RADV — no ROCm install required. See [BENCHMARKS.md](BENCHMARKS.md) for measured throughput across quantizations on a Radeon RX 9060 XT.
+
+### HomeCloud (AI-disabled)
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| Board | Raspberry Pi 4 (4 GB) | Raspberry Pi 5 (8 GB) — or any x86_64 mini-PC |
+| OS | Raspberry Pi OS 64-bit (Bookworm) or Ubuntu Server 24.04 (arm64/x86_64) | same |
+| RAM | 4 GB | 8 GB |
+| Storage | 32 GB microSD/SSD | 256 GB SSD/NVMe over USB 3 or PCIe |
+| Network | Ethernet | Ethernet (Gigabit) |
+
+Architecture is auto-detected: any non-x86_64 host is treated as no-GPU and the AI stack is skipped. The dashboard, backups, and Pangolin tunnel all behave identically to the full edition.
 
 ---
 
@@ -54,11 +81,11 @@ No tunnel. Services available on the local network at `homebrain.local` (mDNS) o
 
 ## Prerequisites
 
-1. **Ubuntu 24.04+ x86_64** — freshly installed, SSH accessible
-2. **`homebrain` OS user** — created during provisioning
+1. **64-bit OS, freshly installed** — Ubuntu 24.04+ on x86_64 (HomeBrain), or Raspberry Pi OS 64-bit / Ubuntu Server arm64 on a Pi 4/5 (HomeCloud). SSH accessible either way.
+2. **`homebrain` OS user** — created during provisioning if missing
 3. **For Remote Access mode**: Pangolin tunnel credentials (`NEWT_ID`, `NEWT_SECRET`, tunnel domain, Pangolin endpoint)
-4. **For AI features**: AMD GPU with ≥ 16 GB VRAM. Inference uses Vulkan via Mesa RADV — no ROCm setup needed.
-5. **BIOS setting**: *Restore on AC Power Loss* → **Power On** so the server auto-starts after a power outage
+4. **For AI features (HomeBrain only)**: AMD GPU with ≥ 16 GB VRAM. Inference uses Vulkan via Mesa RADV — no ROCm setup needed.
+5. **BIOS / firmware**: *Restore on AC Power Loss* → **Power On** (or the equivalent Pi PSU watchdog setting) so the server auto-starts after a power outage
 
 ---
 
@@ -114,14 +141,14 @@ All runtime configuration lives in `/opt/homebrain/.env`. Key variables:
 ## Architecture
 
 ```
-HomeBrain
+HomeBrain / HomeCloud
 ├── Nextcloud          (Docker)            — file sync, CalDAV, CardDAV
 ├── Home Assistant     (Docker)            — smart home automation
 ├── MariaDB            (Docker)            — Nextcloud database
 ├── Pangolin Newt      (Docker, optional)  — tunnel client
-├── llama-server       (systemd, GPU)      — local LLM inference (llama.cpp + Vulkan)
-├── whisper-server     (systemd, GPU)      — speech-to-text (whisper.cpp + Vulkan)
-└── OpenClaw           (systemd, GPU)      — AI assistant + WhatsApp integration
+├── llama-server       (systemd, x86 GPU)  — local LLM inference (HomeBrain only)
+├── whisper-server     (systemd, x86 GPU)  — speech-to-text     (HomeBrain only)
+└── OpenClaw           (systemd, x86 GPU)  — AI assistant + WhatsApp (HomeBrain only)
 ```
 
 Updates are pinned in [`config/versions.json`](config/versions.json) and applied via the dashboard's "Update" button — bumping the pinned `llama_cpp.tag` automatically re-downloads and restarts the inference binary on the next update click. See [BENCHMARKS.md](BENCHMARKS.md) for the inference tuning rationale and [TESTING.md](TESTING.md) for the E2E verification checklist used before every merge to `main`.
