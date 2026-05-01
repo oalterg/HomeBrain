@@ -91,13 +91,13 @@
       "filename": "Qwen3.6-27B-IQ4_XS.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-IQ4_XS.gguf",
       "min_size_bytes": 14000000000,
-      "context_window": 32768,
-      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "context_window": 49152,
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {
-        "tg128_ts": 17.22,
-        "pp512_ts": 436,
+        "tg128_ts": 17.17,
+        "pp512_ts": 435,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, DDR4, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b8996, ngl=99",
-        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk q8_0 with fa is mandatory on AMD Vulkan. ctx 65536 -> 32768 + KV q8_0 + -b 4096 -ub 2048 freed enough VRAM headroom (16.2 GB -> 16.1 GB) to lift TG +15.6% (14.89 -> 17.22 t/s) — same VRAM-pressure pattern as the 35B-A3B quants, just hidden behind DeltaNet's GPU-fused TG path. PP unchanged within noise (~436 t/s). Lower ctx is acceptable for the home automation agent; long-form transcripts should use a 35B quant instead."
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. Phase-2 finding: TG was VRAM-bound at ctx=65536 (16.24 GB / 99.6%), not kernel-bound. Phase-3 ctx sweep with q4_0 KV: 32K/40K/48K all hold peak TG ~17.17 t/s (15.6/15.8/16.0 GB); 56K starts throttling at 16.22 GB (-2.4%); 64K is the -13% cliff. Chosen config keeps q4_0 KV (same as before, less precise attention but 50% more usable context than q8_0 at the same VRAM ceiling) and bumps ctx to 48K. Net: TG +15.4% vs old prod (14.89 -> 17.17), context 65K -> 48K (-26%)."
       },
       "default": false
     }

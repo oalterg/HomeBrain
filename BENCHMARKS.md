@@ -32,7 +32,7 @@
 | Qwen3.6-35B-A3B         | UD-Q6_K    | 29 GB | 131K | q8_0 | 18-39     | 4096 / 4096 | 27.18    | 689         | ~15.6 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q6_K_XL | 32 GB | 131K | q8_0 | 16-39     | 4096 / 4096 | 25.38    | 643         | ~15.8 GB | 2026-05-01 |
 | Qwen3.6-35B-A3B         | UD-Q8_K_XL | 38 GB | 131K | q8_0 | 14-39     | 4096 / 2048 | 17.96    | 140         | ~15.9 GB | 2026-05-01 |
-| Qwen3.6-27B (DeltaNet)  | IQ4_XS     | 14 GB | 32K  | q8_0 | (none)    | 4096 / 2048 | **17.22**| 436         | 16.1 GB  | 2026-05-01 |
+| Qwen3.6-27B (DeltaNet)  | IQ4_XS     | 14 GB | 48K  | q4_0 | (none)    | 4096 / 2048 | **17.17**| 435         | 16.0 GB  | 2026-05-01 |
 
 UD-Q5_K_XL remains the production default — best quality/throughput balance. Q4_K_M is the highest-throughput option (~+18% TG, +6% PP over Q5_K_XL) at the cost of perceptible quality loss; useful for latency-sensitive workloads. Q5_K_M and Q5_K_XL are statistically tied — XL is preferred for slightly better quantization quality.
 
@@ -78,9 +78,19 @@ Phase 1 conclusion seemed to be that DeltaNet's TG path is GPU-fused and indiffe
 | ctx 32K + b 4096 / ub 2048                |  32K| q4_0 | 4096 / 2048 | 17.17 | 435   | 15.64 GB | Same TG as 16K, twice the context |
 | ctx 16K + KV q8_0 + b 2048 / ub 1024      |  16K| q8_0 | 2048 / 1024 | 17.19 | 445   | 15.79 GB | Better KV numerics, perf unchanged |
 | ctx 16K + KV q8_0 + b 4096 / ub 2048      |  16K| q8_0 | 4096 / 2048 | 17.19 | 434   | 15.57 GB | tied for best |
-| **ctx 32K + KV q8_0 + b 4096 / ub 2048**  |  32K| q8_0 | 4096 / 2048 | **17.22** | 436 | 16.15 GB | **Kept — best TG, ctx 32K, q8_0 KV** |
+| ctx 32K + KV q8_0 + b 4096 / ub 2048      |  32K| q8_0 | 4096 / 2048 | 17.22 | 436 | 16.15 GB | Tied for best TG; only 32K context |
 
-Net win on the 27B: **+15.6% TG (14.89 → 17.22), PP flat (442 → 436), KV upgraded q4_0 → q8_0** at the cost of half the context window (64K → 32K). Same VRAM-pressure pattern as the 35B-A3B quants — DeltaNet's TG was VRAM-bound, not kernel-bound, just less obvious because the fused kernel masked the regression.
+27B IQ4_XS phase-3 ctx-extension sweep (2026-05-01, b8996 + `rm_kq=1`). Same `-b 4096 -ub 2048` and KV q4_0 — finds the largest ctx that holds peak TG.
+
+| ctx | TG    | PP  | VRAM    | Verdict |
+|----:|------:|----:|--------:|---------|
+| 32K | 17.18 | 434 | 15.64 GB | safe |
+| 40K | 17.15 | 434 | 15.78 GB | safe |
+| **48K** | **17.17** | **435** | **16.00 GB** | **Kept — peak TG, max ctx** |
+| 56K | 16.75 | 434 | 16.22 GB | -2.4% TG, VRAM 99.5% |
+| 64K | 14.93 | 434 | 16.25 GB | -13% TG, the original throttle cliff |
+
+Net win on the 27B: **+15.4% TG (14.89 → 17.17), PP flat, ctx 64K → 48K (-26%) but still ample for the home-automation agent.** KV stays at q4_0 (50% more headroom-per-token vs q8_0); upgrading to q8_0 buys slightly better attention numerics but costs the extra 16K of context. The picked trade prefers context length on this card. Same VRAM-pressure pattern as the 35B-A3B quants — DeltaNet's TG was VRAM-bound, not kernel-bound, just hidden behind the fused-kernel regression mask.
 
 Tuning principles confirmed on this hardware:
 - **`-ub 4096` is the right default for non-XL MoE quants on this GPU.** It improves PP by 30–34% on long prompts vs `-b 2048 -ub 1024`, with TG flat or slightly improved across Q4_K_M / Q5_K_M / Q5_K_XL / Q6_K / Q6_K_XL.
