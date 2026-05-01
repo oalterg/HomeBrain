@@ -1,8 +1,8 @@
 # HomeBrain
 
-Self-hosted private cloud and AI assistant server. Runs on a standard x86_64 Ubuntu machine with an AMD GPU.
+A private cloud + AI assistant in a box. One Ubuntu machine, one provisioning command, no SaaS dependencies.
 
-HomeBrain bundles **Nextcloud** (file sync and storage), **Home Assistant** (smart home), and **OpenClaw** (local AI assistant via WhatsApp) into a single provisioned stack — remote-accessible over a Pangolin tunnel, or local-network-only with no tunnel required.
+HomeBrain bundles **Nextcloud** (file sync), **Home Assistant** (smart home), and **OpenClaw** (local AI assistant on WhatsApp, backed by Qwen3.6 via llama.cpp) into a single stack. Reach it from anywhere over a self-hosted **Pangolin** tunnel, or keep it on the LAN with no tunnel at all.
 
 ---
 
@@ -10,13 +10,13 @@ HomeBrain bundles **Nextcloud** (file sync and storage), **Home Assistant** (sma
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| OS | Ubuntu 22.04 LTS (x86_64) | Ubuntu 24.04 LTS |
-| RAM | 8 GB | 16 GB |
-| Storage | 64 GB SSD | 256 GB NVMe |
-| GPU | — (AI features disabled) | AMD RX 9060 or newer (≥ 8 GB VRAM) |
+| OS | Ubuntu 24.04 LTS (x86_64) | Ubuntu 24.04 LTS or 25.10 |
+| RAM | 16 GB | 32 GB |
+| Storage | 64 GB SSD | 512 GB NVMe (model files alone are ~25 GB) |
+| GPU | — (AI features disabled) | AMD Radeon RX 6000-series or newer, **16 GB VRAM** |
 | Network | Ethernet | Ethernet (Gigabit) |
 
-**GPU note:** The AI stack (llamacpp inference + OpenClaw AI assistant) is automatically enabled when a compatible AMD GPU is detected. Without a GPU, HomeBrain runs as a privacy-first Nextcloud + Home Assistant server.
+**GPU note:** The AI stack (llama.cpp inference + OpenClaw assistant) auto-enables when a compatible AMD GPU is present. Inference runs on Vulkan via Mesa RADV — no ROCm install required. Without a GPU, HomeBrain runs as a privacy-first Nextcloud + Home Assistant server with the AI features disabled. See [BENCHMARKS.md](BENCHMARKS.md) for measured throughput across quantizations on a Radeon RX 9060 XT.
 
 ---
 
@@ -34,30 +34,31 @@ Accessible from anywhere via a **Pangolin** self-hosted tunnel (no static IP, no
 ### 🏠 Local Network Only
 No tunnel. Services available on the local network at `homebrain.local` (mDNS) or by LAN IP. No registration or external credentials required.
 
+- `http://homebrain.local`      → HomeBrain Dashboard (port 80)
 - `http://homebrain.local:8080` → Nextcloud
 - `http://homebrain.local:8123` → Home Assistant
-- `http://homebrain.local:4000` → HomeBrain Dashboard
 
 ---
 
 ## Features
 
 - **Privacy-first**: All data stays on your hardware. No telemetry, no cloud sync, no vendor lock-in.
-- **One-command provisioning**: A setup wizard handles all configuration — passwords, tunnel credentials, deployment mode.
-- **Local AI assistant**: [OpenClaw](https://openclaw.ai) runs a WhatsApp-connected AI agent backed by local llamacpp inference (GPU required). Powered by Qwen3.5 models.
-- **Automated backups**: Scheduled snapshots with configurable retention. Backs up Nextcloud data, Home Assistant config, and OpenClaw agent workspace/memory.
-- **Always-on hardening**: AMD GPU runtime power management disabled (VRAM stays loaded between requests), systemd crash-loop protection, sleep inhibitor service.
-- **Dashboard**: Real-time system stats including GPU utilisation, VRAM, and temperature. Log viewer for all services including llamacpp and OpenClaw.
+- **One-command provisioning**: A browser-based setup wizard handles passwords, tunnel credentials, model selection, and deployment mode.
+- **Local AI assistant**: [OpenClaw](https://openclaw.ai) runs a WhatsApp-connected agent backed by local llama.cpp inference. Default model is Qwen3.6-35B-A3B (MoE); lighter quantizations selectable from the dashboard.
+- **Tuned inference**: Vulkan-RADV configuration tuned for AMD RDNA3/RDNA4 — selective MoE expert offload, q8_0 KV cache, flash attention, `RADV_PERFTEST=rm_kq=1`. ~29 t/s generation, ~750 t/s prompt processing on a 16 GB card at 131K context. See [BENCHMARKS.md](BENCHMARKS.md).
+- **Automated backups**: Scheduled snapshots with configurable retention. Covers Nextcloud data, Home Assistant config, and OpenClaw agent workspace/memory.
+- **Reliability hardening**: AMD GPU runtime power management disabled (VRAM stays resident between requests), systemd crash-loop protection, sleep inhibitor.
+- **Dashboard**: Real-time GPU utilisation, VRAM, and temperature; log viewer for all services; in-place updates via pinned `versions.json`.
 
 ---
 
 ## Prerequisites
 
-1. **Ubuntu 22.04+ x86_64** — freshly installed, SSH accessible
+1. **Ubuntu 24.04+ x86_64** — freshly installed, SSH accessible
 2. **`homebrain` OS user** — created during provisioning
 3. **For Remote Access mode**: Pangolin tunnel credentials (`NEWT_ID`, `NEWT_SECRET`, tunnel domain, Pangolin endpoint)
-4. **For AI features**: AMD GPU with ≥ 8 GB VRAM; ROCm-compatible (RX 5000 series or newer)
-5. **BIOS setting**: Set *Restore on AC Power Loss* → **Power On** so the server auto-starts after a power outage
+4. **For AI features**: AMD GPU with ≥ 16 GB VRAM. Inference uses Vulkan via Mesa RADV — no ROCm setup needed.
+5. **BIOS setting**: *Restore on AC Power Loss* → **Power On** so the server auto-starts after a power outage
 
 ---
 
@@ -71,6 +72,8 @@ curl -fsSL https://raw.githubusercontent.com/oalterg/homebrain/main/install | su
 
 ### 2. Provision
 
+The recommended path is the **browser setup wizard** at `http://<server-ip>` — it walks through deployment mode, credentials, and model selection. For headless deployments, run `provision.sh` directly:
+
 **Remote Access mode** (Pangolin tunnel):
 ```bash
 sudo /opt/homebrain/scripts/provision.sh \
@@ -82,7 +85,7 @@ sudo /opt/homebrain/scripts/provision.sh \
 sudo /opt/homebrain/scripts/provision.sh "<FACTORY_PASSWORD>"
 ```
 
-Alternatively, open the **setup wizard** in your browser at `http://<server-ip>:4000` to configure everything via the GUI.
+Omit `<FACTORY_PASSWORD>` to have one generated and printed at the end of provisioning.
 
 ### 3. Reboot
 
@@ -90,7 +93,7 @@ Alternatively, open the **setup wizard** in your browser at `http://<server-ip>:
 sudo reboot
 ```
 
-After reboot, access the dashboard at your tunnel domain (Remote) or `http://homebrain.local:4000` (Local).
+After reboot, access the dashboard at your tunnel domain (Remote) or `http://homebrain.local` (Local).
 
 ---
 
@@ -112,14 +115,25 @@ All runtime configuration lives in `/opt/homebrain/.env`. Key variables:
 
 ```
 HomeBrain
-├── Nextcloud          (Docker) — file sync, CalDAV, CardDAV
-├── Home Assistant     (Docker) — smart home automation
-├── MariaDB            (Docker) — Nextcloud database
-├── Pangolin Newt      (Docker, optional) — tunnel client
-├── llamacpp server    (systemd) — local LLM inference (GPU required)
-├── whisper-server     (systemd) — speech-to-text (GPU required)
-└── OpenClaw           (systemd) — AI assistant + WhatsApp integration (GPU required)
+├── Nextcloud          (Docker)            — file sync, CalDAV, CardDAV
+├── Home Assistant     (Docker)            — smart home automation
+├── MariaDB            (Docker)            — Nextcloud database
+├── Pangolin Newt      (Docker, optional)  — tunnel client
+├── llama-server       (systemd, GPU)      — local LLM inference (llama.cpp + Vulkan)
+├── whisper-server     (systemd, GPU)      — speech-to-text (whisper.cpp + Vulkan)
+└── OpenClaw           (systemd, GPU)      — AI assistant + WhatsApp integration
 ```
+
+Updates are pinned in [`config/versions.json`](config/versions.json) and applied via the dashboard's "Update" button — bumping the pinned `llama_cpp.tag` automatically re-downloads and restarts the inference binary on the next update click. See [BENCHMARKS.md](BENCHMARKS.md) for the inference tuning rationale and [TESTING.md](TESTING.md) for the E2E verification checklist used before every merge to `main`.
+
+---
+
+## Documentation
+
+- [BENCHMARKS.md](BENCHMARKS.md) — measured throughput across quantizations, hardware tuning notes
+- [ROADMAP.md](ROADMAP.md) — planned features and shipped releases
+- [TESTING.md](TESTING.md) — E2E verification checklist
+- [CLAUDE.md](CLAUDE.md) — repo conventions for AI-assisted contribution
 
 ---
 
