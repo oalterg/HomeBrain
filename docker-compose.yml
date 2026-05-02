@@ -79,6 +79,28 @@ services:
       timeout: 10s
       retries: 5
 
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - vaultwarden
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8443/healthz", "--no-check-certificate"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   vaultwarden:
     image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.7}
     restart: unless-stopped
@@ -156,3 +178,5 @@ volumes:
   db_data:
   ha_config:
   redis_data:
+  caddy_data:
+  caddy_config:

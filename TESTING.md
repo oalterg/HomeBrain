@@ -111,6 +111,41 @@ No external tunnel; access via `homebrain.local`.
 - [ ] Switch deployment mode `local` ↔ `remote` → `VAULT_DOMAIN` updates, vaultwarden container restarts, clients re-resolve
 - [ ] Stop vaultwarden manually → dashboard tile flips to `STOPPED`; `docker compose up -d` restores it; `restart: unless-stopped` re-attaches after host reboot
 
+### Vault — LAN HTTPS (Caddy + local CA)
+
+- [ ] `caddy` container reaches healthy within 30 s of first boot
+- [ ] In local mode `VAULT_DOMAIN` is `https://homebrain.local:8443`
+- [ ] `curl -k https://homebrain.local:8443/healthz` returns HTTP 200
+- [ ] Browser at `https://homebrain.local:8443/` shows the Bitwarden web vault (cert warning expected until CA is installed)
+- [ ] `/api/vault/local-ca` returns a PEM file (mode 600 disposition); installing it on a phone removes the warning
+- [ ] After CA install, Bitwarden Android app at `https://homebrain.local:8443` connects without trust errors
+- [ ] WebSocket sync works: edit a credential in browser ext → mobile updates within 2 s
+- [ ] Mode flip local → remote → `redeploy_tunnels.sh` restarts caddy + vaultwarden; `VAULT_DOMAIN` updates
+- [ ] In remote mode, `/api/vault/local-ca` returns 404 (Pangolin's public chain is used)
+
+### Vault — encrypted documents (Nextcloud E2EE)
+
+- [ ] Vault tile shows `E2EE app: DISABLED`, `Folder: MISSING` on a fresh install
+- [ ] Click "Set up encrypted folder" → response 200, banner says "Ready"
+- [ ] Within 10 s tile shows `E2EE app: ENABLED`, `Folder: CREATED`, "Open in Nextcloud" link appears
+- [ ] `Documents (Encrypted)` folder visible in the Nextcloud UI for the admin user
+- [ ] Re-running setup is idempotent (no-op + same status)
+- [ ] Nextcloud client app prompts to mark the folder as encrypted; once accepted, files added there are E2EE
+
+### Vault — OpenClaw MCP (GPU only)
+
+- [ ] `bw` CLI installed (`npm install -g @bitwarden/cli`); tile shows `CLI installed: YES`
+- [ ] Tile shows `Session: LOCKED`; unlock input is visible
+- [ ] Unlock with the wrong master password → returns 401, tile stays LOCKED
+- [ ] Unlock with the correct master password → response 200, tile flips to `UNLOCKED`
+- [ ] Session token persisted at `/home/homebrain/.openclaw/vault.session` mode 600, owner `homebrain`
+- [ ] Run `python3 /opt/homebrain/scripts/mcp-vault.py` and pipe a JSON-RPC `tools/list` → returns vault.search/vault.reveal/vault.status
+- [ ] `tools/call` `vault.status` → `{unlocked: true, url: …}`
+- [ ] `tools/call` `vault.search` with a query → returns metadata only (no `password` field)
+- [ ] `tools/call` `vault.reveal` with a valid item ID → returns password + writes to `/var/log/homebrain/mcp-vault-audit.log`
+- [ ] Click "Lock session" → session file removed, tile flips to LOCKED
+- [ ] After lock, MCP server returns `{unlocked: false, hint: …}` for any tool call
+
 ### Backup and restore
 
 - [ ] Trigger backup from dashboard → task completes, backup archive written to external drive

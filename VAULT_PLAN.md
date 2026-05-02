@@ -233,7 +233,7 @@ Implementation:
 | **P5 — Document vault** | NC E2EE app enablement, "Documents (Encrypted)" folder, Vault-card surfacing | One-click setup creates a folder visible in the Nextcloud client and refuses unencrypted access. |
 | **P6 — AI integration (stretch)** | OpenClaw MCP tool: `vault.search(query) → summary`, gated by per-session unlock prompt | "Hey OpenClaw, what's my router admin password?" answers from the vault, returns nothing if vault is locked. |
 
-P1–P3 are the MVP and gate the merge to `main`. P4–P6 ship behind feature flags in subsequent PRs.
+P1–P3 are the MVP and gate the merge to `main`. **P4–P6 are now implemented on the same branch** and gated only by their runtime prerequisites (Caddy starts on every install but only used in local mode; NC E2EE setup is opt-in via the dashboard button; MCP server requires `bw` CLI installed manually).
 
 ---
 

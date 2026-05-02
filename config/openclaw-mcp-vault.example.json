@@ -1,0 +1,11 @@
+{
+  "_comment": "Snippet to merge into ~/.openclaw/openclaw.json under the 'mcp.servers' array. After editing, restart the OpenClaw daemon.",
+  "name": "homebrain-vault",
+  "command": "/usr/bin/python3",
+  "args": ["/opt/homebrain/scripts/mcp-vault.py"],
+  "env": {
+    "VAULT_URL": "https://vault.example.com",
+    "VAULT_SESSION_FILE": "/home/homebrain/.openclaw/vault.session",
+    "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log"
+  }
+}

@@ -86,11 +86,12 @@ fi
 # --- 6. Domain (set by mode) ---
 if [[ -z "${VAULT_DOMAIN:-}" ]]; then
     if is_local_mode; then
-        # LAN HTTP fallback — Bitwarden mobile clients won't connect over HTTP,
-        # but the web vault works for browser-based use. P4 will replace this
-        # with a Caddy-issued HTTPS endpoint on :8443.
-        lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-        update_env_var "VAULT_DOMAIN" "http://${lan_ip:-homebrain.local}:${VAULT_PORT:-8082}"
+        # LAN HTTPS via Caddy — Bitwarden clients require TLS. The Caddy
+        # service mints an internal CA on first start and serves on
+        # homebrain.local:VAULT_LOCAL_HTTPS_PORT. Web-vault users can also
+        # hit http://<lan>:VAULT_PORT directly if they accept the warning,
+        # but mobile / desktop clients must use the HTTPS URL.
+        update_env_var "VAULT_DOMAIN" "https://homebrain.local:${VAULT_LOCAL_HTTPS_PORT:-8443}"
     else
         # Remote mode: vault.<tunnel-domain>, served via Pangolin TLS edge.
         if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then

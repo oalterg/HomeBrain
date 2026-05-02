@@ -45,6 +45,9 @@ restart_services=(homeassistant nextcloud)
 if docker compose $(get_compose_args) ps -q vaultwarden 2>/dev/null | grep -q .; then
     restart_services+=(vaultwarden)
 fi
+if docker compose $(get_compose_args) ps -q caddy 2>/dev/null | grep -q .; then
+    restart_services+=(caddy)
+fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) restart "${restart_services[@]}"
 
 # 5. Verification

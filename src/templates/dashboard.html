@@ -513,6 +513,43 @@
                 <div class="link-row" style="margin-top:14px;">
                     <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
                     <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
+                    {% if deployment_mode == 'local' %}
+                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
+                    {% endif %}
+                </div>
+
+                {% if has_gpu %}
+                <div id="vault-mcp" style="margin-top:14px; padding:12px; border-top:1px solid var(--border);">
+                    <strong>OpenClaw access</strong>
+                    <p style="font-size:0.86em; color:var(--text-dim); margin:4px 0 10px 0;">
+                        Lets the local AI agent query the vault on your behalf. Unlock per session — the agent only sees metadata until you explicitly approve a reveal. Requires the Bitwarden CLI (<code>bw</code>) installed.
+                    </p>
+                    <div class="stat-item"><span>CLI installed</span> <span id="vault-mcp-cli">&hellip;</span></div>
+                    <div class="stat-item"><span>Session</span> <span id="vault-mcp-state">&hellip;</span></div>
+                    <div id="vault-mcp-unlock-row" style="display:flex; gap:8px; margin-top:8px;">
+                        <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;">
+                        <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
+                    </div>
+                    <div id="vault-mcp-lock-row" style="display:none; margin-top:8px;">
+                        <button onclick="vaultMcpLock()" style="width:100%;">Lock session</button>
+                    </div>
+                    <small id="vault-mcp-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
+                </div>
+                {% endif %}
+
+                <div id="vault-docs" style="margin-top:14px; padding:12px; border-top:1px solid var(--border);">
+                    <strong>Encrypted documents</strong>
+                    <p style="font-size:0.86em; color:var(--text-dim); margin:4px 0 10px 0;">
+                        Use Nextcloud's end-to-end encryption for large secret files (passport scans, tax PDFs).
+                        Vault attachments stay best for small per-credential files.
+                    </p>
+                    <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app">&hellip;</span></div>
+                    <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder">&hellip;</span></div>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()" style="flex:1;">Set up encrypted folder</button>
+                        <a id="vault-docs-open" href="#" target="_blank" class="btn-link" style="display:none; flex:1; text-align:center;">Open in Nextcloud</a>
+                    </div>
+                    <small id="vault-docs-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
                 </div>
             </div>
 
@@ -1048,7 +1085,7 @@
             // Initial Fetch
             try {
                 // Parallel fetch for speed
-                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus()]);
+                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
@@ -1058,6 +1095,8 @@
             setInterval(fetchStatus, 5000);
             setInterval(pollTask, 2000);
             setInterval(fetchVaultStatus, 10000);
+            setInterval(vaultDocsRefresh, 30000);
+            setInterval(vaultMcpRefresh, 30000);
             
             setInterval(() => {
                 const logsTab = document.getElementById('logs');
@@ -1220,6 +1259,99 @@
                 fetchVaultStatus();
             } catch (e) {
                 if (msg) msg.innerText = 'Network error: ' + e.message;
+            }
+        }
+
+        async function vaultMcpRefresh() {
+            const cli = document.getElementById('vault-mcp-cli');
+            const state = document.getElementById('vault-mcp-state');
+            const unlockRow = document.getElementById('vault-mcp-unlock-row');
+            const lockRow = document.getElementById('vault-mcp-lock-row');
+            if (!cli) return;
+            try {
+                const r = await fetch('/api/vault/mcp/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                cli.innerText = d.bw_installed ? 'YES' : 'MISSING';
+                state.innerText = d.unlocked ? 'UNLOCKED' : 'LOCKED';
+                if (unlockRow) unlockRow.style.display = (!d.bw_installed || d.unlocked) ? 'none' : 'flex';
+                if (lockRow) lockRow.style.display = d.unlocked ? 'block' : 'none';
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultMcpUnlock() {
+            const pw = document.getElementById('vault-mcp-pw');
+            const msg = document.getElementById('vault-mcp-msg');
+            const v = (pw && pw.value) || '';
+            if (!v) { if (msg) msg.innerText = 'Enter your vault master password.'; return; }
+            if (msg) msg.innerText = 'Unlocking…';
+            try {
+                const r = await fetch('/api/vault/mcp/unlock', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'include',
+                    body: JSON.stringify({ master_password: v })
+                });
+                const d = await r.json();
+                if (pw) pw.value = '';
+                if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
+                else { if (msg) msg.innerText = 'Session unlocked. The agent can now search the vault.'; }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                vaultMcpRefresh();
+            }
+        }
+
+        async function vaultMcpLock() {
+            const msg = document.getElementById('vault-mcp-msg');
+            try {
+                await fetch('/api/vault/mcp/lock', { method: 'POST', credentials: 'include' });
+                if (msg) msg.innerText = 'Session locked.';
+            } catch (e) {
+                if (msg) msg.innerText = 'Lock failed: ' + e.message;
+            } finally {
+                vaultMcpRefresh();
+            }
+        }
+
+        async function vaultDocsRefresh() {
+            try {
+                const r = await fetch('/api/vault/docs/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const appEl = document.getElementById('vault-docs-app');
+                const folderEl = document.getElementById('vault-docs-folder');
+                const openEl = document.getElementById('vault-docs-open');
+                const btnEl = document.getElementById('vault-docs-setup-btn');
+                if (appEl) appEl.innerText = d.e2ee_enabled ? 'ENABLED' : 'DISABLED';
+                if (folderEl) folderEl.innerText = d.folder_exists ? 'CREATED' : 'MISSING';
+                if (openEl) {
+                    if (d.folder_url) { openEl.href = d.folder_url; openEl.style.display = ''; }
+                    else openEl.style.display = 'none';
+                }
+                if (btnEl) btnEl.innerText = (d.e2ee_enabled && d.folder_exists) ? 'Re-run setup' : 'Set up encrypted folder';
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultDocsSetup() {
+            const msg = document.getElementById('vault-docs-msg');
+            const btn = document.getElementById('vault-docs-setup-btn');
+            if (msg) msg.innerText = 'Enabling E2EE app and creating folder…';
+            if (btn) btn.disabled = true;
+            try {
+                const r = await fetch('/api/vault/docs/setup', { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (!r.ok) {
+                    if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText);
+                } else {
+                    if (msg) msg.innerText = 'Ready. Mark the folder as encrypted in your Nextcloud client to activate E2EE.';
+                }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                if (btn) btn.disabled = false;
+                vaultDocsRefresh();
             }
         }
 
