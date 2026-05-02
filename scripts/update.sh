@@ -80,9 +80,11 @@ log_info "Applying file updates, preserving configuration..."
 # Capture pinned dep versions before sync so we can detect bumps afterward
 old_llama_tag=""
 old_openclaw_ver=""
+old_vault_tag=""
 if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]; then
     old_llama_tag=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
     old_openclaw_ver=$(jq -r '.openclaw.version // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    old_vault_tag=$(jq -r '.vaultwarden.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
 fi
 
 # Back up the docker-compose.yml just in case
@@ -101,6 +103,18 @@ rsync -a --delete \
 if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]; then
     new_llama_tag=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
     new_openclaw_ver=$(jq -r '.openclaw.version // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    new_vault_tag=$(jq -r '.vaultwarden.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+    # Vault tag drives the vaultwarden image — write it into .env so the next
+    # `docker compose pull/up` picks the new image. Compose pull below handles
+    # the actual rebuild.
+    if [[ -n "$new_vault_tag" ]] && [[ "$old_vault_tag" != "$new_vault_tag" ]]; then
+        log_info "Vaultwarden: ${old_vault_tag:-unset} → ${new_vault_tag}. Updating .env pin."
+        if grep -q "^VAULTWARDEN_TAG=" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^VAULTWARDEN_TAG=.*|VAULTWARDEN_TAG='${new_vault_tag}'|" "$ENV_FILE"
+        else
+            echo "VAULTWARDEN_TAG='${new_vault_tag}'" >> "$ENV_FILE"
+        fi
+    fi
     UPDATE_DEPS_SCRIPT="$SCRIPT_DIR/update-deps.sh"
     if [[ -f "$UPDATE_DEPS_SCRIPT" ]] && [[ "${HAS_GPU:-false}" == "true" ]]; then
         if [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]]; then

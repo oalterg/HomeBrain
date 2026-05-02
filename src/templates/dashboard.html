@@ -477,12 +477,42 @@
                 <div class="stat-item"><span>Nextcloud</span> <span id="st-nc" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Database</span> <span id="st-db" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Home Assistant</span> <span id="st-ha" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>Vault</span> <span id="st-vault" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="skeleton sk-mid"></span></div>
-                
+
                 <div class="link-row">
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
                     <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
+                    <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
+                </div>
+            </div>
+
+            <div class="card" id="vault-card">
+                <h3>HomeBrain Vault</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    Self-hosted password manager. Use the official <a href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Bitwarden apps</a> &mdash; set the server URL to your vault domain.
+                </p>
+                <div class="stat-item"><span>Service</span> <span id="vault-state" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>URL</span> <span id="vault-url" style="font-family:var(--font-mono); font-size:0.85em;">&hellip;</span></div>
+                <div class="stat-item"><span>Users</span> <span id="vault-users" class="skeleton sk-small"></span></div>
+                <div class="stat-item"><span>Signups</span> <span id="vault-signups" class="skeleton sk-small"></span></div>
+
+                <div id="vault-bootstrap" style="display:none; margin-top:14px; padding:12px; border:1px dashed var(--border); border-radius:var(--radius-input); background:var(--surface-2);">
+                    <strong>First-time setup</strong>
+                    <p style="font-size:0.88em; color:var(--text-dim); margin:6px 0 10px 0;">
+                        Create the first vault account. Signups are disabled automatically afterwards.
+                    </p>
+                    <div style="display:flex; gap:8px;">
+                        <input type="email" id="vault-bootstrap-email" placeholder="you@home" style="flex:1; margin-bottom:0;">
+                        <button class="btn-primary" onclick="vaultBootstrap()" style="flex-shrink:0;">Create user</button>
+                    </div>
+                    <small id="vault-bootstrap-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+                </div>
+
+                <div class="link-row" style="margin-top:14px;">
+                    <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
+                    <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
                 </div>
             </div>
 
@@ -958,6 +988,7 @@
                         <option value="nextcloud">Nextcloud Container</option>
                         <option value="db">Database Container</option>
                         <option value="homeassistant">Home Assistant Container</option>
+                        <option value="vaultwarden">Vault (Vaultwarden) Container</option>
                         <option value="newt">Pangolin (Newt) Container</option>
                         <option value="cloudflared-nc">Cloudflare (NC) Container</option>
                         <option value="cloudflared-ha">Cloudflare (HA) Container</option>
@@ -1017,15 +1048,16 @@
             // Initial Fetch
             try {
                 // Parallel fetch for speed
-                await Promise.all([fetchStatus(), pollTask()]);
+                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
             }
-        
+
             // Start Intervals
             setInterval(fetchStatus, 5000);
             setInterval(pollTask, 2000);
+            setInterval(fetchVaultStatus, 10000);
             
             setInterval(() => {
                 const logsTab = document.getElementById('logs');
@@ -1074,9 +1106,11 @@
                 const data = await res.json();
 
                 // Services Status
-                ['nc', 'db', 'ha', 'tunnel'].forEach(k => {
+                ['nc', 'db', 'ha', 'tunnel', 'vault'].forEach(k => {
                     const el = document.getElementById('st-' + k);
-                    if (el) setStatus(el, data[k === 'nc' ? 'nextcloud' : (k === 'tunnel' ? 'tunnel' : (k === 'ha' ? 'homeassistant' : 'db'))]);
+                    if (!el) return;
+                    const map = {nc: 'nextcloud', ha: 'homeassistant', db: 'db', tunnel: 'tunnel', vault: 'vaultwarden'};
+                    setStatus(el, data[map[k]]);
                 });
                 
                 if (document.getElementById('st-maint')) {
@@ -1122,6 +1156,84 @@
             el.className = 'status-badge status-' + (status || 'unknown');
             el.innerText = (status || 'unknown').toUpperCase();
         }
+
+        // --- HomeBrain Vault ---
+        async function fetchVaultStatus() {
+            try {
+                const r = await fetch('/api/vault/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const v = await r.json();
+                const fill = (id, txt) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    el.innerText = txt;
+                };
+                if (!v.enabled) {
+                    fill('vault-state', 'DISABLED');
+                    return;
+                }
+                fill('vault-state', (v.container || 'stopped').toUpperCase());
+                fill('vault-url', v.public_url || '(not set)');
+                fill('vault-users', v.users === null ? '—' : String(v.users));
+                fill('vault-signups', v.signups_allowed ? 'OPEN' : 'LOCKED');
+
+                const openLink = document.getElementById('vault-open');
+                const launchLink = document.getElementById('vault-launch');
+                if (v.public_url) {
+                    if (openLink) openLink.href = v.public_url;
+                    if (launchLink) { launchLink.href = v.public_url; launchLink.style.display = ''; }
+                }
+
+                // First-run prompt: container running, no users yet, signups still open.
+                const bootstrap = document.getElementById('vault-bootstrap');
+                if (bootstrap) {
+                    const showBootstrap = v.signups_allowed && (v.users === 0 || v.users === null) && v.container && v.container !== 'stopped';
+                    bootstrap.style.display = showBootstrap ? '' : 'none';
+                }
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultBootstrap() {
+            const emailEl = document.getElementById('vault-bootstrap-email');
+            const msg = document.getElementById('vault-bootstrap-msg');
+            const email = (emailEl?.value || '').trim();
+            if (!email) { if (msg) msg.innerText = 'Enter an email.'; return; }
+            if (msg) msg.innerText = 'Inviting…';
+            try {
+                const r = await fetch('/api/vault/bootstrap', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'include',
+                    body: JSON.stringify({ email })
+                });
+                const data = await r.json();
+                if (!r.ok) {
+                    if (msg) msg.innerText = 'Error: ' + (data.error || r.statusText);
+                    return;
+                }
+                if (data.already_bootstrapped) {
+                    if (msg) msg.innerText = 'Already bootstrapped (' + data.users + ' user' + (data.users === 1 ? '' : 's') + ').';
+                } else {
+                    if (msg) msg.innerHTML = 'User invited. Open the vault URL above to set the master password.';
+                }
+                fetchVaultStatus();
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            }
+        }
+
+        async function vaultOpenAdmin(ev) {
+            if (ev) ev.preventDefault();
+            try {
+                const r = await fetch('/api/vault/admin-link', { credentials: 'include' });
+                if (!r.ok) { alert('Vault admin not available.'); return; }
+                window.open('/api/vault/admin-redirect', '_blank', 'noopener');
+            } catch (e) {
+                alert('Could not open admin panel: ' + e.message);
+            }
+        }
+
 
         async function pollTask() {
             try {

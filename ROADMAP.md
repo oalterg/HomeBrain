@@ -31,6 +31,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
+- **HomeBrain Vault** *(in progress, `vault-integration` branch)* — Self-hosted Vaultwarden password manager: Bitwarden-compatible clients, MariaDB-backed, dashboard-managed bootstrap, Pangolin-tunnelled, backup-integrated. Document attachments via Vaultwarden + (P5) Nextcloud encrypted folder.
 
 ### Medium-term
 

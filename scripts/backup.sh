@@ -247,6 +247,41 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
     fi
 fi
 
+# ── Vault (Vaultwarden) ─────────────────────────────────────────────────────
+# Backup the vault DB + data dir. The rsa_key.* files inside the data dir are
+# critical — losing them invalidates every active Bitwarden client session.
+VAULT_CID=$(get_vault_cid 2>/dev/null || true)
+if [[ "${VAULT_ENABLED:-true}" == "true" ]] && [[ -n "$VAULT_CID" ]]; then
+    log_info "Stopping Vaultwarden for consistent backup..."
+    docker stop "$VAULT_CID" >/dev/null 2>&1 || log_warn "Failed to stop vaultwarden (continuing)."
+
+    if [[ -n "$DB_CID" ]] && [[ -n "${VAULT_DB_NAME:-}" ]] && [[ -n "${VAULT_DB_USER:-}" ]] && [[ -n "${VAULT_DB_PASSWORD:-}" ]]; then
+        mkdir -p "$STAGING_DIR/vault_db"
+        docker run --rm \
+            --network container:"$DB_CID" \
+            -e MYSQL_PWD="$VAULT_DB_PASSWORD" \
+            mysql:8 \
+            mysqldump --column-statistics=0 -h 127.0.0.1 -u "$VAULT_DB_USER" "$VAULT_DB_NAME" \
+            > "$STAGING_DIR/vault_db/vaultwarden.sql" 2>/dev/null \
+            || log_warn "Vault DB dump failed (non-fatal)."
+        if [[ ! -s "$STAGING_DIR/vault_db/vaultwarden.sql" ]]; then
+            log_warn "Vault DB dump empty — vault may be uninitialised."
+        fi
+    fi
+
+    VAULT_DATA="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}"
+    if [[ -d "$VAULT_DATA" ]]; then
+        mkdir -p "$STAGING_DIR/vault_data"
+        rsync -a "$VAULT_DATA"/ "$STAGING_DIR/vault_data/" || log_warn "Vault data rsync failed (non-fatal)."
+        if [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pem" ]] && [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pkcs8.der" ]]; then
+            log_warn "Vault rsa_key not present in archive — sessions may need re-login after restore."
+        fi
+    fi
+
+    log_info "Restarting Vaultwarden..."
+    docker start "$VAULT_CID" >/dev/null 2>&1 || log_warn "Failed to restart vaultwarden — start manually if needed."
+fi
+
 # 10. Restart Services
 log_info "Resuming services..."
 if [[ -n "$HA_CID" ]]; then docker start "$HA_CID"; fi

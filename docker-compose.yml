@@ -79,6 +79,43 @@ services:
       timeout: 10s
       retries: 5
 
+  vaultwarden:
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.7}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VAULT_PORT:-8082}:80"
+    volumes:
+      - ${VAULT_DATA_DIR:-/home/homebrain/vault-data}:/data
+    environment:
+      - DOMAIN=${VAULT_DOMAIN:-http://localhost:8082}
+      - DATABASE_URL=mysql://${VAULT_DB_USER}:${VAULT_DB_PASSWORD}@db/${VAULT_DB_NAME}
+      - ADMIN_TOKEN=${VAULT_ADMIN_TOKEN}
+      - SIGNUPS_ALLOWED=${VAULT_SIGNUPS_ALLOWED:-false}
+      - SIGNUPS_VERIFY=false
+      - INVITATIONS_ALLOWED=true
+      - WEBSOCKET_ENABLED=true
+      - PUSH_ENABLED=false
+      - SENDS_ALLOWED=true
+      - EMERGENCY_ACCESS_ALLOWED=true
+      - LOG_LEVEL=warn
+      - EXTENDED_LOGGING=true
+      - SHOW_PASSWORD_HINT=false
+      - ROCKET_WORKERS=2
+      - ROCKET_PORT=80
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   newt:
     profiles:
       - pangolin

@@ -71,6 +71,8 @@ HAS_NC_CONFIG=false
 HAS_HA_CONFIG=false
 HAS_OPENCLAW_CONFIG=false
 HAS_OPENCLAW_WORKSPACE=false
+HAS_VAULT_DB=false
+HAS_VAULT_DATA=false
 
 # Check for legacy (root/data) or new (nc_data) folder structures
 if [[ -d "$TMP_DIR/nc_data" ]] || [[ -d "$TMP_DIR/data" ]]; then HAS_NC_DATA=true; fi
@@ -80,9 +82,12 @@ if [[ -d "$TMP_DIR/nc_config" ]] || [[ -d "$TMP_DIR/config" ]]; then HAS_NC_CONF
 if [[ -d "$TMP_DIR/ha_config" ]]; then HAS_HA_CONFIG=true; fi
 [[ -d "${TMP_DIR}/openclaw_config" ]] && HAS_OPENCLAW_CONFIG=true
 [[ -d "${TMP_DIR}/openclaw_workspace" ]] && HAS_OPENCLAW_WORKSPACE=true
+[[ -f "${TMP_DIR}/vault_db/vaultwarden.sql" ]] && HAS_VAULT_DB=true
+[[ -d "${TMP_DIR}/vault_data" ]] && HAS_VAULT_DATA=true
 
 log_info "Backup Contents: NC_DATA=$HAS_NC_DATA, NC_DB=$HAS_NC_DB, NC_CONFIG=$HAS_NC_CONFIG, HA=$HAS_HA_CONFIG"
 log_info "OpenClaw config in archive: ${HAS_OPENCLAW_CONFIG} | workspace: ${HAS_OPENCLAW_WORKSPACE}"
+log_info "Vault in archive: db=${HAS_VAULT_DB} data=${HAS_VAULT_DATA}"
 
 if [ "$HAS_NC_DATA" = false ] && [ "$HAS_HA_CONFIG" = false ]; then
     die "Invalid backup: No Data or HA config found."
@@ -93,7 +98,8 @@ log_info "Stopping services..."
 # Attempt to enable maintenance mode, but proceed if container is already down
 set_maintenance_mode "--on" || true
 # Stop Nextcloud and Homeassistant service
-docker compose $(get_compose_args) stop nextcloud homeassistant
+docker compose $(get_compose_args) stop nextcloud homeassistant vaultwarden 2>/dev/null || \
+    docker compose $(get_compose_args) stop nextcloud homeassistant
 
 # --- 1. Restore Nextcloud Data ---
 if [ "$HAS_NC_DATA" = true ]; then
@@ -260,6 +266,42 @@ if [ "$HAS_NC_DB" = true ]; then
         log_warn "NEXTCLOUD_ADMIN_PASSWORD not set in .env. Retaining password from backup."
     fi
 
+fi
+
+# ── Restore Vault ───────────────────────────────────────────────────────────
+if [[ "$HAS_VAULT_DATA" == "true" ]]; then
+    log_info "Restoring Vault data directory..."
+    VAULT_DATA="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}"
+    mkdir -p "$VAULT_DATA"
+    rsync -a --delete "${TMP_DIR}/vault_data/" "$VAULT_DATA/" || log_warn "Vault data restore failed."
+    chown -R 65534:65534 "$VAULT_DATA" 2>/dev/null || true
+fi
+
+if [[ "$HAS_VAULT_DB" == "true" ]]; then
+    log_info "Restoring Vault database..."
+    docker compose $(get_compose_args) up -d db
+    wait_for_healthy "db" 60 || die "DB failed to start for vault restore."
+    DB_CID=$(get_nc_db_cid)
+    # Re-create database from scratch using stored creds
+    if [[ -n "${VAULT_DB_NAME:-}" ]] && [[ -n "${VAULT_DB_USER:-}" ]] && [[ -n "${VAULT_DB_PASSWORD:-}" ]]; then
+        docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$DB_CID" \
+            mariadb -u root -e "
+            DROP DATABASE IF EXISTS \`${VAULT_DB_NAME}\`;
+            CREATE DATABASE \`${VAULT_DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+            CREATE USER IF NOT EXISTS '${VAULT_DB_USER}'@'%' IDENTIFIED BY '${VAULT_DB_PASSWORD}';
+            ALTER USER '${VAULT_DB_USER}'@'%' IDENTIFIED BY '${VAULT_DB_PASSWORD}';
+            GRANT ALL PRIVILEGES ON \`${VAULT_DB_NAME}\`.* TO '${VAULT_DB_USER}'@'%';
+            FLUSH PRIVILEGES;" 2>&1 | grep -v "Using a password" || true
+        docker run --rm \
+          --network container:"$DB_CID" \
+          -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" \
+          -v "${TMP_DIR}/vault_db:/restore_dir:ro" \
+          mysql:8 \
+          sh -c "mysql -h 127.0.0.1 -u root ${VAULT_DB_NAME} < /restore_dir/vaultwarden.sql" \
+          || log_warn "Vault DB import failed."
+    else
+        log_warn "Vault DB credentials missing in .env — skipping vault DB import."
+    fi
 fi
 
 # --- Restart ---

@@ -8,5 +8,8 @@
   },
   "openclaw": {
     "version": "2026.4.24"
+  },
+  "vaultwarden": {
+    "tag": "1.35.7"
   }
 }

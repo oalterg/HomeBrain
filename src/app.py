@@ -586,6 +586,8 @@ def start_setup():
             update_env_var("MANAGER_DOMAIN",             pan_domain)
             update_env_var("NEXTCLOUD_TRUSTED_DOMAINS",  f"nc.{pan_domain}")
             update_env_var("HA_TRUSTED_DOMAINS",         f"ha.{pan_domain}")
+            update_env_var("VAULT_TRUSTED_DOMAINS",      f"vault.{pan_domain}")
+            update_env_var("VAULT_DOMAIN",               f"https://vault.{pan_domain}")
 
     env_config = get_env_config()
     
@@ -828,6 +830,7 @@ def system_status():
         "db": "stopped",
         "homeassistant": "stopped",
         "tunnel": "stopped",
+        "vaultwarden": "stopped",
     }
     try:
         # Docker Services Check
@@ -1878,6 +1881,189 @@ def whatsapp_link_token():
         return jsonify({"token": token, "port": port})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# --- Routes: HomeBrain Vault (Vaultwarden) ---
+def _vault_admin_token_plain():
+    """Recompute the plaintext admin token (sha256(MASTER:NONCE)) — never stored on disk.
+    Mirrors scripts/provision_vault.sh derivation. Returns empty string if either
+    component is missing.
+    """
+    env = get_env_config()
+    mp = env.get("MASTER_PASSWORD", "")
+    nonce = env.get("VAULT_ADMIN_NONCE", "")
+    if not mp or not nonce:
+        return ""
+    return hashlib.sha256(f"{mp}:{nonce}".encode()).hexdigest()
+
+
+def _vault_base_url():
+    """Internal URL the dashboard uses to talk to vaultwarden. Always 127.0.0.1."""
+    env = get_env_config()
+    port = env.get("VAULT_PORT", "8082")
+    return f"http://127.0.0.1:{port}"
+
+
+def _vault_public_url():
+    env = get_env_config()
+    domain = env.get("VAULT_DOMAIN")
+    if domain:
+        return domain
+    if is_local_mode():
+        return f"http://{get_lan_ip()}:{env.get('VAULT_PORT', '8082')}"
+    pd = env.get("PANGOLIN_DOMAIN")
+    return f"https://vault.{pd}" if pd else ""
+
+
+@app.route("/api/vault/status")
+def vault_status():
+    """Surface vault state for the dashboard tile."""
+    env = get_env_config()
+    enabled = env.get("VAULT_ENABLED", "true").lower() != "false"
+    info = {
+        "enabled": enabled,
+        "public_url": _vault_public_url(),
+        "signups_allowed": env.get("VAULT_SIGNUPS_ALLOWED", "true").lower() == "true",
+        "configured": bool(env.get("VAULT_ADMIN_TOKEN")),
+        "container": "stopped",
+        "users": None,
+        "items": None,
+    }
+    # Container running?
+    try:
+        cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q vaultwarden",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if cid:
+            state = subprocess.check_output(
+                ["docker", "inspect", "-f", "{{.State.Health.Status}}", cid],
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            info["container"] = state or "running"
+    except Exception:
+        pass
+
+    # User count: query the DB directly (avoids the admin-cookie JWT dance).
+    if info["container"] in ("running", "healthy"):
+        try:
+            db_cid = subprocess.check_output(
+                f"docker compose -f {COMPOSE_FILE} ps -q db",
+                shell=True, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+            db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+            db_pass = env.get("VAULT_DB_PASSWORD", "")
+            if db_cid and db_pass:
+                out = subprocess.check_output(
+                    ["docker", "exec", "-e", f"MYSQL_PWD={db_pass}", db_cid,
+                     "mariadb", "-u", db_user, "-N", "-s", "-e",
+                     f"SELECT COUNT(*) FROM `{db_name}`.users;"],
+                    stderr=subprocess.DEVNULL, timeout=4,
+                ).decode().strip()
+                info["users"] = int(out) if out.isdigit() else None
+        except Exception:
+            pass
+    return jsonify(info)
+
+
+@app.route("/api/vault/admin-link")
+@limiter.limit("10 per minute")
+def vault_admin_link():
+    """Issue a one-shot redirect URL to /admin with the cookie pre-set.
+    The dashboard front-end opens this in a new tab; the browser receives a
+    Set-Cookie + 302 to the upstream admin panel.
+    """
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    token = _vault_admin_token_plain()
+    if not token:
+        return jsonify({"error": "vault not provisioned"}), 503
+    return jsonify({"url": f"/api/vault/admin-redirect", "token_set": True})
+
+
+@app.route("/api/vault/admin-redirect")
+@limiter.limit("10 per minute")
+def vault_admin_redirect():
+    """Browser-facing endpoint: sets the VW_ADMIN cookie on the public vault
+    domain, then 302s into the admin panel. Falls back to direct redirect when
+    same-origin (LAN HTTP) where cookie scoping permits.
+    """
+    if not session.get("authenticated"):
+        abort(401)
+    token = _vault_admin_token_plain()
+    if not token:
+        return "Vault not provisioned", 503
+    public = _vault_public_url()
+    if not public:
+        return "Vault domain not configured", 503
+    # Forward to admin login endpoint with token in form body — Vaultwarden
+    # accepts ?token=… for one-shot login from 1.30+; older versions use the
+    # cookie. We send both to maximise compatibility.
+    html = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Opening Vault Admin…</title></head>"
+        "<body><form id='f' method='POST' action='" + public + "/admin'>"
+        "<input type='hidden' name='token' value='" + token + "'></form>"
+        "<script>document.getElementById('f').submit();</script>"
+        "<noscript>JavaScript required to forward admin token.</noscript></body></html>"
+    )
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/api/vault/bootstrap", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_bootstrap():
+    """Create the first vault user via the admin API, then disable signups.
+    Idempotent: returns {already_bootstrapped: true} if any user already exists.
+    """
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify({"error": "valid email required"}), 400
+
+    token = _vault_admin_token_plain()
+    if not token:
+        return jsonify({"error": "vault not provisioned"}), 503
+
+    base = _vault_base_url()
+    try:
+        # Vaultwarden's /admin POST exchanges the plaintext admin token for a
+        # JWT cookie (VW_ADMIN). All subsequent /admin/* calls require the JWT.
+        s = requests.Session()
+        login = s.post(f"{base}/admin", data={"token": token}, timeout=5, allow_redirects=False)
+        if login.status_code not in (200, 302):
+            return jsonify({"error": f"admin login failed: HTTP {login.status_code}"}), 502
+        if not s.cookies.get("VW_ADMIN"):
+            return jsonify({"error": "admin login produced no session cookie — check ADMIN_TOKEN"}), 502
+
+        # Existing users?
+        r = s.get(f"{base}/admin/users", headers={"Accept": "application/json"}, timeout=5)
+        if r.status_code == 200:
+            try:
+                existing = r.json()
+                if isinstance(existing, list) and len(existing) > 0:
+                    update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+                    return jsonify({"already_bootstrapped": True, "users": len(existing)})
+            except Exception:
+                pass
+
+        # Issue invite. Without SMTP, Vaultwarden creates the invite locally;
+        # the recipient finishes signup by visiting the public vault URL.
+        r = s.post(f"{base}/admin/invite", data={"email": email}, timeout=10, allow_redirects=False)
+        if r.status_code not in (200, 302):
+            return jsonify({"error": f"invite failed: HTTP {r.status_code}", "body": r.text[:300]}), 502
+
+        update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+        return jsonify({
+            "status": "invited",
+            "email": email,
+            "next": "Open the public vault URL to set the master password for this user.",
+        })
+    except requests.RequestException as e:
+        return jsonify({"error": f"vault unreachable: {e}"}), 503
+
 
 @app.route("/api/redis/status")
 def redis_status():

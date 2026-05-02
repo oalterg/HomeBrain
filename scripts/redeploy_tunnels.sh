@@ -39,11 +39,20 @@ configure_nc_ha_proxy_settings
 # Nextcloud reads config.php on every request, so strict restart isn't always needed, 
 # but we restart to be safe and ensure clean state.
 log_info "Restarting core services to apply changes..."
-docker compose --env-file "$ENV_FILE" $(get_compose_args) restart homeassistant nextcloud
+restart_services=(homeassistant nextcloud)
+# Vaultwarden's DOMAIN env is recomputed per deployment mode; restart so it
+# picks up the new value (also forces WS reconnects on existing clients).
+if docker compose $(get_compose_args) ps -q vaultwarden 2>/dev/null | grep -q .; then
+    restart_services+=(vaultwarden)
+fi
+docker compose --env-file "$ENV_FILE" $(get_compose_args) restart "${restart_services[@]}"
 
 # 5. Verification
 # Wait for HA to actually come back up to confirm success
 wait_for_healthy "nextcloud" 120 || log_error "Nextcloud failed to restart cleanly."
 wait_for_healthy "homeassistant" 120 || log_error "Home Assistant failed to restart cleanly."
+if docker compose $(get_compose_args) ps -q vaultwarden 2>/dev/null | grep -q .; then
+    wait_for_healthy "vaultwarden" 60 || log_warn "Vaultwarden failed to restart cleanly (non-fatal)."
+fi
 
 log_info "=== Tunnel Redeploy Complete ==="
