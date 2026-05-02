@@ -2,13 +2,18 @@
 # Bitwarden mobile/desktop clients (which refuse plain HTTP).
 #
 # In remote-mode deployments Pangolin terminates TLS at the public edge and
-# this proxy is unused. We still run it so a deployment-mode flip doesn't
-# require restarting the stack.
+# this proxy is unused (still running so a mode flip doesn't require
+# restarting the stack).
 #
 # Caddy mints an internal CA on first start and issues leaf certs for the
 # hostnames below. The CA root is exposed at /api/vault/local-ca on the
 # dashboard so it can be downloaded and trusted once per client device.
 # Persistent state lives in the caddy_data named volume.
+#
+# Hostnames are hardcoded to the canonical mDNS names. If you reach the box
+# by raw LAN IP, install the CA first and use https://homebrain.local:8443
+# from your client — mDNS works on iOS/macOS/Windows 10+/Android out of the
+# box. Adding more hostnames here is safe; Caddy mints a SAN per address.
 
 {
 	auto_https disable_redirects
@@ -18,35 +23,15 @@
 		format console
 		level WARN
 	}
-	# Allow on-demand TLS so clients connecting by raw LAN IP (and not
-	# homebrain.local) still get a valid cert with that IP in SAN.
-	on_demand_tls {
-		# Lock down to RFC1918 only — refuses to mint certs for arbitrary
-		# attacker-supplied hostnames.
-		ask http://127.0.0.1:8443/_caddy_ondemand_check
-	}
 }
 
-# Primary host: homebrain.local (mDNS) — the documented access path.
-homebrain.local:8443, vault.homebrain.local:8443 {
+# Catch-all on :8443. `tls internal` mints a per-SNI cert for whatever the
+# client requested via TLS SNI. The hostname list pre-issues certs for the
+# canonical access paths so no on-demand handshake is required.
+homebrain.local:8443, vault.homebrain.local:8443, 127.0.0.1:8443 {
 	tls internal
 
-	@health path /healthz /_caddy_ondemand_check
-	respond @health 200
-
-	reverse_proxy vaultwarden:80 {
-		header_up X-Forwarded-Proto https
-	}
-}
-
-# Fallback for raw-IP / unknown-hostname access. Mint a self-signed cert
-# on demand using the SNI value the client supplied.
-:8443 {
-	tls internal {
-		on_demand
-	}
-
-	@health path /healthz /_caddy_ondemand_check
+	@health path /healthz
 	respond @health 200
 
 	reverse_proxy vaultwarden:80 {

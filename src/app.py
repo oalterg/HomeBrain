@@ -2166,9 +2166,14 @@ def vault_docs_status():
 @app.route("/api/vault/docs/setup", methods=["POST"])
 @limiter.limit("5 per minute")
 def vault_docs_setup():
-    """Enable Nextcloud's end-to-end-encryption app and provision the
-    canonical 'Documents (Encrypted)' folder for the admin user. Idempotent.
-    """
+    """Provision the canonical 'Documents (Encrypted)' folder for the admin
+    user, and best-effort install + enable Nextcloud's end_to_end_encryption
+    app. The folder always gets created (so the user has a known landing
+    spot); the E2E app install can fail offline or on a Nextcloud install
+    without app-store access, in which case we surface that and let the user
+    enable it manually. The folder still works as a private folder; users
+    can mark it for E2EE in the Nextcloud desktop client once the app is
+    enabled. Idempotent."""
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
     try:
@@ -2179,30 +2184,38 @@ def vault_docs_setup():
         if not nc_cid:
             return jsonify({"error": "Nextcloud container not running"}), 503
 
-        # Enable the E2EE app (no-op if already enabled).
-        subprocess.run(
-            ["docker", "exec", "-u", "www-data", nc_cid,
-             "php", "occ", "app:install", "end_to_end_encryption"],
-            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60,
-        )
-        subprocess.check_call(
-            ["docker", "exec", "-u", "www-data", nc_cid,
-             "php", "occ", "app:enable", "end_to_end_encryption"],
-            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=30,
-        )
+        # 1. Best-effort enable end_to_end_encryption. Don't fail the whole
+        # request if the app store isn't reachable.
+        e2ee_enabled = False
+        e2ee_error = ""
+        try:
+            inst = subprocess.run(
+                ["docker", "exec", "-u", "www-data", nc_cid,
+                 "php", "occ", "app:install", "end_to_end_encryption"],
+                capture_output=True, text=True, timeout=60,
+            )
+            en = subprocess.run(
+                ["docker", "exec", "-u", "www-data", nc_cid,
+                 "php", "occ", "app:enable", "end_to_end_encryption"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if en.returncode == 0:
+                e2ee_enabled = True
+            else:
+                # Concatenate the most useful diagnostic from both calls.
+                e2ee_error = (inst.stdout + inst.stderr + en.stdout + en.stderr).strip()[:300]
+        except subprocess.TimeoutExpired:
+            e2ee_error = "occ command timed out"
 
-        # Create the folder via the host filesystem (faster + simpler than
-        # the WebDAV roundtrip), then `files:scan` so Nextcloud picks it up.
+        # 2. Always create the folder via host filesystem + files:scan.
         env = get_env_config()
         nc_user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
         data_dir = env.get("NEXTCLOUD_DATA_DIR", "/home/homebrain/nextcloud-data")
         folder_path = os.path.join(data_dir, nc_user, "files", "Documents (Encrypted)")
         os.makedirs(folder_path, exist_ok=True)
-        # Nextcloud's www-data container runs as UID 33.
         try:
             subprocess.check_call(
-                ["chown", "-R", "33:33", folder_path],
-                stderr=subprocess.DEVNULL,
+                ["chown", "-R", "33:33", folder_path], stderr=subprocess.DEVNULL,
             )
         except Exception:
             pass
@@ -2211,9 +2224,20 @@ def vault_docs_setup():
              "php", "occ", "files:scan", f"--path={nc_user}/files/Documents (Encrypted)"],
             stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=120,
         )
-        return jsonify({"status": "ready", "folder": "Documents (Encrypted)"})
-    except subprocess.CalledProcessError as e:
-        return jsonify({"error": f"occ command failed: {e}"}), 500
+
+        return jsonify({
+            "status": "ready",
+            "folder": "Documents (Encrypted)",
+            "e2ee_app_enabled": e2ee_enabled,
+            "e2ee_hint": (
+                "" if e2ee_enabled else
+                "End-to-end encryption app could not be installed automatically "
+                "(usually because the app store is unreachable). Folder created "
+                "regardless — install end_to_end_encryption from your Nextcloud "
+                "Apps page, then mark the folder as encrypted in the desktop "
+                "client. Detail: " + (e2ee_error or "no further detail")
+            ),
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
