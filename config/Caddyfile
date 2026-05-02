@@ -18,6 +18,11 @@
 {
 	auto_https disable_redirects
 	admin off
+	# Serve the homebrain.local cert when the client connects without SNI
+	# (curl, some legacy mobile clients, anything hitting the box by raw IP
+	# without SNI). Modern browsers send SNI even for IP literals so they
+	# match the explicit IP route below; this is the safety net.
+	default_sni homebrain.local
 	log {
 		output stdout
 		format console
@@ -25,10 +30,12 @@
 	}
 }
 
-# Catch-all on :8443. `tls internal` mints a per-SNI cert for whatever the
-# client requested via TLS SNI. The hostname list pre-issues certs for the
-# canonical access paths so no on-demand handshake is required.
-homebrain.local:8443, vault.homebrain.local:8443, 127.0.0.1:8443 {
+# Catch-all on :8443. `tls internal` mints a per-SNI cert for each address
+# below. {$VAULT_LAN_IP} is substituted from the env at startup so the box's
+# LAN IP gets a valid SAN — without it, browsers reaching the box by raw IP
+# fail TLS handshake. Falls back to a placeholder when LAN_IP is unset (the
+# placeholder also resolves to localhost so it never matches real traffic).
+homebrain.local:8443, vault.homebrain.local:8443, 127.0.0.1:8443, {$VAULT_LAN_IP:127.0.0.2}:8443 {
 	tls internal
 
 	@health path /healthz

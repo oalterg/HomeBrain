@@ -83,14 +83,22 @@ else
     log_info "DB container not running — skipping DB bootstrap (will be re-run by dashboard once db is up)."
 fi
 
-# --- 6. Domain (set by mode) ---
+# --- 6. Domain + LAN IP for Caddy SANs (set by mode) ---
+# Always discover the LAN IP — Caddy needs it as a SAN so browsers reaching
+# the box by raw IP get a valid cert (mDNS isn't universal on every client OS
+# / corporate network).
+lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if [[ -n "$lan_ip" ]]; then
+    update_env_var "VAULT_LAN_IP" "$lan_ip"
+fi
+
 if [[ -z "${VAULT_DOMAIN:-}" ]]; then
     if is_local_mode; then
-        # LAN HTTPS via Caddy — Bitwarden clients require TLS. The Caddy
-        # service mints an internal CA on first start and serves on
-        # homebrain.local:VAULT_LOCAL_HTTPS_PORT. Web-vault users can also
-        # hit http://<lan>:VAULT_PORT directly if they accept the warning,
-        # but mobile / desktop clients must use the HTTPS URL.
+        # LAN HTTPS via Caddy. Bitwarden clients require TLS; web vault works
+        # over HTTP too via VAULT_PORT but mobile/desktop apps refuse it.
+        # The dashboard recomputes per-request URLs from the user's Host
+        # header — this VAULT_DOMAIN is the canonical URL Vaultwarden uses
+        # internally (Send links, password-reset emails, etc.).
         update_env_var "VAULT_DOMAIN" "https://homebrain.local:${VAULT_LOCAL_HTTPS_PORT:-8443}"
     else
         # Remote mode: vault.<tunnel-domain>, served via Pangolin TLS edge.

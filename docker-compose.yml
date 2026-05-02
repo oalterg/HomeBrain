@@ -88,6 +88,9 @@ services:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      # Substituted into Caddyfile so the SAN list covers the box's LAN IP.
+      - VAULT_LAN_IP=${VAULT_LAN_IP:-127.0.0.2}
     depends_on:
       - vaultwarden
     logging:

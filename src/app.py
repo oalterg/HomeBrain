@@ -1905,14 +1905,39 @@ def _vault_base_url():
 
 
 def _vault_public_url():
+    """The user-facing vault URL.
+
+    In local mode, derive it from the dashboard's request Host header so the
+    link matches whatever path the user took to reach the dashboard (e.g.
+    accessing via 192.168.178.58 → vault on https://192.168.178.58:8443;
+    accessing via homebrain.local → vault on https://homebrain.local:8443).
+    Caddy serves a SAN-correct cert for each. The env var VAULT_DOMAIN
+    remains the canonical URL Vaultwarden itself uses internally (Send
+    links, etc.).
+
+    In remote mode, always use the configured tunnel URL.
+    """
     env = get_env_config()
-    domain = env.get("VAULT_DOMAIN")
-    if domain:
-        return domain
-    if is_local_mode():
-        return f"http://{get_lan_ip()}:{env.get('VAULT_PORT', '8082')}"
-    pd = env.get("PANGOLIN_DOMAIN")
-    return f"https://vault.{pd}" if pd else ""
+    if not is_local_mode():
+        domain = env.get("VAULT_DOMAIN")
+        if domain:
+            return domain
+        pd = env.get("PANGOLIN_DOMAIN")
+        return f"https://vault.{pd}" if pd else ""
+
+    # Local mode: prefer the user's request hostname so the link is
+    # reachable from their browser.
+    https_port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
+    host = ""
+    try:
+        # request.host is "<host>:<port>" — strip the dashboard's port.
+        host = request.host.split(":", 1)[0]
+    except RuntimeError:
+        # Outside a request context (e.g. background task) — fall back to env.
+        pass
+    if not host:
+        host = "homebrain.local"
+    return f"https://{host}:{https_port}"
 
 
 @app.route("/api/vault/status")
