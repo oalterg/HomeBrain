@@ -202,6 +202,42 @@
         .status-unknown  { background: var(--neutral-soft); color: var(--text-dim);border: 1px solid var(--border-strong); }
         .status-starting { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
 
+        /* --- Vault configuration card --- */
+        .vault-config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+        }
+        .vault-config-section { display: flex; flex-direction: column; }
+        .vault-config-section + .vault-config-section { padding-top: 0; }
+        .vault-config-section > header { margin-bottom: 12px; }
+        .vault-config-section > header strong {
+            display: block;
+            font-size: 0.95em;
+            color: var(--text-strong);
+            margin-bottom: 4px;
+        }
+        .vault-config-section > header p {
+            font-size: 0.86em;
+            color: var(--text-dim);
+            margin: 0;
+            line-height: 1.5;
+        }
+        .vault-config-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 14px;
+        }
+        .vault-config-actions > div { display: flex; }
+        .vault-config-msg {
+            display: block;
+            margin-top: 10px;
+            color: var(--text-dim);
+            font-size: 0.85em;
+            min-height: 1em;
+        }
+
         .progress-bg {
             background: var(--surface-sunken);
             height: 22px;
@@ -516,44 +552,7 @@
                     {% if deployment_mode == 'local' %}
                     <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
                     {% endif %}
-                </div>
-
-                {% if has_gpu %}
-                <div id="vault-mcp" style="margin-top:14px; padding:12px; border-top:1px solid var(--border);">
-                    <strong>OpenClaw access</strong>
-                    <p style="font-size:0.86em; color:var(--text-dim); margin:4px 0 10px 0;">
-                        Lets the local AI agent query the vault on your behalf. Unlock per session — the agent only sees metadata until you explicitly approve a reveal. Requires the Bitwarden CLI (<code>bw</code>) installed.
-                    </p>
-                    <div class="stat-item"><span>CLI installed</span> <span id="vault-mcp-cli">&hellip;</span></div>
-                    <div class="stat-item"><span>Session</span> <span id="vault-mcp-state">&hellip;</span></div>
-                    <div class="stat-item"><span>Wired into OpenClaw</span> <span id="vault-mcp-wired">&hellip;</span></div>
-                    <div id="vault-mcp-unlock-row" style="display:flex; gap:8px; margin-top:8px;">
-                        <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;">
-                        <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
-                    </div>
-                    <div id="vault-mcp-lock-row" style="display:none; margin-top:8px;">
-                        <button onclick="vaultMcpLock()" style="width:100%;">Lock session</button>
-                    </div>
-                    <div id="vault-mcp-wire-row" style="display:flex; gap:8px; margin-top:8px;">
-                        <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="flex:1;">Register with OpenClaw</button>
-                    </div>
-                    <small id="vault-mcp-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
-                </div>
-                {% endif %}
-
-                <div id="vault-docs" style="margin-top:14px; padding:12px; border-top:1px solid var(--border);">
-                    <strong>Encrypted documents</strong>
-                    <p style="font-size:0.86em; color:var(--text-dim); margin:4px 0 10px 0;">
-                        Use Nextcloud's end-to-end encryption for large secret files (passport scans, tax PDFs).
-                        Vault attachments stay best for small per-credential files.
-                    </p>
-                    <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app">&hellip;</span></div>
-                    <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder">&hellip;</span></div>
-                    <div style="display:flex; gap:8px; margin-top:8px;">
-                        <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()" style="flex:1;">Set up encrypted folder</button>
-                        <a id="vault-docs-open" href="#" target="_blank" class="btn-link" style="display:none; flex:1; text-align:center;">Open in Nextcloud</a>
-                    </div>
-                    <small id="vault-docs-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
+                    <a href="#" onclick="openTab('settings'); return false;" class="link-out" style="margin-left:auto;">Configure<span aria-hidden="true">→</span></a>
                 </div>
             </div>
 
@@ -946,6 +945,54 @@
                 </table>
             </div>
 
+            <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
+                <h3>HomeBrain Vault</h3>
+                <p style="margin-bottom:18px;">Configure how the vault integrates with the rest of your HomeBrain. Live status appears on the Status tab.</p>
+
+                <div class="vault-config-grid">
+                    {% if has_gpu %}
+                    <section class="vault-config-section" id="vault-mcp">
+                        <header>
+                            <strong>AI assistant access</strong>
+                            <p>Lets the local AI agent query the vault on your behalf. The agent only sees metadata until you explicitly approve a reveal. Requires the Bitwarden CLI (<code>bw</code>).</p>
+                        </header>
+                        <div class="stat-item"><span>Registered with OpenClaw</span> <span id="vault-mcp-wired" class="status-badge status-unknown">&hellip;</span></div>
+                        <div class="stat-item"><span>Session</span> <span id="vault-mcp-state" class="status-badge status-unknown">&hellip;</span></div>
+                        <div class="stat-item"><span>Bitwarden CLI</span> <span id="vault-mcp-cli" class="status-badge status-unknown">&hellip;</span></div>
+
+                        <div class="vault-config-actions">
+                            <div id="vault-mcp-wire-row" style="display:none;">
+                                <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="width:100%;">Register with OpenClaw</button>
+                            </div>
+                            <div id="vault-mcp-unlock-row" style="display:none; gap:8px;">
+                                <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;">
+                                <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
+                            </div>
+                            <div id="vault-mcp-lock-row" style="display:none;">
+                                <button onclick="vaultMcpLock()" style="width:100%;">Lock session</button>
+                            </div>
+                        </div>
+                        <small id="vault-mcp-msg" class="vault-config-msg"></small>
+                    </section>
+                    {% endif %}
+
+                    <section class="vault-config-section" id="vault-docs">
+                        <header>
+                            <strong>Encrypted documents</strong>
+                            <p>Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.</p>
+                        </header>
+                        <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
+                        <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
+
+                        <div class="vault-config-actions">
+                            <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()" style="width:100%;">Set up encrypted folder</button>
+                            <a id="vault-docs-open" href="#" target="_blank" class="btn-link" style="display:none; text-align:center; padding:8px 0;">Open in Nextcloud&nbsp;↗</a>
+                        </div>
+                        <small id="vault-docs-msg" class="vault-config-msg"></small>
+                    </section>
+                </div>
+            </div>
+
             {% if has_gpu %}
             <div class="card">
                 <h3>Personal AI Assistant</h3>
@@ -1219,7 +1266,12 @@
                 fill('vault-state', (v.container || 'stopped').toUpperCase());
                 fill('vault-url', v.public_url || '(not set)');
                 fill('vault-users', v.users === null ? '—' : String(v.users));
-                fill('vault-signups', v.signups_allowed ? 'OPEN' : 'LOCKED');
+                const signupsEl = document.getElementById('vault-signups');
+                if (signupsEl) {
+                    signupsEl.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    signupsEl.className = 'status-badge status-' + (v.signups_allowed ? 'starting' : 'running');
+                    signupsEl.innerText = v.signups_allowed ? 'Open' : 'Locked';
+                }
 
                 const openLink = document.getElementById('vault-open');
                 const launchLink = document.getElementById('vault-launch');
@@ -1266,6 +1318,12 @@
             }
         }
 
+        function setVaultBadge(el, kind, text) {
+            if (!el) return;
+            el.className = 'status-badge status-' + kind;
+            el.innerText = text;
+        }
+
         async function vaultMcpRefresh() {
             const cli = document.getElementById('vault-mcp-cli');
             const state = document.getElementById('vault-mcp-state');
@@ -1279,14 +1337,12 @@
                 const r = await fetch('/api/vault/mcp/status', { credentials: 'include' });
                 if (!r.ok) return;
                 const d = await r.json();
-                cli.innerText = d.bw_installed ? 'YES' : 'MISSING';
-                state.innerText = d.unlocked ? 'UNLOCKED' : 'LOCKED';
-                if (wired) {
-                    if (!d.openclaw_available) wired.innerText = 'OPENCLAW MISSING';
-                    else wired.innerText = d.openclaw_wired ? 'YES' : 'NO';
-                }
+                setVaultBadge(cli, d.bw_installed ? 'running' : 'stopped', d.bw_installed ? 'Installed' : 'Missing');
+                setVaultBadge(state, d.unlocked ? 'running' : 'unknown', d.unlocked ? 'Unlocked' : 'Locked');
+                if (!d.openclaw_available) setVaultBadge(wired, 'unknown', 'OpenClaw missing');
+                else setVaultBadge(wired, d.openclaw_wired ? 'running' : 'unknown', d.openclaw_wired ? 'Yes' : 'No');
                 if (unlockRow) unlockRow.style.display = (!d.bw_installed || d.unlocked) ? 'none' : 'flex';
-                if (lockRow) lockRow.style.display = d.unlocked ? 'block' : 'none';
+                if (lockRow) lockRow.style.display = d.unlocked ? 'flex' : 'none';
                 if (wireRow) wireRow.style.display = d.openclaw_available ? 'flex' : 'none';
                 if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Unregister from OpenClaw' : 'Register with OpenClaw';
             } catch (e) { /* silent */ }
@@ -1296,7 +1352,7 @@
             const msg = document.getElementById('vault-mcp-msg');
             const btn = document.getElementById('vault-mcp-wire-btn');
             const wiredEl = document.getElementById('vault-mcp-wired');
-            const isWired = wiredEl && wiredEl.innerText === 'YES';
+            const isWired = wiredEl && wiredEl.innerText.trim().toLowerCase() === 'yes';
             const url = isWired ? '/api/vault/mcp/unwire' : '/api/vault/mcp/wire-up';
             if (msg) msg.innerText = isWired ? 'Unregistering…' : 'Registering with OpenClaw…';
             if (btn) btn.disabled = true;
@@ -1358,8 +1414,8 @@
                 const folderEl = document.getElementById('vault-docs-folder');
                 const openEl = document.getElementById('vault-docs-open');
                 const btnEl = document.getElementById('vault-docs-setup-btn');
-                if (appEl) appEl.innerText = d.e2ee_enabled ? 'ENABLED' : 'DISABLED';
-                if (folderEl) folderEl.innerText = d.folder_exists ? 'CREATED' : 'MISSING';
+                setVaultBadge(appEl, d.e2ee_enabled ? 'running' : 'unknown', d.e2ee_enabled ? 'Enabled' : 'Disabled');
+                setVaultBadge(folderEl, d.folder_exists ? 'running' : 'unknown', d.folder_exists ? 'Created' : 'Missing');
                 if (openEl) {
                     if (d.folder_url) { openEl.href = d.folder_url; openEl.style.display = ''; }
                     else openEl.style.display = 'none';
