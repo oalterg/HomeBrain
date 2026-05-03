@@ -80,6 +80,11 @@ services:
       retries: 5
 
   caddy:
+    # Profile-gated: only starts when DEPLOYMENT_MODE=local. In remote mode
+    # Pangolin terminates TLS at the public edge and Caddy is unused; gating
+    # it on the profile keeps port 8443 free and reduces attack surface.
+    profiles:
+      - vault-lan-https
     image: caddy:2.10-alpine
     restart: unless-stopped
     ports:

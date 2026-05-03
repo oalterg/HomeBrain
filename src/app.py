@@ -196,6 +196,82 @@ def load_persistent_secret_key():
 
 app.secret_key = load_persistent_secret_key()
 
+
+def _enforce_vault_signups_lockdown():
+    """If at least one vault user already exists, force VAULT_SIGNUPS_ALLOWED=false
+    and (if currently true) restart the vaultwarden container so the env takes
+    effect. Runs once at manager startup as a defence-in-depth measure: someone
+    hand-editing .env back to SIGNUPS_ALLOWED=true would otherwise expose the
+    public vault to fresh-account creation. Idempotent and silent on first
+    boot when no users exist yet."""
+    try:
+        with open(ENV_FILE) as f:
+            env = {}
+            for line in f:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.strip().split("=", 1)
+                    env[k] = v.strip("'\"")
+    except OSError:
+        return
+
+    if env.get("VAULT_ENABLED", "true").lower() == "false":
+        return
+
+    db_pass = env.get("VAULT_DB_PASSWORD")
+    db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+    db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+    if not db_pass:
+        return
+
+    try:
+        db_cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q db",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not db_cid:
+            return
+        out = subprocess.check_output(
+            ["docker", "exec", "-e", f"MYSQL_PWD={db_pass}", db_cid,
+             "mariadb", "-u", db_user, "-N", "-s", "-e",
+             f"SELECT COUNT(*) FROM `{db_name}`.users;"],
+            stderr=subprocess.DEVNULL, timeout=4,
+        ).decode().strip()
+    except Exception:
+        return
+
+    user_count = int(out) if out.isdigit() else 0
+    if user_count == 0:
+        return  # First boot, leave signups open until the wizard creates a user
+
+    if env.get("VAULT_SIGNUPS_ALLOWED", "true").lower() == "true":
+        logging.warning(
+            "Vault has %d user(s) but SIGNUPS_ALLOWED=true — locking down.",
+            user_count,
+        )
+        update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE,
+                 "up", "-d", "vaultwarden"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+        except Exception:
+            pass
+
+
+# Run the lockdown check after the env loader is defined. We can't call it at
+# module import time because update_env_var is defined later — register a
+# Flask deferred startup hook instead.
+@app.before_request
+def _vault_signups_check_once():
+    if getattr(app, "_vault_signups_checked", False):
+        return
+    app._vault_signups_checked = True
+    try:
+        _enforce_vault_signups_lockdown()
+    except Exception as e:
+        logging.warning("Vault signups lockdown check failed: %s", e)
+
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
@@ -836,7 +912,11 @@ def system_status():
     try:
         # Docker Services Check
         # Get profiles dynamically from common.sh for consistency
-        profiles = subprocess.check_output(f"bash -c 'source {INSTALL_DIR}/scripts/common.sh; load_env; get_tunnel_profiles'", shell=True).decode().strip()
+        profiles = subprocess.check_output(
+            f"bash -c 'source {INSTALL_DIR}/scripts/common.sh; load_env; "
+            f"echo $(get_tunnel_profiles) $(get_vault_profiles)'",
+            shell=True,
+        ).decode().strip()
 
         compose_cmd = f"docker compose -f {COMPOSE_FILE} --env-file {ENV_FILE}"
         if os.path.exists(OVERRIDE_FILE):
@@ -2054,8 +2134,19 @@ def vault_mcp_status():
         "session_file": VAULT_MCP_SESSION_FILE,
         "unlocked": False,
         "bw_installed": False,
+        "openclaw_wired": False,
+        "openclaw_available": shutil.which("openclaw") is not None,
     }
     info["bw_installed"] = shutil.which("bw") is not None
+    if info["openclaw_available"]:
+        try:
+            out = subprocess.check_output(
+                ["sudo", "-u", "homebrain", "openclaw", "mcp", "show"],
+                stderr=subprocess.DEVNULL, timeout=5,
+            ).decode()
+            info["openclaw_wired"] = "homebrain-vault" in out
+        except Exception:
+            pass
     if os.path.exists(VAULT_MCP_SESSION_FILE) and info["bw_installed"]:
         try:
             tok = open(VAULT_MCP_SESSION_FILE).read().strip()
@@ -2129,6 +2220,74 @@ def vault_mcp_unlock():
     except Exception:
         pass
     return jsonify({"status": "unlocked"})
+
+
+@app.route("/api/vault/mcp/wire-up", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_mcp_wire_up():
+    """Register the Vault MCP server with the local OpenClaw daemon via
+    `openclaw mcp set`. Idempotent — re-running just overwrites the entry.
+    Restarts the OpenClaw daemon so it picks up the new MCP server."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if shutil.which("openclaw") is None:
+        return jsonify({"error": "openclaw CLI not found"}), 503
+
+    env = get_env_config()
+    public_url = env.get("VAULT_DOMAIN") or _vault_public_url()
+    spec = {
+        "command": "/usr/bin/python3",
+        "args": [f"{INSTALL_DIR}/scripts/mcp-vault.py"],
+        "env": {
+            "VAULT_URL": public_url,
+            "VAULT_SESSION_FILE": VAULT_MCP_SESSION_FILE,
+            "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log",
+        },
+    }
+    try:
+        # `openclaw mcp set` runs as the homebrain user (config lives at
+        # /home/homebrain/.openclaw/openclaw.json owned by homebrain).
+        subprocess.check_call(
+            ["sudo", "-u", "homebrain", "openclaw", "mcp", "set",
+             "homebrain-vault", json.dumps(spec)],
+            stderr=subprocess.STDOUT, timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": f"openclaw mcp set failed: {e}"}), 500
+
+    # Restart the daemon so the new MCP server is picked up. Best-effort —
+    # if the daemon isn't running we just leave the config in place.
+    try:
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
+            capture_output=True, timeout=20,
+        )
+    except Exception:
+        pass
+
+    return jsonify({"status": "registered", "name": "homebrain-vault"})
+
+
+@app.route("/api/vault/mcp/unwire", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_mcp_unwire():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if shutil.which("openclaw") is None:
+        return jsonify({"error": "openclaw CLI not found"}), 503
+    try:
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "mcp", "unset",
+             "homebrain-vault"],
+            capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
+            capture_output=True, timeout=20,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "removed"})
 
 
 @app.route("/api/vault/mcp/lock", methods=["POST"])

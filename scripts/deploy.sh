@@ -57,8 +57,9 @@ if [ -f "$INSTALL_DIR/install_creds.json" ]; then
     profiles=""
 fi
 
-log_info "Starting Stack with Tunnel Profile: ${profiles:-None}"
-docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans
+vault_profiles=$(get_vault_profiles)
+log_info "Starting Stack with Tunnel Profile: ${profiles:-None} · Vault Profile: ${vault_profiles:-None}"
+docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
 
 # 1d. Verification
 wait_for_healthy "nextcloud" 400 || die "Nextcloud failed to start."

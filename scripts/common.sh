@@ -231,6 +231,17 @@ get_tunnel_profiles() {
     echo "${profiles}"
 }
 
+# Vault profile: Caddy LAN-HTTPS edge only runs in local-mode installs.
+# In remote mode the tunnel terminates TLS at the public edge and Caddy is
+# pure dead weight + extra port-bind, so we gate it behind a profile.
+get_vault_profiles() {
+    if is_local_mode && [[ "${VAULT_ENABLED:-true}" != "false" ]]; then
+        echo "--profile vault-lan-https"
+    else
+        echo ""
+    fi
+}
+
 # Returns 0 (true) when running in local/LAN-only mode.
 # Logic: local if Pangolin not provisioned (credentials absent), OR if user explicitly
 # set DEPLOYMENT_MODE=local to opt out despite having credentials.

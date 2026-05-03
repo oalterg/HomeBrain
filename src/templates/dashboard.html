@@ -526,12 +526,16 @@
                     </p>
                     <div class="stat-item"><span>CLI installed</span> <span id="vault-mcp-cli">&hellip;</span></div>
                     <div class="stat-item"><span>Session</span> <span id="vault-mcp-state">&hellip;</span></div>
+                    <div class="stat-item"><span>Wired into OpenClaw</span> <span id="vault-mcp-wired">&hellip;</span></div>
                     <div id="vault-mcp-unlock-row" style="display:flex; gap:8px; margin-top:8px;">
                         <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;">
                         <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
                     </div>
                     <div id="vault-mcp-lock-row" style="display:none; margin-top:8px;">
                         <button onclick="vaultMcpLock()" style="width:100%;">Lock session</button>
+                    </div>
+                    <div id="vault-mcp-wire-row" style="display:flex; gap:8px; margin-top:8px;">
+                        <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="flex:1;">Register with OpenClaw</button>
                     </div>
                     <small id="vault-mcp-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
                 </div>
@@ -1265,8 +1269,11 @@
         async function vaultMcpRefresh() {
             const cli = document.getElementById('vault-mcp-cli');
             const state = document.getElementById('vault-mcp-state');
+            const wired = document.getElementById('vault-mcp-wired');
             const unlockRow = document.getElementById('vault-mcp-unlock-row');
             const lockRow = document.getElementById('vault-mcp-lock-row');
+            const wireRow = document.getElementById('vault-mcp-wire-row');
+            const wireBtn = document.getElementById('vault-mcp-wire-btn');
             if (!cli) return;
             try {
                 const r = await fetch('/api/vault/mcp/status', { credentials: 'include' });
@@ -1274,9 +1281,36 @@
                 const d = await r.json();
                 cli.innerText = d.bw_installed ? 'YES' : 'MISSING';
                 state.innerText = d.unlocked ? 'UNLOCKED' : 'LOCKED';
+                if (wired) {
+                    if (!d.openclaw_available) wired.innerText = 'OPENCLAW MISSING';
+                    else wired.innerText = d.openclaw_wired ? 'YES' : 'NO';
+                }
                 if (unlockRow) unlockRow.style.display = (!d.bw_installed || d.unlocked) ? 'none' : 'flex';
                 if (lockRow) lockRow.style.display = d.unlocked ? 'block' : 'none';
+                if (wireRow) wireRow.style.display = d.openclaw_available ? 'flex' : 'none';
+                if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Unregister from OpenClaw' : 'Register with OpenClaw';
             } catch (e) { /* silent */ }
+        }
+
+        async function vaultMcpWireToggle() {
+            const msg = document.getElementById('vault-mcp-msg');
+            const btn = document.getElementById('vault-mcp-wire-btn');
+            const wiredEl = document.getElementById('vault-mcp-wired');
+            const isWired = wiredEl && wiredEl.innerText === 'YES';
+            const url = isWired ? '/api/vault/mcp/unwire' : '/api/vault/mcp/wire-up';
+            if (msg) msg.innerText = isWired ? 'Unregistering…' : 'Registering with OpenClaw…';
+            if (btn) btn.disabled = true;
+            try {
+                const r = await fetch(url, { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
+                else { if (msg) msg.innerText = isWired ? 'Vault MCP unregistered from OpenClaw.' : 'Vault MCP registered. The agent can now use vault.search / vault.reveal.'; }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                if (btn) btn.disabled = false;
+                vaultMcpRefresh();
+            }
         }
 
         async function vaultMcpUnlock() {

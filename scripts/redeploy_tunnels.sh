@@ -22,11 +22,18 @@ docker compose --env-file "$ENV_FILE" $(get_compose_args) stop newt cloudflared-
 profiles=$(get_tunnel_profiles)
 log_info "Active Tunnel Profile: ${profiles:-None}"
 
-if [[ -n "$profiles" ]]; then
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} pull
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans
-else
-    log_info "No tunnel configured. Skipping tunnel startup."
+vault_profiles=$(get_vault_profiles)
+if [[ -n "$profiles" || -n "$vault_profiles" ]]; then
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} pull
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
+fi
+# In remote mode, ensure Caddy is stopped (mode flip from local→remote
+# leaves it running otherwise — its profile is now opt-out).
+if [[ -z "$vault_profiles" ]]; then
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) stop caddy 2>/dev/null || true
+fi
+if [[ -z "$profiles" && -z "$vault_profiles" ]]; then
+    log_info "No tunnel and no vault profile configured."
 fi
 
 # 3. Reapply Proxy/Trust Configurations
