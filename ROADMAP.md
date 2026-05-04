@@ -35,7 +35,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### Medium-term
 
-- **MCP servers** — Protonmail and Nextcloud MCP integrations for OpenClaw agent
+- **OpenClaw integrations** *(in progress, `vault-integration` branch)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), WhatsApp-native consent loop. See [`INTEGRATIONS_PLAN.md`](INTEGRATIONS_PLAN.md).
 
 ---
 

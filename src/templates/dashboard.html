@@ -612,6 +612,53 @@
             </div>
             {% endif %}
 
+            <div class="card" id="connections-card" style="grid-column: 1 / -1;">
+                <h3>Connections — OpenClaw integrations</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    What your AI assistant can reach. Each integration is exposed to OpenClaw via a local MCP server. Connect once, here.
+                </p>
+                <div id="conn-rows" class="row-list"></div>
+                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+                    <button onclick="connReconcile()" id="conn-reconcile-btn">Apply &amp; restart agent</button>
+                    <button onclick="connRefresh()">Refresh</button>
+                    <span id="conn-msg" style="font-size:0.88em; color:var(--text-dim); align-self:center;"></span>
+                </div>
+
+                <details style="margin-top:14px;">
+                    <summary style="cursor:pointer;">Add Home Assistant token</summary>
+                    <div style="margin-top:10px; display:flex; gap:8px;">
+                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="flex:1; margin-bottom:0;">
+                        <button class="btn-primary" onclick="connHaConnect()">Connect</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        In Home Assistant: Profile → Security → Long-lived access tokens → Create. Paste the token here.
+                    </small>
+                </details>
+
+                <details style="margin-top:8px;">
+                    <summary style="cursor:pointer;">Add email account</summary>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:10px;">
+                        <input type="text"     id="em-name"      placeholder="Account label (e.g. Personal)">
+                        <input type="email"    id="em-user"      placeholder="user@example.com">
+                        <input type="text"     id="em-imap-host" placeholder="IMAP host (e.g. imap.gmail.com or 127.0.0.1 for Proton Bridge)">
+                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
+                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
+                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
+                        <input type="password" id="em-pass"      placeholder="App password" style="grid-column:1/-1;">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.88em; color:var(--text-dim);">
+                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)" style="margin:0;">
+                            Allow agent to send mail directly (off = drafts only)
+                        </label>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP / 127.0.0.1:12025 SMTP. For Gmail / iCloud / Fastmail use an app-specific password.
+                    </small>
+                </details>
+            </div>
+
             <div class="card">
                 <h3>Maintenance Mode</h3>
                 <p style="margin-bottom:14px;">Pause services to perform safe maintenance. Reversible at any time.</p>
@@ -1136,7 +1183,7 @@
             // Initial Fetch
             try {
                 // Parallel fetch for speed
-                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh()]);
+                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
@@ -1148,6 +1195,7 @@
             setInterval(fetchVaultStatus, 10000);
             setInterval(vaultDocsRefresh, 30000);
             setInterval(vaultMcpRefresh, 30000);
+            setInterval(connRefresh, 15000);
             
             setInterval(() => {
                 const logsTab = document.getElementById('logs');
@@ -1245,6 +1293,140 @@
         function setStatus(el, status) {
             el.className = 'status-badge status-' + (status || 'unknown');
             el.innerText = (status || 'unknown').toUpperCase();
+        }
+
+        // --- Connections (OpenClaw integrations) ---
+        const CONN_LABELS = {
+            self: { name: 'HomeBrain self-tools', sub: 'Backups, status, restart' },
+            homeassistant: { name: 'Home Assistant', sub: 'Lights, scenes, automations' },
+            nextcloud: { name: 'Nextcloud', sub: 'Files, notes, calendar' },
+            vault: { name: 'Vault', sub: 'Passwords (read + create)' },
+            email: { name: 'Email', sub: 'IMAP/SMTP — Proton Bridge or direct' },
+        };
+        async function connRefresh() {
+            try {
+                const r = await fetch('/api/integrations/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const rows = document.getElementById('conn-rows');
+                if (!rows) return;
+                rows.innerHTML = '';
+                for (const it of (d.integrations || [])) {
+                    const meta = CONN_LABELS[it.key] || { name: it.key, sub: '' };
+                    const wired = it.wired ? '<span class="status-badge status-running">wired</span>'
+                                : (it.configured ? '<span class="status-badge status-unknown">configured, not wired</span>'
+                                                 : '<span class="status-badge status-stopped">not configured</span>');
+                    let extras = '';
+                    if (it.key === 'email' && (it.accounts || []).length) {
+                        extras = '<small style="display:block; color:var(--text-dim); margin-top:4px;">' +
+                                 it.accounts.map(a => `${a.name} (${a.user})`).join(' · ') + '</small>';
+                    }
+                    if (it.key === 'vault' && it.unlocked) {
+                        extras = '<small style="display:block; color:var(--accent); margin-top:4px;">unlocked</small>';
+                    }
+                    const buttons = [];
+                    if (it.key === 'nextcloud') {
+                        buttons.push(it.configured
+                            ? `<button onclick="connNcDisconnect()">Disconnect</button>`
+                            : `<button class="btn-primary" onclick="connNcConnect()">Connect</button>`);
+                    }
+                    if (it.key === 'homeassistant' && it.configured) {
+                        buttons.push(`<button onclick="connHaDisconnect()">Disconnect</button>`);
+                    }
+                    if (it.configured) {
+                        buttons.push(`<button onclick="connTest('${it.key}')">Test</button>`);
+                    }
+                    rows.insertAdjacentHTML('beforeend',
+                        `<div class="row-item">
+                           <div class="row-main">
+                             <strong>${meta.name}</strong>
+                             <span class="row-meta">${meta.sub} · MCP: ${it.mcp_name}</span>
+                             ${extras}
+                           </div>
+                           <div style="display:flex; gap:6px; align-items:center;">${wired}${buttons.join('')}</div>
+                         </div>`);
+                }
+                // Initialise the email-send-direct toggle from server state.
+                const sd = (d.integrations || []).find(x => x.key === 'email');
+                const cb = document.getElementById('em-send-direct');
+                if (cb && sd) cb.checked = !!sd.send_direct_enabled;
+            } catch (e) { console.warn('connRefresh failed', e); }
+        }
+        async function connReconcile() {
+            const msg = document.getElementById('conn-msg');
+            msg.innerText = 'Applying...';
+            try {
+                const r = await fetch('/api/integrations/reconcile', { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                msg.innerText = r.ok ? 'Applied. Agent restarted.' : ('Failed: ' + (d.error || ''));
+            } catch (e) { msg.innerText = 'Apply failed: ' + e; }
+            connRefresh();
+        }
+        async function connHaConnect() {
+            const tok = (document.getElementById('ha-token-input') || {}).value || '';
+            if (!tok.trim()) { alert('Paste a HA long-lived access token first.'); return; }
+            const r = await fetch('/api/integrations/homeassistant/connect',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({ token: tok.trim() })});
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'HA connected.' : (d.error || 'Connect failed');
+            document.getElementById('ha-token-input').value = '';
+            connRefresh();
+        }
+        async function connHaDisconnect() {
+            await fetch('/api/integrations/homeassistant/disconnect', { method: 'POST', credentials: 'include' });
+            connRefresh();
+        }
+        async function connNcConnect() {
+            const r = await fetch('/api/integrations/nextcloud/connect', { method: 'POST', credentials: 'include' });
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'Nextcloud app password created.' : (d.error || 'Connect failed');
+            connRefresh();
+        }
+        async function connNcDisconnect() {
+            await fetch('/api/integrations/nextcloud/disconnect', { method: 'POST', credentials: 'include' });
+            connRefresh();
+        }
+        async function connTest(key) {
+            const m = document.getElementById('conn-msg');
+            m.innerText = `Testing ${key}...`;
+            try {
+                const r = await fetch(`/api/integrations/${key}/test`, { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (d.ok) {
+                    m.innerText = `${key}: ${d.tool_count} tools — ${(d.tools || []).join(', ')}`;
+                } else {
+                    m.innerText = `${key}: ${d.error || 'failed'}`;
+                }
+            } catch (e) { m.innerText = `${key}: ${e}`; }
+        }
+        async function connEmailAdd() {
+            const body = {
+                name: document.getElementById('em-name').value.trim(),
+                user: document.getElementById('em-user').value.trim(),
+                imap_host: document.getElementById('em-imap-host').value.trim(),
+                imap_port: parseInt(document.getElementById('em-imap-port').value || '993', 10),
+                smtp_host: document.getElementById('em-smtp-host').value.trim(),
+                smtp_port: parseInt(document.getElementById('em-smtp-port').value || '587', 10),
+                password: document.getElementById('em-pass').value,
+            };
+            const r = await fetch('/api/integrations/email/add',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify(body)});
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'Email account added.' : (d.error || 'Add failed');
+            if (r.ok) ['em-name','em-user','em-imap-host','em-imap-port','em-smtp-host','em-smtp-port','em-pass']
+                       .forEach(id => document.getElementById(id).value = '');
+            connRefresh();
+        }
+        async function connEmailSendDirect(enabled) {
+            await fetch('/api/integrations/email/send-direct-toggle',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({ enabled })});
+            connRefresh();
         }
 
         // --- HomeBrain Vault ---

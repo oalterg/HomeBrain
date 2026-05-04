@@ -149,6 +149,25 @@ services:
       timeout: 5s
       retries: 5
 
+  proton-bridge:
+    # Profile-gated: only starts when the user has added a Proton account in
+    # the dashboard (Connections → Email). Bridge exposes IMAP on :12143
+    # and SMTP on :12025 on localhost; the email MCP server connects there.
+    profiles:
+      - proton-bridge
+    image: shenxn/protonmail-bridge:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:12143:143"
+      - "127.0.0.1:12025:25"
+    volumes:
+      - proton_bridge_data:/root
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   newt:
     profiles:
       - pangolin
@@ -191,3 +210,4 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  proton_bridge_data:

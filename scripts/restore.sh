@@ -144,6 +144,29 @@ if [[ "${HAS_OPENCLAW_WORKSPACE}" == "true" ]]; then
     log_info "OpenClaw workspace restored."
 fi
 
+# Integration credentials (HA token, NC app password, email accounts, self
+# bearer token, vault session, pending consent state). Mode-preserved.
+if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
+    log_info "Restoring OpenClaw integration credentials..."
+    mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
+    for f in ha.token nextcloud.token homebrain.token vault.session \
+             email_accounts.json pending_actions.json; do
+        [[ -f "${TMP_DIR}/openclaw_integrations/${f}" ]] || continue
+        cp -a "${TMP_DIR}/openclaw_integrations/${f}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
+        chmod 600 "${HOMEBRAIN_HOME}/.openclaw/${f}"
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
+    done
+    log_info "Integration credentials restored."
+fi
+
+# Per-integration audit logs (best-effort; the live log path is owned by
+# root so we restore into /var/log/homebrain/ directly).
+if [[ -d "${TMP_DIR}/mcp_audit" ]]; then
+    mkdir -p /var/log/homebrain
+    cp -a "${TMP_DIR}/mcp_audit/." /var/log/homebrain/ || true
+    log_info "MCP audit logs restored."
+fi
+
 # --- 2.5 Restore Nextcloud Apps (If Present) ---
 if [ "$HAS_NC_APPS" = true ]; then
     log_info "Restoring Nextcloud Custom User Apps..."

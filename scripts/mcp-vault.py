@@ -159,7 +159,44 @@ TOOLS = [
         "description": "Check whether the vault is currently unlocked.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "vault.list_folders",
+        "description": "List vault folders (id + name).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "vault.create_login",
+        "description": (
+            "ACT-tier: create a new login entry. Requires consent token — "
+            "first call returns {requires_confirmation: true, action_id, "
+            "summary}; the agent must surface a confirmation prompt to the "
+            "user and re-call with confirmation_token=action_id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "username": {"type": "string"},
+                "password": {"type": "string"},
+                "uri": {"type": "string"},
+                "folder_id": {"type": "string"},
+                "confirmation_token": {"type": "string"},
+            },
+            "required": ["name", "username", "password"],
+        },
+    },
 ]
+
+
+# Optional consent integration — re-uses the shared Consent helper from
+# mcp_common.py. We import lazily so this server keeps working even if the
+# shared library is missing (e.g. older deployments mid-upgrade).
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mcp_common import Consent, consent_required  # type: ignore
+    _CONSENT_OK = True
+except Exception:
+    _CONSENT_OK = False
 
 
 def call_tool(name: str, args: dict) -> dict:
@@ -215,6 +252,81 @@ def call_tool(name: str, args: dict) -> dict:
             "totp_seed_present": bool(login.get("totp")),
             "notes": item.get("notes"),
         }
+
+    if name == "vault.list_folders":
+        rc, out, err = _bw("list", "folders", session=session)
+        if rc != 0:
+            return {"error": err.strip() or "list_folders failed"}
+        try:
+            folders = json.loads(out)
+        except json.JSONDecodeError:
+            return {"error": "could not parse bw output"}
+        return {
+            "unlocked": True,
+            "folders": [{"id": f.get("id"), "name": f.get("name")} for f in folders],
+        }
+
+    if name == "vault.create_login":
+        item_name = args.get("name") or "(unnamed)"
+        username = args.get("username") or ""
+        password = args.get("password") or ""
+        uri = args.get("uri") or ""
+        folder_id = args.get("folder_id") or ""
+        confirm = args.get("confirmation_token") or ""
+        chat_id = args.get("_chat_id")
+        summary = (
+            f"Vault: save new login '{item_name}' (user: {username}, "
+            f"uri: {uri or 'none'})"
+        )
+        if _CONSENT_OK and not confirm:
+            action_id = Consent.issue("vault", summary,
+                                      {"name": item_name, "username": username,
+                                       "password": password, "uri": uri,
+                                       "folder_id": folder_id},
+                                      chat_id)
+            return consent_required(action_id, summary)
+        if _CONSENT_OK:
+            redeemed = Consent.verify(confirm, "vault", chat_id)
+            if not redeemed:
+                return {"error": "confirmation_token invalid or expired"}
+            item_name = redeemed["name"]
+            username = redeemed["username"]
+            password = redeemed["password"]
+            uri = redeemed.get("uri", "")
+            folder_id = redeemed.get("folder_id", "")
+
+        # Build the item template via `bw get template item`, populate, encode.
+        rc, tmpl_out, _ = _bw("get", "template", "item", session=session)
+        if rc != 0:
+            return {"error": "could not fetch item template"}
+        try:
+            tmpl = json.loads(tmpl_out)
+        except json.JSONDecodeError:
+            return {"error": "could not parse item template"}
+        tmpl["type"] = 1  # login
+        tmpl["name"] = item_name
+        tmpl["folderId"] = folder_id or None
+        tmpl["login"] = {
+            "username": username, "password": password,
+            "uris": ([{"uri": uri, "match": None}] if uri else []),
+        }
+        encoded = subprocess.run(
+            [VAULT_BW_BIN, "encode"],
+            input=json.dumps(tmpl), capture_output=True, text=True, timeout=10,
+        )
+        if encoded.returncode != 0:
+            return {"error": "bw encode failed"}
+        rc, out, err = _bw("create", "item", encoded.stdout.strip(), session=session)
+        if rc != 0:
+            return {"error": err.strip() or "create failed"}
+        try:
+            created = json.loads(out)
+        except json.JSONDecodeError:
+            return {"error": "could not parse bw output"}
+        _audit("create_login", item_id=created.get("id"),
+               item_name=item_name, username=username,
+               uri=uri, chat_id=chat_id)
+        return {"unlocked": True, "id": created.get("id"), "name": created.get("name")}
 
     return {"error": f"unknown tool: {name}"}
 

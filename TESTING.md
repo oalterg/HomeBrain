@@ -171,6 +171,71 @@ No external tunnel; access via `homebrain.local`.
 
 ---
 
+## OpenClaw integrations (Connections page)
+
+E2E on `homebrain@192.168.178.58`. Run after a fresh provision plus the
+default Vault bootstrap.
+
+### General
+
+- [ ] Dashboard → Status tab shows the **Connections** card with five rows.
+- [ ] On a fresh box, `homebrain-self` is the only row marked `wired`; the
+      rest are `not configured`.
+- [ ] Clicking **Apply & restart agent** runs `/api/integrations/reconcile`,
+      OpenClaw daemon restarts within ~10 s, no errors in
+      `journalctl -u homebrain-manager`.
+
+### Self MCP (`homebrain-self`)
+
+- [ ] `/home/homebrain/.openclaw/homebrain.token` exists, mode 0600.
+- [ ] `curl -H "Authorization: Bearer $(cat ~/.openclaw/homebrain.token)" \
+      http://127.0.0.1/api/integrations/self/status` returns 200.
+- [ ] `connTest('self')` returns 7 tools.
+
+### Home Assistant
+
+- [ ] Generate LLAT in HA → Profile → Security; paste into the dashboard;
+      Connect → row flips to `wired`.
+- [ ] `connTest('homeassistant')` lists 5 tools.
+- [ ] `ha.call_service` with `homeassistant.restart` returns the allowlist
+      denial without any HTTP call to HA.
+
+### Nextcloud
+
+- [ ] Click **Connect** → `occ user:add-app-password` runs, token at
+      `~/.openclaw/nextcloud.token` mode 0600.
+- [ ] `connTest('nextcloud')` lists 8 tools.
+- [ ] `nc.notes_create` (with consent) appears on a separate NC client.
+- [ ] Revoking the app password in NC's UI flips `nc.health` to
+      `unauthorised` within one health-check cycle.
+
+### Vault (existing + new)
+
+- [ ] All `VAULT_PLAN.md §7` steps still pass.
+- [ ] `vault.create_login` (with consent) appears in the Bitwarden mobile
+      app within 2 s; audit log records the action with `chat_id`.
+
+### Email
+
+- [ ] Add a Gmail account using an app-specific password; row shows
+      `wired`.
+- [ ] `email.list_unread` returns inbox metadata, no bodies.
+- [ ] `email.draft` creates a Gmail draft; `email.send_direct` is denied
+      (`disabled`) until the Settings toggle flips it on.
+- [ ] Proton account: `docker compose --profile proton-bridge up -d`
+      starts Bridge; `imap_host=127.0.0.1`, `imap_port=12143` works.
+
+### Cross-cutting
+
+- [ ] All `*.token`, `vault.session`, `email_accounts.json` are mode 0600
+      owned by `homebrain`.
+- [ ] Single-use redemption: replaying a confirmation_token a second
+      time returns "invalid or expired".
+- [ ] `backup.sh` archive contains `openclaw_integrations/` and
+      `mcp_audit/` trees; `restore.sh` repopulates them with mode 0600.
+
+---
+
 ## Sign-off checklist
 
 Complete before merging to `main`:

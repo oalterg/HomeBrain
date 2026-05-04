@@ -225,6 +225,45 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
         log_warn "OpenClaw config not found at ${OPENCLAW_DIR}/openclaw.json — skipping."
     fi
 
+    # Integration tokens (HA, Nextcloud, Email, Self) and pending consent
+    # state. Mode 0600, owned by homebrain — preserve perms on restore.
+    if compgen -G "${OPENCLAW_DIR}/*.token" > /dev/null \
+        || [[ -f "${OPENCLAW_DIR}/email_accounts.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/pending_actions.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/vault.session" ]]; then
+        mkdir -p "${STAGING_DIR}/openclaw_integrations"
+        for f in ha.token nextcloud.token homebrain.token vault.session \
+                 email_accounts.json pending_actions.json; do
+            [[ -f "${OPENCLAW_DIR}/${f}" ]] && cp -a "${OPENCLAW_DIR}/${f}" "${STAGING_DIR}/openclaw_integrations/"
+        done
+        log_info "OpenClaw integration credentials backed up."
+    fi
+
+    # Per-integration audit logs — last 30 days only, capped to keep the
+    # archive bounded. The full log lives at /var/log/homebrain/.
+    if compgen -G "/var/log/homebrain/mcp-*-audit.log" > /dev/null; then
+        mkdir -p "${STAGING_DIR}/mcp_audit"
+        for src in /var/log/homebrain/mcp-*-audit.log; do
+            # Keep only entries newer than 30 days; if jq isn't available
+            # fall back to a tail of the last 5000 lines.
+            base=$(basename "$src")
+            if command -v jq >/dev/null 2>&1; then
+                cutoff=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                         || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+                if [[ -n "$cutoff" ]]; then
+                    jq -c --arg c "$cutoff" 'select(.ts >= $c)' "$src" \
+                        > "${STAGING_DIR}/mcp_audit/${base}" 2>/dev/null \
+                        || tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+                else
+                    tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+                fi
+            else
+                tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+            fi
+        done
+        log_info "MCP audit logs backed up."
+    fi
+
     # Workspace backup (opt-out: default true)
     if [[ "${BACKUP_OPENCLAW_WORKSPACE:-true}" == "true" ]]; then
         if [[ -d "${OPENCLAW_DIR}/workspace" ]]; then

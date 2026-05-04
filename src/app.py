@@ -17,6 +17,7 @@ import fcntl
 from datetime import timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort
 import migration
+import integrations
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -373,6 +374,11 @@ limiter = Limiter(
     storage_uri="memory://"
 )
 
+# Mount the OpenClaw integrations module — adds /api/integrations/* routes
+# for the Connections dashboard card and the bearer-token endpoints used
+# by the homebrain-self MCP server. See src/integrations.py.
+integrations.register_integrations(app, limiter)
+
 # --- Security: Split-Horizon Auth Middleware ---
 @app.before_request
 def security_middleware():
@@ -388,7 +394,13 @@ def security_middleware():
     # 3. Allow Login Handler
     if request.path == '/login':
         return
- 
+
+    # 3b. Bearer-token endpoints for the OpenClaw self-MCP. The integrations
+    # module checks the bearer token itself; we just have to bypass the
+    # session gate so it gets a chance to.
+    if request.path.startswith('/api/integrations/self/'):
+        return
+
     # 4. Default: Block & Show Login Gate
     abort(401)
 
