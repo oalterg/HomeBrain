@@ -646,6 +646,21 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "unauthenticated"}), 401
         return jsonify(_ping_mcp("nextcloud"))
 
+    def vault_test():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        return jsonify(_ping_mcp("vault"))
+
+    def email_test():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        return jsonify(_ping_mcp("email"))
+
+    def self_test():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        return jsonify(_ping_mcp("self"))
+
     # ---- Email -------------------------------------------------------------
     def email_add():
         if not session.get("authenticated"):
@@ -840,6 +855,12 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "nc_disconnect", nc_disconnect, methods=["POST"])
     app.add_url_rule("/api/integrations/nextcloud/test",
                      "nc_test", nc_test, methods=["POST"])
+    app.add_url_rule("/api/integrations/vault/test",
+                     "vault_ping_test", vault_test, methods=["POST"])
+    app.add_url_rule("/api/integrations/email/test",
+                     "email_test", email_test, methods=["POST"])
+    app.add_url_rule("/api/integrations/self/test",
+                     "self_test", self_test, methods=["POST"])
 
     app.add_url_rule("/api/integrations/email/add",
                      "email_add",
