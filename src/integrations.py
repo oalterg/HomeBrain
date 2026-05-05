@@ -277,9 +277,9 @@ def _spec_homeassistant() -> dict | None:
     if not os.path.exists(HA_TOKEN_FILE):
         return None
     env = _read_env()
-    base = "http://homeassistant:8123"  # docker-internal name
-    if env.get("HA_BASE_URL"):
-        base = env["HA_BASE_URL"]
+    # MCP servers run on the host, not inside the docker network.
+    ha_port = env.get("HA_PORT", "8123")
+    base = env.get("HA_BASE_URL") or f"http://127.0.0.1:{ha_port}"
     return {
         "command": PYTHON_BIN,
         "args": [os.path.join(SCRIPTS_DIR, "mcp-homeassistant.py")],
@@ -295,7 +295,10 @@ def _spec_nextcloud() -> dict | None:
     if not os.path.exists(NC_TOKEN_FILE):
         return None
     env = _read_env()
-    base = "http://nextcloud:80"
+    # MCP servers run on the host, not inside the docker network — use the
+    # host-exposed port (NEXTCLOUD_PORT, default 8080) on 127.0.0.1.
+    nc_port = env.get("NEXTCLOUD_PORT", "8080")
+    base = env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}"
     user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
     return {
         "command": PYTHON_BIN,
