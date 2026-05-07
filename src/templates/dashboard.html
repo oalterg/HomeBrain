@@ -202,41 +202,6 @@
         .status-unknown  { background: var(--neutral-soft); color: var(--text-dim);border: 1px solid var(--border-strong); }
         .status-starting { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
 
-        /* --- Vault configuration card --- */
-        .vault-config-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 24px;
-        }
-        .vault-config-section { display: flex; flex-direction: column; }
-        .vault-config-section + .vault-config-section { padding-top: 0; }
-        .vault-config-section > header { margin-bottom: 12px; }
-        .vault-config-section > header strong {
-            display: block;
-            font-size: 0.95em;
-            color: var(--text-strong);
-            margin-bottom: 4px;
-        }
-        .vault-config-section > header p {
-            font-size: 0.86em;
-            color: var(--text-dim);
-            margin: 0;
-            line-height: 1.5;
-        }
-        .vault-config-actions {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-top: 14px;
-        }
-        .vault-config-actions > div { display: flex; }
-        .vault-config-msg {
-            display: block;
-            margin-top: 10px;
-            color: var(--text-dim);
-            font-size: 0.85em;
-            min-height: 1em;
-        }
 
         .progress-bg {
             background: var(--surface-sunken);
@@ -409,6 +374,16 @@
             color: var(--text-dim);
             font-family: var(--font-mono);
         }
+
+        /* Per-integration inline forms (Connect…, Add account…, Configure…) */
+        .conn-form {
+            margin-top: 12px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface-2);
+        }
+        .conn-form input { margin-bottom: 0; }
 
         /* External-launch link buttons (low emphasis vs .btn-primary) */
         .link-row {
@@ -595,6 +570,16 @@
                         <div class="row-main"><strong>AI Agent</strong><span class="row-meta">OpenClaw</span></div>
                         <span id="sys-openclaw-status" class="skeleton sk-mid"></span>
                     </div>
+                    <div class="row-item">
+                        <div class="row-main">
+                            <strong>Integrations</strong>
+                            <span class="row-meta">
+                                <span id="sys-integrations-meta">What the agent can reach</span> ·
+                                <a href="#" onclick="openTab('settings'); document.getElementById('integrations-card').scrollIntoView({behavior:'smooth', block:'start'}); return false;" style="color:var(--accent); text-decoration:none;">manage&nbsp;&rarr;</a>
+                            </span>
+                        </div>
+                        <span id="sys-integrations-status" class="skeleton sk-mid"></span>
+                    </div>
                     <div class="row-item" id="whatsapp-row" style="display:none;">
                         <div class="row-main">
                             <strong>WhatsApp</strong><span class="row-meta">Chat channel</span>
@@ -611,53 +596,6 @@
                 </div>
             </div>
             {% endif %}
-
-            <div class="card" id="connections-card" style="grid-column: 1 / -1;">
-                <h3>Connections — OpenClaw integrations</h3>
-                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
-                    What your AI assistant can reach. Each integration is exposed to OpenClaw via a local MCP server. Connect once, here.
-                </p>
-                <div id="conn-rows" class="row-list"></div>
-                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
-                    <button onclick="connReconcile()" id="conn-reconcile-btn">Apply &amp; restart agent</button>
-                    <button onclick="connRefresh()">Refresh</button>
-                    <span id="conn-msg" style="font-size:0.88em; color:var(--text-dim); align-self:center;"></span>
-                </div>
-
-                <details style="margin-top:14px;">
-                    <summary style="cursor:pointer;">Add Home Assistant token</summary>
-                    <div style="margin-top:10px; display:flex; gap:8px;">
-                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="flex:1; margin-bottom:0;">
-                        <button class="btn-primary" onclick="connHaConnect()">Connect</button>
-                    </div>
-                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
-                        In Home Assistant: Profile → Security → Long-lived access tokens → Create. Paste the token here.
-                    </small>
-                </details>
-
-                <details style="margin-top:8px;">
-                    <summary style="cursor:pointer;">Add email account</summary>
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:10px;">
-                        <input type="text"     id="em-name"      placeholder="Account label (e.g. Personal)">
-                        <input type="email"    id="em-user"      placeholder="user@example.com">
-                        <input type="text"     id="em-imap-host" placeholder="IMAP host (e.g. imap.gmail.com or 127.0.0.1 for Proton Bridge)">
-                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
-                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
-                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
-                        <input type="password" id="em-pass"      placeholder="App password" style="grid-column:1/-1;">
-                    </div>
-                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
-                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
-                        <label style="display:flex; align-items:center; gap:6px; font-size:0.88em; color:var(--text-dim);">
-                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)" style="margin:0;">
-                            Allow agent to send mail directly (off = drafts only)
-                        </label>
-                    </div>
-                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
-                        For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP / 127.0.0.1:12025 SMTP. For Gmail / iCloud / Fastmail use an app-specific password.
-                    </small>
-                </details>
-            </div>
 
             <div class="card">
                 <h3>Maintenance Mode</h3>
@@ -943,7 +881,87 @@
 
     <div id="settings" class="tab-content">
         <div class="grid">
-            
+
+            <div class="card" id="integrations-card" style="grid-column: 1 / -1;">
+                <h3>Agent integrations</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    What your agent can reach. Each row connects the agent to a part of your home.
+                </p>
+                <div id="conn-rows" class="row-list"></div>
+                <small id="conn-self-note" style="display:block; margin-top:10px; color:var(--text-dim); font-size:0.85em;"></small>
+                <small id="conn-msg" style="display:block; margin-top:6px; min-height:1em; color:var(--text-dim); font-size:0.88em;"></small>
+
+                <div hidden id="details-ha" class="conn-form">
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaConnect(); }">
+                        <button class="btn-primary" onclick="connHaConnect()">Connect</button>
+                        <button onclick="closeForm('details-ha')" aria-label="Close">✕</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        In Home Assistant: Profile → Security → Long-lived access tokens → Create. Paste the token here.
+                    </small>
+                </div>
+
+                <div hidden id="details-email" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <input type="text"     id="em-name"      placeholder="Account label (e.g. Personal)">
+                        <input type="email"    id="em-user"      placeholder="user@example.com">
+                        <input type="text"     id="em-imap-host" placeholder="IMAP host (e.g. imap.gmail.com or 127.0.0.1 for Proton Bridge)">
+                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
+                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
+                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
+                        <input type="password" id="em-pass"      placeholder="App password" style="grid-column:1/-1;">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
+                        <button onclick="closeForm('details-email')" aria-label="Close">✕</button>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.88em; color:var(--text-dim);">
+                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)" style="margin:0;">
+                            Allow agent to send mail directly (off = drafts only)
+                        </label>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP / 127.0.0.1:12025 SMTP. For Gmail / iCloud / Fastmail use an app-specific password.
+                    </small>
+                </div>
+
+                {% if has_gpu %}
+                <div hidden id="vault-mcp" class="conn-form">
+                    <p style="margin:0 0 8px 0; color:var(--text-dim); font-size:0.88em;">
+                        The agent only sees metadata until you explicitly approve a reveal.
+                        <span id="vault-mcp-cli-wrap" style="display:none;">Bitwarden CLI: <span id="vault-mcp-cli" class="status-badge status-unknown">…</span></span>
+                        <span id="vault-mcp-wired" hidden></span>
+                        <span id="vault-mcp-state" hidden></span>
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <div id="vault-mcp-wire-row" style="display:none; gap:8px;">
+                            <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="flex:1;">Enable for agent</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                        <div id="vault-mcp-unlock-row" style="display:none; gap:8px;">
+                            <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); vaultMcpUnlock(); }">
+                            <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                        <div id="vault-mcp-lock-row" style="display:none; gap:8px;">
+                            <button onclick="vaultMcpLock()" style="flex:1;">Lock</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                    </div>
+                    <small id="vault-mcp-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+                </div>
+                {% endif %}
+
+                <details style="margin-top:14px;">
+                    <summary style="cursor:pointer; font-size:0.85em; color:var(--text-dim);">Troubleshoot</summary>
+                    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+                        <button onclick="connReconcile()" id="conn-reconcile-btn">Re-sync agent</button>
+                        <button onclick="connRefresh()">Refresh</button>
+                    </div>
+                </details>
+            </div>
+
+
             <div class="card">
                 <h3>System Configuration</h3>
                 <p>Advanced hardware and task management.</p>
@@ -993,51 +1011,17 @@
             </div>
 
             <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
-                <h3>HomeBrain Vault</h3>
-                <p style="margin-bottom:18px;">Configure how the vault integrates with the rest of your HomeBrain. Live status appears on the Status tab.</p>
-
-                <div class="vault-config-grid">
-                    {% if has_gpu %}
-                    <section class="vault-config-section" id="vault-mcp">
-                        <header>
-                            <strong>AI assistant access</strong>
-                            <p>Lets the local AI agent query the vault on your behalf. The agent only sees metadata until you explicitly approve a reveal. Requires the Bitwarden CLI (<code>bw</code>).</p>
-                        </header>
-                        <div class="stat-item"><span>Registered with OpenClaw</span> <span id="vault-mcp-wired" class="status-badge status-unknown">&hellip;</span></div>
-                        <div class="stat-item"><span>Session</span> <span id="vault-mcp-state" class="status-badge status-unknown">&hellip;</span></div>
-                        <div class="stat-item"><span>Bitwarden CLI</span> <span id="vault-mcp-cli" class="status-badge status-unknown">&hellip;</span></div>
-
-                        <div class="vault-config-actions">
-                            <div id="vault-mcp-wire-row" style="display:none;">
-                                <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="width:100%;">Register with OpenClaw</button>
-                            </div>
-                            <div id="vault-mcp-unlock-row" style="display:none; gap:8px;">
-                                <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;">
-                                <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
-                            </div>
-                            <div id="vault-mcp-lock-row" style="display:none;">
-                                <button onclick="vaultMcpLock()" style="width:100%;">Lock session</button>
-                            </div>
-                        </div>
-                        <small id="vault-mcp-msg" class="vault-config-msg"></small>
-                    </section>
-                    {% endif %}
-
-                    <section class="vault-config-section" id="vault-docs">
-                        <header>
-                            <strong>Encrypted documents</strong>
-                            <p>Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.</p>
-                        </header>
-                        <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
-                        <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
-
-                        <div class="vault-config-actions">
-                            <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()" style="width:100%;">Set up encrypted folder</button>
-                            <a id="vault-docs-open" href="#" target="_blank" class="btn-link" style="display:none; text-align:center; padding:8px 0;">Open in Nextcloud&nbsp;↗</a>
-                        </div>
-                        <small id="vault-docs-msg" class="vault-config-msg"></small>
-                    </section>
+                <h3>Encrypted documents</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.
+                </p>
+                <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
+                <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
+                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()">Set up encrypted folder</button>
+                    <a id="vault-docs-open" href="#" target="_blank" class="link-out" style="display:none;">Open in Nextcloud<span aria-hidden="true">↗</span></a>
                 </div>
+                <small id="vault-docs-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
             </div>
 
             {% if has_gpu %}
@@ -1231,6 +1215,8 @@
                 loadSystemConfig();
                 loadSerialDevices();
                 loadFtpUsers();
+                connRefresh();
+                vaultMcpRefresh();
             }
         }
 
@@ -1295,27 +1281,70 @@
             el.innerText = (status || 'unknown').toUpperCase();
         }
 
-        // --- Connections (OpenClaw integrations) ---
+        // --- Connections (agent integrations) ---
+        function openDetails(id, focusId) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            // Hidden div form (preferred) or legacy <details> element.
+            if (el.tagName === 'DETAILS') el.open = true;
+            else el.hidden = false;
+            el.scrollIntoView({behavior:'smooth', block:'center'});
+            if (focusId) {
+                setTimeout(() => {
+                    const f = document.getElementById(focusId);
+                    if (f) f.focus();
+                }, 350);
+            }
+        }
+        function closeForm(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el.tagName === 'DETAILS') el.open = false;
+            else el.hidden = true;
+        }
         const CONN_LABELS = {
-            self: { name: 'HomeBrain self-tools', sub: 'Backups, status, restart' },
+            self:          { name: 'Self-tools',     sub: 'Backups, status, restart' },
             homeassistant: { name: 'Home Assistant', sub: 'Lights, scenes, automations' },
-            nextcloud: { name: 'Nextcloud', sub: 'Files, notes, calendar' },
-            vault: { name: 'Vault', sub: 'Passwords (read + create)' },
-            email: { name: 'Email', sub: 'IMAP/SMTP — Proton Bridge or direct' },
+            nextcloud:     { name: 'Nextcloud',      sub: 'Files, notes, calendar' },
+            vault:         { name: 'Vault',          sub: 'Passwords (read + create)' },
+            email:         { name: 'Email',          sub: 'IMAP/SMTP — Proton Bridge or direct' },
         };
         async function connRefresh() {
             try {
                 const r = await fetch('/api/integrations/status', { credentials: 'include' });
                 if (!r.ok) return;
                 const d = await r.json();
+                const items = (d.integrations || []).filter(x => x.key !== 'self');
+                const selfItem = (d.integrations || []).find(x => x.key === 'self');
+
+                // Update the Status-tab summary badge.
+                const summary = document.getElementById('sys-integrations-status');
+                if (summary) {
+                    const wired = items.filter(x => x.wired).length;
+                    const total = items.length;
+                    const missing = items.filter(x => !x.wired)
+                                         .map(x => (CONN_LABELS[x.key] || {}).name || x.key);
+                    summary.classList.remove('skeleton', 'sk-mid');
+                    summary.className = 'status-badge ' + (wired === total && total > 0 ? 'status-running' : 'status-unknown');
+                    summary.innerText = `${wired}/${total} CONNECTED`;
+                    summary.title = missing.length ? `Not connected: ${missing.join(', ')}` : 'All integrations connected';
+                }
+
+                const note = document.getElementById('conn-self-note');
+                if (note && selfItem) {
+                    note.innerText = selfItem.wired
+                        ? 'Your agent can also call homebrain itself (backups, status, restart).'
+                        : '';
+                }
+
                 const rows = document.getElementById('conn-rows');
                 if (!rows) return;
                 rows.innerHTML = '';
-                for (const it of (d.integrations || [])) {
+                for (const it of items) {
                     const meta = CONN_LABELS[it.key] || { name: it.key, sub: '' };
-                    const wired = it.wired ? '<span class="status-badge status-running">wired</span>'
-                                : (it.configured ? '<span class="status-badge status-unknown">configured, not wired</span>'
-                                                 : '<span class="status-badge status-stopped">not configured</span>');
+                    const badge = it.wired ? '<span class="status-badge status-running" title="Agent can use this">connected</span>'
+                                : (it.configured ? '<span class="status-badge status-unknown" title="Saved but not yet picked up by the agent — Re-sync under Troubleshoot">pending sync</span>'
+                                                 : '<span class="status-badge status-stopped" title="Not set up yet">not connected</span>');
                     let extras = '';
                     if (it.key === 'email' && (it.accounts || []).length) {
                         extras = '<small style="display:block; color:var(--text-dim); margin-top:4px;">' +
@@ -1330,20 +1359,37 @@
                             ? `<button onclick="connNcDisconnect()">Disconnect</button>`
                             : `<button class="btn-primary" onclick="connNcConnect()">Connect</button>`);
                     }
-                    if (it.key === 'homeassistant' && it.configured) {
-                        buttons.push(`<button onclick="connHaDisconnect()">Disconnect</button>`);
+                    if (it.key === 'homeassistant') {
+                        buttons.push(it.configured
+                            ? `<button onclick="connHaDisconnect()">Disconnect</button>`
+                            : `<button class="btn-primary" onclick="openDetails('details-ha','ha-token-input')">Connect…</button>`);
+                    }
+                    if (it.key === 'email') {
+                        const haveAccount = (it.accounts || []).length > 0;
+                        buttons.push(haveAccount
+                            ? `<button onclick="openDetails('details-email','em-name')">Add account…</button>`
+                            : `<button class="btn-primary" onclick="openDetails('details-email','em-name')">Add account…</button>`);
+                    }
+                    if (it.key === 'vault') {
+                        if (!it.wired) {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('vault-mcp')">Configure…</button>`);
+                        } else if (!it.unlocked) {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('vault-mcp','vault-mcp-pw')">Unlock…</button>`);
+                        } else {
+                            buttons.push(`<button onclick="vaultMcpLock()">Lock</button>`);
+                        }
                     }
                     if (it.configured) {
                         buttons.push(`<button onclick="connTest('${it.key}')">Test</button>`);
                     }
                     rows.insertAdjacentHTML('beforeend',
-                        `<div class="row-item">
+                        `<div class="row-item" title="MCP server: ${it.mcp_name}">
                            <div class="row-main">
                              <strong>${meta.name}</strong>
-                             <span class="row-meta">${meta.sub} · MCP: ${it.mcp_name}</span>
+                             <span class="row-meta">${meta.sub}</span>
                              ${extras}
                            </div>
-                           <div style="display:flex; gap:6px; align-items:center;">${wired}${buttons.join('')}</div>
+                           <div style="display:flex; gap:6px; align-items:center;">${badge}${buttons.join('')}</div>
                          </div>`);
                 }
                 // Initialise the email-send-direct toggle from server state.
@@ -1370,8 +1416,9 @@
                   headers: {'Content-Type': 'application/json'},
                   body: JSON.stringify({ token: tok.trim() })});
             const d = await r.json();
-            document.getElementById('conn-msg').innerText = r.ok ? 'HA connected.' : (d.error || 'Connect failed');
+            document.getElementById('conn-msg').innerText = r.ok ? 'Home Assistant connected.' : (d.error || 'Connect failed');
             document.getElementById('ha-token-input').value = '';
+            if (r.ok) closeForm('details-ha');
             connRefresh();
         }
         async function connHaDisconnect() {
@@ -1417,8 +1464,11 @@
                   body: JSON.stringify(body)});
             const d = await r.json();
             document.getElementById('conn-msg').innerText = r.ok ? 'Email account added.' : (d.error || 'Add failed');
-            if (r.ok) ['em-name','em-user','em-imap-host','em-imap-port','em-smtp-host','em-smtp-port','em-pass']
-                       .forEach(id => document.getElementById(id).value = '');
+            if (r.ok) {
+                ['em-name','em-user','em-imap-host','em-imap-port','em-smtp-host','em-smtp-port','em-pass']
+                    .forEach(id => document.getElementById(id).value = '');
+                closeForm('details-email');
+            }
             connRefresh();
         }
         async function connEmailSendDirect(enabled) {
@@ -1521,12 +1571,15 @@
                 const d = await r.json();
                 setVaultBadge(cli, d.bw_installed ? 'running' : 'stopped', d.bw_installed ? 'Installed' : 'Missing');
                 setVaultBadge(state, d.unlocked ? 'running' : 'unknown', d.unlocked ? 'Unlocked' : 'Locked');
-                if (!d.openclaw_available) setVaultBadge(wired, 'unknown', 'OpenClaw missing');
+                if (!d.openclaw_available) setVaultBadge(wired, 'unknown', 'agent missing');
                 else setVaultBadge(wired, d.openclaw_wired ? 'running' : 'unknown', d.openclaw_wired ? 'Yes' : 'No');
+                // Only surface the bw-cli line when it would matter (locked + missing).
+                const cliWrap = document.getElementById('vault-mcp-cli-wrap');
+                if (cliWrap) cliWrap.style.display = d.bw_installed ? 'none' : 'inline';
                 if (unlockRow) unlockRow.style.display = (!d.bw_installed || d.unlocked) ? 'none' : 'flex';
                 if (lockRow) lockRow.style.display = d.unlocked ? 'flex' : 'none';
-                if (wireRow) wireRow.style.display = d.openclaw_available ? 'flex' : 'none';
-                if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Unregister from OpenClaw' : 'Register with OpenClaw';
+                if (wireRow) wireRow.style.display = d.openclaw_available && !d.openclaw_wired ? 'flex' : 'none';
+                if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Disable for agent' : 'Enable for agent';
             } catch (e) { /* silent */ }
         }
 
@@ -1536,13 +1589,13 @@
             const wiredEl = document.getElementById('vault-mcp-wired');
             const isWired = wiredEl && wiredEl.innerText.trim().toLowerCase() === 'yes';
             const url = isWired ? '/api/vault/mcp/unwire' : '/api/vault/mcp/wire-up';
-            if (msg) msg.innerText = isWired ? 'Unregistering…' : 'Registering with OpenClaw…';
+            if (msg) msg.innerText = isWired ? 'Disabling…' : 'Enabling agent access…';
             if (btn) btn.disabled = true;
             try {
                 const r = await fetch(url, { method: 'POST', credentials: 'include' });
                 const d = await r.json();
                 if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
-                else { if (msg) msg.innerText = isWired ? 'Vault MCP unregistered from OpenClaw.' : 'Vault MCP registered. The agent can now use vault.search / vault.reveal.'; }
+                else { if (msg) msg.innerText = isWired ? 'Agent vault access disabled.' : 'Agent vault access enabled. Unlock to use it.'; }
             } catch (e) {
                 if (msg) msg.innerText = 'Network error: ' + e.message;
             } finally {
@@ -1567,7 +1620,11 @@
                 const d = await r.json();
                 if (pw) pw.value = '';
                 if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
-                else { if (msg) msg.innerText = 'Session unlocked. The agent can now search the vault.'; }
+                else {
+                    if (msg) msg.innerText = '';
+                    document.getElementById('conn-msg').innerText = 'Vault unlocked. The agent can search and create entries.';
+                    closeForm('vault-mcp');
+                }
             } catch (e) {
                 if (msg) msg.innerText = 'Network error: ' + e.message;
             } finally {
@@ -1629,13 +1686,9 @@
 
         async function vaultOpenAdmin(ev) {
             if (ev) ev.preventDefault();
-            try {
-                const r = await fetch('/api/vault/admin-link', { credentials: 'include' });
-                if (!r.ok) { alert('Vault admin not available.'); return; }
-                window.open('/api/vault/admin-redirect', '_blank', 'noopener');
-            } catch (e) {
-                alert('Could not open admin panel: ' + e.message);
-            }
+            // Same-origin reverse-proxy through the manager — auth is handled
+            // server-side, the admin token never reaches the browser.
+            window.open('/admin/', '_blank', 'noopener');
         }
 
 

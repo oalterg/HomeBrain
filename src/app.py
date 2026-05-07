@@ -2084,47 +2084,120 @@ def vault_status():
     return jsonify(info)
 
 
-@app.route("/api/vault/admin-link")
-@limiter.limit("10 per minute")
-def vault_admin_link():
-    """Issue a one-shot redirect URL to /admin with the cookie pre-set.
-    The dashboard front-end opens this in a new tab; the browser receives a
-    Set-Cookie + 302 to the upstream admin panel.
-    """
-    if not session.get("authenticated"):
-        return jsonify({"error": "unauthenticated"}), 401
+# --- Vault admin reverse proxy ---
+# Why this exists: opening Vaultwarden's /admin in a new tab cross-origin
+# was fragile in browsers — the user's TLS-cert-warning click-through could
+# break the auto-submitted token POST and dump them on Vaultwarden's login
+# form (the very prompt we're trying to avoid). Proxying through the
+# manager keeps the user same-origin (the dashboard's HTTP origin), keeps
+# the admin token server-side, and removes any cross-site cookie issues.
+def _vault_admin_jwt():
+    """Get a fresh VW_ADMIN JWT for proxying. Cached in the manager session
+    until ~30s before its Max-Age expiry, then re-issued by POSTing the admin
+    token to the internal vault endpoint. Returns None if the vault isn't
+    provisioned or the login fails."""
+    now = int(time.time())
+    cached = session.get('vault_admin_jwt')
+    cached_exp = session.get('vault_admin_jwt_exp', 0)
+    if cached and cached_exp > now + 30:
+        return cached
     token = _vault_admin_token_plain()
     if not token:
-        return jsonify({"error": "vault not provisioned"}), 503
-    return jsonify({"url": f"/api/vault/admin-redirect", "token_set": True})
+        return None
+    try:
+        r = requests.post(
+            f"{_vault_base_url()}/admin",
+            data={"token": token},
+            allow_redirects=False,
+            timeout=5,
+        )
+    except Exception as e:
+        logging.error(f"vault admin login failed: {e}")
+        return None
+    if r.status_code not in (200, 302):
+        return None
+    set_cookie = r.headers.get("Set-Cookie", "")
+    m = re.search(r"VW_ADMIN=([^;]+)", set_cookie)
+    if not m:
+        return None
+    jwt = m.group(1)
+    ma = re.search(r"Max-Age=(\d+)", set_cookie, re.IGNORECASE)
+    ttl = int(ma.group(1)) if ma else 1200
+    session['vault_admin_jwt'] = jwt
+    session['vault_admin_jwt_exp'] = now + ttl
+    return jwt
 
 
-@app.route("/api/vault/admin-redirect")
-@limiter.limit("10 per minute")
-def vault_admin_redirect():
-    """Browser-facing endpoint: sets the VW_ADMIN cookie on the public vault
-    domain, then 302s into the admin panel. Falls back to direct redirect when
-    same-origin (LAN HTTP) where cookie scoping permits.
-    """
+_VAULT_PROXY_HOP_HEADERS = {
+    "host", "cookie", "content-length", "content-encoding",
+    "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "upgrade",
+}
+
+
+def _vault_proxy(upstream_path: str):
+    """Proxy the current request to the internal vault container with the
+    cached admin JWT attached. Streams the response body."""
     if not session.get("authenticated"):
         abort(401)
-    token = _vault_admin_token_plain()
-    if not token:
-        return "Vault not provisioned", 503
-    public = _vault_public_url()
-    if not public:
-        return "Vault domain not configured", 503
-    # Forward to admin login endpoint with token in form body — Vaultwarden
-    # accepts ?token=… for one-shot login from 1.30+; older versions use the
-    # cookie. We send both to maximise compatibility.
-    html = (
-        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Opening Vault Admin…</title></head>"
-        "<body><form id='f' method='POST' action='" + public + "/admin'>"
-        "<input type='hidden' name='token' value='" + token + "'></form>"
-        "<script>document.getElementById('f').submit();</script>"
-        "<noscript>JavaScript required to forward admin token.</noscript></body></html>"
+    jwt = _vault_admin_jwt()
+    if not jwt:
+        return Response("Vault admin not configured.", status=503)
+    upstream = f"{_vault_base_url()}{upstream_path}"
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in _VAULT_PROXY_HOP_HEADERS}
+    try:
+        upstream_resp = requests.request(
+            request.method, upstream,
+            params=request.args,
+            data=request.get_data() if request.method != "GET" else None,
+            headers=headers,
+            cookies={"VW_ADMIN": jwt},
+            allow_redirects=False,
+            stream=True,
+            timeout=30,
+        )
+    except Exception as e:
+        logging.error(f"vault admin proxy upstream error: {e}")
+        return Response(f"Vault unreachable: {e}", status=502)
+
+    excluded = _VAULT_PROXY_HOP_HEADERS | {"set-cookie"}
+    out_headers = [(k, v) for k, v in upstream_resp.raw.headers.items()
+                   if k.lower() not in excluded]
+    return Response(
+        upstream_resp.iter_content(chunk_size=8192),
+        status=upstream_resp.status_code,
+        headers=out_headers,
     )
-    return Response(html, mimetype="text/html")
+
+
+@app.route("/admin", methods=["GET", "POST"])
+@app.route("/admin/", methods=["GET", "POST"])
+@app.route("/admin/<path:p>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@limiter.limit("120 per minute")
+def vault_admin_proxy(p: str = ""):
+    """Reverse-proxy for Vaultwarden's /admin panel. The user lands here
+    same-origin under the manager; the admin token never leaves the server."""
+    suffix = f"/{p}" if p else ""
+    return _vault_proxy(f"/admin{suffix}")
+
+
+@app.route("/vw_static/<path:p>", methods=["GET"])
+@limiter.limit("240 per minute")
+def vault_static_proxy(p: str):
+    """Static assets used by the proxied admin panel (CSS/JS/icons)."""
+    if not session.get("authenticated"):
+        abort(401)
+    upstream = f"{_vault_base_url()}/vw_static/{p}"
+    try:
+        r = requests.get(upstream, stream=True, timeout=30)
+    except Exception as e:
+        return Response(f"Vault unreachable: {e}", status=502)
+    excluded = _VAULT_PROXY_HOP_HEADERS | {"set-cookie"}
+    out_headers = [(k, v) for k, v in r.raw.headers.items()
+                   if k.lower() not in excluded]
+    return Response(r.iter_content(chunk_size=8192),
+                    status=r.status_code, headers=out_headers)
 
 
 # --- Vault MCP unlock (P6) ---
