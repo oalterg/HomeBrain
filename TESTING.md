@@ -93,6 +93,59 @@ No external tunnel; access via `homebrain.local`.
 - [ ] WhatsApp message → OpenClaw → llama-server → response delivered end-to-end
 - [ ] Gateway token is stable across a `homebrain-manager` restart
 
+### HomeBrain Vault (Vaultwarden)
+
+- [ ] `docker compose ps vaultwarden` shows the container `Up` and healthy
+- [ ] Dashboard tile reflects status (`HEALTHY` / `RUNNING`), shows public URL, and exposes an "Open Vault" link
+- [ ] First-run modal: bootstrap with an email → response is `invited` (or `already_bootstrapped`); `VAULT_SIGNUPS_ALLOWED` flips to `false` in `.env`
+- [ ] Vault data dir exists at `/home/homebrain/vault-data` with `rsa_key.pem` (or `rsa_key.pkcs8.der`) after first user signup
+- [ ] DB user `vaultwarden_user` has grants ONLY on the `vaultwarden` database (`SHOW GRANTS FOR 'vaultwarden_user'@'%'`)
+- [ ] `VAULT_ADMIN_TOKEN` in `.env` is an Argon2id PHC string (`$argon2id$…`), NOT plaintext
+- [ ] Bitwarden browser extension: log in with `Self-hosted` server URL → add a credential → it persists across reload
+- [ ] Bitwarden mobile app (remote mode): log in over `vault.<tunnel>` → credential syncs from the browser session in <2s
+- [ ] Add a 2 MB PDF as a credential attachment → file lands under `vault-data/attachments/` and decrypts on a second client
+- [ ] Send: create a one-time text Send → expires server-side after first view
+- [ ] Trigger a backup → archive contains `vault_db/vaultwarden.sql` and `vault_data/rsa_key.*` (live sessions survive)
+- [ ] Wipe `/home/homebrain/vault-data` and restore from archive → all clients still authenticate, attachments decrypt
+- [ ] Bump `vaultwarden.tag` in `versions.json` → click Update → container recreated, no data loss, sessions still valid
+- [ ] Switch deployment mode `local` ↔ `remote` → `VAULT_DOMAIN` updates, vaultwarden container restarts, clients re-resolve
+- [ ] Stop vaultwarden manually → dashboard tile flips to `STOPPED`; `docker compose up -d` restores it; `restart: unless-stopped` re-attaches after host reboot
+
+### Vault — LAN HTTPS (Caddy + local CA)
+
+- [ ] `caddy` container reaches healthy within 30 s of first boot
+- [ ] In local mode `VAULT_DOMAIN` is `https://homebrain.local:8443`
+- [ ] `curl -k https://homebrain.local:8443/healthz` returns HTTP 200
+- [ ] Browser at `https://homebrain.local:8443/` shows the Bitwarden web vault (cert warning expected until CA is installed)
+- [ ] `/api/vault/local-ca` returns a PEM file (mode 600 disposition); installing it on a phone removes the warning
+- [ ] After CA install, Bitwarden Android app at `https://homebrain.local:8443` connects without trust errors
+- [ ] WebSocket sync works: edit a credential in browser ext → mobile updates within 2 s
+- [ ] Mode flip local → remote → `redeploy_tunnels.sh` restarts caddy + vaultwarden; `VAULT_DOMAIN` updates
+- [ ] In remote mode, `/api/vault/local-ca` returns 404 (Pangolin's public chain is used)
+
+### Vault — encrypted documents (Nextcloud E2EE)
+
+- [ ] Vault tile shows `E2EE app: DISABLED`, `Folder: MISSING` on a fresh install
+- [ ] Click "Set up encrypted folder" → response 200, banner says "Ready"
+- [ ] Within 10 s tile shows `E2EE app: ENABLED`, `Folder: CREATED`, "Open in Nextcloud" link appears
+- [ ] `Documents (Encrypted)` folder visible in the Nextcloud UI for the admin user
+- [ ] Re-running setup is idempotent (no-op + same status)
+- [ ] Nextcloud client app prompts to mark the folder as encrypted; once accepted, files added there are E2EE
+
+### Vault — OpenClaw MCP (GPU only)
+
+- [ ] `bw` CLI installed (`npm install -g @bitwarden/cli`); tile shows `CLI installed: YES`
+- [ ] Tile shows `Session: LOCKED`; unlock input is visible
+- [ ] Unlock with the wrong master password → returns 401, tile stays LOCKED
+- [ ] Unlock with the correct master password → response 200, tile flips to `UNLOCKED`
+- [ ] Session token persisted at `/home/homebrain/.openclaw/vault.session` mode 600, owner `homebrain`
+- [ ] Run `python3 /opt/homebrain/scripts/mcp-vault.py` and pipe a JSON-RPC `tools/list` → returns vault.search/vault.reveal/vault.status
+- [ ] `tools/call` `vault.status` → `{unlocked: true, url: …}`
+- [ ] `tools/call` `vault.search` with a query → returns metadata only (no `password` field)
+- [ ] `tools/call` `vault.reveal` with a valid item ID → returns password + writes to `/var/log/homebrain/mcp-vault-audit.log`
+- [ ] Click "Lock session" → session file removed, tile flips to LOCKED
+- [ ] After lock, MCP server returns `{unlocked: false, hint: …}` for any tool call
+
 ### Backup and restore
 
 - [ ] Trigger backup from dashboard → task completes, backup archive written to external drive
@@ -115,6 +168,71 @@ No external tunnel; access via `homebrain.local`.
 
 - [ ] Dashboard loads and shows at least one entity
 - [ ] Admin account created via `utilities.sh` is usable
+
+---
+
+## OpenClaw integrations (Connections page)
+
+E2E on `homebrain@192.168.178.58`. Run after a fresh provision plus the
+default Vault bootstrap.
+
+### General
+
+- [ ] Dashboard → Status tab shows the **Connections** card with five rows.
+- [ ] On a fresh box, `homebrain-self` is the only row marked `wired`; the
+      rest are `not configured`.
+- [ ] Clicking **Apply & restart agent** runs `/api/integrations/reconcile`,
+      OpenClaw daemon restarts within ~10 s, no errors in
+      `journalctl -u homebrain-manager`.
+
+### Self MCP (`homebrain-self`)
+
+- [ ] `/home/homebrain/.openclaw/homebrain.token` exists, mode 0600.
+- [ ] `curl -H "Authorization: Bearer $(cat ~/.openclaw/homebrain.token)" \
+      http://127.0.0.1/api/integrations/self/status` returns 200.
+- [ ] `connTest('self')` returns 7 tools.
+
+### Home Assistant
+
+- [ ] Generate LLAT in HA → Profile → Security; paste into the dashboard;
+      Connect → row flips to `wired`.
+- [ ] `connTest('homeassistant')` lists 5 tools.
+- [ ] `ha.call_service` with `homeassistant.restart` returns the allowlist
+      denial without any HTTP call to HA.
+
+### Nextcloud
+
+- [ ] Click **Connect** → `occ user:add-app-password` runs, token at
+      `~/.openclaw/nextcloud.token` mode 0600.
+- [ ] `connTest('nextcloud')` lists 8 tools.
+- [ ] `nc.notes_create` (with consent) appears on a separate NC client.
+- [ ] Revoking the app password in NC's UI flips `nc.health` to
+      `unauthorised` within one health-check cycle.
+
+### Vault (existing + new)
+
+- [ ] All `VAULT_PLAN.md §7` steps still pass.
+- [ ] `vault.create_login` (with consent) appears in the Bitwarden mobile
+      app within 2 s; audit log records the action with `chat_id`.
+
+### Email
+
+- [ ] Add a Gmail account using an app-specific password; row shows
+      `wired`.
+- [ ] `email.list_unread` returns inbox metadata, no bodies.
+- [ ] `email.draft` creates a Gmail draft; `email.send_direct` is denied
+      (`disabled`) until the Settings toggle flips it on.
+- [ ] Proton account: `docker compose --profile proton-bridge up -d`
+      starts Bridge; `imap_host=127.0.0.1`, `imap_port=12143` works.
+
+### Cross-cutting
+
+- [ ] All `*.token`, `vault.session`, `email_accounts.json` are mode 0600
+      owned by `homebrain`.
+- [ ] Single-use redemption: replaying a confirmation_token a second
+      time returns "invalid or expired".
+- [ ] `backup.sh` archive contains `openclaw_integrations/` and
+      `mcp_audit/` trees; `restore.sh` repopulates them with mode 0600.
 
 ---
 

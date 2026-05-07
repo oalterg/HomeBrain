@@ -244,6 +244,21 @@ systemctl enable --now inhibit-sleep.service 2>/dev/null \
     && log_info "Sleep inhibitor service enabled." \
     || log_warn "Failed to enable sleep inhibitor service."
 
+# --- 6. OpenClaw integration scaffold ---
+# Make sure /home/homebrain/.openclaw/ exists with the right ownership before
+# the dashboard starts wiring MCP servers into it. Idempotent.
+mkdir -p "${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw"
+chown -R homebrain:homebrain "${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw" 2>/dev/null || true
+chmod 700 "${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw" 2>/dev/null || true
+
+# Audit log directory. Owned by root (the manager service writes here);
+# MCP servers running as the homebrain user fall back to stderr if they
+# can't write. Setting it group-writable for the homebrain group lets the
+# stdio MCP subprocesses append directly.
+mkdir -p /var/log/homebrain
+chgrp homebrain /var/log/homebrain 2>/dev/null || true
+chmod 2775 /var/log/homebrain 2>/dev/null || true
+
 echo "HomeBrain Provisioning Complete."
 echo "======================================================="
 echo "   PROVISIONING COMPLETE"

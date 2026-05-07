@@ -31,10 +31,11 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
+- **HomeBrain Vault** *(in progress, `vault-integration` branch)* — Self-hosted Vaultwarden password manager: Bitwarden-compatible clients, MariaDB-backed, dashboard-managed bootstrap, Pangolin-tunnelled, backup-integrated. Document attachments via Vaultwarden + (P5) Nextcloud encrypted folder.
 
 ### Medium-term
 
-- **MCP servers** — Protonmail and Nextcloud MCP integrations for OpenClaw agent
+- **OpenClaw integrations** *(in progress, `vault-integration` branch)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), WhatsApp-native consent loop. See [`INTEGRATIONS_PLAN.md`](INTEGRATIONS_PLAN.md).
 
 ---
 

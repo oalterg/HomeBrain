@@ -79,6 +79,95 @@ services:
       timeout: 10s
       retries: 5
 
+  caddy:
+    # Profile-gated: only starts when DEPLOYMENT_MODE=local. In remote mode
+    # Pangolin terminates TLS at the public edge and Caddy is unused; gating
+    # it on the profile keeps port 8443 free and reduces attack surface.
+    profiles:
+      - vault-lan-https
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Substituted into Caddyfile so the SAN list covers the box's LAN IP.
+      - VAULT_LAN_IP=${VAULT_LAN_IP:-127.0.0.2}
+    depends_on:
+      - vaultwarden
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      # Caddy serves TLS on :8443 with an internal CA. wget --no-check-certificate
+      # accepts the self-signed leaf without trying to verify against the host's
+      # CA bundle.
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  vaultwarden:
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.7}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${VAULT_PORT:-8082}:80"
+    volumes:
+      - ${VAULT_DATA_DIR:-/home/homebrain/vault-data}:/data
+    environment:
+      - DOMAIN=${VAULT_DOMAIN:-http://localhost:8082}
+      - DATABASE_URL=mysql://${VAULT_DB_USER}:${VAULT_DB_PASSWORD}@db/${VAULT_DB_NAME}
+      - ADMIN_TOKEN=${VAULT_ADMIN_TOKEN}
+      - SIGNUPS_ALLOWED=${VAULT_SIGNUPS_ALLOWED:-false}
+      - SIGNUPS_VERIFY=false
+      - INVITATIONS_ALLOWED=true
+      - WEBSOCKET_ENABLED=true
+      - PUSH_ENABLED=false
+      - SENDS_ALLOWED=true
+      - EMERGENCY_ACCESS_ALLOWED=true
+      - LOG_LEVEL=warn
+      - EXTENDED_LOGGING=true
+      - SHOW_PASSWORD_HINT=false
+      - ROCKET_WORKERS=2
+      - ROCKET_PORT=80
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  proton-bridge:
+    # Profile-gated: only starts when the user has added a Proton account in
+    # the dashboard (Connections → Email). Bridge exposes IMAP on :12143
+    # and SMTP on :12025 on localhost; the email MCP server connects there.
+    profiles:
+      - proton-bridge
+    image: shenxn/protonmail-bridge:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:12143:143"
+      - "127.0.0.1:12025:25"
+    volumes:
+      - proton_bridge_data:/root
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   newt:
     profiles:
       - pangolin
@@ -119,3 +208,6 @@ volumes:
   db_data:
   ha_config:
   redis_data:
+  caddy_data:
+  caddy_config:
+  proton_bridge_data:

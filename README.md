@@ -69,6 +69,7 @@ No tunnel. Services available on the local network at `homebrain.local` (mDNS) o
 
 ## Features
 
+- **HomeBrain Vault**: Self-hosted Vaultwarden password manager + secure attachment storage. Bitwarden-compatible — point the official browser extension or mobile app at your `vault.<domain>` URL and you're in. Bootstrapped from the dashboard, gated by your master password, backed up nightly, no SaaS account.
 - **Privacy-first**: All data stays on your hardware. No telemetry, no cloud sync, no vendor lock-in.
 - **One-command provisioning**: A browser-based setup wizard handles passwords, tunnel credentials, model selection, and deployment mode.
 - **Local AI assistant**: [OpenClaw](https://openclaw.ai) runs a WhatsApp-connected agent backed by local llama.cpp inference. Default model is Qwen3.6-35B-A3B (MoE); lighter quantizations selectable from the dashboard.
@@ -165,7 +166,8 @@ All runtime configuration lives in `/opt/homebrain/.env`. Key variables:
 HomeBrain / HomeCloud
 ├── Nextcloud          (Docker)            — file sync, CalDAV, CardDAV
 ├── Home Assistant     (Docker)            — smart home automation
-├── MariaDB            (Docker)            — Nextcloud database
+├── Vaultwarden        (Docker)            — password manager (Bitwarden-compatible API)
+├── MariaDB            (Docker)            — Nextcloud + Vaultwarden database
 ├── Pangolin Newt      (Docker, optional)  — tunnel client
 ├── llama-server       (systemd, x86 GPU)  — local LLM inference (HomeBrain only)
 ├── whisper-server     (systemd, x86 GPU)  — speech-to-text     (HomeBrain only)

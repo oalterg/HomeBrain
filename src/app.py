@@ -17,6 +17,7 @@ import fcntl
 from datetime import timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort
 import migration
+import integrations
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -196,6 +197,82 @@ def load_persistent_secret_key():
 
 app.secret_key = load_persistent_secret_key()
 
+
+def _enforce_vault_signups_lockdown():
+    """If at least one vault user already exists, force VAULT_SIGNUPS_ALLOWED=false
+    and (if currently true) restart the vaultwarden container so the env takes
+    effect. Runs once at manager startup as a defence-in-depth measure: someone
+    hand-editing .env back to SIGNUPS_ALLOWED=true would otherwise expose the
+    public vault to fresh-account creation. Idempotent and silent on first
+    boot when no users exist yet."""
+    try:
+        with open(ENV_FILE) as f:
+            env = {}
+            for line in f:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.strip().split("=", 1)
+                    env[k] = v.strip("'\"")
+    except OSError:
+        return
+
+    if env.get("VAULT_ENABLED", "true").lower() == "false":
+        return
+
+    db_pass = env.get("VAULT_DB_PASSWORD")
+    db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+    db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+    if not db_pass:
+        return
+
+    try:
+        db_cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q db",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not db_cid:
+            return
+        out = subprocess.check_output(
+            ["docker", "exec", "-e", f"MYSQL_PWD={db_pass}", db_cid,
+             "mariadb", "-u", db_user, "-N", "-s", "-e",
+             f"SELECT COUNT(*) FROM `{db_name}`.users;"],
+            stderr=subprocess.DEVNULL, timeout=4,
+        ).decode().strip()
+    except Exception:
+        return
+
+    user_count = int(out) if out.isdigit() else 0
+    if user_count == 0:
+        return  # First boot, leave signups open until the wizard creates a user
+
+    if env.get("VAULT_SIGNUPS_ALLOWED", "true").lower() == "true":
+        logging.warning(
+            "Vault has %d user(s) but SIGNUPS_ALLOWED=true — locking down.",
+            user_count,
+        )
+        update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE,
+                 "up", "-d", "vaultwarden"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+            )
+        except Exception:
+            pass
+
+
+# Run the lockdown check after the env loader is defined. We can't call it at
+# module import time because update_env_var is defined later — register a
+# Flask deferred startup hook instead.
+@app.before_request
+def _vault_signups_check_once():
+    if getattr(app, "_vault_signups_checked", False):
+        return
+    app._vault_signups_checked = True
+    try:
+        _enforce_vault_signups_lockdown()
+    except Exception as e:
+        logging.warning("Vault signups lockdown check failed: %s", e)
+
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
@@ -297,6 +374,11 @@ limiter = Limiter(
     storage_uri="memory://"
 )
 
+# Mount the OpenClaw integrations module — adds /api/integrations/* routes
+# for the Connections dashboard card and the bearer-token endpoints used
+# by the homebrain-self MCP server. See src/integrations.py.
+integrations.register_integrations(app, limiter)
+
 # --- Security: Split-Horizon Auth Middleware ---
 @app.before_request
 def security_middleware():
@@ -312,7 +394,13 @@ def security_middleware():
     # 3. Allow Login Handler
     if request.path == '/login':
         return
- 
+
+    # 3b. Bearer-token endpoints for the OpenClaw self-MCP. The integrations
+    # module checks the bearer token itself; we just have to bypass the
+    # session gate so it gets a chance to.
+    if request.path.startswith('/api/integrations/self/'):
+        return
+
     # 4. Default: Block & Show Login Gate
     abort(401)
 
@@ -586,6 +674,8 @@ def start_setup():
             update_env_var("MANAGER_DOMAIN",             pan_domain)
             update_env_var("NEXTCLOUD_TRUSTED_DOMAINS",  f"nc.{pan_domain}")
             update_env_var("HA_TRUSTED_DOMAINS",         f"ha.{pan_domain}")
+            update_env_var("VAULT_TRUSTED_DOMAINS",      f"vault.{pan_domain}")
+            update_env_var("VAULT_DOMAIN",               f"https://vault.{pan_domain}")
 
     env_config = get_env_config()
     
@@ -828,11 +918,17 @@ def system_status():
         "db": "stopped",
         "homeassistant": "stopped",
         "tunnel": "stopped",
+        "vaultwarden": "stopped",
+        "caddy": "stopped",
     }
     try:
         # Docker Services Check
         # Get profiles dynamically from common.sh for consistency
-        profiles = subprocess.check_output(f"bash -c 'source {INSTALL_DIR}/scripts/common.sh; load_env; get_tunnel_profiles'", shell=True).decode().strip()
+        profiles = subprocess.check_output(
+            f"bash -c 'source {INSTALL_DIR}/scripts/common.sh; load_env; "
+            f"echo $(get_tunnel_profiles) $(get_vault_profiles)'",
+            shell=True,
+        ).decode().strip()
 
         compose_cmd = f"docker compose -f {COMPOSE_FILE} --env-file {ENV_FILE}"
         if os.path.exists(OVERRIDE_FILE):
@@ -1878,6 +1974,640 @@ def whatsapp_link_token():
         return jsonify({"token": token, "port": port})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# --- Routes: HomeBrain Vault (Vaultwarden) ---
+def _vault_admin_token_plain():
+    """Recompute the plaintext admin token (sha256(MASTER:NONCE)) — never stored on disk.
+    Mirrors scripts/provision_vault.sh derivation. Returns empty string if either
+    component is missing.
+    """
+    env = get_env_config()
+    mp = env.get("MASTER_PASSWORD", "")
+    nonce = env.get("VAULT_ADMIN_NONCE", "")
+    if not mp or not nonce:
+        return ""
+    return hashlib.sha256(f"{mp}:{nonce}".encode()).hexdigest()
+
+
+def _vault_base_url():
+    """Internal URL the dashboard uses to talk to vaultwarden. Always 127.0.0.1."""
+    env = get_env_config()
+    port = env.get("VAULT_PORT", "8082")
+    return f"http://127.0.0.1:{port}"
+
+
+def _vault_public_url():
+    """The user-facing vault URL.
+
+    In local mode, derive it from the dashboard's request Host header so the
+    link matches whatever path the user took to reach the dashboard (e.g.
+    accessing via 192.168.178.58 → vault on https://192.168.178.58:8443;
+    accessing via homebrain.local → vault on https://homebrain.local:8443).
+    Caddy serves a SAN-correct cert for each. The env var VAULT_DOMAIN
+    remains the canonical URL Vaultwarden itself uses internally (Send
+    links, etc.).
+
+    In remote mode, always use the configured tunnel URL.
+    """
+    env = get_env_config()
+    if not is_local_mode():
+        domain = env.get("VAULT_DOMAIN")
+        if domain:
+            return domain
+        pd = env.get("PANGOLIN_DOMAIN")
+        return f"https://vault.{pd}" if pd else ""
+
+    # Local mode: prefer the user's request hostname so the link is
+    # reachable from their browser.
+    https_port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
+    host = ""
+    try:
+        # request.host is "<host>:<port>" — strip the dashboard's port.
+        host = request.host.split(":", 1)[0]
+    except RuntimeError:
+        # Outside a request context (e.g. background task) — fall back to env.
+        pass
+    if not host:
+        host = "homebrain.local"
+    return f"https://{host}:{https_port}"
+
+
+@app.route("/api/vault/status")
+def vault_status():
+    """Surface vault state for the dashboard tile."""
+    env = get_env_config()
+    enabled = env.get("VAULT_ENABLED", "true").lower() != "false"
+    info = {
+        "enabled": enabled,
+        "public_url": _vault_public_url(),
+        "signups_allowed": env.get("VAULT_SIGNUPS_ALLOWED", "true").lower() == "true",
+        "configured": bool(env.get("VAULT_ADMIN_TOKEN")),
+        "container": "stopped",
+        "users": None,
+        "items": None,
+    }
+    # Container running?
+    try:
+        cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q vaultwarden",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if cid:
+            state = subprocess.check_output(
+                ["docker", "inspect", "-f", "{{.State.Health.Status}}", cid],
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            info["container"] = state or "running"
+    except Exception:
+        pass
+
+    # User count: query the DB directly (avoids the admin-cookie JWT dance).
+    if info["container"] in ("running", "healthy"):
+        try:
+            db_cid = subprocess.check_output(
+                f"docker compose -f {COMPOSE_FILE} ps -q db",
+                shell=True, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+            db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+            db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+            db_pass = env.get("VAULT_DB_PASSWORD", "")
+            if db_cid and db_pass:
+                out = subprocess.check_output(
+                    ["docker", "exec", "-e", f"MYSQL_PWD={db_pass}", db_cid,
+                     "mariadb", "-u", db_user, "-N", "-s", "-e",
+                     f"SELECT COUNT(*) FROM `{db_name}`.users;"],
+                    stderr=subprocess.DEVNULL, timeout=4,
+                ).decode().strip()
+                info["users"] = int(out) if out.isdigit() else None
+        except Exception:
+            pass
+    return jsonify(info)
+
+
+# --- Vault admin reverse proxy ---
+# Why this exists: opening Vaultwarden's /admin in a new tab cross-origin
+# was fragile in browsers — the user's TLS-cert-warning click-through could
+# break the auto-submitted token POST and dump them on Vaultwarden's login
+# form (the very prompt we're trying to avoid). Proxying through the
+# manager keeps the user same-origin (the dashboard's HTTP origin), keeps
+# the admin token server-side, and removes any cross-site cookie issues.
+def _vault_admin_jwt():
+    """Get a fresh VW_ADMIN JWT for proxying. Cached in the manager session
+    until ~30s before its Max-Age expiry, then re-issued by POSTing the admin
+    token to the internal vault endpoint. Returns None if the vault isn't
+    provisioned or the login fails."""
+    now = int(time.time())
+    cached = session.get('vault_admin_jwt')
+    cached_exp = session.get('vault_admin_jwt_exp', 0)
+    if cached and cached_exp > now + 30:
+        return cached
+    token = _vault_admin_token_plain()
+    if not token:
+        return None
+    try:
+        r = requests.post(
+            f"{_vault_base_url()}/admin",
+            data={"token": token},
+            allow_redirects=False,
+            timeout=5,
+        )
+    except Exception as e:
+        logging.error(f"vault admin login failed: {e}")
+        return None
+    if r.status_code not in (200, 302):
+        return None
+    set_cookie = r.headers.get("Set-Cookie", "")
+    m = re.search(r"VW_ADMIN=([^;]+)", set_cookie)
+    if not m:
+        return None
+    jwt = m.group(1)
+    ma = re.search(r"Max-Age=(\d+)", set_cookie, re.IGNORECASE)
+    ttl = int(ma.group(1)) if ma else 1200
+    session['vault_admin_jwt'] = jwt
+    session['vault_admin_jwt_exp'] = now + ttl
+    return jwt
+
+
+_VAULT_PROXY_HOP_HEADERS = {
+    "host", "cookie", "content-length", "content-encoding",
+    "transfer-encoding", "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "upgrade",
+}
+
+
+def _vault_proxy(upstream_path: str):
+    """Proxy the current request to the internal vault container with the
+    cached admin JWT attached. Streams the response body."""
+    if not session.get("authenticated"):
+        abort(401)
+    jwt = _vault_admin_jwt()
+    if not jwt:
+        return Response("Vault admin not configured.", status=503)
+    upstream = f"{_vault_base_url()}{upstream_path}"
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in _VAULT_PROXY_HOP_HEADERS}
+    try:
+        upstream_resp = requests.request(
+            request.method, upstream,
+            params=request.args,
+            data=request.get_data() if request.method != "GET" else None,
+            headers=headers,
+            cookies={"VW_ADMIN": jwt},
+            allow_redirects=False,
+            stream=True,
+            timeout=30,
+        )
+    except Exception as e:
+        logging.error(f"vault admin proxy upstream error: {e}")
+        return Response(f"Vault unreachable: {e}", status=502)
+
+    excluded = _VAULT_PROXY_HOP_HEADERS | {"set-cookie"}
+    out_headers = [(k, v) for k, v in upstream_resp.raw.headers.items()
+                   if k.lower() not in excluded]
+    return Response(
+        upstream_resp.iter_content(chunk_size=8192),
+        status=upstream_resp.status_code,
+        headers=out_headers,
+    )
+
+
+@app.route("/admin", methods=["GET", "POST"])
+@app.route("/admin/", methods=["GET", "POST"])
+@app.route("/admin/<path:p>", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@limiter.limit("120 per minute")
+def vault_admin_proxy(p: str = ""):
+    """Reverse-proxy for Vaultwarden's /admin panel. The user lands here
+    same-origin under the manager; the admin token never leaves the server."""
+    suffix = f"/{p}" if p else ""
+    return _vault_proxy(f"/admin{suffix}")
+
+
+@app.route("/vw_static/<path:p>", methods=["GET"])
+@limiter.limit("240 per minute")
+def vault_static_proxy(p: str):
+    """Static assets used by the proxied admin panel (CSS/JS/icons)."""
+    if not session.get("authenticated"):
+        abort(401)
+    upstream = f"{_vault_base_url()}/vw_static/{p}"
+    try:
+        r = requests.get(upstream, stream=True, timeout=30)
+    except Exception as e:
+        return Response(f"Vault unreachable: {e}", status=502)
+    excluded = _VAULT_PROXY_HOP_HEADERS | {"set-cookie"}
+    out_headers = [(k, v) for k, v in r.raw.headers.items()
+                   if k.lower() not in excluded]
+    return Response(r.iter_content(chunk_size=8192),
+                    status=r.status_code, headers=out_headers)
+
+
+# --- Vault MCP unlock (P6) ---
+# The MCP server (scripts/mcp-vault.py) refuses to handle secrets unless a
+# valid `bw` session token sits at $VAULT_SESSION_FILE. The dashboard is the
+# only component that ever sees the user's vault master password — it runs
+# `bw unlock` here and writes the token (mode 0600). The LLM never sees it.
+VAULT_MCP_SESSION_FILE = os.path.join(
+    os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"),
+    ".openclaw", "vault.session",
+)
+
+
+@app.route("/api/vault/mcp/status")
+def vault_mcp_status():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    info = {
+        "session_file": VAULT_MCP_SESSION_FILE,
+        "unlocked": False,
+        "bw_installed": False,
+        "openclaw_wired": False,
+        "openclaw_available": shutil.which("openclaw") is not None,
+    }
+    info["bw_installed"] = shutil.which("bw") is not None
+    if info["openclaw_available"]:
+        try:
+            out = subprocess.check_output(
+                ["sudo", "-u", "homebrain", "openclaw", "mcp", "show"],
+                stderr=subprocess.DEVNULL, timeout=5,
+            ).decode()
+            info["openclaw_wired"] = "homebrain-vault" in out
+        except Exception:
+            pass
+    if os.path.exists(VAULT_MCP_SESSION_FILE) and info["bw_installed"]:
+        try:
+            tok = open(VAULT_MCP_SESSION_FILE).read().strip()
+            r = subprocess.run(
+                ["bw", "status"],
+                capture_output=True, text=True, timeout=5,
+                env={**os.environ, "BW_SESSION": tok},
+            )
+            if r.returncode == 0:
+                info["unlocked"] = json.loads(r.stdout).get("status") == "unlocked"
+        except Exception:
+            pass
+    return jsonify(info)
+
+
+@app.route("/api/vault/mcp/unlock", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_mcp_unlock():
+    """Run `bw unlock` with the supplied master password and persist the
+    resulting session token at VAULT_MCP_SESSION_FILE (mode 0600). The
+    password is never logged or stored."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if shutil.which("bw") is None:
+        return jsonify({
+            "error": "Bitwarden CLI not installed",
+            "hint": "Run `sudo npm install -g @bitwarden/cli` then retry.",
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    master_pw = data.get("master_password", "")
+    if not master_pw:
+        return jsonify({"error": "master_password required"}), 400
+
+    env = get_env_config()
+    public = env.get("VAULT_DOMAIN") or _vault_public_url()
+    if not public:
+        return jsonify({"error": "vault not provisioned"}), 503
+
+    # Configure bw to point at our self-hosted server (idempotent).
+    try:
+        subprocess.run(
+            ["bw", "config", "server", public],
+            capture_output=True, timeout=5,
+        )
+        proc = subprocess.run(
+            ["bw", "unlock", "--raw", master_pw],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "bw unlock timed out"}), 504
+
+    if proc.returncode != 0:
+        return jsonify({"error": "unlock failed", "detail": proc.stderr.strip()[:200]}), 401
+
+    token = proc.stdout.strip()
+    if not token:
+        return jsonify({"error": "no session token returned"}), 502
+
+    os.makedirs(os.path.dirname(VAULT_MCP_SESSION_FILE), exist_ok=True)
+    fd = os.open(VAULT_MCP_SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, token.encode())
+    finally:
+        os.close(fd)
+    # Best-effort chown to homebrain so the openclaw daemon can read it.
+    try:
+        import pwd
+        hb_uid = pwd.getpwnam("homebrain").pw_uid
+        os.chown(VAULT_MCP_SESSION_FILE, hb_uid, hb_uid)
+    except Exception:
+        pass
+    return jsonify({"status": "unlocked"})
+
+
+@app.route("/api/vault/mcp/wire-up", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_mcp_wire_up():
+    """Register the Vault MCP server with the local OpenClaw daemon via
+    `openclaw mcp set`. Idempotent — re-running just overwrites the entry.
+    Restarts the OpenClaw daemon so it picks up the new MCP server."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if shutil.which("openclaw") is None:
+        return jsonify({"error": "openclaw CLI not found"}), 503
+
+    env = get_env_config()
+    public_url = env.get("VAULT_DOMAIN") or _vault_public_url()
+    spec = {
+        "command": "/usr/bin/python3",
+        "args": [f"{INSTALL_DIR}/scripts/mcp-vault.py"],
+        "env": {
+            "VAULT_URL": public_url,
+            "VAULT_SESSION_FILE": VAULT_MCP_SESSION_FILE,
+            "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log",
+        },
+    }
+    try:
+        # `openclaw mcp set` runs as the homebrain user (config lives at
+        # /home/homebrain/.openclaw/openclaw.json owned by homebrain).
+        subprocess.check_call(
+            ["sudo", "-u", "homebrain", "openclaw", "mcp", "set",
+             "homebrain-vault", json.dumps(spec)],
+            stderr=subprocess.STDOUT, timeout=15,
+        )
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": f"openclaw mcp set failed: {e}"}), 500
+
+    # Restart the daemon so the new MCP server is picked up. Best-effort —
+    # if the daemon isn't running we just leave the config in place.
+    try:
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
+            capture_output=True, timeout=20,
+        )
+    except Exception:
+        pass
+
+    return jsonify({"status": "registered", "name": "homebrain-vault"})
+
+
+@app.route("/api/vault/mcp/unwire", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_mcp_unwire():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if shutil.which("openclaw") is None:
+        return jsonify({"error": "openclaw CLI not found"}), 503
+    try:
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "mcp", "unset",
+             "homebrain-vault"],
+            capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
+            capture_output=True, timeout=20,
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "removed"})
+
+
+@app.route("/api/vault/mcp/lock", methods=["POST"])
+@limiter.limit("10 per minute")
+def vault_mcp_lock():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    try:
+        if os.path.exists(VAULT_MCP_SESSION_FILE):
+            os.remove(VAULT_MCP_SESSION_FILE)
+        subprocess.run(["bw", "lock"], capture_output=True, timeout=5)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "locked"})
+
+
+@app.route("/api/vault/docs/status")
+def vault_docs_status():
+    """Report whether the Nextcloud end-to-end-encryption app is enabled and
+    whether the canonical encrypted folder exists for the admin user."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    info = {"e2ee_enabled": False, "folder_exists": False, "folder_url": ""}
+    try:
+        nc_cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q nextcloud",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not nc_cid:
+            return jsonify(info)
+        out = subprocess.check_output(
+            ["docker", "exec", "-u", "www-data", nc_cid,
+             "php", "occ", "app:list", "--output=json"],
+            stderr=subprocess.DEVNULL, timeout=10,
+        ).decode()
+        try:
+            apps = json.loads(out)
+            enabled = apps.get("enabled", {})
+            info["e2ee_enabled"] = "end_to_end_encryption" in enabled
+        except Exception:
+            pass
+        # Folder existence: probe the admin user's data dir directly
+        env = get_env_config()
+        nc_user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
+        data_dir = env.get("NEXTCLOUD_DATA_DIR", "/home/homebrain/nextcloud-data")
+        folder_path = os.path.join(data_dir, nc_user, "files", "Documents (Encrypted)")
+        info["folder_exists"] = os.path.isdir(folder_path)
+        if info["e2ee_enabled"] and info["folder_exists"]:
+            base = ""
+            if is_local_mode():
+                base = f"http://{get_lan_ip()}:8080"
+            else:
+                base = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
+            info["folder_url"] = f"{base}/apps/files/?dir=/Documents%20(Encrypted)"
+    except Exception:
+        pass
+    return jsonify(info)
+
+
+@app.route("/api/vault/docs/setup", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_docs_setup():
+    """Provision the canonical 'Documents (Encrypted)' folder for the admin
+    user, and best-effort install + enable Nextcloud's end_to_end_encryption
+    app. The folder always gets created (so the user has a known landing
+    spot); the E2E app install can fail offline or on a Nextcloud install
+    without app-store access, in which case we surface that and let the user
+    enable it manually. The folder still works as a private folder; users
+    can mark it for E2EE in the Nextcloud desktop client once the app is
+    enabled. Idempotent."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    try:
+        nc_cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q nextcloud",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not nc_cid:
+            return jsonify({"error": "Nextcloud container not running"}), 503
+
+        # 1. Best-effort enable end_to_end_encryption. Don't fail the whole
+        # request if the app store isn't reachable.
+        e2ee_enabled = False
+        e2ee_error = ""
+        try:
+            inst = subprocess.run(
+                ["docker", "exec", "-u", "www-data", nc_cid,
+                 "php", "occ", "app:install", "end_to_end_encryption"],
+                capture_output=True, text=True, timeout=60,
+            )
+            en = subprocess.run(
+                ["docker", "exec", "-u", "www-data", nc_cid,
+                 "php", "occ", "app:enable", "end_to_end_encryption"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if en.returncode == 0:
+                e2ee_enabled = True
+            else:
+                # Concatenate the most useful diagnostic from both calls.
+                e2ee_error = (inst.stdout + inst.stderr + en.stdout + en.stderr).strip()[:300]
+        except subprocess.TimeoutExpired:
+            e2ee_error = "occ command timed out"
+
+        # 2. Always create the folder via host filesystem + files:scan.
+        env = get_env_config()
+        nc_user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
+        data_dir = env.get("NEXTCLOUD_DATA_DIR", "/home/homebrain/nextcloud-data")
+        folder_path = os.path.join(data_dir, nc_user, "files", "Documents (Encrypted)")
+        os.makedirs(folder_path, exist_ok=True)
+        try:
+            subprocess.check_call(
+                ["chown", "-R", "33:33", folder_path], stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        subprocess.run(
+            ["docker", "exec", "-u", "www-data", nc_cid,
+             "php", "occ", "files:scan", f"--path={nc_user}/files/Documents (Encrypted)"],
+            stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=120,
+        )
+
+        return jsonify({
+            "status": "ready",
+            "folder": "Documents (Encrypted)",
+            "e2ee_app_enabled": e2ee_enabled,
+            "e2ee_hint": (
+                "" if e2ee_enabled else
+                "End-to-end encryption app could not be installed automatically "
+                "(usually because the app store is unreachable). Folder created "
+                "regardless — install end_to_end_encryption from your Nextcloud "
+                "Apps page, then mark the folder as encrypted in the desktop "
+                "client. Detail: " + (e2ee_error or "no further detail")
+            ),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vault/local-ca")
+@limiter.limit("20 per minute")
+def vault_local_ca():
+    """Serve the Caddy-issued internal CA root certificate so users can
+    install it on their LAN clients (one-time per device). Master-password
+    gated. Returns 404 in remote mode where Pangolin's public CA chain is
+    used. Returns 503 if Caddy hasn't minted the CA yet (first boot)."""
+    if not session.get("authenticated"):
+        abort(401)
+    if not is_local_mode():
+        return ("Local CA is only used in LAN-only deployments. "
+                "Remote-mode installs use Pangolin's public TLS chain."), 404
+    try:
+        cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q caddy",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not cid:
+            return "Caddy container not running.", 503
+        # Caddy stores its internal CA root at a known path inside the
+        # caddy_data volume.
+        pem = subprocess.check_output(
+            ["docker", "exec", cid, "cat",
+             "/data/caddy/pki/authorities/local/root.crt"],
+            stderr=subprocess.DEVNULL, timeout=5,
+        )
+        if not pem.strip().startswith(b"-----BEGIN"):
+            return "CA not yet generated — try again in 30 s.", 503
+        return Response(
+            pem,
+            mimetype="application/x-pem-file",
+            headers={
+                "Content-Disposition": 'attachment; filename="homebrain-vault-ca.pem"',
+            },
+        )
+    except subprocess.CalledProcessError:
+        return "CA not available yet.", 503
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
+@app.route("/api/vault/bootstrap", methods=["POST"])
+@limiter.limit("5 per minute")
+def vault_bootstrap():
+    """Create the first vault user via the admin API, then disable signups.
+    Idempotent: returns {already_bootstrapped: true} if any user already exists.
+    """
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify({"error": "valid email required"}), 400
+
+    token = _vault_admin_token_plain()
+    if not token:
+        return jsonify({"error": "vault not provisioned"}), 503
+
+    base = _vault_base_url()
+    try:
+        # Vaultwarden's /admin POST exchanges the plaintext admin token for a
+        # JWT cookie (VW_ADMIN). All subsequent /admin/* calls require the JWT.
+        s = requests.Session()
+        login = s.post(f"{base}/admin", data={"token": token}, timeout=5, allow_redirects=False)
+        if login.status_code not in (200, 302):
+            return jsonify({"error": f"admin login failed: HTTP {login.status_code}"}), 502
+        if not s.cookies.get("VW_ADMIN"):
+            return jsonify({"error": "admin login produced no session cookie — check ADMIN_TOKEN"}), 502
+
+        # Existing users?
+        r = s.get(f"{base}/admin/users", headers={"Accept": "application/json"}, timeout=5)
+        if r.status_code == 200:
+            try:
+                existing = r.json()
+                if isinstance(existing, list) and len(existing) > 0:
+                    update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+                    return jsonify({"already_bootstrapped": True, "users": len(existing)})
+            except Exception:
+                pass
+
+        # Issue invite. Without SMTP, Vaultwarden creates the invite locally;
+        # the recipient finishes signup by visiting the public vault URL.
+        # /admin/invite expects JSON (Form on POST / login, Json on /invite).
+        r = s.post(f"{base}/admin/invite", json={"email": email}, timeout=10, allow_redirects=False)
+        if r.status_code not in (200, 302):
+            return jsonify({"error": f"invite failed: HTTP {r.status_code}", "body": r.text[:300]}), 502
+
+        update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
+        return jsonify({
+            "status": "invited",
+            "email": email,
+            "next": "Open the public vault URL to set the master password for this user.",
+        })
+    except requests.RequestException as e:
+        return jsonify({"error": f"vault unreachable: {e}"}), 503
+
 
 @app.route("/api/redis/status")
 def redis_status():

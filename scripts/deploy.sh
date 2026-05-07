@@ -41,6 +41,12 @@ log_info "Starting Database..."
 docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d --remove-orphans db
 wait_for_healthy "db" 120 || die "DB failed to start. Aborting deployment."
 
+# 1b.1. Provision the Vault DB+user before bringing the vault container up.
+# Idempotent — generates secrets on first run, no-ops afterwards.
+log_info "Provisioning HomeBrain Vault state..."
+bash "$SCRIPT_DIR/provision_vault.sh" || log_warn "Vault provisioning had issues (non-fatal); will retry from dashboard."
+load_env  # Reload vault env vars set by provision_vault.sh
+
 # 1c. Start Remaining Services
 profiles=$(get_tunnel_profiles)
 
@@ -51,12 +57,16 @@ if [ -f "$INSTALL_DIR/install_creds.json" ]; then
     profiles=""
 fi
 
-log_info "Starting Stack with Tunnel Profile: ${profiles:-None}"
-docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans
+vault_profiles=$(get_vault_profiles)
+log_info "Starting Stack with Tunnel Profile: ${profiles:-None} · Vault Profile: ${vault_profiles:-None}"
+docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
 
 # 1d. Verification
 wait_for_healthy "nextcloud" 400 || die "Nextcloud failed to start."
-wait_for_healthy "homeassistant" 120 || die "Homeassistant failed to start." 
+wait_for_healthy "homeassistant" 120 || die "Homeassistant failed to start."
+if [[ "${VAULT_ENABLED:-true}" == "true" ]]; then
+    wait_for_healthy "vaultwarden" 120 || log_warn "Vaultwarden failed health check (non-fatal — check /api/logs/vaultwarden)."
+fi
 
 # 1e. Create Home Assistant Admin Account
 log_info "Hardening Home Assistant Admin account..."

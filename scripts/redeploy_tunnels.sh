@@ -22,11 +22,18 @@ docker compose --env-file "$ENV_FILE" $(get_compose_args) stop newt cloudflared-
 profiles=$(get_tunnel_profiles)
 log_info "Active Tunnel Profile: ${profiles:-None}"
 
-if [[ -n "$profiles" ]]; then
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} pull
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans
-else
-    log_info "No tunnel configured. Skipping tunnel startup."
+vault_profiles=$(get_vault_profiles)
+if [[ -n "$profiles" || -n "$vault_profiles" ]]; then
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} pull
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
+fi
+# In remote mode, ensure Caddy is stopped (mode flip from local→remote
+# leaves it running otherwise — its profile is now opt-out).
+if [[ -z "$vault_profiles" ]]; then
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) stop caddy 2>/dev/null || true
+fi
+if [[ -z "$profiles" && -z "$vault_profiles" ]]; then
+    log_info "No tunnel and no vault profile configured."
 fi
 
 # 3. Reapply Proxy/Trust Configurations
@@ -39,11 +46,23 @@ configure_nc_ha_proxy_settings
 # Nextcloud reads config.php on every request, so strict restart isn't always needed, 
 # but we restart to be safe and ensure clean state.
 log_info "Restarting core services to apply changes..."
-docker compose --env-file "$ENV_FILE" $(get_compose_args) restart homeassistant nextcloud
+restart_services=(homeassistant nextcloud)
+# Vaultwarden's DOMAIN env is recomputed per deployment mode; restart so it
+# picks up the new value (also forces WS reconnects on existing clients).
+if docker compose $(get_compose_args) ps -q vaultwarden 2>/dev/null | grep -q .; then
+    restart_services+=(vaultwarden)
+fi
+if docker compose $(get_compose_args) ps -q caddy 2>/dev/null | grep -q .; then
+    restart_services+=(caddy)
+fi
+docker compose --env-file "$ENV_FILE" $(get_compose_args) restart "${restart_services[@]}"
 
 # 5. Verification
 # Wait for HA to actually come back up to confirm success
 wait_for_healthy "nextcloud" 120 || log_error "Nextcloud failed to restart cleanly."
 wait_for_healthy "homeassistant" 120 || log_error "Home Assistant failed to restart cleanly."
+if docker compose $(get_compose_args) ps -q vaultwarden 2>/dev/null | grep -q .; then
+    wait_for_healthy "vaultwarden" 60 || log_warn "Vaultwarden failed to restart cleanly (non-fatal)."
+fi
 
 log_info "=== Tunnel Redeploy Complete ==="

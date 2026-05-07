@@ -202,6 +202,7 @@
         .status-unknown  { background: var(--neutral-soft); color: var(--text-dim);border: 1px solid var(--border-strong); }
         .status-starting { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning); }
 
+
         .progress-bg {
             background: var(--surface-sunken);
             height: 22px;
@@ -374,6 +375,16 @@
             font-family: var(--font-mono);
         }
 
+        /* Per-integration inline forms (Connect…, Add account…, Configure…) */
+        .conn-form {
+            margin-top: 12px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--surface-2);
+        }
+        .conn-form input { margin-bottom: 0; }
+
         /* External-launch link buttons (low emphasis vs .btn-primary) */
         .link-row {
             display: flex;
@@ -477,12 +488,46 @@
                 <div class="stat-item"><span>Nextcloud</span> <span id="st-nc" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Database</span> <span id="st-db" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Home Assistant</span> <span id="st-ha" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>Vault</span> <span id="st-vault" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="skeleton sk-mid"></span></div>
-                
+
                 <div class="link-row">
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
                     <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
+                    <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
+                </div>
+            </div>
+
+            <div class="card" id="vault-card">
+                <h3>HomeBrain Vault</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    Self-hosted password manager. Use the official <a href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Bitwarden apps</a> &mdash; set the server URL to your vault domain.
+                </p>
+                <div class="stat-item"><span>Service</span> <span id="vault-state" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>URL</span> <span id="vault-url" style="font-family:var(--font-mono); font-size:0.85em;">&hellip;</span></div>
+                <div class="stat-item"><span>Users</span> <span id="vault-users" class="skeleton sk-small"></span></div>
+                <div class="stat-item"><span>Signups</span> <span id="vault-signups" class="skeleton sk-small"></span></div>
+
+                <div id="vault-bootstrap" style="display:none; margin-top:14px; padding:12px; border:1px dashed var(--border); border-radius:var(--radius-input); background:var(--surface-2);">
+                    <strong>First-time setup</strong>
+                    <p style="font-size:0.88em; color:var(--text-dim); margin:6px 0 10px 0;">
+                        Create the first vault account. Signups are disabled automatically afterwards.
+                    </p>
+                    <div style="display:flex; gap:8px;">
+                        <input type="email" id="vault-bootstrap-email" placeholder="you@home" style="flex:1; margin-bottom:0;">
+                        <button class="btn-primary" onclick="vaultBootstrap()" style="flex-shrink:0;">Create user</button>
+                    </div>
+                    <small id="vault-bootstrap-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+                </div>
+
+                <div class="link-row" style="margin-top:14px;">
+                    <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
+                    <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
+                    {% if deployment_mode == 'local' %}
+                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
+                    {% endif %}
+                    <a href="#" onclick="openTab('settings'); return false;" class="link-out" style="margin-left:auto;">Configure<span aria-hidden="true">→</span></a>
                 </div>
             </div>
 
@@ -524,6 +569,16 @@
                     <div class="row-item">
                         <div class="row-main"><strong>AI Agent</strong><span class="row-meta">OpenClaw</span></div>
                         <span id="sys-openclaw-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item">
+                        <div class="row-main">
+                            <strong>Integrations</strong>
+                            <span class="row-meta">
+                                <span id="sys-integrations-meta">What the agent can reach</span> ·
+                                <a href="#" onclick="openTab('settings'); document.getElementById('integrations-card').scrollIntoView({behavior:'smooth', block:'start'}); return false;" style="color:var(--accent); text-decoration:none;">manage&nbsp;&rarr;</a>
+                            </span>
+                        </div>
+                        <span id="sys-integrations-status" class="skeleton sk-mid"></span>
                     </div>
                     <div class="row-item" id="whatsapp-row" style="display:none;">
                         <div class="row-main">
@@ -826,7 +881,87 @@
 
     <div id="settings" class="tab-content">
         <div class="grid">
-            
+
+            <div class="card" id="integrations-card" style="grid-column: 1 / -1;">
+                <h3>Agent integrations</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    What your agent can reach. Each row connects the agent to a part of your home.
+                </p>
+                <div id="conn-rows" class="row-list"></div>
+                <small id="conn-self-note" style="display:block; margin-top:10px; color:var(--text-dim); font-size:0.85em;"></small>
+                <small id="conn-msg" style="display:block; margin-top:6px; min-height:1em; color:var(--text-dim); font-size:0.88em;"></small>
+
+                <div hidden id="details-ha" class="conn-form">
+                    <div style="display:flex; gap:8px;">
+                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaConnect(); }">
+                        <button class="btn-primary" onclick="connHaConnect()">Connect</button>
+                        <button onclick="closeForm('details-ha')" aria-label="Close">✕</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        In Home Assistant: Profile → Security → Long-lived access tokens → Create. Paste the token here.
+                    </small>
+                </div>
+
+                <div hidden id="details-email" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                        <input type="text"     id="em-name"      placeholder="Account label (e.g. Personal)">
+                        <input type="email"    id="em-user"      placeholder="user@example.com">
+                        <input type="text"     id="em-imap-host" placeholder="IMAP host (e.g. imap.gmail.com or 127.0.0.1 for Proton Bridge)">
+                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
+                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
+                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
+                        <input type="password" id="em-pass"      placeholder="App password" style="grid-column:1/-1;">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
+                        <button onclick="closeForm('details-email')" aria-label="Close">✕</button>
+                        <label style="display:flex; align-items:center; gap:6px; font-size:0.88em; color:var(--text-dim);">
+                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)" style="margin:0;">
+                            Allow agent to send mail directly (off = drafts only)
+                        </label>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP / 127.0.0.1:12025 SMTP. For Gmail / iCloud / Fastmail use an app-specific password.
+                    </small>
+                </div>
+
+                {% if has_gpu %}
+                <div hidden id="vault-mcp" class="conn-form">
+                    <p style="margin:0 0 8px 0; color:var(--text-dim); font-size:0.88em;">
+                        The agent only sees metadata until you explicitly approve a reveal.
+                        <span id="vault-mcp-cli-wrap" style="display:none;">Bitwarden CLI: <span id="vault-mcp-cli" class="status-badge status-unknown">…</span></span>
+                        <span id="vault-mcp-wired" hidden></span>
+                        <span id="vault-mcp-state" hidden></span>
+                    </p>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <div id="vault-mcp-wire-row" style="display:none; gap:8px;">
+                            <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="flex:1;">Enable for agent</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                        <div id="vault-mcp-unlock-row" style="display:none; gap:8px;">
+                            <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); vaultMcpUnlock(); }">
+                            <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                        <div id="vault-mcp-lock-row" style="display:none; gap:8px;">
+                            <button onclick="vaultMcpLock()" style="flex:1;">Lock</button>
+                            <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
+                        </div>
+                    </div>
+                    <small id="vault-mcp-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+                </div>
+                {% endif %}
+
+                <details style="margin-top:14px;">
+                    <summary style="cursor:pointer; font-size:0.85em; color:var(--text-dim);">Troubleshoot</summary>
+                    <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+                        <button onclick="connReconcile()" id="conn-reconcile-btn">Re-sync agent</button>
+                        <button onclick="connRefresh()">Refresh</button>
+                    </div>
+                </details>
+            </div>
+
+
             <div class="card">
                 <h3>System Configuration</h3>
                 <p>Advanced hardware and task management.</p>
@@ -873,6 +1008,20 @@
                         </td>
                     </tr>
                 </table>
+            </div>
+
+            <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
+                <h3>Encrypted documents</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.
+                </p>
+                <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
+                <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
+                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()">Set up encrypted folder</button>
+                    <a id="vault-docs-open" href="#" target="_blank" class="link-out" style="display:none;">Open in Nextcloud<span aria-hidden="true">↗</span></a>
+                </div>
+                <small id="vault-docs-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
             </div>
 
             {% if has_gpu %}
@@ -958,6 +1107,7 @@
                         <option value="nextcloud">Nextcloud Container</option>
                         <option value="db">Database Container</option>
                         <option value="homeassistant">Home Assistant Container</option>
+                        <option value="vaultwarden">Vault (Vaultwarden) Container</option>
                         <option value="newt">Pangolin (Newt) Container</option>
                         <option value="cloudflared-nc">Cloudflare (NC) Container</option>
                         <option value="cloudflared-ha">Cloudflare (HA) Container</option>
@@ -1017,15 +1167,19 @@
             // Initial Fetch
             try {
                 // Parallel fetch for speed
-                await Promise.all([fetchStatus(), pollTask()]);
+                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
             }
-        
+
             // Start Intervals
             setInterval(fetchStatus, 5000);
             setInterval(pollTask, 2000);
+            setInterval(fetchVaultStatus, 10000);
+            setInterval(vaultDocsRefresh, 30000);
+            setInterval(vaultMcpRefresh, 30000);
+            setInterval(connRefresh, 15000);
             
             setInterval(() => {
                 const logsTab = document.getElementById('logs');
@@ -1061,6 +1215,8 @@
                 loadSystemConfig();
                 loadSerialDevices();
                 loadFtpUsers();
+                connRefresh();
+                vaultMcpRefresh();
             }
         }
 
@@ -1074,9 +1230,11 @@
                 const data = await res.json();
 
                 // Services Status
-                ['nc', 'db', 'ha', 'tunnel'].forEach(k => {
+                ['nc', 'db', 'ha', 'tunnel', 'vault'].forEach(k => {
                     const el = document.getElementById('st-' + k);
-                    if (el) setStatus(el, data[k === 'nc' ? 'nextcloud' : (k === 'tunnel' ? 'tunnel' : (k === 'ha' ? 'homeassistant' : 'db'))]);
+                    if (!el) return;
+                    const map = {nc: 'nextcloud', ha: 'homeassistant', db: 'db', tunnel: 'tunnel', vault: 'vaultwarden'};
+                    setStatus(el, data[map[k]]);
                 });
                 
                 if (document.getElementById('st-maint')) {
@@ -1122,6 +1280,417 @@
             el.className = 'status-badge status-' + (status || 'unknown');
             el.innerText = (status || 'unknown').toUpperCase();
         }
+
+        // --- Connections (agent integrations) ---
+        function openDetails(id, focusId) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            // Hidden div form (preferred) or legacy <details> element.
+            if (el.tagName === 'DETAILS') el.open = true;
+            else el.hidden = false;
+            el.scrollIntoView({behavior:'smooth', block:'center'});
+            if (focusId) {
+                setTimeout(() => {
+                    const f = document.getElementById(focusId);
+                    if (f) f.focus();
+                }, 350);
+            }
+        }
+        function closeForm(id) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el.tagName === 'DETAILS') el.open = false;
+            else el.hidden = true;
+        }
+        const CONN_LABELS = {
+            self:          { name: 'Self-tools',     sub: 'Backups, status, restart' },
+            homeassistant: { name: 'Home Assistant', sub: 'Lights, scenes, automations' },
+            nextcloud:     { name: 'Nextcloud',      sub: 'Files, notes, calendar' },
+            vault:         { name: 'Vault',          sub: 'Passwords (read + create)' },
+            email:         { name: 'Email',          sub: 'IMAP/SMTP — Proton Bridge or direct' },
+        };
+        async function connRefresh() {
+            try {
+                const r = await fetch('/api/integrations/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const items = (d.integrations || []).filter(x => x.key !== 'self');
+                const selfItem = (d.integrations || []).find(x => x.key === 'self');
+
+                // Update the Status-tab summary badge.
+                const summary = document.getElementById('sys-integrations-status');
+                if (summary) {
+                    const wired = items.filter(x => x.wired).length;
+                    const total = items.length;
+                    const missing = items.filter(x => !x.wired)
+                                         .map(x => (CONN_LABELS[x.key] || {}).name || x.key);
+                    summary.classList.remove('skeleton', 'sk-mid');
+                    summary.className = 'status-badge ' + (wired === total && total > 0 ? 'status-running' : 'status-unknown');
+                    summary.innerText = `${wired}/${total} CONNECTED`;
+                    summary.title = missing.length ? `Not connected: ${missing.join(', ')}` : 'All integrations connected';
+                }
+
+                const note = document.getElementById('conn-self-note');
+                if (note && selfItem) {
+                    note.innerText = selfItem.wired
+                        ? 'Your agent can also call homebrain itself (backups, status, restart).'
+                        : '';
+                }
+
+                const rows = document.getElementById('conn-rows');
+                if (!rows) return;
+                rows.innerHTML = '';
+                for (const it of items) {
+                    const meta = CONN_LABELS[it.key] || { name: it.key, sub: '' };
+                    const badge = it.wired ? '<span class="status-badge status-running" title="Agent can use this">connected</span>'
+                                : (it.configured ? '<span class="status-badge status-unknown" title="Saved but not yet picked up by the agent — Re-sync under Troubleshoot">pending sync</span>'
+                                                 : '<span class="status-badge status-stopped" title="Not set up yet">not connected</span>');
+                    let extras = '';
+                    if (it.key === 'email' && (it.accounts || []).length) {
+                        extras = '<small style="display:block; color:var(--text-dim); margin-top:4px;">' +
+                                 it.accounts.map(a => `${a.name} (${a.user})`).join(' · ') + '</small>';
+                    }
+                    if (it.key === 'vault' && it.unlocked) {
+                        extras = '<small style="display:block; color:var(--accent); margin-top:4px;">unlocked</small>';
+                    }
+                    const buttons = [];
+                    if (it.key === 'nextcloud') {
+                        buttons.push(it.configured
+                            ? `<button onclick="connNcDisconnect()">Disconnect</button>`
+                            : `<button class="btn-primary" onclick="connNcConnect()">Connect</button>`);
+                    }
+                    if (it.key === 'homeassistant') {
+                        buttons.push(it.configured
+                            ? `<button onclick="connHaDisconnect()">Disconnect</button>`
+                            : `<button class="btn-primary" onclick="openDetails('details-ha','ha-token-input')">Connect…</button>`);
+                    }
+                    if (it.key === 'email') {
+                        const haveAccount = (it.accounts || []).length > 0;
+                        buttons.push(haveAccount
+                            ? `<button onclick="openDetails('details-email','em-name')">Add account…</button>`
+                            : `<button class="btn-primary" onclick="openDetails('details-email','em-name')">Add account…</button>`);
+                    }
+                    if (it.key === 'vault') {
+                        if (!it.wired) {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('vault-mcp')">Configure…</button>`);
+                        } else if (!it.unlocked) {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('vault-mcp','vault-mcp-pw')">Unlock…</button>`);
+                        } else {
+                            buttons.push(`<button onclick="vaultMcpLock()">Lock</button>`);
+                        }
+                    }
+                    if (it.configured) {
+                        buttons.push(`<button onclick="connTest('${it.key}')">Test</button>`);
+                    }
+                    rows.insertAdjacentHTML('beforeend',
+                        `<div class="row-item" title="MCP server: ${it.mcp_name}">
+                           <div class="row-main">
+                             <strong>${meta.name}</strong>
+                             <span class="row-meta">${meta.sub}</span>
+                             ${extras}
+                           </div>
+                           <div style="display:flex; gap:6px; align-items:center;">${badge}${buttons.join('')}</div>
+                         </div>`);
+                }
+                // Initialise the email-send-direct toggle from server state.
+                const sd = (d.integrations || []).find(x => x.key === 'email');
+                const cb = document.getElementById('em-send-direct');
+                if (cb && sd) cb.checked = !!sd.send_direct_enabled;
+            } catch (e) { console.warn('connRefresh failed', e); }
+        }
+        async function connReconcile() {
+            const msg = document.getElementById('conn-msg');
+            msg.innerText = 'Applying...';
+            try {
+                const r = await fetch('/api/integrations/reconcile', { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                msg.innerText = r.ok ? 'Applied. Agent restarted.' : ('Failed: ' + (d.error || ''));
+            } catch (e) { msg.innerText = 'Apply failed: ' + e; }
+            connRefresh();
+        }
+        async function connHaConnect() {
+            const tok = (document.getElementById('ha-token-input') || {}).value || '';
+            if (!tok.trim()) { alert('Paste a HA long-lived access token first.'); return; }
+            const r = await fetch('/api/integrations/homeassistant/connect',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({ token: tok.trim() })});
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'Home Assistant connected.' : (d.error || 'Connect failed');
+            document.getElementById('ha-token-input').value = '';
+            if (r.ok) closeForm('details-ha');
+            connRefresh();
+        }
+        async function connHaDisconnect() {
+            await fetch('/api/integrations/homeassistant/disconnect', { method: 'POST', credentials: 'include' });
+            connRefresh();
+        }
+        async function connNcConnect() {
+            const r = await fetch('/api/integrations/nextcloud/connect', { method: 'POST', credentials: 'include' });
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'Nextcloud app password created.' : (d.error || 'Connect failed');
+            connRefresh();
+        }
+        async function connNcDisconnect() {
+            await fetch('/api/integrations/nextcloud/disconnect', { method: 'POST', credentials: 'include' });
+            connRefresh();
+        }
+        async function connTest(key) {
+            const m = document.getElementById('conn-msg');
+            m.innerText = `Testing ${key}...`;
+            try {
+                const r = await fetch(`/api/integrations/${key}/test`, { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (d.ok) {
+                    m.innerText = `${key}: ${d.tool_count} tools — ${(d.tools || []).join(', ')}`;
+                } else {
+                    m.innerText = `${key}: ${d.error || 'failed'}`;
+                }
+            } catch (e) { m.innerText = `${key}: ${e}`; }
+        }
+        async function connEmailAdd() {
+            const body = {
+                name: document.getElementById('em-name').value.trim(),
+                user: document.getElementById('em-user').value.trim(),
+                imap_host: document.getElementById('em-imap-host').value.trim(),
+                imap_port: parseInt(document.getElementById('em-imap-port').value || '993', 10),
+                smtp_host: document.getElementById('em-smtp-host').value.trim(),
+                smtp_port: parseInt(document.getElementById('em-smtp-port').value || '587', 10),
+                password: document.getElementById('em-pass').value,
+            };
+            const r = await fetch('/api/integrations/email/add',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify(body)});
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok ? 'Email account added.' : (d.error || 'Add failed');
+            if (r.ok) {
+                ['em-name','em-user','em-imap-host','em-imap-port','em-smtp-host','em-smtp-port','em-pass']
+                    .forEach(id => document.getElementById(id).value = '');
+                closeForm('details-email');
+            }
+            connRefresh();
+        }
+        async function connEmailSendDirect(enabled) {
+            await fetch('/api/integrations/email/send-direct-toggle',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({ enabled })});
+            connRefresh();
+        }
+
+        // --- HomeBrain Vault ---
+        async function fetchVaultStatus() {
+            try {
+                const r = await fetch('/api/vault/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const v = await r.json();
+                const fill = (id, txt) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    el.innerText = txt;
+                };
+                if (!v.enabled) {
+                    fill('vault-state', 'DISABLED');
+                    return;
+                }
+                fill('vault-state', (v.container || 'stopped').toUpperCase());
+                fill('vault-url', v.public_url || '(not set)');
+                fill('vault-users', v.users === null ? '—' : String(v.users));
+                const signupsEl = document.getElementById('vault-signups');
+                if (signupsEl) {
+                    signupsEl.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
+                    signupsEl.className = 'status-badge status-' + (v.signups_allowed ? 'starting' : 'running');
+                    signupsEl.innerText = v.signups_allowed ? 'Open' : 'Locked';
+                }
+
+                const openLink = document.getElementById('vault-open');
+                const launchLink = document.getElementById('vault-launch');
+                if (v.public_url) {
+                    if (openLink) openLink.href = v.public_url;
+                    if (launchLink) { launchLink.href = v.public_url; launchLink.style.display = ''; }
+                }
+
+                // First-run prompt: container running, no users yet, signups still open.
+                const bootstrap = document.getElementById('vault-bootstrap');
+                if (bootstrap) {
+                    const showBootstrap = v.signups_allowed && (v.users === 0 || v.users === null) && v.container && v.container !== 'stopped';
+                    bootstrap.style.display = showBootstrap ? '' : 'none';
+                }
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultBootstrap() {
+            const emailEl = document.getElementById('vault-bootstrap-email');
+            const msg = document.getElementById('vault-bootstrap-msg');
+            const email = (emailEl?.value || '').trim();
+            if (!email) { if (msg) msg.innerText = 'Enter an email.'; return; }
+            if (msg) msg.innerText = 'Inviting…';
+            try {
+                const r = await fetch('/api/vault/bootstrap', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'include',
+                    body: JSON.stringify({ email })
+                });
+                const data = await r.json();
+                if (!r.ok) {
+                    if (msg) msg.innerText = 'Error: ' + (data.error || r.statusText);
+                    return;
+                }
+                if (data.already_bootstrapped) {
+                    if (msg) msg.innerText = 'Already bootstrapped (' + data.users + ' user' + (data.users === 1 ? '' : 's') + ').';
+                } else {
+                    if (msg) msg.innerHTML = 'User invited. Open the vault URL above to set the master password.';
+                }
+                fetchVaultStatus();
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            }
+        }
+
+        function setVaultBadge(el, kind, text) {
+            if (!el) return;
+            el.className = 'status-badge status-' + kind;
+            el.innerText = text;
+        }
+
+        async function vaultMcpRefresh() {
+            const cli = document.getElementById('vault-mcp-cli');
+            const state = document.getElementById('vault-mcp-state');
+            const wired = document.getElementById('vault-mcp-wired');
+            const unlockRow = document.getElementById('vault-mcp-unlock-row');
+            const lockRow = document.getElementById('vault-mcp-lock-row');
+            const wireRow = document.getElementById('vault-mcp-wire-row');
+            const wireBtn = document.getElementById('vault-mcp-wire-btn');
+            if (!cli) return;
+            try {
+                const r = await fetch('/api/vault/mcp/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                setVaultBadge(cli, d.bw_installed ? 'running' : 'stopped', d.bw_installed ? 'Installed' : 'Missing');
+                setVaultBadge(state, d.unlocked ? 'running' : 'unknown', d.unlocked ? 'Unlocked' : 'Locked');
+                if (!d.openclaw_available) setVaultBadge(wired, 'unknown', 'agent missing');
+                else setVaultBadge(wired, d.openclaw_wired ? 'running' : 'unknown', d.openclaw_wired ? 'Yes' : 'No');
+                // Only surface the bw-cli line when it would matter (locked + missing).
+                const cliWrap = document.getElementById('vault-mcp-cli-wrap');
+                if (cliWrap) cliWrap.style.display = d.bw_installed ? 'none' : 'inline';
+                if (unlockRow) unlockRow.style.display = (!d.bw_installed || d.unlocked) ? 'none' : 'flex';
+                if (lockRow) lockRow.style.display = d.unlocked ? 'flex' : 'none';
+                if (wireRow) wireRow.style.display = d.openclaw_available && !d.openclaw_wired ? 'flex' : 'none';
+                if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Disable for agent' : 'Enable for agent';
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultMcpWireToggle() {
+            const msg = document.getElementById('vault-mcp-msg');
+            const btn = document.getElementById('vault-mcp-wire-btn');
+            const wiredEl = document.getElementById('vault-mcp-wired');
+            const isWired = wiredEl && wiredEl.innerText.trim().toLowerCase() === 'yes';
+            const url = isWired ? '/api/vault/mcp/unwire' : '/api/vault/mcp/wire-up';
+            if (msg) msg.innerText = isWired ? 'Disabling…' : 'Enabling agent access…';
+            if (btn) btn.disabled = true;
+            try {
+                const r = await fetch(url, { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
+                else { if (msg) msg.innerText = isWired ? 'Agent vault access disabled.' : 'Agent vault access enabled. Unlock to use it.'; }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                if (btn) btn.disabled = false;
+                vaultMcpRefresh();
+            }
+        }
+
+        async function vaultMcpUnlock() {
+            const pw = document.getElementById('vault-mcp-pw');
+            const msg = document.getElementById('vault-mcp-msg');
+            const v = (pw && pw.value) || '';
+            if (!v) { if (msg) msg.innerText = 'Enter your vault master password.'; return; }
+            if (msg) msg.innerText = 'Unlocking…';
+            try {
+                const r = await fetch('/api/vault/mcp/unlock', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    credentials: 'include',
+                    body: JSON.stringify({ master_password: v })
+                });
+                const d = await r.json();
+                if (pw) pw.value = '';
+                if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
+                else {
+                    if (msg) msg.innerText = '';
+                    document.getElementById('conn-msg').innerText = 'Vault unlocked. The agent can search and create entries.';
+                    closeForm('vault-mcp');
+                }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                vaultMcpRefresh();
+            }
+        }
+
+        async function vaultMcpLock() {
+            const msg = document.getElementById('vault-mcp-msg');
+            try {
+                await fetch('/api/vault/mcp/lock', { method: 'POST', credentials: 'include' });
+                if (msg) msg.innerText = 'Session locked.';
+            } catch (e) {
+                if (msg) msg.innerText = 'Lock failed: ' + e.message;
+            } finally {
+                vaultMcpRefresh();
+            }
+        }
+
+        async function vaultDocsRefresh() {
+            try {
+                const r = await fetch('/api/vault/docs/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const appEl = document.getElementById('vault-docs-app');
+                const folderEl = document.getElementById('vault-docs-folder');
+                const openEl = document.getElementById('vault-docs-open');
+                const btnEl = document.getElementById('vault-docs-setup-btn');
+                setVaultBadge(appEl, d.e2ee_enabled ? 'running' : 'unknown', d.e2ee_enabled ? 'Enabled' : 'Disabled');
+                setVaultBadge(folderEl, d.folder_exists ? 'running' : 'unknown', d.folder_exists ? 'Created' : 'Missing');
+                if (openEl) {
+                    if (d.folder_url) { openEl.href = d.folder_url; openEl.style.display = ''; }
+                    else openEl.style.display = 'none';
+                }
+                if (btnEl) btnEl.innerText = (d.e2ee_enabled && d.folder_exists) ? 'Re-run setup' : 'Set up encrypted folder';
+            } catch (e) { /* silent */ }
+        }
+
+        async function vaultDocsSetup() {
+            const msg = document.getElementById('vault-docs-msg');
+            const btn = document.getElementById('vault-docs-setup-btn');
+            if (msg) msg.innerText = 'Enabling E2EE app and creating folder…';
+            if (btn) btn.disabled = true;
+            try {
+                const r = await fetch('/api/vault/docs/setup', { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (!r.ok) {
+                    if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText);
+                } else {
+                    if (msg) msg.innerText = 'Ready. Mark the folder as encrypted in your Nextcloud client to activate E2EE.';
+                }
+            } catch (e) {
+                if (msg) msg.innerText = 'Network error: ' + e.message;
+            } finally {
+                if (btn) btn.disabled = false;
+                vaultDocsRefresh();
+            }
+        }
+
+        async function vaultOpenAdmin(ev) {
+            if (ev) ev.preventDefault();
+            // Same-origin reverse-proxy through the manager — auth is handled
+            // server-side, the admin token never reaches the browser.
+            window.open('/admin/', '_blank', 'noopener');
+        }
+
 
         async function pollTask() {
             try {

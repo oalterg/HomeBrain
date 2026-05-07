@@ -225,6 +225,45 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
         log_warn "OpenClaw config not found at ${OPENCLAW_DIR}/openclaw.json — skipping."
     fi
 
+    # Integration tokens (HA, Nextcloud, Email, Self) and pending consent
+    # state. Mode 0600, owned by homebrain — preserve perms on restore.
+    if compgen -G "${OPENCLAW_DIR}/*.token" > /dev/null \
+        || [[ -f "${OPENCLAW_DIR}/email_accounts.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/pending_actions.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/vault.session" ]]; then
+        mkdir -p "${STAGING_DIR}/openclaw_integrations"
+        for f in ha.token nextcloud.token homebrain.token vault.session \
+                 email_accounts.json pending_actions.json; do
+            [[ -f "${OPENCLAW_DIR}/${f}" ]] && cp -a "${OPENCLAW_DIR}/${f}" "${STAGING_DIR}/openclaw_integrations/"
+        done
+        log_info "OpenClaw integration credentials backed up."
+    fi
+
+    # Per-integration audit logs — last 30 days only, capped to keep the
+    # archive bounded. The full log lives at /var/log/homebrain/.
+    if compgen -G "/var/log/homebrain/mcp-*-audit.log" > /dev/null; then
+        mkdir -p "${STAGING_DIR}/mcp_audit"
+        for src in /var/log/homebrain/mcp-*-audit.log; do
+            # Keep only entries newer than 30 days; if jq isn't available
+            # fall back to a tail of the last 5000 lines.
+            base=$(basename "$src")
+            if command -v jq >/dev/null 2>&1; then
+                cutoff=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                         || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+                if [[ -n "$cutoff" ]]; then
+                    jq -c --arg c "$cutoff" 'select(.ts >= $c)' "$src" \
+                        > "${STAGING_DIR}/mcp_audit/${base}" 2>/dev/null \
+                        || tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+                else
+                    tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+                fi
+            else
+                tail -n 5000 "$src" > "${STAGING_DIR}/mcp_audit/${base}"
+            fi
+        done
+        log_info "MCP audit logs backed up."
+    fi
+
     # Workspace backup (opt-out: default true)
     if [[ "${BACKUP_OPENCLAW_WORKSPACE:-true}" == "true" ]]; then
         if [[ -d "${OPENCLAW_DIR}/workspace" ]]; then
@@ -245,6 +284,41 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
             log_warn "OpenClaw workspace directory not found — skipping."
         fi
     fi
+fi
+
+# ── Vault (Vaultwarden) ─────────────────────────────────────────────────────
+# Backup the vault DB + data dir. The rsa_key.* files inside the data dir are
+# critical — losing them invalidates every active Bitwarden client session.
+VAULT_CID=$(get_vault_cid 2>/dev/null || true)
+if [[ "${VAULT_ENABLED:-true}" == "true" ]] && [[ -n "$VAULT_CID" ]]; then
+    log_info "Stopping Vaultwarden for consistent backup..."
+    docker stop "$VAULT_CID" >/dev/null 2>&1 || log_warn "Failed to stop vaultwarden (continuing)."
+
+    if [[ -n "$DB_CID" ]] && [[ -n "${VAULT_DB_NAME:-}" ]] && [[ -n "${VAULT_DB_USER:-}" ]] && [[ -n "${VAULT_DB_PASSWORD:-}" ]]; then
+        mkdir -p "$STAGING_DIR/vault_db"
+        docker run --rm \
+            --network container:"$DB_CID" \
+            -e MYSQL_PWD="$VAULT_DB_PASSWORD" \
+            mysql:8 \
+            mysqldump --column-statistics=0 -h 127.0.0.1 -u "$VAULT_DB_USER" "$VAULT_DB_NAME" \
+            > "$STAGING_DIR/vault_db/vaultwarden.sql" 2>/dev/null \
+            || log_warn "Vault DB dump failed (non-fatal)."
+        if [[ ! -s "$STAGING_DIR/vault_db/vaultwarden.sql" ]]; then
+            log_warn "Vault DB dump empty — vault may be uninitialised."
+        fi
+    fi
+
+    VAULT_DATA="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}"
+    if [[ -d "$VAULT_DATA" ]]; then
+        mkdir -p "$STAGING_DIR/vault_data"
+        rsync -a "$VAULT_DATA"/ "$STAGING_DIR/vault_data/" || log_warn "Vault data rsync failed (non-fatal)."
+        if [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pem" ]] && [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pkcs8.der" ]]; then
+            log_warn "Vault rsa_key not present in archive — sessions may need re-login after restore."
+        fi
+    fi
+
+    log_info "Restarting Vaultwarden..."
+    docker start "$VAULT_CID" >/dev/null 2>&1 || log_warn "Failed to restart vaultwarden — start manually if needed."
 fi
 
 # 10. Restart Services
