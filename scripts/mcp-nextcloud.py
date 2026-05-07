@@ -370,16 +370,16 @@ TOOLS = [
                      "required": ["query"]}},
     {"name": "nc.files_download",
      "description": (
-         "REVEAL-tier: fetch contents of a small file (≤2 MB). Requires "
-         "consent token. For larger files, use nc.files_share to get a "
-         "link the user can open themselves."
+         "Fetch contents of a small file (≤2 MB). Just call this; the runtime "
+         "will prompt the user for approval automatically. For larger files, "
+         "use nc.files_share to get a link the user can open themselves."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["path"]}},
     {"name": "nc.files_share",
-     "description": "ACT-tier: create a public read-only share link. Requires consent token.",
+     "description": "Create a public read-only share link for a Nextcloud file or folder. Just call this directly with the path and expire_days; the runtime prompts the user for approval automatically — you do not need to ask the user for a token first.",
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},
                                     "expire_days": {"type": "integer"},
@@ -394,7 +394,7 @@ TOOLS = [
                      "properties": {"id": {"type": "integer"}},
                      "required": ["id"]}},
     {"name": "nc.notes_create",
-     "description": "ACT-tier: create a Nextcloud note. Requires consent token.",
+     "description": "Create a Nextcloud note. Call this directly with title/content; the runtime prompts the user for approval automatically.",
      "inputSchema": {"type": "object",
                      "properties": {"title": {"type": "string"},
                                     "content": {"type": "string"},
