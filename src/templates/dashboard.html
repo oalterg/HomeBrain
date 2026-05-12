@@ -833,6 +833,7 @@
     <div id="settings" class="tab-content">
         <div class="grid">
 
+            {% if has_gpu %}
             <div class="card" id="integrations-card" style="grid-column: 1 / -1;">
                 <h3>Agent integrations</h3>
                 <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
@@ -912,12 +913,10 @@
                 </details>
             </div>
 
+            <div class="card">
+                <h3>Personal AI Assistant</h3>
+                <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local. Live status appears on the Status tab.</p>
 
-            <div class="card" {% if not has_gpu %}style="opacity:0.55; pointer-events:none;"{% endif %}>
-                <h3>Personal AI Assistant{% if not has_gpu %} <span class="status-badge status-unknown">GPU Required</span>{% endif %}</h3>
-                <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local.{% if has_gpu %} Live status appears on the Status tab.{% endif %}</p>
-
-                {% if has_gpu %}
                 <div id="ai-model-selector" style="display:none;">
                     <label>AI model</label>
                     <select id="ai-model-select" onchange="onModelSelectChange()" style="margin-bottom:10px;"></select>
@@ -928,12 +927,8 @@
                     <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
                     <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
                 </div>
-                {% else %}
-                <p style="color:var(--text-dim); font-size:0.9em;">
-                    This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
-                </p>
-                {% endif %}
             </div>
+            {% endif %}
 
             <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
                 <h3>HomeBrain Vault</h3>
@@ -1119,10 +1114,12 @@
                         <option value="cloudflared-nc">Cloudflare (NC) Container</option>
                         <option value="cloudflared-ha">Cloudflare (HA) Container</option>
                     </optgroup>
+                    {% if has_gpu %}
                     <optgroup label="AI Services">
                         <option value="llama-server">llama-server (AI Inference)</option>
                         <option value="openclaw">OpenClaw Agent</option>
                     </optgroup>
+                    {% endif %}
                 </select>
                 <button onclick="pollLogs()">Refresh Now</button>
             </div>
@@ -1829,6 +1826,10 @@
         }
 
         function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus, whisperStatus) {
+            // No-op on hardware without an AI-capable GPU — the AI Assistant card
+            // and its DOM nodes don't exist there.
+            if (!document.getElementById('sys-llama-status')) return;
+
             const badgeMap = {
                 running:       ['status-running',  'RUNNING'],
                 starting:      ['status-starting', 'LOADING MODEL...'],
