@@ -509,25 +509,9 @@
                 <div class="stat-item"><span>Users</span> <span id="vault-users" class="skeleton sk-small"></span></div>
                 <div class="stat-item"><span>Signups</span> <span id="vault-signups" class="skeleton sk-small"></span></div>
 
-                <div id="vault-bootstrap" style="display:none; margin-top:14px; padding:12px; border:1px dashed var(--border); border-radius:var(--radius-input); background:var(--surface-2);">
-                    <strong>First-time setup</strong>
-                    <p style="font-size:0.88em; color:var(--text-dim); margin:6px 0 10px 0;">
-                        Create the first vault account. Signups are disabled automatically afterwards.
-                    </p>
-                    <div style="display:flex; gap:8px;">
-                        <input type="email" id="vault-bootstrap-email" placeholder="you@home" style="flex:1; margin-bottom:0;">
-                        <button class="btn-primary" onclick="vaultBootstrap()" style="flex-shrink:0;">Create user</button>
-                    </div>
-                    <small id="vault-bootstrap-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
-                </div>
-
                 <div class="link-row" style="margin-top:14px;">
                     <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
-                    <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
-                    {% if deployment_mode == 'local' %}
-                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
-                    {% endif %}
-                    <a href="#" onclick="openTab('settings'); return false;" class="link-out" style="margin-left:auto;">Configure<span aria-hidden="true">→</span></a>
+                    <a id="vault-configure-link" href="#" onclick="openTab('settings'); document.getElementById('vault-config-card').scrollIntoView({behavior:'smooth', block:'start'}); return false;" class="link-out">Configure<span aria-hidden="true">→</span></a>
                 </div>
             </div>
 
@@ -597,39 +581,6 @@
             </div>
             {% endif %}
 
-            <div class="card">
-                <h3>Maintenance Mode</h3>
-                <p style="margin-bottom:14px;">Pause services to perform safe maintenance. Reversible at any time.</p>
-                <div class="stat-item" style="margin-bottom:14px;"><span>Status</span> <span id="st-maint" class="skeleton sk-mid"></span></div>
-                <div style="display:flex; gap:10px;">
-                    <button onclick="toggleMaintenance('on')" style="flex:1">Enable</button>
-                    <button onclick="toggleMaintenance('off')" style="flex:1">Disable</button>
-                </div>
-            </div>
-
-            <div class="card" style="grid-column: 1 / -1;">
-                <h3>Updates</h3>
-                <div class="updates-row">
-                    <div>
-                        <label>App update</label>
-                        <div style="display:flex; align-items:center; gap:10px;">
-                            <button id="btn-check-update" onclick="checkManagerUpdate()" style="flex-shrink:0;">Check now</button>
-                            <button id="btn-do-update" class="btn-primary" onclick="doManagerUpdate()" style="display:none;">Install update</button>
-                            <span id="update-msg" style="font-size: 0.88em; color:var(--text-dim);"></span>
-                        </div>
-                    </div>
-                    <div>
-                        <label>System update channel</label>
-                        <div style="display:flex; gap:10px;">
-                            <select id="update-channel" onchange="resetUpdateUI()" style="margin-bottom:0; flex:2;">
-                                <option value="stable">Stable (Releases)</option>
-                                <option value="beta">Beta (Main Branch)</option>
-                            </select>
-                            <button onclick="triggerAction('/api/upgrade', 'System Upgrade')" style="flex:1;">Run OS upgrade</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
@@ -962,6 +913,102 @@
             </div>
 
 
+            <div class="card" {% if not has_gpu %}style="opacity:0.55; pointer-events:none;"{% endif %}>
+                <h3>Personal AI Assistant{% if not has_gpu %} <span class="status-badge status-unknown">GPU Required</span>{% endif %}</h3>
+                <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local.{% if has_gpu %} Live status appears on the Status tab.{% endif %}</p>
+
+                {% if has_gpu %}
+                <div id="ai-model-selector" style="display:none;">
+                    <label>AI model</label>
+                    <select id="ai-model-select" onchange="onModelSelectChange()" style="margin-bottom:10px;"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
+                </div>
+
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px;">
+                    <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
+                    <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
+                </div>
+                {% else %}
+                <p style="color:var(--text-dim); font-size:0.9em;">
+                    This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
+                </p>
+                {% endif %}
+            </div>
+
+            <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
+                <h3>HomeBrain Vault</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    Self-hosted password manager. Live status is on the Status tab; this card holds first-time setup, admin actions, and encrypted-document storage.
+                </p>
+
+                <div id="vault-bootstrap" style="display:none; margin-bottom:14px; padding:12px; border:1px dashed var(--border); border-radius:var(--radius-input); background:var(--surface-2);">
+                    <strong>First-time setup</strong>
+                    <p style="font-size:0.88em; color:var(--text-dim); margin:6px 0 10px 0;">
+                        Create the first vault account. Signups are disabled automatically afterwards.
+                    </p>
+                    <div style="display:flex; gap:8px;">
+                        <input type="email" id="vault-bootstrap-email" placeholder="you@home" style="flex:1; margin-bottom:0;">
+                        <button class="btn-primary" onclick="vaultBootstrap()" style="flex-shrink:0;">Create user</button>
+                    </div>
+                    <small id="vault-bootstrap-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+                </div>
+
+                <div class="link-row">
+                    <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
+                    {% if deployment_mode == 'local' %}
+                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
+                    {% endif %}
+                </div>
+
+                <hr style="margin:18px 0; border:none; border-top:1px solid var(--border);">
+
+                <strong style="display:block; margin-bottom:4px;">Encrypted documents</strong>
+                <p style="margin:0 0 12px 0; color:var(--text-dim); font-size:0.88em;">
+                    Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.
+                </p>
+                <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
+                <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
+                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                    <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()">Set up encrypted folder</button>
+                    <a id="vault-docs-open" href="#" target="_blank" class="link-out" style="display:none;">Open in Nextcloud<span aria-hidden="true">↗</span></a>
+                </div>
+                <small id="vault-docs-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
+            </div>
+
+            <div class="card" style="grid-column: 1 / -1;">
+                <h3>Maintenance &amp; updates</h3>
+
+                <div class="stat-item"><span>Maintenance mode</span> <span id="st-maint" class="skeleton sk-mid"></span></div>
+                <p style="margin:6px 0 10px 0; color:var(--text-dim); font-size:0.88em;">Pause services for safe maintenance. Reversible at any time.</p>
+                <div style="display:flex; gap:10px; margin-bottom:18px;">
+                    <button onclick="toggleMaintenance('on')" style="flex:1">Enable</button>
+                    <button onclick="toggleMaintenance('off')" style="flex:1">Disable</button>
+                </div>
+
+                <hr style="margin:18px 0; border:none; border-top:1px solid var(--border);">
+
+                <div class="updates-row">
+                    <div>
+                        <label>App update</label>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <button id="btn-check-update" onclick="checkManagerUpdate()" style="flex-shrink:0;">Check now</button>
+                            <button id="btn-do-update" class="btn-primary" onclick="doManagerUpdate()" style="display:none;">Install update</button>
+                            <span id="update-msg" style="font-size: 0.88em; color:var(--text-dim);"></span>
+                        </div>
+                    </div>
+                    <div>
+                        <label>System update channel</label>
+                        <div style="display:flex; gap:10px;">
+                            <select id="update-channel" onchange="resetUpdateUI()" style="margin-bottom:0; flex:2;">
+                                <option value="stable">Stable (Releases)</option>
+                                <option value="beta">Beta (Main Branch)</option>
+                            </select>
+                            <button onclick="triggerAction('/api/upgrade', 'System Upgrade')" style="flex:1;">Run OS upgrade</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div class="card">
                 <h3>System Configuration</h3>
                 <p>Advanced hardware and task management.</p>
@@ -1010,46 +1057,6 @@
                 </table>
             </div>
 
-            <div class="card" id="vault-config-card" style="grid-column: 1 / -1;">
-                <h3>Encrypted documents</h3>
-                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
-                    Nextcloud end-to-end encryption for large secret files (passport scans, tax PDFs). Vault attachments stay best for small per-credential files.
-                </p>
-                <div class="stat-item"><span>E2EE app</span> <span id="vault-docs-app" class="status-badge status-unknown">&hellip;</span></div>
-                <div class="stat-item"><span>Folder</span> <span id="vault-docs-folder" class="status-badge status-unknown">&hellip;</span></div>
-                <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-                    <button id="vault-docs-setup-btn" onclick="vaultDocsSetup()">Set up encrypted folder</button>
-                    <a id="vault-docs-open" href="#" target="_blank" class="link-out" style="display:none;">Open in Nextcloud<span aria-hidden="true">↗</span></a>
-                </div>
-                <small id="vault-docs-msg" style="display:block; margin-top:8px; color:var(--text-dim);"></small>
-            </div>
-
-            {% if has_gpu %}
-            <div class="card">
-                <h3>Personal AI Assistant</h3>
-                <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local. Live status appears on the Status tab.</p>
-
-                <div id="ai-model-selector" style="display:none;">
-                    <label>AI model</label>
-                    <select id="ai-model-select" onchange="onModelSelectChange()" style="margin-bottom:10px;"></select>
-                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
-                </div>
-
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px;">
-                    <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
-                    <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
-                </div>
-            </div>
-            {% else %}
-            <div class="card" style="opacity: 0.55; pointer-events: none;">
-                <h3>Personal AI Assistant <span class="status-badge status-unknown">GPU Required</span></h3>
-                <p>Run a fully private AI assistant on your device. Inference and chat stay entirely local.</p>
-                <p style="color:var(--hb-text-dim); font-size:0.9em; margin-top:10px;">
-                    This device does not have a compatible GPU. AI features require a discrete graphics processor (AMD, NVIDIA, or Intel integrated GPU with DRM support).
-                </p>
-            </div>
-            {% endif %}
-            
             <div class="card" style="grid-column: 1 / -1;">
                 <h3>FTP Server <span style="font-weight:400; color:var(--text-dim); font-size:0.85em;">— for camera uploads</span></h3>
                 <p style="margin-bottom:18px;">Create dedicated FTP accounts that map to Nextcloud users.</p>
@@ -1513,10 +1520,14 @@
                 }
 
                 // First-run prompt: container running, no users yet, signups still open.
+                const showBootstrap = v.signups_allowed && (v.users === 0 || v.users === null) && v.container && v.container !== 'stopped';
                 const bootstrap = document.getElementById('vault-bootstrap');
-                if (bootstrap) {
-                    const showBootstrap = v.signups_allowed && (v.users === 0 || v.users === null) && v.container && v.container !== 'stopped';
-                    bootstrap.style.display = showBootstrap ? '' : 'none';
+                if (bootstrap) bootstrap.style.display = showBootstrap ? '' : 'none';
+                // Status-tab "Configure →" link becomes a "Set up →" CTA when bootstrap is needed.
+                const cfgLink = document.getElementById('vault-configure-link');
+                if (cfgLink) {
+                    cfgLink.innerHTML = (showBootstrap ? 'Set up' : 'Configure') + '<span aria-hidden="true">→</span>';
+                    cfgLink.style.outline = showBootstrap ? '2px solid var(--accent)' : '';
                 }
             } catch (e) { /* silent */ }
         }
