@@ -25,15 +25,29 @@ app = Flask(__name__)
 
 # --- GPU Detection ---
 def has_gpu() -> bool:
-    """Check if a GPU is available. Reads HAS_GPU from env, falls back to /dev/dri probe."""
+    """Check if an AI-capable compute GPU is available.
+
+    Reads HAS_GPU from env when set explicitly. Otherwise probes
+    /sys/class/drm/renderD*/device/driver and only accepts compute-capable
+    drivers (amdgpu / nvidia / i915 / xe). Display-only GPUs like the
+    Raspberry Pi VideoCore (v3d/vc4) are rejected — they expose a render
+    node but cannot run llama.cpp inference, and treating them as a GPU
+    leaves the dashboard's AI cards stuck in skeleton state.
+    """
     val = os.environ.get("HAS_GPU", "").lower()
     if val in ("true", "1", "yes"):
         return True
     if val in ("false", "0", "no"):
         return False
-    # Fallback: probe /dev/dri directly (for existing installs without HAS_GPU in .env)
     import glob
-    return bool(glob.glob("/dev/dri/renderD*"))
+    ai_drivers = {"amdgpu", "nvidia", "i915", "xe"}
+    for path in glob.glob("/sys/class/drm/renderD*/device/driver"):
+        try:
+            if os.path.basename(os.readlink(path)) in ai_drivers:
+                return True
+        except OSError:
+            continue
+    return False
 
 # Cache for delta-based GPU compute utilisation (avoids relying on gpu_busy_percent,
 # which reports spurious 92-100 % on GFX12/RDNA4/Navi44 hardware regardless of load).
