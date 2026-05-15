@@ -207,48 +207,38 @@ def _has_openclaw() -> bool:
     return shutil.which("openclaw") is not None
 
 
-# `openclaw mcp show` is implemented by spawning the OpenClaw Node CLI,
-# which in turn touches each configured MCP server to enumerate its tools —
-# each invocation can leave hundreds of MB of resident state and 600-700MB
-# child Node processes that don't tear down cleanly.
+# Wiring state lives in ~/.openclaw/openclaw.json under .mcp.servers — a
+# plain key/value map of name → server-spec. The integrations status
+# endpoint only needs to know which names are present, so we read the
+# JSON directly instead of shelling out to `openclaw mcp show`.
 #
-# integration_status() called _wired_in_openclaw() once per integration,
-# i.e. 5× per /api/integrations/status request, and the dashboard polls
-# that endpoint every 15 s. With even a single browser tab open the box
-# was forking a steady stream of openclaw children faster than they
-# could exit, marching to OOM (see project_clean_provision_e2e memo).
+# Why this matters: shelling to the CLI for a read every 15 s (×5
+# integrations per /api/integrations/status request) was:
+#   - 15-25 s per CLI invocation in practice (gets slower under load)
+#   - leaking 6+ orphaned Node child processes per call (the CLI spawns
+#     each MCP server to enumerate tools, and those children detach)
+#   - the direct cause of two OOM cascades on .58 today
+# A file read is sub-millisecond and has no side effects.
 #
-# Membership in `openclaw mcp show` only changes when we explicitly wire
-# or unwire via mcp_set/mcp_unset, so cache the output with a short TTL
-# and invalidate on writes.
-_MCP_SHOW_CACHE: dict[str, Any] = {"ts": 0.0, "value": ""}
-_MCP_SHOW_TTL_SECONDS = 5.0
+# We *do* still keep `_openclaw_mcp_set` / `_openclaw_mcp_unset`
+# shelling out, because those need to invoke the CLI's atomic write
+# path (config validation + reconciliation), and they only run on
+# explicit user action — not on every status poll.
+_OPENCLAW_CONFIG_PATH = os.path.join(OPENCLAW_DIR, "openclaw.json")
 
 
-def _openclaw_mcp_show() -> str:
-    if not _has_openclaw():
-        return ""
-    now = time.time()
-    if now - _MCP_SHOW_CACHE["ts"] < _MCP_SHOW_TTL_SECONDS:
-        return _MCP_SHOW_CACHE["value"]
+def _openclaw_wired_names() -> set[str]:
+    """Read the set of currently-wired MCP server names from
+    `~/.openclaw/openclaw.json`. Returns an empty set if the file is
+    missing or unreadable — callers treat that as "nothing wired,"
+    which matches the dashboard's existing semantics."""
     try:
-        out = subprocess.check_output(
-            ["sudo", "-u", "homebrain", "openclaw", "mcp", "show"],
-            stderr=subprocess.DEVNULL, timeout=5,
-        ).decode()
-    except Exception:
-        out = ""
-    _MCP_SHOW_CACHE["ts"] = now
-    _MCP_SHOW_CACHE["value"] = out
-    return out
-
-
-def _invalidate_mcp_show_cache() -> None:
-    """Force the next _openclaw_mcp_show() to spawn a fresh CLI call.
-    Call this after any mcp set / unset so the cached wiring view does
-    not lag behind a write the user just performed."""
-    _MCP_SHOW_CACHE["ts"] = 0.0
-    _MCP_SHOW_CACHE["value"] = ""
+        with open(_OPENCLAW_CONFIG_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return set()
+    servers = data.get("mcp", {}).get("servers", {})
+    return set(servers.keys()) if isinstance(servers, dict) else set()
 
 
 def _openclaw_mcp_set(name: str, spec: dict) -> tuple[bool, str]:
@@ -260,7 +250,6 @@ def _openclaw_mcp_set(name: str, spec: dict) -> tuple[bool, str]:
              name, json.dumps(spec)],
             stderr=subprocess.STDOUT, timeout=15,
         )
-        _invalidate_mcp_show_cache()
         return True, ""
     except subprocess.CalledProcessError as e:
         return False, f"openclaw mcp set failed: {e}"
@@ -276,8 +265,6 @@ def _openclaw_mcp_unset(name: str) -> None:
         )
     except Exception:
         pass
-    finally:
-        _invalidate_mcp_show_cache()
 
 
 def _openclaw_daemon_restart() -> None:
@@ -552,7 +539,7 @@ def remove_email_account(name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _wired_in_openclaw(name: str) -> bool:
-    return name in _openclaw_mcp_show()
+    return name in _openclaw_wired_names()
 
 
 def integration_status(key: str) -> dict:
