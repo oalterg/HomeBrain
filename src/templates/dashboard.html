@@ -1188,8 +1188,12 @@
         
             // Initial Fetch
             try {
-                // Parallel fetch for speed
-                await Promise.all([fetchStatus(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh()]);
+                // Parallel fetch for speed. loadSystemConfig drives the AI
+                // status badges in the Status tab (Inference Engine, AI
+                // Agent, Whisper) — fetching it at init means those rows
+                // populate immediately instead of staying skeleton until
+                // someone opens the Settings tab.
+                await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
@@ -1197,6 +1201,7 @@
 
             // Start Intervals
             setInterval(fetchStatus, 5000);
+            setInterval(loadSystemConfig, 10000); // AI state doesn't churn — 10s is enough
             setInterval(pollTask, 2000);
             setInterval(fetchVaultStatus, 10000);
             setInterval(vaultDocsRefresh, 30000);
