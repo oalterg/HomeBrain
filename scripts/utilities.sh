@@ -194,22 +194,6 @@ get_system_config_status() {
         fi
     fi
 
-    # WhatsApp channel link status.
-    # Avoid `openclaw channels status --probe` here — `--probe` activates the
-    # WhatsApp channel runtime (Baileys socket) and the agent runtime
-    # backends on every dashboard refresh. That's the source of the
-    # "GPU fan spins on every status poll" UX bug. The link state is just a
-    # file presence check on the credentials dir.
-    local wa_status="disabled"
-    if [[ "$ai_status" != "not_installed" ]]; then
-        local wa_creds_dir="${HOMEBRAIN_HOME}/.openclaw/credentials/whatsapp"
-        if [[ -d "$wa_creds_dir" ]] && [[ -n "$(ls -A "$wa_creds_dir" 2>/dev/null)" ]]; then
-            wa_status="linked"
-        else
-            wa_status="not_linked"
-        fi
-    fi
-
     # whisper-server + proxy (speech-to-text)
     local whisper_status="not_installed"
     if [[ -x "${HOMEBRAIN_HOME}/ai-runtime/whisper-server/whisper-server" ]]; then
@@ -222,7 +206,7 @@ get_system_config_status() {
     fi
 
     local current_model="${AI_MODEL_ID:-}"
-    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whatsapp\": \"$wa_status\", \"whisper\": \"$whisper_status\", \"ai_model_id\": \"$current_model\"}"
+    echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whisper\": \"$whisper_status\", \"ai_model_id\": \"$current_model\"}"
 }
 
 # --- Helper: Install Dependencies ---
