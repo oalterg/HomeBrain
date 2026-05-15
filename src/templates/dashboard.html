@@ -495,7 +495,9 @@
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
                     <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
                     <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
+                    {% if has_gpu %}
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
+                    {% endif %}
                 </div>
             </div>
 
