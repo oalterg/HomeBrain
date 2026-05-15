@@ -207,16 +207,48 @@ def _has_openclaw() -> bool:
     return shutil.which("openclaw") is not None
 
 
+# `openclaw mcp show` is implemented by spawning the OpenClaw Node CLI,
+# which in turn touches each configured MCP server to enumerate its tools —
+# each invocation can leave hundreds of MB of resident state and 600-700MB
+# child Node processes that don't tear down cleanly.
+#
+# integration_status() called _wired_in_openclaw() once per integration,
+# i.e. 5× per /api/integrations/status request, and the dashboard polls
+# that endpoint every 15 s. With even a single browser tab open the box
+# was forking a steady stream of openclaw children faster than they
+# could exit, marching to OOM (see project_clean_provision_e2e memo).
+#
+# Membership in `openclaw mcp show` only changes when we explicitly wire
+# or unwire via mcp_set/mcp_unset, so cache the output with a short TTL
+# and invalidate on writes.
+_MCP_SHOW_CACHE: dict[str, Any] = {"ts": 0.0, "value": ""}
+_MCP_SHOW_TTL_SECONDS = 5.0
+
+
 def _openclaw_mcp_show() -> str:
     if not _has_openclaw():
         return ""
+    now = time.time()
+    if now - _MCP_SHOW_CACHE["ts"] < _MCP_SHOW_TTL_SECONDS:
+        return _MCP_SHOW_CACHE["value"]
     try:
-        return subprocess.check_output(
+        out = subprocess.check_output(
             ["sudo", "-u", "homebrain", "openclaw", "mcp", "show"],
             stderr=subprocess.DEVNULL, timeout=5,
         ).decode()
     except Exception:
-        return ""
+        out = ""
+    _MCP_SHOW_CACHE["ts"] = now
+    _MCP_SHOW_CACHE["value"] = out
+    return out
+
+
+def _invalidate_mcp_show_cache() -> None:
+    """Force the next _openclaw_mcp_show() to spawn a fresh CLI call.
+    Call this after any mcp set / unset so the cached wiring view does
+    not lag behind a write the user just performed."""
+    _MCP_SHOW_CACHE["ts"] = 0.0
+    _MCP_SHOW_CACHE["value"] = ""
 
 
 def _openclaw_mcp_set(name: str, spec: dict) -> tuple[bool, str]:
@@ -228,6 +260,7 @@ def _openclaw_mcp_set(name: str, spec: dict) -> tuple[bool, str]:
              name, json.dumps(spec)],
             stderr=subprocess.STDOUT, timeout=15,
         )
+        _invalidate_mcp_show_cache()
         return True, ""
     except subprocess.CalledProcessError as e:
         return False, f"openclaw mcp set failed: {e}"
@@ -243,6 +276,8 @@ def _openclaw_mcp_unset(name: str) -> None:
         )
     except Exception:
         pass
+    finally:
+        _invalidate_mcp_show_cache()
 
 
 def _openclaw_daemon_restart() -> None:
