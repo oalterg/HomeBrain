@@ -2741,23 +2741,134 @@ from flask import render_template_string
 @app.errorhandler(401)
 def custom_401(e):
     # Dynamic Title based on state
-    title = "🔐 Master Access" if is_setup_complete() else "🔐 Factory Access"
+    title = "Master Access" if is_setup_complete() else "Factory Access"
     hint = "Enter your Master Admin Password." if is_setup_complete() else "Enter the Factory Password found on your device label."
 
+    # Self-contained on purpose — this 401 surface must work even if every
+    # template file is broken. Tokens hand-picked to match _theme.html light
+    # mode so the page reads consistently with the rest of the dashboard.
     resp = Response(render_template_string("""
     <!DOCTYPE html>
-    <html><head><title>HomeBrain Access</title>
+    <html lang="en" data-theme="light"><head><title>HomeBrain Access</title>
+    <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
-    <style>body{max-width:400px;margin:10% auto;text-align:center;background:#121212;color:#eee}</style>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('hb-theme');
+          var theme = (stored === 'dark' || stored === 'light') ? stored : 'light';
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      :root, :root[data-theme="light"] {
+        --bg:#f4f6f3; --surface:#ffffff; --text:#0f1813; --text-dim:#5b6660;
+        --border:#d6dbd3; --accent:#16a34a; --accent-hover:#128039;
+        --accent-ring:rgba(22,163,74,0.28); --danger:#b91c1c;
+        color-scheme: light;
+      }
+      :root[data-theme="dark"] {
+        --bg:#0e1311; --surface:#181d1a; --text:#e8ede9; --text-dim:#9aa39d;
+        --border:#2a3128; --accent:#2ecc71; --accent-hover:#27b765;
+        --accent-ring:rgba(46,204,113,0.32); --danger:#ef4444;
+        color-scheme: dark;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .card {
+        width: 100%;
+        max-width: 380px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 32px 28px;
+        box-shadow: 0 1px 0 rgba(15,24,19,0.02), 0 6px 24px rgba(15,24,19,0.06);
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 6px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p.hint {
+        margin: 0 0 22px;
+        font-size: 0.9rem;
+        color: var(--text-dim);
+      }
+      input[type="password"] {
+        width: 100%;
+        padding: 11px 13px;
+        font-size: 0.95rem;
+        font-family: inherit;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        outline: none;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+      input[type="password"]:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+      button {
+        width: 100%;
+        margin-top: 14px;
+        padding: 11px 13px;
+        font-size: 0.95rem;
+        font-family: inherit;
+        font-weight: 600;
+        background: var(--accent);
+        color: #ffffff;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 120ms ease;
+      }
+      button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+      button:active { transform: translateY(1px); }
+      .err {
+        margin: 14px 0 0;
+        font-size: 0.85rem;
+        color: var(--danger);
+        min-height: 1.1em;
+      }
+    </style>
     </head><body>
-    <h2>{{ title }}</h2>
-    <p>{{ hint }}</p>
-    <form onsubmit="event.preventDefault(); fetch('/login', {method:'POST', body: new FormData(this)})
-    .then(r=>r.json()).then(d=>{if(d.status=='success')location.reload();else alert(d.error)})">
-    <input type="password" name="password" placeholder="Password" required autofocus style="margin-bottom:15px; width:100%; padding:10px;">
-    <button type="submit" style="width:100%;">Unlock Manager</button>
-    </form>
+    <main class="card">
+      <h1>{{ title }}</h1>
+      <p class="hint">{{ hint }}</p>
+      <form id="f" autocomplete="on">
+        <input type="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+        <button type="submit">Unlock</button>
+        <p class="err" id="err"></p>
+      </form>
+    </main>
+    <script>
+      document.getElementById('f').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const err = document.getElementById('err');
+        err.textContent = '';
+        try {
+          const r = await fetch('/login', { method: 'POST', body: new FormData(e.target) });
+          const d = await r.json();
+          if (d.status === 'success') { location.reload(); }
+          else { err.textContent = d.error || 'Login failed'; }
+        } catch (ex) {
+          err.textContent = 'Network error — try again';
+        }
+      });
+    </script>
     </body></html>
     """, title=title, hint=hint), 401)
     
