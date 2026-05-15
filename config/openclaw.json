@@ -118,34 +118,21 @@
     "telegram": {
       "enabled": false,
       "dmPolicy": "allowlist",
-      "allowFrom": [],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
+      "groupPolicy": "allowlist"
     },
     "signal": {
       "enabled": false,
       "dmPolicy": "allowlist",
-      "allowFrom": [],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
+      "groupPolicy": "allowlist"
     },
     "matrix": {
       "enabled": false,
-      "dmPolicy": "allowlist",
-      "allowFrom": [],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
+      "groupPolicy": "allowlist"
     },
     "nextcloud-talk": {
       "enabled": false,
       "dmPolicy": "allowlist",
-      "allowFrom": [],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
+      "groupPolicy": "allowlist"
     }
   },
   "gateway": {
