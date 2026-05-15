@@ -927,6 +927,7 @@
 
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px;">
                     <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
+                    <span id="openclaw-lan-only" style="display:none; color:var(--text-dim); font-size:0.85em;">OpenClaw web is on your home network &mdash; from outside, use a messenger channel.</span>
                     <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
                 </div>
             </div>
@@ -1144,6 +1145,21 @@
     <script>
         let currentLogSource = 'manager';
         let rawLogData = ""; // Store raw text for client-side filtering
+
+        // True when `host` looks like a LAN-only hostname the box should be
+        // directly reachable on (loopback, RFC1918, mDNS .local). Used to
+        // decide whether to expose links to host-network ports like the
+        // OpenClaw gateway on :18789, which aren't tunnelled by Pangolin.
+        function isLanHostname(host) {
+            if (!host) return true;
+            host = host.toLowerCase();
+            if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return true;
+            if (host.endsWith('.local')) return true;
+            if (/^10\./.test(host)) return true;
+            if (/^192\.168\./.test(host)) return true;
+            if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(host)) return true;
+            return false;
+        }
 
         // --- Global Error Capture (Client-Side Logging) ---
         window.onerror = function(msg, url, line) {
@@ -1853,10 +1869,16 @@
             ocEl.innerText = openclawStatus === 'starting' ? 'STARTING' : oTxt;
             ocEl.dataset.val = openclawStatus;
 
-            // OpenClaw link (only when running) — used in Settings card and Status quick-launch row
+            // OpenClaw link (only when running) — used in Settings card and Status quick-launch row.
+            // The gateway lives on host port 18789 (not in docker), so it's only reachable when
+            // the dashboard is being viewed over the home LAN. From a remote (Pangolin) browser
+            // the port is not tunnelled, so we hide the link and surface a short explainer
+            // instead. Messenger channels (WhatsApp/Signal/…) cover the remote case.
             const linkAnchor = document.getElementById('openclaw-link-anchor');
             const launchAnchor = document.getElementById('openclaw-launch');
-            if (openclawStatus === 'running') {
+            const lanOnlyHint = document.getElementById('openclaw-lan-only');
+            const lanReachable = isLanHostname(location.hostname);
+            if (openclawStatus === 'running' && lanReachable) {
                 // Pre-authenticate the link via URL fragment so the token is never
                 // sent to the server in logs. OpenClaw 2026.3.7+ uses `#token=`.
                 // Older versions don't support fragments — user will be prompted
@@ -1877,9 +1899,17 @@
                     });
                 if (linkAnchor) linkAnchor.style.display = '';
                 if (launchAnchor) launchAnchor.style.display = '';
+                if (lanOnlyHint) lanOnlyHint.style.display = 'none';
+            } else if (openclawStatus === 'running') {
+                // Remote browser: gateway port not tunnelled. Hide the direct link
+                // and explain why instead of leading to a broken URL.
+                if (linkAnchor) linkAnchor.style.display = 'none';
+                if (launchAnchor) launchAnchor.style.display = 'none';
+                if (lanOnlyHint) lanOnlyHint.style.display = '';
             } else {
                 if (linkAnchor) linkAnchor.style.display = 'none';
                 if (launchAnchor) launchAnchor.style.display = 'none';
+                if (lanOnlyHint) lanOnlyHint.style.display = 'none';
             }
 
             // Model selector (show when not installed or when running/disabled)
