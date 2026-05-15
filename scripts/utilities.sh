@@ -1220,17 +1220,30 @@ setup_openclaw() {
 
     # --- [3/3] Register and start daemon ---
     log_info "[3/3] Registering and starting daemon..."
-    run_as_admin openclaw daemon install 2>/dev/null || true
+    # `--force` overwrites a stale systemd unit. Without it `daemon install`
+    # short-circuits with "service already enabled" and the next `daemon start`
+    # then exec's whatever path the previous unit pointed at — which silently
+    # breaks after an OpenClaw upgrade or a path move.
+    run_as_admin openclaw daemon install --force 2>/dev/null || true
     run_as_admin openclaw daemon start \
-        || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install"; return 1; }
+        || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install --force"; return 1; }
 
-    # Verify startup (up to 30 s)
+    # Verify startup (up to 60 s) by probing the gateway's TCP port directly.
+    # The old check grepped `openclaw gateway status` for keywords, but that
+    # command reports the *unit-registered* state, not the actual process
+    # health — a crash-looping daemon with a stale unit still made the grep
+    # match and "OpenClaw is running" got logged for a port that was never
+    # bound. /dev/tcp is bash-native and avoids depending on curl/ss/nc here.
+    # 60 s headroom for first-install plugin bundling (acpx, browser, whatsapp
+    # each fetch their bundled deps before the gateway binds).
+    local oc_port="${OPENCLAW_PORT:-18789}"
     local retries=0
-    while [[ $retries -lt 15 ]]; do
-        if run_as_admin openclaw gateway status 2>/dev/null | grep -qi "running\|active\|online"; then
+    while [[ $retries -lt 30 ]]; do
+        if (exec 3<>/dev/tcp/127.0.0.1/${oc_port}) 2>/dev/null; then
+            exec 3<&- 3>&-
             local ip
             ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-            log_info "OpenClaw is running. Access at http://${ip}:18789"
+            log_info "OpenClaw is running. Access at http://${ip}:${oc_port}"
             log_info "=== OpenClaw setup complete ==="
             return 0
         fi
@@ -1238,8 +1251,9 @@ setup_openclaw() {
         ((retries++))
     done
 
-    log_error "OpenClaw did not report as running within 30 s."
+    log_error "OpenClaw gateway did not bind to :${oc_port} within 60 s."
     log_error "Check status with: sudo -u ${HOMEBRAIN_USER} openclaw gateway status"
+    log_error "Or the journal:    sudo -u ${HOMEBRAIN_USER} journalctl --user -u openclaw-gateway -n 50"
     return 1
 }
 
