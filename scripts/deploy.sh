@@ -17,6 +17,28 @@ load_env
 # --- 0a. Verify HomeBrain OS user and group membership ---
 ensure_homebrain_user
 
+# --- 0a.1. Clear stale host bind-mount data on fresh installs ---
+# `docker compose down -v` wipes named volumes but leaves host bind mounts.
+# When re-provisioning, leftover /home/homebrain/{nextcloud,vault}-data makes
+# the Nextcloud entrypoint loop with "Login is invalid because files already
+# exist for this user" until deploy.sh's install-status wait times out.
+#
+# A fresh install is identified by the absence of $INSTALL_DIR/.setup_complete;
+# under that condition any data in these bind-mount dirs is by definition
+# stale (no admin password has ever been claimed). On a re-deploy of a working
+# install (.setup_complete present) we MUST NOT wipe — that would destroy
+# real user data.
+if [[ ! -f "$INSTALL_DIR/.setup_complete" ]]; then
+    nc_data_dir="${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}"
+    vault_data_dir="${VAULT_DATA_DIR:-/home/homebrain/vault-data}"
+    for d in "$nc_data_dir" "$vault_data_dir"; do
+        if [[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
+            log_info "Fresh install: clearing stale bind-mount data at $d"
+            rm -rf -- "$d"
+        fi
+    done
+fi
+
 # --- 0b. Migrate legacy /home/admin data to /home/homebrain (no-op on fresh installs) ---
 bash "$SCRIPT_DIR/utilities.sh" migrate || log_warn "Migration step failed (non-fatal on fresh installs)."
 
