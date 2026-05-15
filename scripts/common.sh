@@ -154,7 +154,11 @@ update_env_var() {
             safe_val=$(printf '%s\n' "$value" | sed -e 's/[\/&]/\\&/g')
             sed -i "s|^${key}=.*|${key}='${safe_val}'|" "$ENV_FILE"
         else
-            # If key missing, append it
+            # If key missing, append it. Ensure the file ends with a newline
+            # first — .env.template ships without a trailing \n on the last
+            # entry, and `>>` does not prepend one, which merged consecutive
+            # appends onto the previous line (e.g. HA_BASE_URL=VAULT_LAN_IP=…).
+            [[ -s "$ENV_FILE" && "$(tail -c1 "$ENV_FILE")" != $'\n' ]] && echo "" >> "$ENV_FILE"
             echo "${key}='${value}'" >> "$ENV_FILE"
         fi
     else
