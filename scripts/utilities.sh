@@ -1225,6 +1225,14 @@ setup_openclaw() {
     # then exec's whatever path the previous unit pointed at — which silently
     # breaks after an OpenClaw upgrade or a path move.
     run_as_admin openclaw daemon install --force 2>/dev/null || true
+    # The previous (sabotaged or version-mismatched) unit may have crash-
+    # looped its way to systemd's "Start request repeated too quickly"
+    # rate-limit cap before we got here. `--force` rewrites the unit file
+    # but does NOT clear that failed/limited state, and the next start
+    # would then surface as `systemctl restart failed: Job for
+    # openclaw-gateway.service failed`. Reload-and-reset before start.
+    run_as_admin systemctl --user daemon-reload 2>/dev/null || true
+    run_as_admin systemctl --user reset-failed openclaw-gateway 2>/dev/null || true
     run_as_admin openclaw daemon start \
         || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install --force"; return 1; }
 
