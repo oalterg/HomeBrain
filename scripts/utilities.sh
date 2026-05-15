@@ -1256,7 +1256,12 @@ setup_openclaw() {
             return 0
         fi
         sleep 2
-        ((retries++))
+        # NB: `((retries++))` returns exit status 1 when retries is currently 0
+        # (post-increment yields the old value, 0 is falsy in arithmetic
+        # context), which `set -euo pipefail` then treats as fatal — exiting
+        # the script before the first probe iteration even completes. Use the
+        # assignment form which always returns 0.
+        retries=$((retries + 1))
     done
 
     log_error "OpenClaw gateway did not bind to :${oc_port} within 60 s."
