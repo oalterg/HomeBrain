@@ -434,28 +434,6 @@
         .card-header { margin-bottom: 12px; }
         .card-title { margin: 0; color: var(--text-strong); font-size: 1.1em; }
 
-        /* WhatsApp modal */
-        .modal-backdrop {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.55);
-            backdrop-filter: blur(4px);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-        }
-        .modal-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-card);
-            padding: 26px;
-            max-width: 420px;
-            text-align: center;
-            box-shadow: var(--shadow-pop);
-            color: var(--text);
-        }
     </style>
 </head>
 
@@ -565,15 +543,6 @@
                             </span>
                         </div>
                         <span id="sys-integrations-status" class="skeleton sk-mid"></span>
-                    </div>
-                    <div class="row-item" id="whatsapp-row" style="display:none;">
-                        <div class="row-main">
-                            <strong>WhatsApp</strong><span class="row-meta">Chat channel</span>
-                            <small id="whatsapp-link-action" style="display:none; margin-top:4px;">
-                                <a href="#" onclick="startWhatsAppLink(); return false;" style="color:var(--accent);">Link WhatsApp &rarr;</a>
-                            </small>
-                        </div>
-                        <span id="sys-whatsapp-status" class="skeleton sk-mid"></span>
                     </div>
                     <div class="row-item" id="whisper-row" style="display:none;">
                         <div class="row-main"><strong>Speech-to-Text</strong><span class="row-meta">Whisper</span></div>
@@ -1841,14 +1810,14 @@
                     if (pciRow) pciRow.style.display = 'table-row';
                     if (pciEl) updateBadge('sys-pci-status', data.pci, 'gen3');
                 }
-                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whatsapp || 'disabled', data.whisper || 'not_installed');
+                updateAIStatus(data.llama_server || 'not_installed', data.openclaw || 'not_installed', data.ai_model_id, data.whisper || 'not_installed');
 
                 checkRedisStatus();
                 
             } catch(e) { console.error("Sys Config Load Error", e); }
         }
 
-        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, waStatus, whisperStatus) {
+        function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStatus) {
             // No-op on hardware without an AI-capable GPU — the AI Assistant card
             // and its DOM nodes don't exist there.
             if (!document.getElementById('sys-llama-status')) return;
@@ -1942,25 +1911,6 @@
                 btn.disabled = true;
             } else {
                 btn.innerText = 'Enable';
-            }
-
-            // WhatsApp status row
-            const waRow = document.getElementById('whatsapp-row');
-            const waEl = document.getElementById('sys-whatsapp-status');
-            const waAction = document.getElementById('whatsapp-link-action');
-            if (waStatus && waStatus !== 'disabled' && openclawStatus === 'running') {
-                waRow.style.display = '';
-                if (waStatus === 'linked') {
-                    waEl.className = 'status-badge status-running';
-                    waEl.innerText = 'LINKED';
-                    waAction.style.display = 'none';
-                } else {
-                    waEl.className = 'status-badge status-stopped';
-                    waEl.innerText = 'NOT LINKED';
-                    waAction.style.display = 'block';
-                }
-            } else {
-                waRow.style.display = 'none';
             }
 
             // Whisper STT status row
@@ -2584,144 +2534,8 @@
                 .replace(/'/g, "&#039;");
         }
 
-        // --- WhatsApp QR Linking ---
-        let waSocket = null;
-
-        function startWhatsAppLink() {
-            const modal = document.getElementById('whatsapp-qr-modal');
-            modal.style.display = 'flex';
-            const msgEl = document.getElementById('whatsapp-qr-message');
-            const imgEl = document.getElementById('whatsapp-qr-img');
-            msgEl.textContent = 'Connecting to gateway...';
-            imgEl.style.display = 'none';
-
-            fetch('/api/ai/whatsapp/link-token', { credentials: 'include' })
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) { msgEl.textContent = data.error; return; }
-                    connectWhatsAppWs(data.token, data.port);
-                })
-                .catch(() => { msgEl.textContent = 'Failed to get gateway token.'; });
-        }
-
-        function connectWhatsAppWs(token, port) {
-            const host = window.location.hostname;
-            const msgEl = document.getElementById('whatsapp-qr-message');
-            const imgEl = document.getElementById('whatsapp-qr-img');
-
-            waSocket = new WebSocket('ws://' + host + ':' + port);
-            let reqId = 0;
-            let authenticated = false;
-            let connectTimer = null;
-
-            function genId() {
-                // Match OpenClaw's ID format: 8 hex chars
-                var s = '';
-                for (var i = 0; i < 8; i++) s += Math.floor(Math.random()*16).toString(16);
-                return s;
-            }
-
-            function send(method, params) {
-                var id = genId();
-                // OpenClaw gateway uses {type:"req"} framing, NOT JSON-RPC 2.0
-                waSocket.send(JSON.stringify({ type: 'req', id: id, method: method, params: params || {} }));
-                return id;
-            }
-
-            function sendConnect() {
-                if (authenticated) return;
-                send('connect', {
-                    minProtocol: 3, maxProtocol: 3,
-                    client: { id: 'openclaw-control-ui', version: 'control-ui', platform: 'web', mode: 'webchat' },
-                    role: 'operator', scopes: ['operator.admin'],
-                    auth: { token: token },
-                    caps: [],
-                    userAgent: navigator.userAgent,
-                    locale: navigator.language
-                });
-            }
-
-            waSocket.onopen = function() {
-                msgEl.textContent = 'Authenticating with gateway...';
-                // Gateway may or may not send connect.challenge; send connect after 750ms fallback
-                connectTimer = setTimeout(function() { sendConnect(); }, 750);
-            };
-
-            waSocket.onmessage = function(ev) {
-                try {
-                    var msg = JSON.parse(ev.data);
-                    var payload = msg.payload || {};
-
-                    // Handle connect.challenge event
-                    if (msg.type === 'event' && msg.event === 'connect.challenge') {
-                        if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
-                        sendConnect();
-                        return;
-                    }
-
-                    // Skip other events (health, tick, etc.)
-                    if (msg.type === 'event') return;
-
-                    // Handle connect response (type: "res", ok: true, payload.type: "hello-ok")
-                    if (msg.type === 'res' && !authenticated) {
-                        if (msg.ok && payload.protocol) {
-                            authenticated = true;
-                            msgEl.textContent = 'Requesting QR code...';
-                            send('web.login.start', { force: true, timeoutMs: 60000 });
-                        } else {
-                            msgEl.textContent = 'Gateway auth failed: ' + (payload.message || payload.reason || JSON.stringify(payload));
-                        }
-                        return;
-                    }
-
-                    // Handle QR code response
-                    if (msg.type === 'res' && payload.qrDataUrl) {
-                        imgEl.src = payload.qrDataUrl;
-                        imgEl.style.display = 'block';
-                        msgEl.textContent = 'Scan this QR code with WhatsApp';
-                        send('web.login.wait', { timeoutMs: 120000 });
-                        return;
-                    }
-
-                    // Handle successful link
-                    if (msg.type === 'res' && payload.connected) {
-                        imgEl.style.display = 'none';
-                        msgEl.textContent = 'WhatsApp linked successfully!';
-                        setTimeout(closeWhatsAppModal, 2000);
-                        return;
-                    }
-
-                    // Handle errors
-                    if (msg.type === 'res' && !msg.ok) {
-                        msgEl.textContent = payload.message || 'Linking failed.';
-                    }
-                } catch(e) { /* ignore parse errors */ }
-            };
-
-            waSocket.onerror = function() { msgEl.textContent = 'WebSocket connection failed.'; };
-            waSocket.onclose = function() { waSocket = null; if (connectTimer) clearTimeout(connectTimer); };
-        }
-
-        function closeWhatsAppModal() {
-            document.getElementById('whatsapp-qr-modal').style.display = 'none';
-            if (waSocket) { waSocket.close(); waSocket = null; }
-        }
 
         init();
     </script>
-
-    <div id="whatsapp-qr-modal" class="modal-backdrop">
-        <div class="modal-card">
-            <h3 style="margin-top:0; color:var(--text-strong);">Link WhatsApp</h3>
-            <p id="whatsapp-qr-message" style="color:var(--text-dim); font-size:0.9em;">Connecting...</p>
-            <div id="whatsapp-qr-container" style="margin:16px auto; padding: 12px; background:#fff; display:inline-block; border-radius:6px;">
-                <img id="whatsapp-qr-img" style="display:none; max-width:280px; border-radius:4px;" />
-            </div>
-            <p style="font-size:0.82em; color:var(--text-dim);">
-                Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Scan QR code
-            </p>
-            <button onclick="closeWhatsAppModal()" style="margin-top:12px; padding:6px 18px;">Close</button>
-        </div>
-    </div>
 </body>
 </html>
