@@ -176,27 +176,37 @@ get_system_config_status() {
         fi
     fi
 
-    # OpenClaw AI (system service managed by openclaw daemon)
+    # OpenClaw AI (system service managed by openclaw daemon).
+    # Avoid invoking the openclaw CLI here — it spawns Node (~1.5 s per call)
+    # and `gateway status` reports unit-registered state, not actual process
+    # health. The setup_openclaw verify loop (PR #24) already settled on the
+    # cheap, accurate signal: systemd unit is-active + TCP port bound.
     local ai_status="not_installed"
     if command -v openclaw >/dev/null 2>&1; then
-        local oc_output
-        oc_output=$(run_as_admin timeout 15 openclaw gateway status 2>/dev/null || true)
-        if echo "$oc_output" | grep -qi "running\|active\|online"; then
-            ai_status="running"
-        else
-            ai_status="disabled"
+        ai_status="disabled"
+        if run_as_admin systemctl --user is-active --quiet openclaw-gateway 2>/dev/null; then
+            if (exec 3<>/dev/tcp/127.0.0.1/${OPENCLAW_PORT:-18789}) 2>/dev/null; then
+                exec 3<&- 3>&-
+                ai_status="running"
+            else
+                ai_status="starting"
+            fi
         fi
     fi
 
-    # WhatsApp channel link status
+    # WhatsApp channel link status.
+    # Avoid `openclaw channels status --probe` here — `--probe` activates the
+    # WhatsApp channel runtime (Baileys socket) and the agent runtime
+    # backends on every dashboard refresh. That's the source of the
+    # "GPU fan spins on every status poll" UX bug. The link state is just a
+    # file presence check on the credentials dir.
     local wa_status="disabled"
-    if command -v openclaw >/dev/null 2>&1 && [[ "$ai_status" != "not_installed" ]]; then
-        local wa_output
-        wa_output=$(run_as_admin timeout 10 openclaw channels status --probe 2>/dev/null || true)
-        if echo "$wa_output" | grep -qi "whatsapp.*not linked\|whatsapp.*disconnected\|whatsapp.*logged out"; then
-            wa_status="not_linked"
-        elif echo "$wa_output" | grep -qi "whatsapp.*linked\|whatsapp.*connected"; then
+    if [[ "$ai_status" != "not_installed" ]]; then
+        local wa_creds_dir="${HOMEBRAIN_HOME}/.openclaw/credentials/whatsapp"
+        if [[ -d "$wa_creds_dir" ]] && [[ -n "$(ls -A "$wa_creds_dir" 2>/dev/null)" ]]; then
             wa_status="linked"
+        else
+            wa_status="not_linked"
         fi
     fi
 
