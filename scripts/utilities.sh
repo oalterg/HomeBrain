@@ -1081,24 +1081,24 @@ patch_openclaw_config() {
         .channels.whatsapp.allowFrom = (.channels.whatsapp.allowFrom // []) |
         .plugins.entries.whatsapp.enabled = true |
         # Non-destructive migration: ensure additional curated messenger
-        # channels (Telegram, Signal, Matrix, Nextcloud Talk) appear in the
-        # OpenClaw control UI so users can configure credentials there.
-        # Uses jq `//` so an existing user-tuned entry is never overwritten —
-        # we only fill the key when it is missing entirely.
-        # Each channel ships disabled; user enables it from OpenClaw UI after
-        # entering credentials (bot token / linked-device / username+pwd / …).
+        # channels (Telegram, Signal, Matrix, Nextcloud Talk) appear in
+        # the OpenClaw control UI so users can configure credentials.
+        # Uses jq // so an existing user-tuned entry is never overwritten;
+        # we only fill the key when it is missing entirely. Each channel
+        # ships disabled, with the schema-required fields only — extra
+        # properties are rejected by the per-channel schemas
+        # (additionalProperties: false). Matrix uses dm.* nested config
+        # rather than dmPolicy; the others require dmPolicy + groupPolicy.
+        # Defaults to allowlist so an accidentally-enabled channel cannot
+        # DM the agent until the user explicitly allowlists a peer.
         .channels.telegram = (.channels.telegram //
-            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
-             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
         .channels.signal = (.channels.signal //
-            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
-             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
         .channels.matrix = (.channels.matrix //
-            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
-             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+            {"enabled": false, "groupPolicy": "allowlist"}) |
         .channels["nextcloud-talk"] = (.channels["nextcloud-talk"] //
-            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
-             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
         .plugins.entries.telegram = (.plugins.entries.telegram // {"enabled": false}) |
         .plugins.entries.signal = (.plugins.entries.signal // {"enabled": false}) |
         .plugins.entries.matrix = (.plugins.entries.matrix // {"enabled": false}) |
