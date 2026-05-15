@@ -1080,6 +1080,29 @@ patch_openclaw_config() {
         .channels.whatsapp.dmPolicy = "allowlist" |
         .channels.whatsapp.allowFrom = (.channels.whatsapp.allowFrom // []) |
         .plugins.entries.whatsapp.enabled = true |
+        # Non-destructive migration: ensure additional curated messenger
+        # channels (Telegram, Signal, Matrix, Nextcloud Talk) appear in the
+        # OpenClaw control UI so users can configure credentials there.
+        # Uses jq `//` so an existing user-tuned entry is never overwritten —
+        # we only fill the key when it is missing entirely.
+        # Each channel ships disabled; user enables it from OpenClaw UI after
+        # entering credentials (bot token / linked-device / username+pwd / …).
+        .channels.telegram = (.channels.telegram //
+            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
+             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+        .channels.signal = (.channels.signal //
+            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
+             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+        .channels.matrix = (.channels.matrix //
+            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
+             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+        .channels["nextcloud-talk"] = (.channels["nextcloud-talk"] //
+            {"enabled": false, "dmPolicy": "allowlist", "allowFrom": [],
+             "groupPolicy": "allowlist", "debounceMs": 0, "mediaMaxMb": 50}) |
+        .plugins.entries.telegram = (.plugins.entries.telegram // {"enabled": false}) |
+        .plugins.entries.signal = (.plugins.entries.signal // {"enabled": false}) |
+        .plugins.entries.matrix = (.plugins.entries.matrix // {"enabled": false}) |
+        .plugins.entries["nextcloud-talk"] = (.plugins.entries["nextcloud-talk"] // {"enabled": false}) |
         .gateway.controlUi.allowedOrigins = $origins |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |

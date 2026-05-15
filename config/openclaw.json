@@ -114,6 +114,38 @@
       "groupPolicy": "allowlist",
       "debounceMs": 0,
       "mediaMaxMb": 50
+    },
+    "telegram": {
+      "enabled": false,
+      "dmPolicy": "allowlist",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    },
+    "signal": {
+      "enabled": false,
+      "dmPolicy": "allowlist",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    },
+    "matrix": {
+      "enabled": false,
+      "dmPolicy": "allowlist",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
+    },
+    "nextcloud-talk": {
+      "enabled": false,
+      "dmPolicy": "allowlist",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "debounceMs": 0,
+      "mediaMaxMb": 50
     }
   },
   "gateway": {
@@ -149,6 +181,18 @@
     "entries": {
       "whatsapp": {
         "enabled": true
+      },
+      "telegram": {
+        "enabled": false
+      },
+      "signal": {
+        "enabled": false
+      },
+      "matrix": {
+        "enabled": false
+      },
+      "nextcloud-talk": {
+        "enabled": false
       },
       "browser": {
         "enabled": true
