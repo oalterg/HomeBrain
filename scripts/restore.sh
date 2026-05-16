@@ -150,7 +150,8 @@ if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
     log_info "Restoring OpenClaw integration credentials..."
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     for f in ha.token nextcloud.token homebrain.token vault.session \
-             email_accounts.json pending_actions.json; do
+             ha_accounts.json nc_accounts.json email_accounts.json \
+             pending_actions.json; do
         [[ -f "${TMP_DIR}/openclaw_integrations/${f}" ]] || continue
         cp -a "${TMP_DIR}/openclaw_integrations/${f}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
         chmod 600 "${HOMEBRAIN_HOME}/.openclaw/${f}"
