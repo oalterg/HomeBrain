@@ -29,6 +29,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -793,10 +794,18 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         })
 
     # ---- Reconcile (push every spec into openclaw) ------------------------
+    # Fire-and-forget. Each `openclaw mcp set` is a Node CLI invocation
+    # taking ~5-10 s under 2026.5; multiplied across the 4-5 configured
+    # integrations plus the daemon restart, the full sweep regularly
+    # exceeds gunicorn's 30 s worker timeout and returns 500 even though
+    # the underlying work succeeds. Async + immediate ack mirrors the
+    # backup / restore pattern.
     def reconcile():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        return jsonify({"results": reconcile_all_mcp()})
+        threading.Thread(target=reconcile_all_mcp, daemon=True).start()
+        return jsonify({"status": "started",
+                        "message": "Reconcile running in the background."})
 
     # ---- Home Assistant (multi-account) ------------------------------------
     def ha_add():
