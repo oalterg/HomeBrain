@@ -815,13 +815,33 @@
                 <small id="conn-msg" style="display:block; margin-top:6px; min-height:1em; color:var(--text-dim); font-size:0.88em;"></small>
 
                 <div hidden id="details-ha" class="conn-form">
-                    <div style="display:flex; gap:8px;">
-                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaConnect(); }">
-                        <button class="btn-primary" onclick="connHaConnect()">Connect</button>
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:8px;">
+                        <input type="text" id="ha-name"     placeholder="Label (e.g. Home, Cabin)">
+                        <input type="text" id="ha-base-url" placeholder="https://ha.example.com">
+                        <input type="text" id="ha-token-input" placeholder="Long-lived access token (paste from HA → Profile → Security)" style="grid-column:1/-1;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaAdd(); }">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="connHaAdd()">Add</button>
                         <button onclick="closeForm('details-ha')" aria-label="Close">✕</button>
                     </div>
                     <small style="display:block; margin-top:6px; color:var(--text-dim);">
-                        In Home Assistant: Profile → Security → Long-lived access tokens → Create. Paste the token here.
+                        In each Home Assistant instance: Profile → Security → Long-lived access tokens → Create. Add one row per house. The agent picks the right one with the <code>account</code> parameter.
+                    </small>
+                </div>
+
+                <div hidden id="details-nc" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr 2fr; gap:8px;">
+                        <input type="text" id="nc-name"     placeholder="Label (e.g. Personal)">
+                        <input type="text" id="nc-base-url" placeholder="https://nc.example.com">
+                        <input type="text" id="nc-user"     placeholder="Username">
+                        <input type="password" id="nc-token" placeholder="App password (Personal → Security → App passwords)">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="connNcAdd()">Add</button>
+                        <button onclick="closeForm('details-nc')" aria-label="Close">✕</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        For your HomeBrain&rsquo;s Nextcloud, the row offers a one-click <em>Add HomeBrain NC</em> instead. Use this form for external instances.
                     </small>
                 </div>
 
@@ -1342,23 +1362,35 @@
                                 : (it.configured ? '<span class="status-badge status-unknown" title="Saved but not yet picked up by the agent — Re-sync under Troubleshoot">pending sync</span>'
                                                  : '<span class="status-badge status-stopped" title="Not set up yet">not connected</span>');
                     let extras = '';
+                    // Multi-account integrations all surface a per-account
+                    // list under the row title with a small remove button.
                     if (it.key === 'email' && (it.accounts || []).length) {
-                        extras = '<small style="display:block; color:var(--text-dim); margin-top:4px;">' +
-                                 it.accounts.map(a => `${a.name} (${a.user})`).join(' · ') + '</small>';
+                        extras = renderAccountList(it.accounts.map(a => ({
+                            name: a.name, sub: a.user })), 'email');
+                    }
+                    if (it.key === 'homeassistant' && (it.accounts || []).length) {
+                        extras = renderAccountList(it.accounts.map(a => ({
+                            name: a.name, sub: a.base_url })), 'homeassistant');
+                    }
+                    if (it.key === 'nextcloud' && (it.accounts || []).length) {
+                        extras = renderAccountList(it.accounts.map(a => ({
+                            name: a.name, sub: `${a.user || ''} @ ${a.base_url || ''}` })), 'nextcloud');
                     }
                     if (it.key === 'vault' && it.unlocked) {
                         extras = '<small style="display:block; color:var(--accent); margin-top:4px;">unlocked</small>';
                     }
                     const buttons = [];
                     if (it.key === 'nextcloud') {
-                        buttons.push(it.configured
-                            ? `<button onclick="connNcDisconnect()">Disconnect</button>`
-                            : `<button class="btn-primary" onclick="connNcConnect()">Connect</button>`);
+                        const hasLocal = (it.accounts || []).some(a => a.name === 'homebrain');
+                        if (!hasLocal) {
+                            buttons.push(`<button onclick="connNcAddLocal()" title="Auto-create app password against the HomeBrain-shipped Nextcloud">Add HomeBrain NC</button>`);
+                        }
+                        const cta = (it.accounts || []).length > 0 ? 'button' : 'btn-primary button';
+                        buttons.push(`<button class="${cta}" onclick="openDetails('details-nc','nc-name')">Add external NC…</button>`);
                     }
                     if (it.key === 'homeassistant') {
-                        buttons.push(it.configured
-                            ? `<button onclick="connHaDisconnect()">Disconnect</button>`
-                            : `<button class="btn-primary" onclick="openDetails('details-ha','ha-token-input')">Connect…</button>`);
+                        const cls = (it.accounts || []).length > 0 ? '' : 'btn-primary';
+                        buttons.push(`<button class="${cls}" onclick="openDetails('details-ha','ha-name')">Add account…</button>`);
                     }
                     if (it.key === 'email') {
                         const haveAccount = (it.accounts || []).length > 0;
@@ -1404,31 +1436,92 @@
             } catch (e) { msg.innerText = 'Apply failed: ' + e; }
             connRefresh();
         }
-        async function connHaConnect() {
-            const tok = (document.getElementById('ha-token-input') || {}).value || '';
-            if (!tok.trim()) { alert('Paste a HA long-lived access token first.'); return; }
-            const r = await fetch('/api/integrations/homeassistant/connect',
+        // Render an inline per-account list under an integration row.
+        // `kind` selects the remove endpoint (email | homeassistant | nextcloud).
+        function renderAccountList(accounts, kind) {
+            if (!accounts || !accounts.length) return '';
+            const items = accounts.map(a => {
+                const sub = a.sub ? ` <span style="color:var(--text-faint);">— ${a.sub}</span>` : '';
+                return `<span style="display:inline-flex; align-items:center; gap:4px; padding:2px 6px;
+                        background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-pill);
+                        font-size:0.85em;">
+                        <strong>${a.name}</strong>${sub}
+                        <button onclick="connAccountRemove('${kind}','${a.name.replace(/'/g, "\\'")}')"
+                                style="padding:0 4px; background:transparent; border:0; color:var(--text-faint);
+                                       cursor:pointer; font-size:1em;" title="Remove account">✕</button>
+                       </span>`;
+            }).join(' ');
+            return `<div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">${items}</div>`;
+        }
+
+        async function connAccountRemove(kind, name) {
+            if (!confirm(`Remove the ${kind} account "${name}"?`)) return;
+            const path = kind === 'email' ? 'email/remove'
+                       : kind === 'homeassistant' ? 'homeassistant/remove'
+                       : 'nextcloud/remove';
+            const r = await fetch(`/api/integrations/${path}`,
                 { method: 'POST', credentials: 'include',
                   headers: {'Content-Type': 'application/json'},
-                  body: JSON.stringify({ token: tok.trim() })});
+                  body: JSON.stringify({ name })});
+            const d = await r.json().catch(() => ({}));
+            document.getElementById('conn-msg').innerText = r.ok ? `Removed ${kind} account "${name}".` : (d.error || 'Remove failed');
+            connRefresh();
+        }
+
+        async function connHaAdd() {
+            const body = {
+                name: document.getElementById('ha-name').value.trim(),
+                base_url: document.getElementById('ha-base-url').value.trim(),
+                token: document.getElementById('ha-token-input').value.trim(),
+            };
+            if (!body.name || !body.base_url || !body.token) {
+                alert('Label, base URL, and token are required.');
+                return;
+            }
+            const r = await fetch('/api/integrations/homeassistant/add',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify(body)});
             const d = await r.json();
-            document.getElementById('conn-msg').innerText = r.ok ? 'Home Assistant connected.' : (d.error || 'Connect failed');
-            document.getElementById('ha-token-input').value = '';
-            if (r.ok) closeForm('details-ha');
+            document.getElementById('conn-msg').innerText = r.ok ? `Home Assistant account "${body.name}" added.` : (d.error || 'Add failed');
+            if (r.ok) {
+                ['ha-name', 'ha-base-url', 'ha-token-input'].forEach(id => document.getElementById(id).value = '');
+                closeForm('details-ha');
+            }
             connRefresh();
         }
-        async function connHaDisconnect() {
-            await fetch('/api/integrations/homeassistant/disconnect', { method: 'POST', credentials: 'include' });
-            connRefresh();
-        }
-        async function connNcConnect() {
-            const r = await fetch('/api/integrations/nextcloud/connect', { method: 'POST', credentials: 'include' });
+
+        async function connNcAdd() {
+            const body = {
+                name: document.getElementById('nc-name').value.trim(),
+                base_url: document.getElementById('nc-base-url').value.trim(),
+                user: document.getElementById('nc-user').value.trim(),
+                token: document.getElementById('nc-token').value,
+            };
+            if (!body.name || !body.base_url || !body.user || !body.token) {
+                alert('Label, base URL, user, and app password are required.');
+                return;
+            }
+            const r = await fetch('/api/integrations/nextcloud/add',
+                { method: 'POST', credentials: 'include',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify(body)});
             const d = await r.json();
-            document.getElementById('conn-msg').innerText = r.ok ? 'Nextcloud app password created.' : (d.error || 'Connect failed');
+            document.getElementById('conn-msg').innerText = r.ok ? `Nextcloud account "${body.name}" added.` : (d.error || 'Add failed');
+            if (r.ok) {
+                ['nc-name', 'nc-base-url', 'nc-user', 'nc-token'].forEach(id => document.getElementById(id).value = '');
+                closeForm('details-nc');
+            }
             connRefresh();
         }
-        async function connNcDisconnect() {
-            await fetch('/api/integrations/nextcloud/disconnect', { method: 'POST', credentials: 'include' });
+
+        async function connNcAddLocal() {
+            const r = await fetch('/api/integrations/nextcloud/add_local',
+                { method: 'POST', credentials: 'include' });
+            const d = await r.json();
+            document.getElementById('conn-msg').innerText = r.ok
+                ? 'HomeBrain Nextcloud connected as "homebrain".'
+                : (d.error || 'Add failed');
             connRefresh();
         }
         async function connTest(key) {
