@@ -46,9 +46,6 @@
       "models": {
         "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL": {}
       },
-      "llm": {
-        "idleTimeoutSeconds": 0
-      },
       "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"

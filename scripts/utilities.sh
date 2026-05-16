@@ -1071,7 +1071,11 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
-        .agents.defaults.llm.idleTimeoutSeconds = 0 |
+        # OpenClaw 2026.5+ removed agents.defaults.llm; idle-timeout is
+        # configured per-provider via models.providers.<id>.timeoutSeconds
+        # (0 = no idle timeout — which is what we want for a local model
+        # that should stay warm).
+        .models.providers.llamacpp.timeoutSeconds = 0 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
@@ -1228,6 +1232,23 @@ setup_openclaw() {
                 die "OpenClaw npm install failed and no existing openclaw binary found."
             fi
         fi
+    fi
+
+    # --- [1b/3] Install external channel plugins ---
+    # OpenClaw 2026.5+ moved several channel plugins (matrix,
+    # nextcloud-talk, …) out of the core bundle. The dashboard's seed
+    # declares them in plugins.entries so they appear in the control UI
+    # for credential entry; without the plugin code installed, the
+    # gateway emits "plugin not installed" warnings and the channel
+    # cannot connect. Install them via the OpenClaw plugin registry.
+    # Idempotent — `plugins install` is a no-op when the plugin is
+    # already present.
+    if command -v openclaw >/dev/null 2>&1; then
+        for plugin in 'clawhub:@openclaw/matrix' '@openclaw/nextcloud-talk'; do
+            log_info "Ensuring OpenClaw plugin: ${plugin}"
+            run_as_admin timeout 60 openclaw plugins install "$plugin" 2>&1 \
+                | grep -vE '^$' | head -10 || log_warn "plugins install ${plugin} reported issues (non-fatal)"
+        done
     fi
 
     # --- [2/3] Write config ---
