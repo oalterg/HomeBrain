@@ -134,6 +134,41 @@ ARCHIVE_PATH="$BACKUP_MOUNTDIR/homebrain_backup${SUFFIX}_${DATE}.tar.gz"
 
 mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$STAGING_DIR/nc_config" "$STAGING_DIR/ha_config"
 
+# ── Portable instance secrets ───────────────────────────────────────────────
+# These .env entries are NOT per-install identity (MASTER_PASSWORD,
+# VAULT_ADMIN_TOKEN/NONCE, NEWT_* etc. stay with the box). They are
+# derivation keys whose value the user-facing data is bound to:
+#
+#   HOMEBRAIN_EMAIL_KEY    Fernet key used to encrypt every multi-account
+#                          token at rest (email, HA, NC). Restoring the
+#                          *_accounts.json files without this key onto a
+#                          fresh instance would leave the user with
+#                          undecryptable garbage — they'd have to re-enter
+#                          every IMAP password and re-issue every HA LLAT.
+#                          The key itself derives from MASTER_PASSWORD via
+#                          PBKDF2, but since each install has a different
+#                          master pw, the cross-install Fernet key MUST be
+#                          carried with the encrypted blobs.
+#
+#   HOMEBRAIN_SELF_NONCE   Per-install nonce for the self-MCP bearer token
+#                          derivation. Restoring it keeps the bearer stable
+#                          across the migration (no functional impact
+#                          either way — the dashboard re-derives on start
+#                          — but quieter logs).
+#
+# Format: shell-sourceable, NOT a complete .env (we strip everything else).
+INSTANCE_SECRETS_FILE="$STAGING_DIR/instance_secrets.env"
+{
+    [[ -n "${HOMEBRAIN_EMAIL_KEY:-}" ]] && echo "HOMEBRAIN_EMAIL_KEY=${HOMEBRAIN_EMAIL_KEY}"
+    [[ -n "${HOMEBRAIN_SELF_NONCE:-}" ]] && echo "HOMEBRAIN_SELF_NONCE=${HOMEBRAIN_SELF_NONCE}"
+} > "$INSTANCE_SECRETS_FILE"
+if [[ -s "$INSTANCE_SECRETS_FILE" ]]; then
+    chmod 600 "$INSTANCE_SECRETS_FILE"
+    log_info "Portable instance secrets captured for cross-instance restore."
+else
+    rm -f "$INSTANCE_SECRETS_FILE"
+fi
+
 # 5. Stop Services / Enable Maintenance Mode
 log_info "Preparing services..."
 
