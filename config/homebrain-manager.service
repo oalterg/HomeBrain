@@ -7,7 +7,11 @@ StartLimitBurst=5
 [Service]
 User=root
 WorkingDirectory=/opt/homebrain/src
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+# Include /sbin and /usr/sbin so the manager's subprocess calls find
+# admin tools that live there (blkid, mount, mkfs.*, parted, ip, etc.).
+# Debian/Ubuntu root historically gets this PATH; systemd starts services
+# with a stripped one unless we set it explicitly.
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
 ExecStart=/opt/homebrain/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:80 --timeout 30 app:app
 Restart=always
 RestartSec=10
