@@ -1,6 +1,6 @@
 services:
   db:
-    image: mariadb:11.4.9
+    image: mariadb:11.4.10
     restart: unless-stopped
     command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
     volumes:
@@ -22,7 +22,7 @@ services:
       retries: 5
   
   redis:
-    image: redis:8.4.0-alpine
+    image: redis:8.4.3-alpine
     restart: unless-stopped
     volumes:
       - redis_data:/data
@@ -33,7 +33,7 @@ services:
       retries: 5
 
   nextcloud:
-    image: nextcloud:32.0.3-apache
+    image: nextcloud:32.0.9-apache
     restart: unless-stopped
     ports:
       - "${NEXTCLOUD_PORT:-8080}:80"
@@ -85,7 +85,7 @@ services:
     # it on the profile keeps port 8443 free and reduces attack surface.
     profiles:
       - vault-lan-https
-    image: caddy:2.10-alpine
+    image: caddy:2.11.3-alpine
     restart: unless-stopped
     ports:
       - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
@@ -113,7 +113,7 @@ services:
       retries: 5
 
   vaultwarden:
-    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.7}
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.8}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULT_PORT:-8082}:80"
