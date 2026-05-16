@@ -1112,8 +1112,13 @@ def list_drives():
         root_disk = re.sub(r'p?\d+$', '', root_dev)
 
         # Include children (partitions) so we can inspect their mount points.
+        # TRAN exposes the bus transport — "usb", "sata", "nvme", etc. The
+        # `rm` (removable) bit alone is unreliable: many USB SSD enclosures
+        # (P3-1TB, Samsung T5/T7, etc.) report rm=0 because the underlying
+        # SATA controller doesn't advertise removable media. TRAN=usb is
+        # the truthful signal for an externally-attached drive.
         output = subprocess.check_output(
-            "lsblk -J -o NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT", shell=True
+            "lsblk -J -o NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT,TRAN", shell=True
         ).decode()
         data = json.loads(output)
 
@@ -1143,11 +1148,19 @@ def list_drives():
             if dev_name.startswith("/dev/zram") or dev_name.startswith("/dev/loop") or dev_name.startswith("/dev/ram"):
                 continue
 
-            # Layer 2: Skip non-removable drives (RM=0) — internal NVMe/SATA are never removable.
-            # lsblk -J emits `rm` as a JSON bool (true/false) on util-linux >= 2.37
-            # and as a string ("0"/"1") on older versions; accept both.
+            # Layer 2: Accept a drive if EITHER it advertises removable
+            # (rm bit set) OR it is attached via USB transport. The rm
+            # bit is unreliable on USB SSD enclosures that wrap SATA —
+            # they report rm=0 because the underlying SATA controller
+            # doesn't advertise removable media. The transport type is
+            # set by the kernel based on the bus and is reliable.
+            # Older util-linux (<2.37) emits `rm` as a string ("0"/"1");
+            # newer versions emit a JSON bool. Accept both.
             rm = dev.get("rm")
-            if rm not in (True, 1, "1"):
+            tran = dev.get("tran") or ""
+            is_removable = rm in (True, 1, "1")
+            is_usb = tran.lower() == "usb"
+            if not (is_removable or is_usb):
                 continue
 
             # Layer 1 (continued): Skip the disk that contains the root filesystem.
