@@ -1072,10 +1072,13 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
-        # models.providers.<id>.timeoutSeconds field is a per-request
-        # timeout (min 1) — not the keep-model-warm knob the legacy
-        # idleTimeoutSeconds was. Leave it unset so the schema default
-        # applies; fine for our local single-provider setup.
+        # models.providers.<id>.timeoutSeconds is a per-request HTTP
+        # timeout (schema minimum 1) — not the keep-model-warm knob
+        # the legacy field was. Leave it unset so the schema default
+        # applies; also delete any stale 0 that an earlier release
+        # may have written (the value is rejected by the schema).
+        | del(.models.providers.llamacpp.timeoutSeconds)
+        |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
