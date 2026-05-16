@@ -225,15 +225,21 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
         log_warn "OpenClaw config not found at ${OPENCLAW_DIR}/openclaw.json — skipping."
     fi
 
-    # Integration tokens (HA, Nextcloud, Email, Self) and pending consent
-    # state. Mode 0600, owned by homebrain — preserve perms on restore.
+    # Integration credentials (HA accounts, NC accounts, email accounts,
+    # Self bearer token, vault session, pending consent state). Mode 0600,
+    # owned by homebrain — preserve perms on restore. Legacy *.token files
+    # (ha.token, nextcloud.token, homebrain.token) are included too so a
+    # box that has not yet been migrated still backs up cleanly; the
+    # dashboard's first integration_status() call after restore folds them
+    # into the new accounts store and deletes them.
     if compgen -G "${OPENCLAW_DIR}/*.token" > /dev/null \
-        || [[ -f "${OPENCLAW_DIR}/email_accounts.json" ]] \
+        || compgen -G "${OPENCLAW_DIR}/*_accounts.json" > /dev/null \
         || [[ -f "${OPENCLAW_DIR}/pending_actions.json" ]] \
         || [[ -f "${OPENCLAW_DIR}/vault.session" ]]; then
         mkdir -p "${STAGING_DIR}/openclaw_integrations"
         for f in ha.token nextcloud.token homebrain.token vault.session \
-                 email_accounts.json pending_actions.json; do
+                 ha_accounts.json nc_accounts.json email_accounts.json \
+                 pending_actions.json; do
             [[ -f "${OPENCLAW_DIR}/${f}" ]] && cp -a "${OPENCLAW_DIR}/${f}" "${STAGING_DIR}/openclaw_integrations/"
         done
         log_info "OpenClaw integration credentials backed up."
