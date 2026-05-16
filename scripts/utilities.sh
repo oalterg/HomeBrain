@@ -1141,6 +1141,26 @@ setup_openclaw() {
 
     load_versions  # sets OPENCLAW_VERSION
 
+    # Sweep stale plugin-runtime-deps trees from prior OpenClaw versions.
+    # Each setup leaves ~200-700 MB of staged node_modules under
+    # ~/.openclaw/plugin-runtime-deps/openclaw-<version>-<hash>/ — the
+    # internal cleanup hits "ENOTEMPTY: rmdir openclaw/plugin-sdk" on
+    # symlink targets and gives up, so old trees pile up across upgrades.
+    # Drop everything that doesn't match the version we're about to
+    # install; the live tree is rebuilt by the gateway after install.
+    local prd="${HOMEBRAIN_HOME}/.openclaw/plugin-runtime-deps"
+    if [[ -d "$prd" ]]; then
+        for dir in "$prd"/openclaw-*; do
+            [[ -d "$dir" ]] || continue
+            local base
+            base=$(basename "$dir")
+            if [[ "$base" != openclaw-"${OPENCLAW_VERSION}"-* ]]; then
+                log_info "Removing stale plugin-runtime-deps: $base"
+                rm -rf -- "$dir"
+            fi
+        done
+    fi
+
     # Pre-flight: warn if llama-server is not reachable
     if ! curl -sf --max-time 5 http://127.0.0.1:8001/health >/dev/null 2>&1; then
         log_warn "llama-server is not responding on port 8001. OpenClaw may not work correctly."
