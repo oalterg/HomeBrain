@@ -43,8 +43,12 @@ HOMEBRAIN_HOME = os.environ.get("HOMEBRAIN_HOME", "/home/homebrain")
 OPENCLAW_DIR = os.path.join(HOMEBRAIN_HOME, ".openclaw")
 LOG_DIR = "/var/log/homebrain"
 
+# Legacy single-account files — kept for migration; new accounts live in
+# the *_ACCOUNTS_FILE companions below as JSON arrays.
 HA_TOKEN_FILE = os.path.join(OPENCLAW_DIR, "ha.token")
 NC_TOKEN_FILE = os.path.join(OPENCLAW_DIR, "nextcloud.token")
+HA_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "ha_accounts.json")
+NC_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "nc_accounts.json")
 EMAIL_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "email_accounts.json")
 SELF_TOKEN_FILE = os.path.join(OPENCLAW_DIR, "homebrain.token")
 
@@ -296,39 +300,33 @@ def _spec_self() -> dict:
 
 
 def _spec_homeassistant() -> dict | None:
-    if not os.path.exists(HA_TOKEN_FILE):
+    # The HA MCP now reads a per-account list at runtime, so the spec
+    # only points it at the file. Returning None when there are no
+    # accounts leaves the integration "configured: false" in the UI.
+    _migrate_legacy_ha_token()  # one-shot; cheap if already done
+    if not _load_ha_accounts():
         return None
-    env = _read_env()
-    # MCP servers run on the host, not inside the docker network.
-    ha_port = env.get("HA_PORT", "8123")
-    base = env.get("HA_BASE_URL") or f"http://127.0.0.1:{ha_port}"
     return {
         "command": PYTHON_BIN,
         "args": [os.path.join(SCRIPTS_DIR, "mcp-homeassistant.py")],
         "env": {
-            "HA_BASE_URL": base,
-            "HA_TOKEN_FILE": HA_TOKEN_FILE,
+            "HA_ACCOUNTS_FILE": HA_ACCOUNTS_FILE,
+            "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
         },
     }
 
 
 def _spec_nextcloud() -> dict | None:
-    if not os.path.exists(NC_TOKEN_FILE):
+    _migrate_legacy_nc_token()
+    if not _load_nc_accounts():
         return None
-    env = _read_env()
-    # MCP servers run on the host, not inside the docker network — use the
-    # host-exposed port (NEXTCLOUD_PORT, default 8080) on 127.0.0.1.
-    nc_port = env.get("NEXTCLOUD_PORT", "8080")
-    base = env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}"
-    user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
     return {
         "command": PYTHON_BIN,
         "args": [os.path.join(SCRIPTS_DIR, "mcp-nextcloud.py")],
         "env": {
-            "NC_BASE_URL": base,
-            "NC_USER": user,
-            "NC_TOKEN_FILE": NC_TOKEN_FILE,
+            "NC_ACCOUNTS_FILE": NC_ACCOUNTS_FILE,
+            "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
         },
     }
@@ -401,37 +399,174 @@ def reconcile_all_mcp() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Per-integration bootstrap helpers
+# Home Assistant + Nextcloud account stores (multi-account)
 # ---------------------------------------------------------------------------
+# Each integration keeps a JSON file under ~/.openclaw with a list of
+# accounts. Tokens are Fernet-encrypted at rest using the same key as
+# email account passwords (HOMEBRAIN_INTEGRATIONS_KEY in MCP env, aka
+# HOMEBRAIN_EMAIL_KEY in .env — same value, name kept for compat). Users
+# may add as many accounts as they want, each pointing at a different
+# domain. The MCP server-side dispatches tools by `account` parameter.
 
-def bootstrap_homeassistant(token: str | None = None) -> tuple[bool, str]:
-    """Persist a long-lived access token. If `token` is None, attempt to
-    auto-create one against the running HA container using the admin
-    credentials baked into .env at provision time. Falling back to a manual
-    paste flow is the dashboard's responsibility."""
-    if token:
-        _write_secret(HA_TOKEN_FILE, token)
-        return True, "stored"
+def _load_ha_accounts() -> list[dict]:
+    if not os.path.exists(HA_ACCOUNTS_FILE):
+        return []
+    try:
+        with open(HA_ACCOUNTS_FILE) as f:
+            d = json.load(f)
+        return d.get("accounts", []) if isinstance(d, dict) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_ha_accounts(accounts: list[dict]) -> None:
+    blob = json.dumps({"accounts": accounts}, indent=2)
+    _write_secret(HA_ACCOUNTS_FILE, blob)
+
+
+def add_ha_account(name: str, base_url: str, token: str) -> tuple[bool, str]:
+    if not all([name, base_url, token]):
+        return False, "name, base_url, and token are required"
+    accounts = _load_ha_accounts()
+    if any(a.get("name") == name for a in accounts):
+        return False, f"account '{name}' already exists"
+    accounts.append({
+        "name": name,
+        "base_url": base_url.rstrip("/"),
+        "token": _encrypt_secret(token),
+    })
+    _save_ha_accounts(accounts)
+    return True, "added"
+
+
+def remove_ha_account(name: str) -> bool:
+    accounts = _load_ha_accounts()
+    new = [a for a in accounts if a.get("name") != name]
+    if len(new) == len(accounts):
+        return False
+    if new:
+        _save_ha_accounts(new)
+    else:
+        os.remove(HA_ACCOUNTS_FILE)
+    return True
+
+
+def _load_nc_accounts() -> list[dict]:
+    if not os.path.exists(NC_ACCOUNTS_FILE):
+        return []
+    try:
+        with open(NC_ACCOUNTS_FILE) as f:
+            d = json.load(f)
+        return d.get("accounts", []) if isinstance(d, dict) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_nc_accounts(accounts: list[dict]) -> None:
+    blob = json.dumps({"accounts": accounts}, indent=2)
+    _write_secret(NC_ACCOUNTS_FILE, blob)
+
+
+def add_nc_account(name: str, base_url: str, user: str, token: str) -> tuple[bool, str]:
+    if not all([name, base_url, user, token]):
+        return False, "name, base_url, user, and token are required"
+    accounts = _load_nc_accounts()
+    if any(a.get("name") == name for a in accounts):
+        return False, f"account '{name}' already exists"
+    accounts.append({
+        "name": name,
+        "base_url": base_url.rstrip("/"),
+        "user": user,
+        "token": _encrypt_secret(token),
+    })
+    _save_nc_accounts(accounts)
+    return True, "added"
+
+
+def remove_nc_account(name: str) -> bool:
+    accounts = _load_nc_accounts()
+    new = [a for a in accounts if a.get("name") != name]
+    if len(new) == len(accounts):
+        return False
+    if new:
+        _save_nc_accounts(new)
+    else:
+        os.remove(NC_ACCOUNTS_FILE)
+    return True
+
+
+# --- Migration from legacy single-account token files ----------------------
+
+def _migrate_legacy_ha_token() -> None:
+    """If the legacy `~/.openclaw/ha.token` exists, fold it into the new
+    accounts store as account 'home' (the user's primary HA install) and
+    delete the file. One-shot; safe to call on every spec build."""
+    if not os.path.exists(HA_TOKEN_FILE):
+        return
+    if _load_ha_accounts():
+        # Already migrated or user added accounts manually; just drop the
+        # stale token file so the migration check stops firing.
+        try:
+            os.remove(HA_TOKEN_FILE)
+        except OSError:
+            pass
+        return
+    try:
+        token = open(HA_TOKEN_FILE).read().strip()
+    except OSError:
+        return
     env = _read_env()
-    ha_user = env.get("HA_ADMIN_USER", "")
-    ha_pass = env.get("HA_ADMIN_PASSWORD", "")
-    if not (ha_user and ha_pass):
-        return False, "no admin credentials in .env; paste a token manually"
-    # HA's /auth/token + long_lived_access_tokens flow is multi-step and
-    # changes between versions. We document the manual path as the reliable
-    # one, and surface a hint in the UI if the auto path fails.
-    return False, "auto-create not yet implemented; paste a token manually"
+    ha_port = env.get("HA_PORT", "8123")
+    base = env.get("HA_BASE_URL") or f"http://127.0.0.1:{ha_port}"
+    add_ha_account("home", base, token)
+    try:
+        os.remove(HA_TOKEN_FILE)
+    except OSError:
+        pass
 
 
-def bootstrap_nextcloud() -> tuple[bool, str]:
-    """Create a Nextcloud app password via `occ user:add-app-password` for
-    the admin user. Idempotent on the file (we always overwrite); not on
-    Nextcloud (every call creates a new app password — old ones remain
-    until manually revoked)."""
+def _migrate_legacy_nc_token() -> None:
+    """Mirror of _migrate_legacy_ha_token for Nextcloud. The legacy
+    single-account flow always pointed at the HomeBrain-shipped NC, so we
+    name the migrated entry 'homebrain'."""
+    if not os.path.exists(NC_TOKEN_FILE):
+        return
+    if _load_nc_accounts():
+        try:
+            os.remove(NC_TOKEN_FILE)
+        except OSError:
+            pass
+        return
+    try:
+        token = open(NC_TOKEN_FILE).read().strip()
+    except OSError:
+        return
+    env = _read_env()
+    nc_port = env.get("NEXTCLOUD_PORT", "8080")
+    base = env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}"
+    user = env.get("NEXTCLOUD_ADMIN_USER", "admin")
+    add_nc_account("homebrain", base, user, token)
+    try:
+        os.remove(NC_TOKEN_FILE)
+    except OSError:
+        pass
+
+
+# --- HomeBrain-NC convenience bootstrap ------------------------------------
+# Auto-creates an app password against the LOCAL HomeBrain-shipped Nextcloud
+# and stores it as account 'homebrain'. Used by the dashboard's one-click
+# "Add this HomeBrain's Nextcloud" button. External NCs go through
+# add_nc_account directly with a user-supplied app password.
+
+def bootstrap_local_nextcloud() -> tuple[bool, str]:
     env = _read_env()
     user = env.get("NEXTCLOUD_ADMIN_USER", "")
     if not user:
         return False, "NEXTCLOUD_ADMIN_USER not in .env"
+    nc_port = env.get("NEXTCLOUD_PORT", "8080")
+    base = env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}"
+    if any(a.get("name") == "homebrain" for a in _load_nc_accounts()):
+        return False, "account 'homebrain' already exists"
     try:
         nc_cid = subprocess.check_output(
             ["docker", "compose", "-f",
@@ -440,8 +575,6 @@ def bootstrap_nextcloud() -> tuple[bool, str]:
         ).decode().strip()
         if not nc_cid:
             return False, "Nextcloud container not running"
-        # `occ user:add-app-password` reads the user's password from stdin in
-        # newer NC versions. Pass --password-from-env for robustness.
         admin_pass = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
         if not admin_pass:
             return False, "NEXTCLOUD_ADMIN_PASSWORD not in .env"
@@ -452,27 +585,28 @@ def bootstrap_nextcloud() -> tuple[bool, str]:
              user, "--password-from-env"],
             capture_output=True, text=True, timeout=20,
         )
-        # NC prints the app password on stdout, sometimes prefixed with text.
         out = proc.stdout.strip().splitlines()
         if proc.returncode != 0 or not out:
             return False, f"occ failed: {proc.stderr.strip()[:200]}"
-        # The token is the last whitespace-separated word on the last line.
         token = out[-1].split()[-1]
         if not token or len(token) < 20:
             return False, f"unexpected occ output: {proc.stdout.strip()[:200]}"
-        _write_secret(NC_TOKEN_FILE, token)
-        return True, "stored"
+        return add_nc_account("homebrain", base, user, token)
     except Exception as e:
         return False, str(e)
 
 
-def disconnect_homeassistant() -> None:
+def disconnect_homeassistant_all() -> None:
+    if os.path.exists(HA_ACCOUNTS_FILE):
+        os.remove(HA_ACCOUNTS_FILE)
     if os.path.exists(HA_TOKEN_FILE):
         os.remove(HA_TOKEN_FILE)
     _openclaw_mcp_unset(MCP_NAMES["homeassistant"])
 
 
-def disconnect_nextcloud() -> None:
+def disconnect_nextcloud_all() -> None:
+    if os.path.exists(NC_ACCOUNTS_FILE):
+        os.remove(NC_ACCOUNTS_FILE)
     if os.path.exists(NC_TOKEN_FILE):
         os.remove(NC_TOKEN_FILE)
     _openclaw_mcp_unset(MCP_NAMES["nextcloud"])
@@ -550,9 +684,17 @@ def integration_status(key: str) -> dict:
     if key == "self":
         info["configured"] = bool(_self_token())
     elif key == "homeassistant":
-        info["configured"] = os.path.exists(HA_TOKEN_FILE)
+        _migrate_legacy_ha_token()
+        accounts = _load_ha_accounts()
+        info["configured"] = bool(accounts)
+        info["accounts"] = [{"name": a.get("name"), "base_url": a.get("base_url")}
+                            for a in accounts]
     elif key == "nextcloud":
-        info["configured"] = os.path.exists(NC_TOKEN_FILE)
+        _migrate_legacy_nc_token()
+        accounts = _load_nc_accounts()
+        info["configured"] = bool(accounts)
+        info["accounts"] = [{"name": a.get("name"), "base_url": a.get("base_url"),
+                             "user": a.get("user")} for a in accounts]
     elif key == "vault":
         # Match the existing dashboard logic — vault is "configured" once
         # the admin token has been derived in .env.
@@ -625,46 +767,72 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "unauthenticated"}), 401
         return jsonify({"results": reconcile_all_mcp()})
 
-    # ---- Home Assistant ----------------------------------------------------
-    def ha_connect():
+    # ---- Home Assistant (multi-account) ------------------------------------
+    def ha_add():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         body = request.get_json(silent=True) or {}
-        token = (body.get("token") or "").strip()
-        ok_, msg = bootstrap_homeassistant(token=token or None)
+        ok_, msg = add_ha_account(
+            name=(body.get("name") or "").strip(),
+            base_url=(body.get("base_url") or "").strip(),
+            token=(body.get("token") or "").strip(),
+        )
         if not ok_:
             return jsonify({"error": msg}), 400
-        results = reconcile_all_mcp()
-        return jsonify({"status": "connected", "reconcile": results})
+        reconcile_all_mcp()
+        return jsonify({"status": "added"})
 
-    def ha_disconnect():
+    def ha_remove():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        disconnect_homeassistant()
-        _openclaw_daemon_restart()
-        return jsonify({"status": "disconnected"})
+        body = request.get_json(silent=True) or {}
+        if not remove_ha_account((body.get("name") or "").strip()):
+            return jsonify({"error": "account not found"}), 404
+        reconcile_all_mcp()
+        return jsonify({"status": "removed"})
 
     def ha_test():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         return jsonify(_ping_mcp("homeassistant"))
 
-    # ---- Nextcloud ---------------------------------------------------------
-    def nc_connect():
+    # ---- Nextcloud (multi-account) -----------------------------------------
+    def nc_add():
+        """Add an EXTERNAL Nextcloud account. For the HomeBrain-shipped NC,
+        use nc_add_local which auto-creates an app password."""
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        ok_, msg = bootstrap_nextcloud()
+        body = request.get_json(silent=True) or {}
+        ok_, msg = add_nc_account(
+            name=(body.get("name") or "").strip(),
+            base_url=(body.get("base_url") or "").strip(),
+            user=(body.get("user") or "").strip(),
+            token=(body.get("token") or "").strip(),
+        )
         if not ok_:
             return jsonify({"error": msg}), 400
-        results = reconcile_all_mcp()
-        return jsonify({"status": "connected", "reconcile": results})
+        reconcile_all_mcp()
+        return jsonify({"status": "added"})
 
-    def nc_disconnect():
+    def nc_add_local():
+        """One-click: auto-create an app password against the HomeBrain-
+        shipped Nextcloud and store it as account 'homebrain'."""
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        disconnect_nextcloud()
-        _openclaw_daemon_restart()
-        return jsonify({"status": "disconnected"})
+        ok_, msg = bootstrap_local_nextcloud()
+        if not ok_:
+            return jsonify({"error": msg}), 400
+        reconcile_all_mcp()
+        return jsonify({"status": "added", "name": "homebrain"})
+
+    def nc_remove():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        if not remove_nc_account((body.get("name") or "").strip()):
+            return jsonify({"error": "account not found"}), 404
+        reconcile_all_mcp()
+        return jsonify({"status": "removed"})
 
     def nc_test():
         if not session.get("authenticated"):
@@ -863,21 +1031,25 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      limiter.limit("10 per minute")(reconcile),
                      methods=["POST"])
 
-    app.add_url_rule("/api/integrations/homeassistant/connect",
-                     "ha_connect",
-                     limiter.limit("5 per minute")(ha_connect),
+    app.add_url_rule("/api/integrations/homeassistant/add",
+                     "ha_add",
+                     limiter.limit("10 per minute")(ha_add),
                      methods=["POST"])
-    app.add_url_rule("/api/integrations/homeassistant/disconnect",
-                     "ha_disconnect", ha_disconnect, methods=["POST"])
+    app.add_url_rule("/api/integrations/homeassistant/remove",
+                     "ha_remove", ha_remove, methods=["POST"])
     app.add_url_rule("/api/integrations/homeassistant/test",
                      "ha_test", ha_test, methods=["POST"])
 
-    app.add_url_rule("/api/integrations/nextcloud/connect",
-                     "nc_connect",
-                     limiter.limit("5 per minute")(nc_connect),
+    app.add_url_rule("/api/integrations/nextcloud/add",
+                     "nc_add",
+                     limiter.limit("10 per minute")(nc_add),
                      methods=["POST"])
-    app.add_url_rule("/api/integrations/nextcloud/disconnect",
-                     "nc_disconnect", nc_disconnect, methods=["POST"])
+    app.add_url_rule("/api/integrations/nextcloud/add_local",
+                     "nc_add_local",
+                     limiter.limit("5 per minute")(nc_add_local),
+                     methods=["POST"])
+    app.add_url_rule("/api/integrations/nextcloud/remove",
+                     "nc_remove", nc_remove, methods=["POST"])
     app.add_url_rule("/api/integrations/nextcloud/test",
                      "nc_test", nc_test, methods=["POST"])
     app.add_url_rule("/api/integrations/vault/test",
