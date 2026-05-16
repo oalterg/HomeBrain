@@ -61,6 +61,32 @@ fi
 log_info "Extracting backup to temporary location $TMP_DIR..."
 tar -xzf "$BACKUP_FILE" -C "$TMP_DIR"
 
+# ── Portable instance-secret merge ──────────────────────────────────────────
+# Pull HOMEBRAIN_EMAIL_KEY / HOMEBRAIN_SELF_NONCE from the archive (if
+# present) into the destination .env BEFORE we start any containers or
+# restore the openclaw_integrations directory. Without this step, the
+# *_accounts.json files (multi-account email / HA / NC) are encrypted
+# with the source instance's Fernet key and the destination would derive
+# a different one from its own MASTER_PASSWORD — leaving the user with
+# undecryptable account tokens. See backup.sh for the rationale.
+if [[ -f "${TMP_DIR}/instance_secrets.env" ]]; then
+    log_info "Merging portable instance secrets from backup..."
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" == \#* ]] && continue
+        # Strip any surrounding quotes the value may have picked up.
+        value="${value%\"}"; value="${value#\"}"
+        value="${value%\'}"; value="${value#\'}"
+        if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+            # Replace existing. Use | delimiter to avoid clashing with the
+            # base64 / urlsafe characters in Fernet keys.
+            sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+        else
+            echo "${key}=${value}" >> "$ENV_FILE"
+        fi
+        log_info "  imported ${key}"
+    done < "${TMP_DIR}/instance_secrets.env"
+fi
+
 # --- Smart Detection ---
 log_info "Analyzing backup structure..."
 
