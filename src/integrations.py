@@ -398,6 +398,37 @@ def reconcile_all_mcp() -> dict:
     return results
 
 
+def reconcile_one(key: str) -> dict:
+    """Targeted reconcile for a single integration after an account-list
+    mutation. Skips the heavy `openclaw mcp set` when the integration is
+    already wired — the MCP server reads the accounts file fresh on each
+    tool call, so adding/removing a non-first / non-last account never
+    needs a registry change.
+
+    Use this from /api/integrations/<k>/add and /remove instead of
+    `reconcile_all_mcp()` — running the full sweep on every account
+    mutation can blow past gunicorn's worker timeout (5 × CLI calls @
+    1-5 s each + a daemon restart).
+    """
+    _ensure_dir(OPENCLAW_DIR)
+    name = MCP_NAMES[key]
+    spec = SPEC_BUILDERS[key]()
+    wired = name in _openclaw_wired_names()
+    if spec is None:
+        if wired:
+            _openclaw_mcp_unset(name)
+            _openclaw_daemon_restart()
+            return {key: "unwired"}
+        return {key: "not_configured"}
+    if not wired:
+        ok, msg = _openclaw_mcp_set(name, spec)
+        if ok:
+            _openclaw_daemon_restart()
+            return {key: "wired"}
+        return {key: f"failed: {msg}"}
+    return {key: "wired (no-op; file change visible to MCP on next call)"}
+
+
 # ---------------------------------------------------------------------------
 # Home Assistant + Nextcloud account stores (multi-account)
 # ---------------------------------------------------------------------------
@@ -779,7 +810,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         )
         if not ok_:
             return jsonify({"error": msg}), 400
-        reconcile_all_mcp()
+        reconcile_one("homeassistant")
         return jsonify({"status": "added"})
 
     def ha_remove():
@@ -788,7 +819,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         body = request.get_json(silent=True) or {}
         if not remove_ha_account((body.get("name") or "").strip()):
             return jsonify({"error": "account not found"}), 404
-        reconcile_all_mcp()
+        reconcile_one("homeassistant")
         return jsonify({"status": "removed"})
 
     def ha_test():
@@ -811,7 +842,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         )
         if not ok_:
             return jsonify({"error": msg}), 400
-        reconcile_all_mcp()
+        reconcile_one("nextcloud")
         return jsonify({"status": "added"})
 
     def nc_add_local():
@@ -822,7 +853,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         ok_, msg = bootstrap_local_nextcloud()
         if not ok_:
             return jsonify({"error": msg}), 400
-        reconcile_all_mcp()
+        reconcile_one("nextcloud")
         return jsonify({"status": "added", "name": "homebrain"})
 
     def nc_remove():
@@ -831,7 +862,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         body = request.get_json(silent=True) or {}
         if not remove_nc_account((body.get("name") or "").strip()):
             return jsonify({"error": "account not found"}), 404
-        reconcile_all_mcp()
+        reconcile_one("nextcloud")
         return jsonify({"status": "removed"})
 
     def nc_test():
@@ -870,7 +901,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         )
         if not ok_:
             return jsonify({"error": msg}), 400
-        reconcile_all_mcp()
+        reconcile_one("email")
         return jsonify({"status": "added"})
 
     def email_remove():
@@ -879,7 +910,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         body = request.get_json(silent=True) or {}
         if not remove_email_account(body.get("name", "")):
             return jsonify({"error": "account not found"}), 404
-        reconcile_all_mcp()
+        reconcile_one("email")
         return jsonify({"status": "removed"})
 
     def email_send_direct_toggle():
@@ -898,7 +929,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                     f.write(f"{k}={v}\n")
         except OSError as e:
             return jsonify({"error": str(e)}), 500
-        reconcile_all_mcp()
+        # The toggle changes an env var that the email MCP server only
+        # reads at spawn time, so bounce the daemon to re-spawn it. No
+        # registry change needed — skip the full reconcile.
+        _openclaw_daemon_restart()
         return jsonify({"status": "ok", "enabled": enabled})
 
     # ---- Self MCP — bearer-auth endpoints ---------------------------------
