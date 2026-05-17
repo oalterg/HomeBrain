@@ -12,7 +12,11 @@ WorkingDirectory=/opt/homebrain/src
 # Debian/Ubuntu root historically gets this PATH; systemd starts services
 # with a stripped one unless we set it explicitly.
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
-ExecStart=/opt/homebrain/venv/bin/gunicorn --workers 3 --bind 0.0.0.0:80 --timeout 30 app:app
+# gevent worker class is required for the /openclaw WebSocket reverse-proxy
+# (flask-sock + simple-websocket). gunicorn auto-applies gevent monkey-patch
+# at startup so existing subprocess/threading code keeps working — long
+# blocking calls just yield to other greenlets instead of stalling the worker.
+ExecStart=/opt/homebrain/venv/bin/gunicorn --worker-class gevent --workers 3 --bind 0.0.0.0:80 --timeout 30 app:app
 Restart=always
 RestartSec=10
 TimeoutStartSec=60

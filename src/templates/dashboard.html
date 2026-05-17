@@ -915,9 +915,8 @@
                 </div>
 
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:18px;">
-                    <a id="openclaw-link-anchor" href="#" target="_blank" style="display:none; color:var(--accent); text-decoration:none; font-size:0.92em;">Open OpenClaw &rarr;</a>
-                    <span id="openclaw-lan-only" style="display:none; color:var(--text-dim); font-size:0.85em;">OpenClaw web is on your home network &mdash; from outside, use a messenger channel.</span>
-                    <button id="btn-ai-toggle" class="btn-primary" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
+                    <a id="openclaw-open" href="/openclaw/" target="_blank" rel="noopener" class="btn-primary" style="display:none; text-decoration:none;">Open AI Assistant &rarr;</a>
+                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto; opacity:0.6;">Loading…</button>
                 </div>
             </div>
             {% endif %}
@@ -1936,47 +1935,28 @@
             ocEl.innerText = openclawStatus === 'starting' ? 'STARTING' : oTxt;
             ocEl.dataset.val = openclawStatus;
 
-            // OpenClaw link (only when running) — used in Settings card and Status quick-launch row.
-            // The gateway lives on host port 18789 (not in docker), so it's only reachable when
-            // the dashboard is being viewed over the home LAN. From a remote (Pangolin) browser
-            // the port is not tunnelled, so we hide the link and surface a short explainer
-            // instead. Messenger channels (WhatsApp/Signal/…) cover the remote case.
-            const linkAnchor = document.getElementById('openclaw-link-anchor');
-            const launchAnchor = document.getElementById('openclaw-launch');
-            const lanOnlyHint = document.getElementById('openclaw-lan-only');
-            const lanReachable = isLanHostname(location.hostname);
-            if (openclawStatus === 'running' && lanReachable) {
-                // Pre-authenticate the link via URL fragment so the token is never
-                // sent to the server in logs. OpenClaw 2026.3.7+ uses `#token=`.
-                // Older versions don't support fragments — user will be prompted
-                // to enter the token manually in that case.
-                fetch('/api/ai/whatsapp/link-token')
-                    .then(r => r.ok ? r.json() : Promise.reject())
-                    .then(data => {
-                        const port = data.port || 18789;
-                        const base = `http://${location.hostname}:${port}/`;
-                        const href = data.token ? `${base}#token=${encodeURIComponent(data.token)}` : base;
-                        if (linkAnchor) linkAnchor.href = href;
-                        if (launchAnchor) launchAnchor.href = href;
-                    })
-                    .catch(() => {
-                        const fallback = `http://${location.hostname}:18789`;
-                        if (linkAnchor) linkAnchor.href = fallback;
-                        if (launchAnchor) launchAnchor.href = fallback;
-                    });
-                if (linkAnchor) linkAnchor.style.display = '';
-                if (launchAnchor) launchAnchor.style.display = '';
-                if (lanOnlyHint) lanOnlyHint.style.display = 'none';
-            } else if (openclawStatus === 'running') {
-                // Remote browser: gateway port not tunnelled. Hide the direct link
-                // and explain why instead of leading to a broken URL.
-                if (linkAnchor) linkAnchor.style.display = 'none';
-                if (launchAnchor) launchAnchor.style.display = 'none';
-                if (lanOnlyHint) lanOnlyHint.style.display = '';
-            } else {
-                if (linkAnchor) linkAnchor.style.display = 'none';
-                if (launchAnchor) launchAnchor.style.display = 'none';
-                if (lanOnlyHint) lanOnlyHint.style.display = 'none';
+            // OpenClaw link — same-origin reverse-proxy mounted on the manager
+            // at /openclaw/. Works identically over LAN, mDNS, and Pangolin
+            // because the auth gate is the master-password session that's
+            // already enforcing this page. No port juggling, no token in URLs.
+            const openclawOpen = document.getElementById('openclaw-open');
+            const openclawLaunch = document.getElementById('openclaw-launch');
+            const aiToggle = document.getElementById('btn-ai-toggle');
+            const isRunning = openclawStatus === 'running';
+            if (openclawOpen) {
+                openclawOpen.href = '/openclaw/';
+                openclawOpen.style.display = isRunning ? 'inline-block' : 'none';
+            }
+            if (openclawLaunch) {
+                openclawLaunch.href = '/openclaw/';
+                openclawLaunch.style.display = isRunning ? '' : 'none';
+            }
+            // Hierarchy: when AI is running, "Open AI Assistant" is the
+            // primary action and Disable is secondary. When AI is off, the
+            // Install/Start toggle becomes primary so users know what to do
+            // next at a glance.
+            if (aiToggle) {
+                aiToggle.classList.toggle('btn-primary', !isRunning);
             }
 
             // Model selector (show when not installed or when running/disabled)
