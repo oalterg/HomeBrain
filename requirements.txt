@@ -4,3 +4,12 @@ python-dotenv==1.2.1
 flask-limiter==4.1.1
 gunicorn==23.0.0
 cryptography==46.0.4
+# OpenClaw control UI is proxied through the manager so a single
+# authenticated origin (master-password session) serves both. WS support
+# requires a non-blocking worker; gevent monkey-patches the stdlib at
+# gunicorn startup, simple-websocket is the server-side WS lib used by
+# flask-sock, and websocket-client handles the upstream WS leg.
+gevent==25.5.1
+flask-sock==0.7.0
+simple-websocket==1.1.0
+websocket-client==1.8.0

@@ -1110,6 +1110,14 @@ patch_openclaw_config() {
         # Pangolin/Caddy in front of the gateway, not by OpenClaw itself.
         .models.providers.llamacpp.baseUrl = "http://127.0.0.1:8001/v1" |
         .gateway.mode = (.gateway.mode // "local") |
+        # Single-origin UX: the HomeBrain manager reverse-proxies the
+        # OpenClaw Control UI under /openclaw, so the user reaches it via
+        # the same master-password session as the dashboard (LAN and
+        # Pangolin both work). basePath tells the gateway to mount its
+        # static assets and API routes under that prefix; bind stays on
+        # loopback because the manager is the only legitimate ingress.
+        .gateway.bind = "loopback" |
+        .gateway.controlUi.basePath = "/openclaw" |
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
