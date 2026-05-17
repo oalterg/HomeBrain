@@ -148,3 +148,55 @@ All 35B-A3B entries in `platform_models.json` carry `--presence-penalty 1.5 --re
 - Architecture: 40 layers, 256 experts (8 active per token), n_embd=2048, n_head=16, n_head_kv=2.
 - KV cache at 131K ctx with q8_0: ~1.4 GB on GPU.
 - Q5 quants stay under VRAM limit at -ot 20-39; Q6_K needs 18-39 to leave ~700 MB headroom for compute buffers; Q8_K_XL needs 14-39 (26 of 40 layers on CPU) and is CPU-bound.
+
+## Multi-Token Prediction (MTP) sweep — b9186 (2026-05-17)
+
+llama.cpp [PR #22673](https://github.com/ggml-org/llama.cpp/pull/22673) (merged 2026-05-16) adds a `draft-mtp` speculative-decoding path that uses a small auxiliary head shipped inside MTP-flavored GGUFs (`unsloth/Qwen3.6-{27B,35B-A3B}-MTP-GGUF`). The unsloth release claims 1.4–2× generation speedup on dense models and 1.15–1.25× on MoE.
+
+Hardware: RX 9060 XT + Ryzen 5 5600, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9186, docker stack running (prod-realistic), 3 deterministic 512-token runs per cell.
+
+### 27B (dense DeltaNet hybrid) — large win
+
+| `--spec-draft-n-max` | TG t/s | Acceptance | Δ vs baseline |
+|---|---:|---:|---:|
+| baseline (no MTP) | 17.24 | — | — |
+| **n=2** | **25.55** | 61.9% | **+48.2%** |
+| n=3 | 25.14 | 53.4% | +45.9% |
+| n=4 | 23.23 | 45.3% | +34.7% |
+| n=6 | 10.56 | 34.2% | −38.7% |
+
+Three interleaved baselines (17.21 / 17.25 / 17.26) and two n=3 reruns (both 25.14) confirm stability. Adopted **n_max=2** in `platform_models.json`.
+
+### 35B-A3B (MoE) — MTP is net negative in every config
+
+Cross-product of quant × CPU-expert-offload depth × KV cache, with and without MTP n=2. Each row is the mean of 3 runs; baselines were re-measured between MTP runs to control for thermal drift.
+
+| Quant | KV | `-ot` pattern | Baseline | MTP n=2 | MTP Δ |
+|---|---|---|---:|---:|---:|
+| **Q4_K_M** | q8 | blk.23-39 (prod, 17 layers offl.) | **33.68** | 32.53 | −3.4% |
+| Q4_K_M | q8 | blk.20-39 (20 layers) | 31.86 | 31.61 | −0.8% |
+| Q4_K_M | q4 | blk.23-39 | 29.26 | 31.65 | +8.2% |
+| Q4_K_M | q4 | blk.20-39 | 31.81 | 30.43 | −4.3% |
+| Q4_K_M | q4 | blk.18-39 (22 layers) | 30.70 | 29.46 | −4.0% |
+| Q4_K_M | q4 | blk.15-39 (25 layers) | 28.98 | 29.27 | +1.0% |
+| **Q5_K_XL** | q8 | blk.20-39 (prod) | 28.40 | 27.45 | −3.3% |
+| Q5_K_XL | q8 | blk.20-39, n=3 | 28.41 | 25.69 | −9.6% |
+| Q5_K_XL | q4 | blk.20-39 | 28.69 | 27.96 | −2.5% |
+| Q5_K_XL | q4 | blk.25-39 | 22.05 | 20.83 | −5.5% |
+| Q5_K_XL | q4 | blk.28-39 | 16.12 | 17.23 | +6.9%¹ |
+| Q5_K_XL | q4 | blk.30-39 | 16.55 | 18.17 | +9.8%¹ |
+| Q5_K_M | q4 | blk.25-39 | 24.44 | 21.31 | −12.8% |
+| Q5_K_M | q4 | blk.20-39 | 29.03 | 26.83 | −7.6% |
+
+¹ MTP relative win exists only where baseline is already crippled by VRAM-ceiling thrash (`-ot` keeps more weight on GPU than fits). Absolute TG is still worse than the unconstrained config.
+
+**Findings**
+- The current production config (Q4_K_M + q8 KV + `-ot blk.23-39`) at **33.68 t/s** is the absolute speed champion. MTP hurts it by 3.4%.
+- The dense-vs-MoE gap matches unsloth's prediction *direction* (large on dense, small on MoE) but our MoE result is below their 1.15× floor. Hypothesis: heavy `-ot ffn_.*exps=CPU` defeats MTP's parallel verification — the CPU expert step is serial regardless of how many tokens you draft, so the speculative path adds draft cost without amortizing the verify cost. Their numbers likely assume all weights on GPU.
+- `--spec-draft-p-split` and `--spec-draft-n-min` are no-ops for `draft-mtp` — verified by identical accept counts across all values. The flags only apply to `draft-simple` / `draft-eagle3`.
+- Q5_K_M is dominated by Q4_K_M at the same offload + KV across the board; not worth shipping.
+
+**Decisions**
+- 27B IQ4_XS: switch to MTP-GGUF + `--spec-type draft-mtp --spec-draft-n-max 2`. Stored as Phase-4 in `platform_models.json`.
+- 35B-A3B (all quants): **do not enable MTP.** Keep current configs.
+- llama.cpp tag bumped to b9186 in `versions.json` (first tagged release with the merged PR).
