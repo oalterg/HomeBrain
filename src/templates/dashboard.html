@@ -2108,8 +2108,13 @@
                 }
 
                 if (confirm(confirmMsg)) {
-                    // Persist model selection before triggering install
-                    if (action === 'enable' && (neitherInstalled || llamaState === 'not_installed')) {
+                    // Persist model selection before any enable path. The
+                    // 'disabled' state (binary on disk, service stopped after
+                    // an upgrade) also hits setup_llama_server, which reads
+                    // AI_MODEL_FILENAME from .env — so we must keep .env in
+                    // sync with the dropdown on every enable click, not just
+                    // first-install.
+                    if (action === 'enable') {
                         const modelId = document.getElementById('ai-model-select')?.value;
                         if (modelId) {
                             await fetch('/api/ai/model', {

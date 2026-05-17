@@ -708,10 +708,48 @@ setup_llama_server() {
     # Read model config from .env (set by dashboard model selector)
     local MODEL_NAME="${AI_MODEL_FILENAME:-}"
     local MODEL_URL="${AI_MODEL_URL:-}"
+    local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
+
+    # Self-heal: when the dashboard's "Start AI" path fires without first POSTing
+    # /api/ai/model (e.g. binary present but service was 'disabled' after a system
+    # upgrade), .env is missing AI_MODEL_FILENAME/URL. Rather than dying, look up
+    # the model from platform_models.json — prefer AI_MODEL_ID if present,
+    # otherwise the default — and persist back to .env so future calls succeed.
+    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
+        if [[ ! -f "$MODELS_FILE" ]] || ! command -v jq >/dev/null 2>&1; then
+            die "No AI model configured and platform_models.json/jq unavailable to recover."
+        fi
+        local resolved_id
+        if [[ -n "${AI_MODEL_ID:-}" ]]; then
+            resolved_id="$AI_MODEL_ID"
+            log_warn "AI_MODEL_FILENAME/URL missing from .env; rehydrating from platform_models.json for id='$resolved_id'."
+        else
+            resolved_id=$(jq -r '.default // (.models[] | select(.default == true) | .id) // empty' "$MODELS_FILE" 2>/dev/null)
+            [[ -z "$resolved_id" ]] && resolved_id=$(jq -r '.models[0].id // empty' "$MODELS_FILE" 2>/dev/null)
+            log_warn "No AI model selected in .env; defaulting to '$resolved_id' from platform_models.json."
+        fi
+        if [[ -z "$resolved_id" ]]; then
+            die "No AI model configured. Please select a model in the dashboard before installing."
+        fi
+        local r_file r_url r_min
+        r_file=$(jq -r --arg id "$resolved_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
+        r_url=$(jq  -r --arg id "$resolved_id" '.models[] | select(.id == $id) | .url      // empty' "$MODELS_FILE" 2>/dev/null)
+        r_min=$(jq  -r --arg id "$resolved_id" '.models[] | select(.id == $id) | .min_size_bytes // 1000000000' "$MODELS_FILE" 2>/dev/null)
+        if [[ -z "$r_file" || -z "$r_url" ]]; then
+            die "Could not resolve filename/url for model id '$resolved_id' in platform_models.json."
+        fi
+        update_env_var "AI_MODEL_ID"       "$resolved_id"
+        update_env_var "AI_MODEL_FILENAME" "$r_file"
+        update_env_var "AI_MODEL_URL"      "$r_url"
+        update_env_var "AI_MODEL_MIN_SIZE" "$r_min"
+        MODEL_NAME="$r_file"
+        MODEL_URL="$r_url"
+        export AI_MODEL_ID="$resolved_id" AI_MODEL_FILENAME="$r_file" AI_MODEL_URL="$r_url" AI_MODEL_MIN_SIZE="$r_min"
+    fi
+
     local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
     # Parse ctx_size and extra_flags from platform_models.json for the selected model
     # (they were baked in by generate_llama_service, no need to keep in .env)
-    local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
     local CTX_SIZE="8192"
     local EXTRA_FLAGS=""
     if [[ -f "$MODELS_FILE" ]] && [[ -n "$MODEL_NAME" ]]; then
@@ -729,10 +767,6 @@ setup_llama_server() {
     local LLAMA_BIN
     LLAMA_BIN=$(get_llama_bin_path)
     local HEALTH_URL="http://127.0.0.1:8001/health"
-
-    if [[ -z "$MODEL_NAME" || -z "$MODEL_URL" ]]; then
-        die "No AI model configured. Please select a model in the dashboard before installing."
-    fi
 
     # --- [1/5] Fast-path: binary and complete model already present ---
     # Size check matters: a partial download (file exists but < MIN_SIZE) would
