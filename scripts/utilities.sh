@@ -1102,6 +1102,14 @@ patch_openclaw_config() {
 
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         "${jq_extra_args[@]}" '
+        # OpenClaw 2026.5+ schema makes both required and refuses to start
+        # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
+        # Existing configs migrated from older releases lacked these keys, so
+        # we always (re)assert them. local mode is correct for the bundled
+        # llama-server on 127.0.0.1; remote-access tunnelling is handled by
+        # Pangolin/Caddy in front of the gateway, not by OpenClaw itself.
+        .models.providers.llamacpp.baseUrl = "http://127.0.0.1:8001/v1" |
+        .gateway.mode = (.gateway.mode // "local") |
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
