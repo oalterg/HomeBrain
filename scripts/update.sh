@@ -116,7 +116,6 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         fi
     fi
     UPDATE_DEPS_SCRIPT="$SCRIPT_DIR/update-deps.sh"
-    log_info "Dep-version check: HAS_GPU=${HAS_GPU:-unset} update-deps=$([[ -f "$UPDATE_DEPS_SCRIPT" ]]&&echo present||echo missing) llama=${old_llama_tag:-}→${new_llama_tag:-} openclaw=${old_openclaw_ver:-}→${new_openclaw_ver:-}"
     if [[ -f "$UPDATE_DEPS_SCRIPT" ]] && [[ "${HAS_GPU:-false}" == "true" ]]; then
         if [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]]; then
             log_info "llama.cpp: ${old_llama_tag} → ${new_llama_tag}. Updating binary..."
