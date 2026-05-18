@@ -125,6 +125,33 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]]; then
             log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
             bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
+        else
+            # Config drift catch-all: the openclaw npm package didn't change but the
+            # patch_openclaw_config jq pipeline in utilities.sh may have (new schema
+            # keys, refreshed allowedOrigins, etc.). Re-patch the existing
+            # openclaw.json and only bounce the daemon when the file actually
+            # changes — the npm install is skipped because the version matched.
+            if command -v openclaw >/dev/null 2>&1; then
+                CFG="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/openclaw.json"
+                if [[ -f "$CFG" ]]; then
+                    log_info "Refreshing openclaw.json against current utilities.sh..."
+                    cp "$CFG" "${CFG}.preupdate"
+                    # shellcheck disable=SC1091
+                    source "$SCRIPT_DIR/utilities.sh"
+                    load_env 2>/dev/null || true
+                    load_versions 2>/dev/null || true
+                    if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
+                        if ! cmp -s "${CFG}.preupdate" "$CFG"; then
+                            log_info "openclaw.json changed — restarting daemon to apply."
+                            run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
+                                || log_warn "openclaw-gateway restart failed — check logs."
+                        else
+                            log_info "openclaw.json already matches expected shape — no daemon restart."
+                        fi
+                    fi
+                    rm -f "${CFG}.preupdate"
+                fi
+            fi
         fi
     fi
 fi

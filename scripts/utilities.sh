@@ -1080,10 +1080,25 @@ patch_openclaw_config() {
         return 0
     fi
 
-    # Build allowed origins for cross-origin WebSocket from HomeBrain dashboard
+    # Build allowed origins the OpenClaw Control UI accepts. The SPA does a
+    # client-side check of `location.origin` against this list before it
+    # touches the gateway WS; the proxy-side Origin rewriting we do server-side
+    # doesn't help here because the check fires inside the user's browser.
+    # Cover every way the dashboard is reachable: loopback, LAN IP, mDNS
+    # name, and (when remote mode is provisioned) the Pangolin domain.
     local lan_ip
     lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    local origins="[\"http://${lan_ip}\", \"http://${lan_ip}:80\", \"http://localhost\", \"http://127.0.0.1\"]"
+    local origins_jq='['
+    origins_jq+='"http://localhost","http://127.0.0.1",'
+    origins_jq+='"http://homebrain.local","http://homebrain.local:80",'
+    if [[ -n "${lan_ip:-}" ]]; then
+        origins_jq+="\"http://${lan_ip}\",\"http://${lan_ip}:80\","
+    fi
+    if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
+        origins_jq+="\"https://${PANGOLIN_DOMAIN}\","
+    fi
+    origins_jq="${origins_jq%,}]"
+    local origins="$origins_jq"
 
     # Derive a stable gateway token from MASTER_PASSWORD so it survives redeployment
     local gw_token=""
