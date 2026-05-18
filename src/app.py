@@ -2107,11 +2107,12 @@ def openclaw_proxy(subpath=""):
         url += "?" + request.query_string.decode("latin-1")
 
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
-    # Same-origin browser checks on the gateway: when allowedOrigins is
-    # populated (patch_openclaw_config writes the dashboard origin), Origin
-    # is verified. Drop the inbound Origin and let the gateway treat the
-    # proxied request as loopback-trusted.
-    headers.pop("Origin", None)
+    # Forward the browser's Origin to the gateway. patch_openclaw_config
+    # writes every origin the dashboard can be reached at (loopback, LAN IP,
+    # mDNS, Pangolin domain) into gateway.controlUi.allowedOrigins; the
+    # gateway accepts or rejects based on this header. Overriding Origin to
+    # the proxy's own loopback URL — as we did before — leaves a port-mismatch
+    # against the allowlist entries and gets us rejected.
     token = _openclaw_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -2208,9 +2209,16 @@ def _openclaw_ws_handle(ws, subpath):
     token = _openclaw_token()
     if token:
         headers.append(f"Authorization: Bearer {token}")
-    # Gateway WebSocket origin check accepts loopback; force it explicitly
-    # so reverse-proxied requests are treated the same as direct loopback.
-    headers.append(f"Origin: http://{_OPENCLAW_PROXY_HOST}:{_OPENCLAW_PROXY_PORT}")
+    # Forward the browser's Origin verbatim. The gateway's
+    # controlUi.allowedOrigins is populated with every dashboard origin
+    # (loopback, LAN IP, mDNS, Pangolin domain) by patch_openclaw_config —
+    # the gateway only accepts the connection when the captured Origin
+    # matches. Overriding to the loopback URL with port 18789 (as we did
+    # before) leaves a port mismatch with the allowlist entries and gets
+    # the WS rejected with "origin not allowed" after the auth challenge.
+    browser_origin = request.headers.get("Origin")
+    if browser_origin:
+        headers.append(f"Origin: {browser_origin}")
     forwarded_proto = ("Sec-WebSocket-Protocol", request.headers.get("Sec-WebSocket-Protocol"))
     if forwarded_proto[1]:
         headers.append(f"{forwarded_proto[0]}: {forwarded_proto[1]}")
