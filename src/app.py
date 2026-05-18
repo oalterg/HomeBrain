@@ -2181,9 +2181,9 @@ def openclaw_ws_proxy(ws, subpath):
     return _openclaw_ws_handle(ws, subpath)
 
 
-sock.route("/openclaw")(openclaw_ws_proxy_root)
-sock.route("/openclaw/")(openclaw_ws_proxy_root)
-sock.route("/openclaw/<path:subpath>")(openclaw_ws_proxy)
+sock.route("/openclaw", endpoint="openclaw_ws_root")(openclaw_ws_proxy_root)
+sock.route("/openclaw/", endpoint="openclaw_ws_root_slash")(openclaw_ws_proxy_root)
+sock.route("/openclaw/<path:subpath>", endpoint="openclaw_ws_sub")(openclaw_ws_proxy)
 
 
 def _openclaw_ws_handle(ws, subpath):
