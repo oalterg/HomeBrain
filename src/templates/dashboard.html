@@ -824,6 +824,7 @@
                         <button class="btn-primary" onclick="connHaAdd()">Add</button>
                         <button onclick="closeForm('details-ha')" aria-label="Close">✕</button>
                     </div>
+                    <small id="ha-local-hint" style="display:none; margin-top:6px; color:var(--accent);"></small>
                     <small style="display:block; margin-top:6px; color:var(--text-dim);">
                         In each Home Assistant instance: Profile → Security → Long-lived access tokens → Create. Add one row per house. The agent picks the right one with the <code>account</code> parameter.
                     </small>
@@ -1316,6 +1317,8 @@
             if (!el) return;
             if (el.tagName === 'DETAILS') el.open = false;
             else el.hidden = true;
+            const hint = document.getElementById('ha-local-hint');
+            if (id === 'details-ha' && hint) hint.style.display = 'none';
         }
         const CONN_LABELS = {
             self:          { name: 'Self-tools',     sub: 'Backups, status, restart' },
@@ -1388,8 +1391,12 @@
                         buttons.push(`<button class="${cta}" onclick="openDetails('details-nc','nc-name')">Add external NC…</button>`);
                     }
                     if (it.key === 'homeassistant') {
-                        const cls = (it.accounts || []).length > 0 ? '' : 'btn-primary';
-                        buttons.push(`<button class="${cls}" onclick="openDetails('details-ha','ha-name')">Add account…</button>`);
+                        const hasLocal = (it.accounts || []).some(a => a.name === 'home');
+                        if (!hasLocal) {
+                            buttons.push(`<button onclick="connHaAddLocal()" title="Pre-fill with the HomeBrain-shipped Home Assistant; you only paste the token">Add HomeBrain HA</button>`);
+                        }
+                        const cta = (it.accounts || []).length > 0 ? '' : 'btn-primary button';
+                        buttons.push(`<button class="${cta}" onclick="openDetails('details-ha','ha-name')">Add external HA…</button>`);
                     }
                     if (it.key === 'email') {
                         const haveAccount = (it.accounts || []).length > 0;
@@ -1512,6 +1519,21 @@
                 closeForm('details-nc');
             }
             connRefresh();
+        }
+
+        function connHaAddLocal() {
+            // No backend equivalent of NC's occ user:add-app-password — HA tokens
+            // are user-scoped and require the HA UI. Best we can do is pre-fill the
+            // form so the user only pastes the token.
+            document.getElementById('ha-name').value = 'home';
+            document.getElementById('ha-base-url').value = 'http://127.0.0.1:8123';
+            const hint = document.getElementById('ha-local-hint');
+            if (hint) {
+                const tokenUrl = `${window.location.protocol}//${window.location.hostname}:8123/profile/security`;
+                hint.innerHTML = `Open <a href="${tokenUrl}" target="_blank" rel="noopener">Home Assistant → Profile → Security</a>, create a long-lived access token, and paste it below.`;
+                hint.style.display = 'block';
+            }
+            openDetails('details-ha', 'ha-token-input');
         }
 
         async function connNcAddLocal() {
