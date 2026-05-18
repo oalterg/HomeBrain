@@ -2055,6 +2055,36 @@ def _openclaw_upstream_path(subpath):
     return target
 
 
+def _openclaw_bootstrap_script(token: str) -> bytes:
+    """Tiny inline bootstrap injected into the Control UI's index.html.
+
+    Without it the SPA loads with no gatewayUrl/token in state, shows its
+    auth dialog, and any URL the user types fails — the UI expects the
+    `openclaw dashboard` CLI to hand it credentials via URL hash params.
+    We do the same thing from the proxy: set the base-path global so
+    relative WS URLs resolve to the same origin, then write the gateway
+    URL + token into the URL hash. The SPA reads the hash, scrubs it via
+    history.replaceState (its existing behaviour), and auto-connects.
+    """
+    safe_token = json.dumps(token)  # JSON-encode for safe JS string literal
+    js = (
+        "<script>"
+        "window.__OPENCLAW_CONTROL_UI_BASE_PATH__='/openclaw';"
+        "(function(){try{"
+        "var loc=window.location,"
+        "scheme=loc.protocol==='https:'?'wss:':'ws:',"
+        "gw=scheme+'//'+loc.host+'/openclaw',"
+        "tok=" + safe_token + ","
+        "h=new URLSearchParams(loc.hash.startsWith('#')?loc.hash.slice(1):loc.hash);"
+        "if(!h.get('token')&&tok){"
+        "h.set('gatewayUrl',gw);h.set('token',tok);"
+        "loc.hash='#'+h.toString();"
+        "}}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
+        "</script>"
+    )
+    return js.encode("utf-8")
+
+
 @app.route("/openclaw", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 @app.route("/openclaw/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 @app.route("/openclaw/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
@@ -2066,6 +2096,10 @@ def openclaw_proxy(subpath=""):
     request reaching this view is authenticated. We forward verbatim, stream
     the response body (important for SSE / long-running calls), and inject
     the gateway bearer token so the browser never sees it.
+
+    For the SPA index.html we additionally inject a bootstrap script that
+    primes the gatewayUrl + token in the URL hash so the UI auto-connects
+    to the same origin without ever showing its built-in auth dialog.
     """
     target_path = _openclaw_upstream_path(subpath)
     url = f"http://{_OPENCLAW_PROXY_HOST}:{_OPENCLAW_PROXY_PORT}{target_path}"
@@ -2100,6 +2134,28 @@ def openclaw_proxy(subpath=""):
     excluded = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
     resp_headers = [(k, v) for k, v in upstream.raw.headers.items() if k.lower() not in excluded]
 
+    upstream_ct = upstream.headers.get("Content-Type", "")
+    is_html = (
+        request.method == "GET"
+        and upstream.status_code == 200
+        and upstream_ct.lower().startswith("text/html")
+    )
+
+    if is_html and token:
+        # Buffer the (small) HTML, inject the bootstrap script right after
+        # <head>, hand back as a regular response. Streaming for ~10 KB of
+        # HTML buys nothing and prevents body rewriting.
+        try:
+            body = upstream.raw.read(decode_content=True)
+        finally:
+            upstream.close()
+        marker = b"<head>"
+        idx = body.find(marker)
+        if idx != -1:
+            inject = _openclaw_bootstrap_script(token)
+            body = body[: idx + len(marker)] + inject + body[idx + len(marker) :]
+        return Response(body, status=upstream.status_code, headers=resp_headers)
+
     def generate():
         try:
             for chunk in upstream.iter_content(chunk_size=16384):
@@ -2111,8 +2167,22 @@ def openclaw_proxy(subpath=""):
     return Response(stream_with_context(generate()), status=upstream.status_code, headers=resp_headers)
 
 
+@sock.route("/openclaw")
+@sock.route("/openclaw/")
+def openclaw_ws_proxy_root(ws):
+    """The Control UI's `new WebSocket(gatewayUrl)` call targets the basePath
+    root, not a subpath — without these routes flask-sock never matches and
+    the bare `/openclaw` upgrade falls through to the HTTP proxy view → 400.
+    """
+    return _openclaw_ws_handle(ws, "")
+
+
 @sock.route("/openclaw/<path:subpath>")
 def openclaw_ws_proxy(ws, subpath):
+    return _openclaw_ws_handle(ws, subpath)
+
+
+def _openclaw_ws_handle(ws, subpath):
     """WebSocket reverse-proxy to the OpenClaw gateway.
 
     OpenClaw's control UI uses WS for live agent streaming. We bridge the
