@@ -131,13 +131,17 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             # keys, refreshed allowedOrigins, etc.). Re-patch the existing
             # openclaw.json and only bounce the daemon when the file actually
             # changes — the npm install is skipped because the version matched.
-            if command -v openclaw >/dev/null 2>&1; then
+            # After self-update re-exec $SCRIPT_DIR points at /tmp/homebrain_self_update
+            # which only has update.sh + common.sh. utilities.sh lives in the rsynced
+            # install dir, so always source from there.
+            UTILS_FILE="$INSTALL_DIR/scripts/utilities.sh"
+            if command -v openclaw >/dev/null 2>&1 && [[ -f "$UTILS_FILE" ]]; then
                 CFG="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/openclaw.json"
                 if [[ -f "$CFG" ]]; then
                     log_info "Refreshing openclaw.json against current utilities.sh..."
                     cp "$CFG" "${CFG}.preupdate"
-                    # shellcheck disable=SC1091
-                    source "$SCRIPT_DIR/utilities.sh"
+                    # shellcheck disable=SC1090
+                    source "$UTILS_FILE"
                     load_env 2>/dev/null || true
                     load_versions 2>/dev/null || true
                     if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
@@ -151,6 +155,8 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
                     fi
                     rm -f "${CFG}.preupdate"
                 fi
+            else
+                log_warn "openclaw config refresh skipped: openclaw=$(command -v openclaw||echo missing) utils=$UTILS_FILE present=$([[ -f $UTILS_FILE ]]&&echo y||echo n)"
             fi
         fi
     fi
