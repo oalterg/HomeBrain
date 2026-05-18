@@ -2167,19 +2167,23 @@ def openclaw_proxy(subpath=""):
     return Response(stream_with_context(generate()), status=upstream.status_code, headers=resp_headers)
 
 
-@sock.route("/openclaw")
-@sock.route("/openclaw/")
+# The Control UI's `new WebSocket(gatewayUrl)` call targets the basePath
+# root, not a subpath — without an exact-match route flask-sock never matches
+# and the bare `/openclaw` upgrade falls through to the HTTP proxy view → 400.
+# Register the handler under all three rules. NB: sock.route decorators do not
+# return the wrapped function, so they can't be stacked syntactically; call
+# them as plain functions to bind the same handler under each rule.
 def openclaw_ws_proxy_root(ws):
-    """The Control UI's `new WebSocket(gatewayUrl)` call targets the basePath
-    root, not a subpath — without these routes flask-sock never matches and
-    the bare `/openclaw` upgrade falls through to the HTTP proxy view → 400.
-    """
     return _openclaw_ws_handle(ws, "")
 
 
-@sock.route("/openclaw/<path:subpath>")
 def openclaw_ws_proxy(ws, subpath):
     return _openclaw_ws_handle(ws, subpath)
+
+
+sock.route("/openclaw")(openclaw_ws_proxy_root)
+sock.route("/openclaw/")(openclaw_ws_proxy_root)
+sock.route("/openclaw/<path:subpath>")(openclaw_ws_proxy)
 
 
 def _openclaw_ws_handle(ws, subpath):
