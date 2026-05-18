@@ -2209,23 +2209,23 @@ def _openclaw_ws_handle(ws, subpath):
     token = _openclaw_token()
     if token:
         headers.append(f"Authorization: Bearer {token}")
-    # Forward the browser's Origin verbatim. The gateway's
-    # controlUi.allowedOrigins is populated with every dashboard origin
-    # (loopback, LAN IP, mDNS, Pangolin domain) by patch_openclaw_config —
-    # the gateway only accepts the connection when the captured Origin
-    # matches. Overriding to the loopback URL with port 18789 (as we did
-    # before) leaves a port mismatch with the allowlist entries and gets
-    # the WS rejected with "origin not allowed" after the auth challenge.
-    browser_origin = request.headers.get("Origin")
-    if browser_origin:
-        headers.append(f"Origin: {browser_origin}")
     forwarded_proto = ("Sec-WebSocket-Protocol", request.headers.get("Sec-WebSocket-Protocol"))
     if forwarded_proto[1]:
         headers.append(f"{forwarded_proto[0]}: {forwarded_proto[1]}")
 
+    # Forward the browser's Origin verbatim. The gateway's
+    # controlUi.allowedOrigins is populated by patch_openclaw_config with
+    # every dashboard origin (loopback, LAN IP, mDNS, Pangolin domain);
+    # the gateway only accepts the connection when this header matches.
+    # Pass via the explicit `origin=` kwarg — including it in header= as
+    # well makes websocket-client send TWO Origin headers which get merged
+    # into a comma-separated value that matches nothing in the allowlist.
+    browser_origin = request.headers.get("Origin") or f"http://{_OPENCLAW_PROXY_HOST}"
+
     try:
         upstream = ws_client.create_connection(
-            upstream_url, header=headers, timeout=30, enable_multithread=True,
+            upstream_url, header=headers, origin=browser_origin,
+            timeout=30, enable_multithread=True,
         )
     except Exception as e:
         logging.warning("OpenClaw WS upstream connect failed: %s", e)
