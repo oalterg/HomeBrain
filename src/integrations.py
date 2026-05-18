@@ -1137,6 +1137,52 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "integrations_audit_tail",
                      audit_tail, methods=["GET"])
 
+    # Post-provision self-heal: reconcile_all_mcp() was historically only
+    # triggered by the user clicking "Apply" in Connections, which left
+    # self-MCP + vault-MCP unwired on fresh installs and after upgrades that
+    # introduced new INTEGRATION_ORDER entries. Now we run it on app boot when
+    # the registry is missing the canonical self-MCP entry. Multi-worker safe
+    # via an exclusive flock on a tmpfs lockfile — at most one worker per host
+    # does the work, the rest no-op. Idempotent on subsequent boots once the
+    # self-MCP is wired.
+    threading.Thread(target=_startup_wire_if_needed, daemon=True).start()
+
+
+def _startup_wire_if_needed() -> None:
+    if not _has_openclaw():
+        return
+    try:
+        if _self_token() and _wired_in_openclaw(MCP_NAMES["self"]):
+            return
+    except Exception:
+        pass
+    import fcntl
+    lock_path = "/tmp/homebrain-startup-reconcile.lock"
+    try:
+        fd = open(lock_path, "w")
+    except OSError:
+        return
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        # Re-check inside the lock to avoid a redundant daemon restart if a
+        # sibling worker just finished.
+        if _self_token() and _wired_in_openclaw(MCP_NAMES["self"]):
+            return
+        logging.info("startup self-heal: wiring missing MCP servers")
+        try:
+            reconcile_all_mcp()
+        except Exception as e:
+            logging.warning("startup reconcile failed: %s", e)
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fd.close()
+
 
 # ---------------------------------------------------------------------------
 # Smoke test against an MCP server (used by integration_test endpoints)
