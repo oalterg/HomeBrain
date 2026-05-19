@@ -1175,6 +1175,17 @@ patch_openclaw_config() {
         .plugins.entries.matrix = (.plugins.entries.matrix // {"enabled": false}) |
         .plugins.entries["nextcloud-talk"] = (.plugins.entries["nextcloud-talk"] // {"enabled": false}) |
         .gateway.controlUi.allowedOrigins = $origins |
+        # The Control UI uses crypto.subtle to sign a device-identity
+        # challenge — that API is only exposed in "secure contexts"
+        # (HTTPS, localhost, or 127.0.0.1). On LAN HTTP the browser
+        # refuses, the SPA throws "device identity required", and
+        # there is no way to enable it from the client side. Setting
+        # allowInsecureAuth on the gateway opts into token-only auth
+        # for those non-secure contexts. The bearer token is generated
+        # from MASTER_PASSWORD and the manager already gates /openclaw
+        # behind the session, so dropping device-identity here does
+        # not weaken our auth posture — it just unblocks the LAN flow.
+        .gateway.controlUi.allowInsecureAuth = true |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
