@@ -2058,13 +2058,12 @@ def _openclaw_upstream_path(subpath):
 def _openclaw_bootstrap_script(token: str) -> bytes:
     """Tiny inline bootstrap injected into the Control UI's index.html.
 
-    The Control UI keeps its gateway token in localStorage at
-    `openclaw.control.token.v1:<normalized-gateway-url>`. Its default
-    settings constructor reads from that key, so seeding it before the
-    SPA module runs lets the WS auto-connect with the right credentials
-    on the very first visit — no auth dialog, no URL-hash dance, no
-    "would you like to switch gateway" confirmation prompt (which the
-    hash path triggers and we cannot dismiss programmatically).
+    The SPA's URL-fragment handler (`pI` in the bundle) applies a token
+    via `lI(state, {...settings, token: u})` when `#token=...` is present
+    and *no* `gatewayUrl` is given — that's the same-origin path that
+    bypasses the "switch gateway" confirmation prompt. We also seed
+    localStorage under every known gatewayUrl as a belt-and-braces so
+    subsequent visits without a fragment still authenticate.
     """
     safe_token = json.dumps(token)  # JSON-encode for safe JS string literal
     # Strategy: seed the token under our same-origin gateway URL, then drop any
@@ -2084,13 +2083,17 @@ def _openclaw_bootstrap_script(token: str) -> bytes:
         "tokPrefix='openclaw.control.token.v1:',"
         "setPrefix='openclaw.control.settings.v1',"
         "ls=window.localStorage;"
-        "if(tok&&ls){"
+        "if(tok){"
+        "var h=new URLSearchParams(loc.hash.startsWith('#')?loc.hash.slice(1):loc.hash);"
+        "if(h.get('token')!==tok){h.set('token',tok);h.delete('gatewayUrl');loc.hash='#'+h.toString();}"
+        "if(ls){"
         "ls.setItem(tokPrefix+gw,tok);"
         "for(var i=ls.length-1;i>=0;i--){"
         "var k=ls.key(i);"
         "if(!k||k.indexOf(setPrefix)!==0)continue;"
         "try{var v=JSON.parse(ls.getItem(k)||'{}'),u=v&&typeof v.gatewayUrl==='string'?v.gatewayUrl:null;"
         "if(u)ls.setItem(tokPrefix+u,tok);}catch(_){}"
+        "}"
         "}"
         "}"
         "}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
@@ -2164,6 +2167,11 @@ def openclaw_proxy(subpath=""):
             body = upstream.raw.read(decode_content=True)
         finally:
             upstream.close()
+        # Prevent the browser from caching a previous bootstrap that
+        # might still try the old URL-hash-only or localStorage-only
+        # flow. The injected script must run on every visit.
+        resp_headers = [(k, v) for k, v in resp_headers if k.lower() != "cache-control"]
+        resp_headers.append(("Cache-Control", "no-store, max-age=0"))
         marker = b"<head>"
         idx = body.find(marker)
         if idx != -1:
