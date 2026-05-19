@@ -2067,6 +2067,12 @@ def _openclaw_bootstrap_script(token: str) -> bytes:
     hash path triggers and we cannot dismiss programmatically).
     """
     safe_token = json.dumps(token)  # JSON-encode for safe JS string literal
+    # Strategy: seed the token under our same-origin gateway URL, then drop any
+    # stale settings entries (from previous failed visits with different
+    # gatewayUrls) that would otherwise override our defaults. AC() merges
+    # saved settings on top of the i={gatewayUrl, token:OC(t), ...} default,
+    # so any orphan settings entry pointing elsewhere makes the SPA try a
+    # gateway we have no token for. Removing them forces the default path.
     js = (
         "<script>"
         "window.__OPENCLAW_CONTROL_UI_BASE_PATH__='/openclaw';"
@@ -2074,9 +2080,18 @@ def _openclaw_bootstrap_script(token: str) -> bytes:
         "var loc=window.location,"
         "scheme=loc.protocol==='https:'?'wss:':'ws:',"
         "gw=scheme+'//'+loc.host+'/openclaw',"
-        "tok=" + safe_token + ";"
-        "if(tok){"
-        "localStorage.setItem('openclaw.control.token.v1:'+gw,tok);"
+        "tok=" + safe_token + ","
+        "tokKey='openclaw.control.token.v1:'+gw,"
+        "setPrefix='openclaw.control.settings.v1',"
+        "ls=window.localStorage;"
+        "if(tok&&ls){"
+        "ls.setItem(tokKey,tok);"
+        "for(var i=ls.length-1;i>=0;i--){"
+        "var k=ls.key(i);"
+        "if(k&&k.indexOf(setPrefix)===0&&k!==setPrefix+':'+gw){"
+        "ls.removeItem(k);"
+        "}"
+        "}"
         "}"
         "}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
         "</script>"
