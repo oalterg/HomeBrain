@@ -2259,6 +2259,18 @@ def _openclaw_ws_handle(ws, subpath):
                             params = parsed.setdefault("params", {})
                             auth = params.setdefault("auth", {})
                             auth["token"] = token
+                            # The browser's device-identity signature is
+                            # computed over a payload that includes its
+                            # idea of the token (usually empty, since
+                            # the user never sees it). Injecting the
+                            # real token here would make that signature
+                            # invalid, so strip the device field — we
+                            # rely on token + the gateway's allowInsecureAuth
+                            # setting for auth. The manager session is the
+                            # real defense layer; device identity is a
+                            # nice-to-have we cannot satisfy without the
+                            # browser's private key.
+                            params.pop("device", None)
                             msg = json.dumps(parsed)
                             connect_injected = True
                     except (ValueError, TypeError):
