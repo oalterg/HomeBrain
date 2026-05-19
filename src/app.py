@@ -2058,13 +2058,13 @@ def _openclaw_upstream_path(subpath):
 def _openclaw_bootstrap_script(token: str) -> bytes:
     """Tiny inline bootstrap injected into the Control UI's index.html.
 
-    Without it the SPA loads with no gatewayUrl/token in state, shows its
-    auth dialog, and any URL the user types fails — the UI expects the
-    `openclaw dashboard` CLI to hand it credentials via URL hash params.
-    We do the same thing from the proxy: set the base-path global so
-    relative WS URLs resolve to the same origin, then write the gateway
-    URL + token into the URL hash. The SPA reads the hash, scrubs it via
-    history.replaceState (its existing behaviour), and auto-connects.
+    The Control UI keeps its gateway token in localStorage at
+    `openclaw.control.token.v1:<normalized-gateway-url>`. Its default
+    settings constructor reads from that key, so seeding it before the
+    SPA module runs lets the WS auto-connect with the right credentials
+    on the very first visit — no auth dialog, no URL-hash dance, no
+    "would you like to switch gateway" confirmation prompt (which the
+    hash path triggers and we cannot dismiss programmatically).
     """
     safe_token = json.dumps(token)  # JSON-encode for safe JS string literal
     js = (
@@ -2074,12 +2074,11 @@ def _openclaw_bootstrap_script(token: str) -> bytes:
         "var loc=window.location,"
         "scheme=loc.protocol==='https:'?'wss:':'ws:',"
         "gw=scheme+'//'+loc.host+'/openclaw',"
-        "tok=" + safe_token + ","
-        "h=new URLSearchParams(loc.hash.startsWith('#')?loc.hash.slice(1):loc.hash);"
-        "if(!h.get('token')&&tok){"
-        "h.set('gatewayUrl',gw);h.set('token',tok);"
-        "loc.hash='#'+h.toString();"
-        "}}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
+        "tok=" + safe_token + ";"
+        "if(tok){"
+        "localStorage.setItem('openclaw.control.token.v1:'+gw,tok);"
+        "}"
+        "}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
         "</script>"
     )
     return js.encode("utf-8")
