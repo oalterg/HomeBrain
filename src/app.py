@@ -2065,38 +2065,10 @@ def _openclaw_bootstrap_script(token: str) -> bytes:
     localStorage under every known gatewayUrl as a belt-and-braces so
     subsequent visits without a fragment still authenticate.
     """
-    safe_token = json.dumps(token)  # JSON-encode for safe JS string literal
-    # Strategy: seed the token under our same-origin gateway URL, then drop any
-    # stale settings entries (from previous failed visits with different
-    # gatewayUrls) that would otherwise override our defaults. AC() merges
-    # saved settings on top of the i={gatewayUrl, token:OC(t), ...} default,
-    # so any orphan settings entry pointing elsewhere makes the SPA try a
-    # gateway we have no token for. Removing them forces the default path.
+    del token  # injected server-side in WS proxy; not needed client-side
     js = (
         "<script>"
         "window.__OPENCLAW_CONTROL_UI_BASE_PATH__='/openclaw';"
-        "(function(){try{"
-        "var loc=window.location,"
-        "scheme=loc.protocol==='https:'?'wss:':'ws:',"
-        "gw=scheme+'//'+loc.host+'/openclaw',"
-        "tok=" + safe_token + ","
-        "tokPrefix='openclaw.control.token.v1:',"
-        "setPrefix='openclaw.control.settings.v1',"
-        "ls=window.localStorage;"
-        "if(tok){"
-        "var h=new URLSearchParams(loc.hash.startsWith('#')?loc.hash.slice(1):loc.hash);"
-        "if(h.get('token')!==tok){h.set('token',tok);h.delete('gatewayUrl');loc.hash='#'+h.toString();}"
-        "if(ls){"
-        "ls.setItem(tokPrefix+gw,tok);"
-        "for(var i=ls.length-1;i>=0;i--){"
-        "var k=ls.key(i);"
-        "if(!k||k.indexOf(setPrefix)!==0)continue;"
-        "try{var v=JSON.parse(ls.getItem(k)||'{}'),u=v&&typeof v.gatewayUrl==='string'?v.gatewayUrl:null;"
-        "if(u)ls.setItem(tokPrefix+u,tok);}catch(_){}"
-        "}"
-        "}"
-        "}"
-        "}catch(e){console.warn('homebrain bootstrap failed',e);}})();"
         "</script>"
     )
     return js.encode("utf-8")
@@ -2159,17 +2131,16 @@ def openclaw_proxy(subpath=""):
         and upstream_ct.lower().startswith("text/html")
     )
 
-    if is_html and token:
-        # Buffer the (small) HTML, inject the bootstrap script right after
-        # <head>, hand back as a regular response. Streaming for ~10 KB of
-        # HTML buys nothing and prevents body rewriting.
+    if is_html:
+        # Buffer the small HTML so we can splice in the base-path global
+        # before the SPA module evaluates. Streaming buys nothing for
+        # ~10 KB and prevents body rewriting.
         try:
             body = upstream.raw.read(decode_content=True)
         finally:
             upstream.close()
-        # Prevent the browser from caching a previous bootstrap that
-        # might still try the old URL-hash-only or localStorage-only
-        # flow. The injected script must run on every visit.
+        # Force a fresh fetch every visit so stale HTML can never run a
+        # prior bootstrap variant against current state.
         resp_headers = [(k, v) for k, v in resp_headers if k.lower() != "cache-control"]
         resp_headers.append(("Cache-Control", "no-store, max-age=0"))
         marker = b"<head>"
@@ -2260,17 +2231,39 @@ def _openclaw_ws_handle(ws, subpath):
     stop = threading.Event()
 
     def client_to_upstream():
+        # The manager session has already authenticated the user, and we
+        # hold the gateway bearer token server-side. Rather than coax the
+        # SPA into shipping it (URL hash, localStorage, settings dance —
+        # all browser-state-dependent), inject auth.token into the very
+        # first `connect` request as it passes through. The Control UI's
+        # connect frame is a small JSON text message; subsequent traffic
+        # is forwarded verbatim. Force-write the token even if the SPA
+        # supplied one — server-side state is authoritative.
+        connect_injected = False
         try:
             while not stop.is_set():
-                # No timeout: rely on WS-level pings (handled by simple-websocket)
-                # to detect dropped connections. receive() returns None on close.
                 msg = ws.receive()
                 if msg is None:
                     break
                 if isinstance(msg, (bytes, bytearray)):
                     upstream.send_binary(bytes(msg))
-                else:
-                    upstream.send(msg)
+                    continue
+                if not connect_injected and token and isinstance(msg, str):
+                    try:
+                        parsed = json.loads(msg)
+                        if (
+                            isinstance(parsed, dict)
+                            and parsed.get("type") == "req"
+                            and parsed.get("method") == "connect"
+                        ):
+                            params = parsed.setdefault("params", {})
+                            auth = params.setdefault("auth", {})
+                            auth["token"] = token
+                            msg = json.dumps(parsed)
+                            connect_injected = True
+                    except (ValueError, TypeError):
+                        pass
+                upstream.send(msg)
         except Exception:
             pass
         finally:
