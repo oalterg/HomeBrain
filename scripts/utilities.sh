@@ -1124,17 +1124,16 @@ patch_openclaw_config() {
         # llama-server on 127.0.0.1; remote-access tunnelling is handled by
         # Pangolin/Caddy in front of the gateway, not by OpenClaw itself.
         .models.providers.llamacpp.baseUrl = "http://127.0.0.1:8001/v1" |
-        # Auth fields on the llamacpp provider. Without these, the embedded
+        # Auth fields on the llamacpp provider. Without these the embedded
         # agent fails every prompt with "No API key found for provider
-        # 'llamacpp'. Auth store: …/auth-profiles.json …". The bundled
-        # llama-server does not actually validate the key — any non-empty
-        # string is accepted — but OpenClaw still requires *something* to
-        # mark the provider as "auth-resolved" so the agent's startup auth
-        # probe passes. The 2026.5.12 config rewriter silently dropped
+        # llamacpp". The bundled llama-server does not actually validate
+        # the key — any non-empty string is accepted — but OpenClaw still
+        # requires the provider be auth-resolved before the agent will
+        # dispatch. The 2026.5.12 config rewriter silently dropped
         # raw-string apiKey/api fields on writeback; later 2026.5.x builds
         # preserve them, but installs that touched 2026.5.12 still have
-        # them missing. Re-assert idempotently so the fields self-heal on
-        # every dashboard update. `api: openai-completions` selects the
+        # them missing. Re-assert idempotently so the fields self-heal
+        # on every dashboard update. api openai-completions selects the
         # OpenAI-compat adapter llama-server speaks.
         .models.providers.llamacpp.apiKey = "1234" |
         .models.providers.llamacpp.api = "openai-completions" |
