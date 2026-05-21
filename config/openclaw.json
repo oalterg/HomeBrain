@@ -49,16 +49,6 @@
       "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
-      },
-      "heartbeat": {
-        "every": "120m",
-        "target": "last",
-        "directPolicy": "allow",
-        "activeHours": {
-          "start": "08:00",
-          "end": "24:00",
-          "timezone": "Europe/Berlin"
-        }
       }
     },
     "list": [
@@ -74,7 +64,6 @@
     ]
   },
   "tools": {
-    "profile": "coding",
     "media": {
       "audio": {
         "enabled": true,
@@ -93,97 +82,23 @@
       }
     }
   },
-  "commands": {
-    "native": "auto",
-    "nativeSkills": "auto",
-    "restart": true,
-    "ownerDisplay": "raw"
-  },
-  "session": {
-    "dmScope": "per-channel-peer"
-  },
-  "channels": {
-    "whatsapp": {
-      "enabled": true,
-      "dmPolicy": "allowlist",
-      "selfChatMode": true,
-      "allowFrom": [],
-      "groupPolicy": "allowlist",
-      "debounceMs": 0,
-      "mediaMaxMb": 50
-    },
-    "telegram": {
-      "enabled": false,
-      "dmPolicy": "allowlist",
-      "groupPolicy": "allowlist"
-    },
-    "signal": {
-      "enabled": false,
-      "dmPolicy": "allowlist",
-      "groupPolicy": "allowlist"
-    },
-    "matrix": {
-      "enabled": false,
-      "groupPolicy": "allowlist"
-    },
-    "nextcloud-talk": {
-      "enabled": false,
-      "dmPolicy": "allowlist",
-      "groupPolicy": "allowlist"
-    }
-  },
   "gateway": {
     "port": 18789,
     "mode": "local",
     "bind": "loopback",
     "controlUi": {
       "basePath": "/openclaw",
-      "allowedOrigins": [],
-      "dangerouslyAllowHostHeaderOriginFallback": true,
-      "dangerouslyDisableDeviceAuth": true
+      "allowedOrigins": []
     },
     "auth": {
       "mode": "token",
       "token": ""
-    },
-    "tailscale": {
-      "mode": "off",
-      "resetOnExit": false
-    },
-    "nodes": {
-      "denyCommands": [
-        "camera.snap",
-        "camera.clip",
-        "screen.record",
-        "contacts.add",
-        "calendar.add",
-        "reminders.add",
-        "sms.send"
-      ]
     }
   },
   "plugins": {
     "entries": {
-      "whatsapp": {
-        "enabled": true
-      },
-      "telegram": {
-        "enabled": false
-      },
-      "signal": {
-        "enabled": false
-      },
-      "matrix": {
-        "enabled": false
-      },
-      "nextcloud-talk": {
-        "enabled": false
-      },
       "browser": {
         "enabled": true
-      },
-      "bonjour": {
-        "enabled": false
       }
     }
   }
