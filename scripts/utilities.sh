@@ -1160,33 +1160,34 @@ patch_openclaw_config() {
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
         .browser.executablePath = "/usr/bin/google-chrome-stable" |
         .browser.noSandbox = true |
-        .channels.whatsapp.enabled = true |
-        .channels.whatsapp.dmPolicy = "allowlist" |
-        .channels.whatsapp.allowFrom = (.channels.whatsapp.allowFrom // []) |
-        .plugins.entries.whatsapp.enabled = true |
-        # Non-destructive migration: ensure additional curated messenger
-        # channels (Telegram, Signal, Matrix, Nextcloud Talk) appear in
-        # the OpenClaw control UI so users can configure credentials.
-        # Uses jq // so an existing user-tuned entry is never overwritten;
-        # we only fill the key when it is missing entirely. Each channel
-        # ships disabled, with the schema-required fields only — extra
-        # properties are rejected by the per-channel schemas
-        # (additionalProperties: false). Matrix uses dm.* nested config
-        # rather than dmPolicy; the others require dmPolicy + groupPolicy.
-        # Defaults to allowlist so an accidentally-enabled channel cannot
-        # DM the agent until the user explicitly allowlists a peer.
-        .channels.telegram = (.channels.telegram //
-            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
-        .channels.signal = (.channels.signal //
-            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
-        .channels.matrix = (.channels.matrix //
-            {"enabled": false, "groupPolicy": "allowlist"}) |
-        .channels["nextcloud-talk"] = (.channels["nextcloud-talk"] //
-            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}) |
-        .plugins.entries.telegram = (.plugins.entries.telegram // {"enabled": false}) |
-        .plugins.entries.signal = (.plugins.entries.signal // {"enabled": false}) |
-        .plugins.entries.matrix = (.plugins.entries.matrix // {"enabled": false}) |
-        .plugins.entries["nextcloud-talk"] = (.plugins.entries["nextcloud-talk"] // {"enabled": false}) |
+        # One-shot migration: drop the disabled channel skeletons HomeBrain
+        # used to seed before the OpenClaw self-config agent tool existed.
+        # We only delete entries that still exactly match our old skeleton —
+        # if the user has actually configured one (linked an account,
+        # enabled it, added an allowlist entry), the equality check fails
+        # and the entry is preserved. WhatsApp is intentionally not migrated:
+        # earlier installs may have linked it, and the user can clean it up
+        # via the agent (channels(remove, whatsapp)) when they want to.
+        (if (.channels.telegram // null) ==
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}
+          then del(.channels.telegram) else . end) |
+        (if (.channels.signal // null) ==
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}
+          then del(.channels.signal) else . end) |
+        (if (.channels.matrix // null) ==
+            {"enabled": false, "groupPolicy": "allowlist"}
+          then del(.channels.matrix) else . end) |
+        (if (.channels["nextcloud-talk"] // null) ==
+            {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}
+          then del(.channels["nextcloud-talk"]) else . end) |
+        (if (.plugins.entries.telegram // null) == {"enabled": false}
+          then del(.plugins.entries.telegram) else . end) |
+        (if (.plugins.entries.signal // null) == {"enabled": false}
+          then del(.plugins.entries.signal) else . end) |
+        (if (.plugins.entries.matrix // null) == {"enabled": false}
+          then del(.plugins.entries.matrix) else . end) |
+        (if (.plugins.entries["nextcloud-talk"] // null) == {"enabled": false}
+          then del(.plugins.entries["nextcloud-talk"]) else . end) |
         .gateway.controlUi.allowedOrigins = $origins |
         # The Control UI uses crypto.subtle to sign a device-identity
         # challenge — that API is only exposed in "secure contexts"
@@ -1325,22 +1326,12 @@ setup_openclaw() {
         fi
     fi
 
-    # --- [1b/3] Install external channel plugins ---
-    # OpenClaw 2026.5+ moved several channel plugins (matrix,
-    # nextcloud-talk, …) out of the core bundle. The dashboard's seed
-    # declares them in plugins.entries so they appear in the control UI
-    # for credential entry; without the plugin code installed, the
-    # gateway emits "plugin not installed" warnings and the channel
-    # cannot connect. Install them via the OpenClaw plugin registry.
-    # Idempotent — `plugins install` is a no-op when the plugin is
-    # already present.
-    if command -v openclaw >/dev/null 2>&1; then
-        for plugin in 'clawhub:@openclaw/matrix' '@openclaw/nextcloud-talk'; do
-            log_info "Ensuring OpenClaw plugin: ${plugin}"
-            run_as_admin timeout 60 openclaw plugins install "$plugin" 2>&1 \
-                | grep -vE '^$' | head -10 || log_warn "plugins install ${plugin} reported issues (non-fatal)"
-        done
-    fi
+    # Channel plugins (matrix, nextcloud-talk, telegram, signal, etc.)
+    # are intentionally NOT pre-installed here. The agent's `channels`
+    # self-config tool installs them on demand from the official-external
+    # catalog when the user actually wants a given messenger — which keeps
+    # fresh provisioning fast and avoids cluttering the OpenClaw UI with
+    # never-configured channel cards.
 
     # --- [2/3] Write config ---
     log_info "[2/3] Writing config..."

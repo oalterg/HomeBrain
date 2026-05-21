@@ -1992,21 +1992,6 @@ def update_system_config():
     
     return jsonify({"status": "started"})
 
-@app.route("/api/ai/whatsapp/link-token")
-def whatsapp_link_token():
-    """Return the OpenClaw gateway token + port for WhatsApp WebSocket linking."""
-    try:
-        config_path = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), ".openclaw/openclaw.json")
-        if not os.path.exists(config_path):
-            return jsonify({"error": "OpenClaw not configured"}), 404
-        with open(config_path) as f:
-            oc_config = json.load(f)
-        token = oc_config.get("gateway", {}).get("auth", {}).get("token", "")
-        port = oc_config.get("gateway", {}).get("port", 18789)
-        return jsonify({"token": token, "port": port})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 # --- Reverse-proxy: OpenClaw Control UI ---
 # Goal: single authenticated origin for the user. The master-password session
 # (security_middleware) gates access; we then forward the request to the local
