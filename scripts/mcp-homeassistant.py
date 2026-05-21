@@ -46,9 +46,12 @@ LEGACY_BASE_URL = os.environ.get("HA_BASE_URL", "").rstrip("/")
 LEGACY_TOKEN_FILE = os.environ.get("HA_TOKEN_FILE", "")
 LEGACY_TOKEN = os.environ.get("HA_TOKEN", "")
 
-# Domains the agent is permitted to call services on. Critical/destructive
-# domains intentionally absent. This list is the trust boundary; do not
-# expand it without thinking about blast radius.
+# Domains the agent is permitted to call services on through the curated
+# `ha.call_service` tool. Critical/destructive domains intentionally absent.
+# This list is the trust boundary for the curated path; do not expand it
+# without thinking about blast radius. For anything outside this set the
+# agent must use `ha.call_service_raw`, which has no allowlist and routes
+# every call through the same user consent flow.
 SERVICE_DOMAIN_ALLOWLIST = {
     "light", "switch", "fan", "cover", "climate", "media_player",
     "vacuum", "lock", "scene", "script", "automation", "input_boolean",
@@ -57,6 +60,15 @@ SERVICE_DOMAIN_ALLOWLIST = {
     "remote", "siren", "valve",
 }
 SERVICE_NAME_DENYLIST = {"delete", "remove", "clear_skipped_update", "purge"}
+
+# Permanently blocked from `ha.call_service_raw` even with user consent —
+# these either brick the running HA instance for ~30s (invisible to a user
+# clicking "approve") or are irreversibly destructive.
+RAW_NUCLEAR_DENYLIST = {
+    ("homeassistant", "restart"),
+    ("homeassistant", "stop"),
+    ("homeassistant", "reload_core_config"),
+}
 
 
 def _decrypt(blob: str) -> str:
@@ -293,6 +305,98 @@ def t_call_service(args: dict) -> dict:
               response=resp if isinstance(resp, list) else None)
 
 
+def t_list_services(args: dict) -> dict:
+    """Introspect the HA service registry so the agent can discover what
+    parameters a service like `light.turn_on` actually accepts before
+    calling it (HA returns a 400 for unknown/typed-wrong fields). Optionally
+    filter by domain to keep the payload compact."""
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    only_domain = (args.get("domain") or "").strip().lower()
+    code, body = _http(account, "GET", "/api/services")
+    if code != 200 or not isinstance(body, list):
+        return unavailable(f"HA services unreachable: {body}")
+    if only_domain:
+        body = [d for d in body if d.get("domain") == only_domain]
+    return ok(account=account["name"], domains=body, total=len(body))
+
+
+def t_template(args: dict) -> dict:
+    """Render a Jinja2 template against HA state — read-only. Useful for
+    composite queries the curated tools don't cover (e.g. `{{ states.light
+    | selectattr('state','eq','on') | list | count }}`)."""
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    tpl = args.get("template") or ""
+    if not tpl:
+        return err("template is required")
+    code, body = _http(account, "POST", "/api/template", {"template": tpl})
+    if code != 200:
+        return err(f"template render failed (code {code}): {body}")
+    return ok(account=account["name"], rendered=body)
+
+
+def t_call_service_raw(args: dict) -> dict:
+    """Allowlist-free escape hatch for `ha.call_service`. Use when the
+    curated tool rejects a domain you need (e.g. `number.set_value` for a
+    bulb's startup brightness) or when HA returns a 400 because the field
+    name doesn't match what your specific entity expects. Same consent
+    flow as the curated tool — the user still approves every call."""
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    domain = (args.get("domain") or "").strip()
+    service = (args.get("service") or "").strip()
+    target = args.get("target") or {}
+    data = args.get("service_data") or {}
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+
+    if not domain or not service:
+        return err("domain and service are required")
+    if (domain, service) in RAW_NUCLEAR_DENYLIST:
+        return err(f"{domain}.{service} is permanently denied",
+                   hint="restart/stop/reload_core_config cannot be invoked "
+                        "via the agent; do it from the HA UI.")
+
+    summary = (f"Home Assistant ({account['name']}): RAW {domain}.{service} "
+               f"on {target or 'default target'}")
+    payload = {"account": account["name"], "domain": domain, "service": service,
+               "target": target, "service_data": data}
+
+    if not confirm:
+        action_id = Consent.issue("homeassistant", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+
+    redeem_account = _pick_account(redeemed.get("account"))
+    if redeem_account is None:
+        return err(f"account '{redeemed.get('account')}' no longer configured")
+
+    body = {**redeemed.get("service_data", {}),
+            **({"target": redeemed.get("target")} if redeemed.get("target") else {})}
+    code, resp = _http(redeem_account, "POST",
+                       f"/api/services/{redeemed['domain']}/{redeemed['service']}",
+                       body)
+    if code not in (200, 201):
+        audit("homeassistant", "call_service_raw.fail",
+              account=redeem_account["name"],
+              domain=redeemed["domain"], service=redeemed["service"],
+              code=code, resp=str(resp)[:200])
+        return err(f"HA service call failed (code {code}): {resp}")
+    audit("homeassistant", "call_service_raw.ok",
+          account=redeem_account["name"],
+          domain=redeemed["domain"], service=redeemed["service"],
+          target=redeemed.get("target"))
+    return ok(account=redeem_account["name"], executed=True,
+              response=resp if isinstance(resp, list) else None)
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": ("Configured account name to act on. Omit when only one "
@@ -326,13 +430,64 @@ TOOLS = [
      "description": "List all configured Home Assistant areas (rooms).",
      "inputSchema": {"type": "object",
                      "properties": {"account": _ACCOUNT_PROP}}},
+    {"name": "ha.list_services",
+     "description": (
+         "List Home Assistant service definitions, including each field's "
+         "expected type, selector, and example value. Call this before "
+         "ha.call_service / ha.call_service_raw when you're not sure what "
+         "parameters a service accepts (HA returns 400 for unknown fields, "
+         "and brightness in particular has multiple variants: `brightness` "
+         "0-255, `brightness_pct` 0-100, `brightness_step_pct`)."
+     ),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "domain": {"type": "string",
+                        "description": "Filter to one domain (e.g. 'light')."},
+         },
+     }},
+    {"name": "ha.template",
+     "description": ("Render a Jinja2 template against HA state — read-only. "
+                     "Useful for composite queries (counts, filters, conditions)."),
+     "inputSchema": {"type": "object",
+                     "properties": {"template": {"type": "string"},
+                                    "account": _ACCOUNT_PROP},
+                     "required": ["template"]}},
     {"name": "ha.call_service",
      "description": (
          "Invoke a Home Assistant service. Just call this directly with the "
          "domain, service, target, and optional account; the runtime prompts "
          "the user for approval automatically — you do not need to ask the "
          "user for a token first. Allowlisted domains only — destructive "
-         "domains are denied server-side."
+         "domains are denied server-side. For non-allowlisted domains "
+         "(`number`, `text`, `select`, custom integrations) or when this "
+         "tool returns a 400 because a field name doesn't match what your "
+         "specific entity expects, fall back to ha.call_service_raw."
+     ),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "domain": {"type": "string"},
+             "service": {"type": "string"},
+             "target": {"type": "object",
+                        "description": "e.g. {entity_id: 'light.kitchen'}"},
+             "service_data": {"type": "object"},
+             "confirmation_token": {"type": "string"},
+         },
+         "required": ["domain", "service"],
+     }},
+    {"name": "ha.call_service_raw",
+     "description": (
+         "Allowlist-free version of ha.call_service. Same consent flow — "
+         "the user still approves every call — but with no domain or "
+         "service-name filtering. Use this when ha.call_service refuses "
+         "your domain (e.g. you need `number.set_value` for a bulb's "
+         "startup brightness) or when you've confirmed via ha.list_services "
+         "that the curated call shape is correct but HA still returns 400. "
+         "A small nuclear list (homeassistant.restart/stop, "
+         "reload_core_config) is permanently blocked."
      ),
      "inputSchema": {
          "type": "object",
@@ -356,7 +511,10 @@ DISPATCH = {
     "ha.entity_search": t_entity_search,
     "ha.state": t_state,
     "ha.area_list": t_area_list,
+    "ha.list_services": t_list_services,
+    "ha.template": t_template,
     "ha.call_service": t_call_service,
+    "ha.call_service_raw": t_call_service_raw,
 }
 
 
@@ -368,4 +526,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-homeassistant", "0.2.0", TOOLS, dispatch)
+    serve("homebrain-homeassistant", "0.3.0", TOOLS, dispatch)
