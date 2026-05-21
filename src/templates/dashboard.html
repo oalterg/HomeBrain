@@ -1072,7 +1072,7 @@
                 <div class="ftp-row">
                     <form onsubmit="setupFtp(event)" class="ftp-form">
                         <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; align-items:end;">
-                            <div><label>NC User</label><input type="text" id="ftp-nc-user" placeholder="admin" style="margin-bottom:0;"></div>
+                            <div><label>NC User</label><select id="ftp-nc-user" style="margin-bottom:0;"><option value="admin">admin</option></select></div>
                             <div><label>FTP User</label><input type="text" id="ftp-user" placeholder="camera1" style="margin-bottom:0;"></div>
                             <div><label>FTP Password</label><input type="password" id="ftp-pass" style="margin-bottom:0;"></div>
                         </div>
@@ -1252,6 +1252,7 @@
                 loadSystemConfig();
                 loadSerialDevices();
                 loadFtpUsers();
+                populateFtpNcUserSelect();
                 connRefresh();
                 vaultMcpRefresh();
             }
@@ -2307,6 +2308,31 @@
         }
 
         // --- FTP Logic ---
+        async function populateFtpNcUserSelect() {
+            // Replace the seeded `admin` option with the real on-device NC
+            // user list. Degrades silently if the endpoint isn't available
+            // (NC container down, partial install) — the seeded admin
+            // option stays so the form remains usable.
+            const sel = document.getElementById('ftp-nc-user');
+            if (!sel) return;
+            try {
+                const r = await fetch('/api/integrations/nextcloud/local_users',
+                    { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const users = d.users || [];
+                if (!users.length) return;
+                const prev = sel.value;
+                sel.innerHTML = users.map(u => {
+                    const label = u.displayname && u.displayname !== u.id
+                        ? `${u.displayname} (${u.id})` : u.id;
+                    return `<option value="${u.id}">${label}</option>`;
+                }).join('');
+                if (users.some(u => u.id === prev)) sel.value = prev;
+                else if (d.admin_user && users.some(u => u.id === d.admin_user)) sel.value = d.admin_user;
+            } catch (e) { /* silent — keep the seeded admin option */ }
+        }
+
         async function loadFtpUsers() {
             const el = document.getElementById('ftp-user-list');
             el.innerText = 'Loading...';
