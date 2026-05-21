@@ -590,31 +590,102 @@ def _migrate_legacy_nc_token() -> None:
 # "Add this HomeBrain's Nextcloud" button. External NCs go through
 # add_nc_account directly with a user-supplied app password.
 
-def bootstrap_local_nextcloud() -> tuple[bool, str]:
-    env = _read_env()
-    user = env.get("NEXTCLOUD_ADMIN_USER", "")
-    if not user:
-        return False, "NEXTCLOUD_ADMIN_USER not in .env"
-    nc_port = env.get("NEXTCLOUD_PORT", "8080")
-    base = env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}"
-    if any(a.get("name") == "homebrain" for a in _load_nc_accounts()):
-        return False, "account 'homebrain' already exists"
+def _nc_container_id() -> str:
+    """Resolve the running Nextcloud container's id, or '' if not running."""
     try:
-        nc_cid = subprocess.check_output(
+        return subprocess.check_output(
             ["docker", "compose", "-f",
              os.path.join(INSTALL_DIR, "docker-compose.yml"), "ps", "-q", "nextcloud"],
             stderr=subprocess.DEVNULL, timeout=10,
         ).decode().strip()
-        if not nc_cid:
-            return False, "Nextcloud container not running"
-        admin_pass = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
-        if not admin_pass:
+    except Exception:
+        return ""
+
+
+def list_local_nc_users() -> tuple[list[dict] | None, str]:
+    """Enumerate on-device Nextcloud users via `occ user:list`, annotating
+    which are already wired up as accounts so the dashboard can dim them.
+    Returns ([{id, displayname, configured}], "") on success or (None, err)."""
+    env = _read_env()
+    if not env.get("NEXTCLOUD_ADMIN_USER"):
+        return None, "NEXTCLOUD_ADMIN_USER not in .env"
+    nc_cid = _nc_container_id()
+    if not nc_cid:
+        return None, "Nextcloud container not running"
+    try:
+        proc = subprocess.run(
+            ["docker", "exec", "-u", "www-data", nc_cid,
+             "php", "occ", "user:list", "--output=json"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if proc.returncode != 0:
+            return None, f"occ user:list failed: {proc.stderr.strip()[:200]}"
+        data = json.loads(proc.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        return None, f"could not list users: {e}"
+
+    nc_port = env.get("NEXTCLOUD_PORT", "8080")
+    base = (env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}").rstrip("/")
+    taken = {(a.get("base_url", "").rstrip("/"), a.get("user"))
+             for a in _load_nc_accounts()}
+    users = [{"id": uid, "displayname": disp or uid,
+              "configured": (base, uid) in taken}
+             for uid, disp in data.items()]
+    users.sort(key=lambda u: (u["configured"], u["id"]))
+    return users, ""
+
+
+def bootstrap_local_nextcloud(user: str | None = None,
+                              password: str | None = None) -> tuple[bool, str]:
+    """Mint an app password on the on-device NC and store it as an account.
+    `user` defaults to NEXTCLOUD_ADMIN_USER; `password` defaults to
+    NEXTCLOUD_ADMIN_PASSWORD when (and only when) targeting that admin —
+    every other user must supply their own NC login password, which is
+    used once to mint the app password and then discarded."""
+    env = _read_env()
+    admin_user = env.get("NEXTCLOUD_ADMIN_USER", "")
+    if not admin_user:
+        return False, "NEXTCLOUD_ADMIN_USER not in .env"
+    target_user = (user or admin_user).strip()
+    if not target_user:
+        return False, "user is required"
+
+    if password:
+        target_pass = password
+    elif target_user == admin_user:
+        target_pass = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
+        if not target_pass:
             return False, "NEXTCLOUD_ADMIN_PASSWORD not in .env"
+    else:
+        return False, f"password is required for non-admin user '{target_user}'"
+
+    nc_port = env.get("NEXTCLOUD_PORT", "8080")
+    base = (env.get("NC_BASE_URL") or f"http://127.0.0.1:{nc_port}").rstrip("/")
+    existing = _load_nc_accounts()
+    if any((a.get("base_url", "").rstrip("/") == base
+            and a.get("user") == target_user) for a in existing):
+        return False, f"local user '{target_user}' is already added"
+
+    # Pick a unique account name. The username is the natural choice;
+    # only fall back to a suffix on collision (e.g. an external NC also
+    # named 'alice'). Legacy installs keep their 'homebrain' account.
+    account_name = target_user
+    taken_names = {a.get("name") for a in existing}
+    if account_name in taken_names:
+        i = 2
+        while f"{account_name}-{i}" in taken_names:
+            i += 1
+        account_name = f"{account_name}-{i}"
+
+    nc_cid = _nc_container_id()
+    if not nc_cid:
+        return False, "Nextcloud container not running"
+    try:
         proc = subprocess.run(
             ["docker", "exec", "-i", "-u", "www-data",
-             "-e", f"OC_PASS={admin_pass}", nc_cid,
+             "-e", f"OC_PASS={target_pass}", nc_cid,
              "php", "occ", "user:add-app-password",
-             user, "--password-from-env"],
+             target_user, "--password-from-env"],
             capture_output=True, text=True, timeout=20,
         )
         out = proc.stdout.strip().splitlines()
@@ -623,7 +694,7 @@ def bootstrap_local_nextcloud() -> tuple[bool, str]:
         token = out[-1].split()[-1]
         if not token or len(token) < 20:
             return False, f"unexpected occ output: {proc.stdout.strip()[:200]}"
-        return add_nc_account("homebrain", base, user, token)
+        return add_nc_account(account_name, base, target_user, token)
     except Exception as e:
         return False, str(e)
 
@@ -725,8 +796,17 @@ def integration_status(key: str) -> dict:
         _migrate_legacy_nc_token()
         accounts = _load_nc_accounts()
         info["configured"] = bool(accounts)
+        # is_local lets the dashboard render local-vs-external accounts
+        # differently (e.g. dim the "Add HomeBrain user" picker entries
+        # that are already wired up). Match by base_url against .env.
+        env = _read_env()
+        nc_port = env.get("NEXTCLOUD_PORT", "8080")
+        local_base = (env.get("NC_BASE_URL")
+                      or f"http://127.0.0.1:{nc_port}").rstrip("/")
         info["accounts"] = [{"name": a.get("name"), "base_url": a.get("base_url"),
-                             "user": a.get("user")} for a in accounts]
+                             "user": a.get("user"),
+                             "is_local": (a.get("base_url") or "").rstrip("/") == local_base}
+                            for a in accounts]
     elif key == "vault":
         # Match the existing dashboard logic — vault is "configured" once
         # the admin token has been derived in .env.
@@ -855,15 +935,34 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         return jsonify({"status": "added"})
 
     def nc_add_local():
-        """One-click: auto-create an app password against the HomeBrain-
-        shipped Nextcloud and store it as account 'homebrain'."""
+        """Mint an app password against the HomeBrain-shipped Nextcloud and
+        store it as an account. With no body, defaults to admin (one-click
+        legacy flow). Body `{user, password?}` targets any local user;
+        admin's password is read from .env, everyone else must supply
+        theirs (used once to mint the app password, never stored)."""
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        ok_, msg = bootstrap_local_nextcloud()
+        body = request.get_json(silent=True) or {}
+        user = (body.get("user") or "").strip() or None
+        password = body.get("password") or None
+        ok_, msg = bootstrap_local_nextcloud(user=user, password=password)
         if not ok_:
             return jsonify({"error": msg}), 400
         reconcile_one("nextcloud")
-        return jsonify({"status": "added", "name": "homebrain"})
+        return jsonify({"status": "added"})
+
+    def nc_local_users():
+        """List on-device NC users so the dashboard can populate the
+        "Add HomeBrain user" picker, marking which are already wired up."""
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        users, err_msg = list_local_nc_users()
+        if users is None:
+            return jsonify({"error": err_msg}), 400
+        env = _read_env()
+        admin_user = env.get("NEXTCLOUD_ADMIN_USER", "")
+        return jsonify({"users": users, "admin_user": admin_user,
+                        "admin_password_stored": bool(env.get("NEXTCLOUD_ADMIN_PASSWORD"))})
 
     def nc_remove():
         if not session.get("authenticated"):
@@ -1091,6 +1190,8 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "nc_add_local",
                      limiter.limit("5 per minute")(nc_add_local),
                      methods=["POST"])
+    app.add_url_rule("/api/integrations/nextcloud/local_users",
+                     "nc_local_users", nc_local_users, methods=["GET"])
     app.add_url_rule("/api/integrations/nextcloud/remove",
                      "nc_remove", nc_remove, methods=["POST"])
     app.add_url_rule("/api/integrations/nextcloud/test",

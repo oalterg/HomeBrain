@@ -842,7 +842,28 @@
                         <button onclick="closeForm('details-nc')" aria-label="Close">✕</button>
                     </div>
                     <small style="display:block; margin-top:6px; color:var(--text-dim);">
-                        For your HomeBrain&rsquo;s Nextcloud, the row offers a one-click <em>Add HomeBrain NC</em> instead. Use this form for external instances.
+                        For your HomeBrain&rsquo;s Nextcloud, the row offers a one-click <em>Add HomeBrain user</em> instead. Use this form for external instances.
+                    </small>
+                </div>
+
+                <div hidden id="details-nc-local" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:end;">
+                        <div>
+                            <label style="display:block; font-size:0.82em; color:var(--text-dim); margin-bottom:2px;">User</label>
+                            <select id="nc-local-user" onchange="connNcLocalUserPicked()" style="width:100%;"></select>
+                        </div>
+                        <div id="nc-local-pass-wrap">
+                            <label style="display:block; font-size:0.82em; color:var(--text-dim); margin-bottom:2px;">Password</label>
+                            <input type="password" id="nc-local-pass" placeholder="That user&rsquo;s Nextcloud password" style="width:100%;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); connNcAddLocalSubmit(); }">
+                        </div>
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+                        <button class="btn-primary" onclick="connNcAddLocalSubmit()">Add</button>
+                        <button onclick="closeForm('details-nc-local')" aria-label="Close">✕</button>
+                        <small id="nc-local-hint" style="color:var(--text-dim);"></small>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        We mint an app password against this HomeBrain&rsquo;s Nextcloud — your login password is used once and never stored.
                     </small>
                 </div>
 
@@ -1051,7 +1072,7 @@
                 <div class="ftp-row">
                     <form onsubmit="setupFtp(event)" class="ftp-form">
                         <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:12px; align-items:end;">
-                            <div><label>NC User</label><input type="text" id="ftp-nc-user" placeholder="admin" style="margin-bottom:0;"></div>
+                            <div><label>NC User</label><select id="ftp-nc-user" style="margin-bottom:0;"><option value="admin">admin</option></select></div>
                             <div><label>FTP User</label><input type="text" id="ftp-user" placeholder="camera1" style="margin-bottom:0;"></div>
                             <div><label>FTP Password</label><input type="password" id="ftp-pass" style="margin-bottom:0;"></div>
                         </div>
@@ -1231,6 +1252,7 @@
                 loadSystemConfig();
                 loadSerialDevices();
                 loadFtpUsers();
+                populateFtpNcUserSelect();
                 connRefresh();
                 vaultMcpRefresh();
             }
@@ -1383,12 +1405,14 @@
                     }
                     const buttons = [];
                     if (it.key === 'nextcloud') {
-                        const hasLocal = (it.accounts || []).some(a => a.name === 'homebrain');
-                        if (!hasLocal) {
-                            buttons.push(`<button onclick="connNcAddLocal()" title="Auto-create app password against the HomeBrain-shipped Nextcloud">Add HomeBrain NC</button>`);
-                        }
-                        const cta = (it.accounts || []).length > 0 ? 'button' : 'btn-primary button';
-                        buttons.push(`<button class="${cta}" onclick="openDetails('details-nc','nc-name')">Add external NC…</button>`);
+                        // Match against base_url, not name — accounts created via
+                        // the new picker are named after the username (e.g. 'alice'),
+                        // not the legacy 'homebrain'.
+                        const haveAnyLocal = (it.accounts || []).some(a => a.is_local);
+                        const localLabel = haveAnyLocal ? 'Add another HomeBrain user…' : 'Add HomeBrain user…';
+                        const localCta = haveAnyLocal ? 'button' : 'btn-primary button';
+                        buttons.push(`<button class="${localCta}" onclick="connNcAddLocal()" title="Mint an app password against this HomeBrain&rsquo;s Nextcloud for any local user">${localLabel}</button>`);
+                        buttons.push(`<button class="button" onclick="openDetails('details-nc','nc-name')">Add external NC…</button>`);
                     }
                     if (it.key === 'homeassistant') {
                         const hasLocal = (it.accounts || []).some(a => a.name === 'home');
@@ -1536,13 +1560,89 @@
             openDetails('details-ha', 'ha-token-input');
         }
 
+        // Cache the local-users payload between renders so we can decide
+        // password-field auto-fill without round-tripping on each pick.
+        let _ncLocal = { admin_user: '', admin_password_stored: false, users: [] };
+
         async function connNcAddLocal() {
-            const r = await fetch('/api/integrations/nextcloud/add_local',
-                { method: 'POST', credentials: 'include' });
+            const msg = document.getElementById('conn-msg');
+            const sel = document.getElementById('nc-local-user');
+            sel.innerHTML = '<option>Loading…</option>';
+            openDetails('details-nc-local');
+            try {
+                const r = await fetch('/api/integrations/nextcloud/local_users',
+                    { credentials: 'include' });
+                const d = await r.json();
+                if (!r.ok) {
+                    msg.innerText = d.error || 'Could not list local users';
+                    closeForm('details-nc-local');
+                    return;
+                }
+                _ncLocal = d;
+                const remaining = (d.users || []).filter(u => !u.configured);
+                if (!remaining.length) {
+                    msg.innerText = 'All local Nextcloud users are already added.';
+                    closeForm('details-nc-local');
+                    connRefresh();
+                    return;
+                }
+                sel.innerHTML = remaining.map(u => {
+                    const label = u.displayname && u.displayname !== u.id
+                        ? `${u.displayname} (${u.id})` : u.id;
+                    return `<option value="${u.id}">${label}</option>`;
+                }).join('');
+                connNcLocalUserPicked();
+                document.getElementById('nc-local-pass').focus();
+            } catch (e) {
+                msg.innerText = 'Could not list local users: ' + e;
+                closeForm('details-nc-local');
+            }
+        }
+
+        function connNcLocalUserPicked() {
+            // Selecting the admin user collapses to one-click: we already
+            // have admin's password in .env, so hide the password field
+            // and show a small reassurance hint. Any other user gets the
+            // password input back.
+            const sel = document.getElementById('nc-local-user');
+            const wrap = document.getElementById('nc-local-pass-wrap');
+            const pass = document.getElementById('nc-local-pass');
+            const hint = document.getElementById('nc-local-hint');
+            const isAdmin = sel.value === _ncLocal.admin_user;
+            if (isAdmin && _ncLocal.admin_password_stored) {
+                wrap.style.display = 'none';
+                pass.value = '';
+                hint.innerText = 'Using stored admin password.';
+            } else {
+                wrap.style.display = '';
+                hint.innerText = '';
+            }
+        }
+
+        async function connNcAddLocalSubmit() {
+            const sel = document.getElementById('nc-local-user');
+            const pass = document.getElementById('nc-local-pass');
+            const user = sel.value;
+            if (!user) return;
+            const isAdmin = user === _ncLocal.admin_user;
+            const body = { user };
+            if (!(isAdmin && _ncLocal.admin_password_stored)) {
+                if (!pass.value) { pass.focus(); return; }
+                body.password = pass.value;
+            }
+            const r = await fetch('/api/integrations/nextcloud/add_local', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
             const d = await r.json();
             document.getElementById('conn-msg').innerText = r.ok
-                ? 'HomeBrain Nextcloud connected as "homebrain".'
+                ? `HomeBrain user "${user}" added.`
                 : (d.error || 'Add failed');
+            if (r.ok) {
+                pass.value = '';
+                closeForm('details-nc-local');
+            }
             connRefresh();
         }
         async function connTest(key) {
@@ -2208,6 +2308,31 @@
         }
 
         // --- FTP Logic ---
+        async function populateFtpNcUserSelect() {
+            // Replace the seeded `admin` option with the real on-device NC
+            // user list. Degrades silently if the endpoint isn't available
+            // (NC container down, partial install) — the seeded admin
+            // option stays so the form remains usable.
+            const sel = document.getElementById('ftp-nc-user');
+            if (!sel) return;
+            try {
+                const r = await fetch('/api/integrations/nextcloud/local_users',
+                    { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const users = d.users || [];
+                if (!users.length) return;
+                const prev = sel.value;
+                sel.innerHTML = users.map(u => {
+                    const label = u.displayname && u.displayname !== u.id
+                        ? `${u.displayname} (${u.id})` : u.id;
+                    return `<option value="${u.id}">${label}</option>`;
+                }).join('');
+                if (users.some(u => u.id === prev)) sel.value = prev;
+                else if (d.admin_user && users.some(u => u.id === d.admin_user)) sel.value = d.admin_user;
+            } catch (e) { /* silent — keep the seeded admin option */ }
+        }
+
         async function loadFtpUsers() {
             const el = document.getElementById('ftp-user-list');
             el.innerText = 'Loading...';
