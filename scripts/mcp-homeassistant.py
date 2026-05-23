@@ -287,8 +287,8 @@ def t_call_service(args: dict) -> dict:
     if redeem_account is None:
         return err(f"account '{redeemed.get('account')}' no longer configured")
 
-    body = {**redeemed.get("service_data", {}),
-            **({"target": redeemed.get("target")} if redeemed.get("target") else {})}
+    body = {**(redeemed.get("target") or {}),
+            **redeemed.get("service_data", {})}
     code, resp = _http(redeem_account, "POST",
                        f"/api/services/{redeemed['domain']}/{redeemed['service']}",
                        body)
@@ -378,8 +378,8 @@ def t_call_service_raw(args: dict) -> dict:
     if redeem_account is None:
         return err(f"account '{redeemed.get('account')}' no longer configured")
 
-    body = {**redeemed.get("service_data", {}),
-            **({"target": redeemed.get("target")} if redeemed.get("target") else {})}
+    body = {**(redeemed.get("target") or {}),
+            **redeemed.get("service_data", {})}
     code, resp = _http(redeem_account, "POST",
                        f"/api/services/{redeemed['domain']}/{redeemed['service']}",
                        body)
