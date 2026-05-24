@@ -35,7 +35,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    audit, err, ok, serve, unavailable,
+    Consent, audit, consent_required, err, ok, serve, unavailable,
 )
 
 HA_ACCOUNTS_FILE = os.environ.get("HA_ACCOUNTS_FILE", "")
@@ -49,7 +49,8 @@ LEGACY_TOKEN = os.environ.get("HA_TOKEN", "")
 
 # Domains the agent is permitted to call services on through the curated
 # `ha.call_service` tool. Critical/destructive domains intentionally absent.
-# For anything outside this set the agent must use `ha.call_service_raw`.
+# For anything outside this set the agent must use `ha.call_service_raw`,
+# which has no allowlist but the same consent envelope.
 SERVICE_DOMAIN_ALLOWLIST = {
     "light", "switch", "fan", "cover", "climate", "media_player",
     "vacuum", "lock", "scene", "script", "automation", "input_boolean",
@@ -254,6 +255,8 @@ def t_call_service(args: dict) -> dict:
     service = (args.get("service") or "").strip()
     target = args.get("target") or {}
     data = args.get("service_data") or {}
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
 
     if not domain or not service:
         return err("domain and service are required")
@@ -265,16 +268,38 @@ def t_call_service(args: dict) -> dict:
     if service in SERVICE_NAME_DENYLIST:
         return err(f"service '{service}' is denied for safety")
 
-    body = {**target, **data}
-    code, resp = _http(account, "POST",
-                       f"/api/services/{domain}/{service}", body)
+    summary = (f"Home Assistant ({account['name']}): call {domain}.{service} "
+               f"on {target or 'default target'}")
+    payload = {"account": account["name"], "domain": domain, "service": service,
+               "target": target, "service_data": data}
+
+    if not confirm:
+        action_id = Consent.issue("homeassistant", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+
+    redeem_account = _pick_account(redeemed.get("account"))
+    if redeem_account is None:
+        return err(f"account '{redeemed.get('account')}' no longer configured")
+
+    body = {**(redeemed.get("target") or {}),
+            **redeemed.get("service_data", {})}
+    code, resp = _http(redeem_account, "POST",
+                       f"/api/services/{redeemed['domain']}/{redeemed['service']}",
+                       body)
     if code not in (200, 201):
         audit("homeassistant", "call_service.fail",
-              account=account["name"], domain=domain, service=service, code=code)
+              account=redeem_account["name"],
+              domain=redeemed["domain"], service=redeemed["service"], code=code)
         return err(f"HA service call failed: {resp}")
     audit("homeassistant", "call_service.ok",
-          account=account["name"], domain=domain, service=service, target=target)
-    return ok(account=account["name"], executed=True,
+          account=redeem_account["name"],
+          domain=redeemed["domain"], service=redeemed["service"],
+          target=redeemed.get("target"))
+    return ok(account=redeem_account["name"], executed=True,
               response=resp if isinstance(resp, list) else None)
 
 
@@ -346,6 +371,8 @@ def t_call_service_raw(args: dict) -> dict:
     service = (args.get("service") or "").strip()
     target = args.get("target") or {}
     data = args.get("service_data") or {}
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
 
     if not domain or not service:
         return err("domain and service are required")
@@ -354,17 +381,39 @@ def t_call_service_raw(args: dict) -> dict:
                    hint="restart/stop/reload_core_config cannot be invoked "
                         "via the agent; do it from the HA UI.")
 
-    body = {**target, **data}
-    code, resp = _http(account, "POST",
-                       f"/api/services/{domain}/{service}", body)
+    summary = (f"Home Assistant ({account['name']}): RAW {domain}.{service} "
+               f"on {target or 'default target'}")
+    payload = {"account": account["name"], "domain": domain, "service": service,
+               "target": target, "service_data": data}
+
+    if not confirm:
+        action_id = Consent.issue("homeassistant", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+
+    redeem_account = _pick_account(redeemed.get("account"))
+    if redeem_account is None:
+        return err(f"account '{redeemed.get('account')}' no longer configured")
+
+    body = {**(redeemed.get("target") or {}),
+            **redeemed.get("service_data", {})}
+    code, resp = _http(redeem_account, "POST",
+                       f"/api/services/{redeemed['domain']}/{redeemed['service']}",
+                       body)
     if code not in (200, 201):
         audit("homeassistant", "call_service_raw.fail",
-              account=account["name"], domain=domain, service=service,
+              account=redeem_account["name"],
+              domain=redeemed["domain"], service=redeemed["service"],
               code=code, resp=str(resp)[:200])
         return err(f"HA service call failed (code {code}): {resp}")
     audit("homeassistant", "call_service_raw.ok",
-          account=account["name"], domain=domain, service=service, target=target)
-    return ok(account=account["name"], executed=True,
+          account=redeem_account["name"],
+          domain=redeemed["domain"], service=redeemed["service"],
+          target=redeemed.get("target"))
+    return ok(account=redeem_account["name"], executed=True,
               response=resp if isinstance(resp, list) else None)
 
 
@@ -458,6 +507,7 @@ TOOLS = [
              "target": {"type": "object",
                         "description": "e.g. {entity_id: 'light.kitchen'}"},
              "service_data": {"type": "object"},
+             "confirmation_token": {"type": "string"},
          },
          "required": ["domain", "service"],
      }},
@@ -477,6 +527,7 @@ TOOLS = [
              "target": {"type": "object",
                         "description": "e.g. {entity_id: 'light.kitchen'}"},
              "service_data": {"type": "object"},
+             "confirmation_token": {"type": "string"},
          },
          "required": ["domain", "service"],
      }},
