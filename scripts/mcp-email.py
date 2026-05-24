@@ -432,6 +432,47 @@ def t_archive(args: dict) -> dict:
             pass
 
 
+def t_flag(args: dict) -> dict:
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
+    msg_id = args.get("id") or ""
+    remove = bool(args.get("remove", False))
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not msg_id:
+        return err("id is required")
+    action = "unflag" if remove else "flag"
+    summary = f"Email: {action} message {msg_id} on account '{name}'"
+    if not confirm:
+        action_id = Consent.issue("email", summary,
+                                  {"account": name, "id": msg_id,
+                                   "remove": remove}, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "email", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_acc = _pick_account(redeemed["account"])
+    if not redeem_acc:
+        return err("account not found")
+    conn = _imap(redeem_acc)
+    if not conn:
+        return unavailable("could not connect to IMAP")
+    try:
+        conn.select("INBOX")
+        op = "-FLAGS" if redeemed.get("remove") else "+FLAGS"
+        conn.store(redeemed["id"].encode(), op, r"(\Flagged)")
+        audit("email", "flag", account=redeemed["account"],
+              id=redeemed["id"], remove=redeemed.get("remove", False))
+        return ok(flagged=not redeemed.get("remove"), id=redeemed["id"])
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
 TOOLS = [
     {"name": "email.list_accounts",
      "description": "List configured email accounts (names only — never credentials).",
@@ -483,6 +524,15 @@ TOOLS = [
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["id"]}},
+    {"name": "email.flag",
+     "description": "Flag or unflag a message (IMAP \\Flagged). Consent-gated.",
+     "inputSchema": {"type": "object",
+                     "properties": {"account": {"type": "string"},
+                                    "id": {"type": "string"},
+                                    "remove": {"type": "boolean",
+                                               "description": "true to unflag (default false)"},
+                                    "confirmation_token": {"type": "string"}},
+                     "required": ["id"]}},
 ]
 
 
@@ -494,6 +544,7 @@ DISPATCH = {
     "email.draft": t_draft,
     "email.send_direct": t_send_direct,
     "email.archive": t_archive,
+    "email.flag": t_flag,
 }
 
 
@@ -505,4 +556,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-email", "0.1.0", TOOLS, dispatch)
+    serve("homebrain-email", "0.2.0", TOOLS, dispatch)
