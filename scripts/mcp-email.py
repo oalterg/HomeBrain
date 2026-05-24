@@ -66,11 +66,34 @@ def _accounts() -> list[dict]:
     return data.get("accounts", []) if isinstance(data, dict) else []
 
 
-def _find(name: str) -> dict | None:
-    for a in _accounts():
+def _pick_account(name: str | None) -> dict | None:
+    accounts = _accounts()
+    if not accounts:
+        return None
+    if not name:
+        return accounts[0] if len(accounts) == 1 else None
+    for a in accounts:
         if a.get("name") == name:
             return a
     return None
+
+
+def _account_or_err(args: dict) -> tuple[dict | None, dict | None]:
+    name = (args.get("account") or "").strip() or None
+    a = _pick_account(name)
+    if a is not None:
+        return a, None
+    accounts = _accounts()
+    if not accounts:
+        return None, unavailable("no email accounts configured")
+    if not name and len(accounts) > 1:
+        names = ", ".join(repr(x.get("name")) for x in accounts)
+        return None, err(
+            f"multiple email accounts configured; pass `account` (one of: {names})",
+            hint="Use email.list_accounts to see the configured set.",
+        )
+    return None, err(f"account '{name}' not found",
+                     hint="Use email.list_accounts to see the configured set.")
 
 
 def _imap(account: dict) -> imaplib.IMAP4 | None:
@@ -126,11 +149,11 @@ def _summarise(msg_bytes: bytes, uid: str) -> dict:
 
 
 def t_list_unread(args: dict) -> dict:
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     limit = int(args.get("limit") or 20)
-    acc = _find(name)
-    if not acc:
-        return err(f"account '{name}' not found")
     conn = _imap(acc)
     if not conn:
         return unavailable(f"could not connect to IMAP for '{name}'")
@@ -155,12 +178,12 @@ def t_list_unread(args: dict) -> dict:
 
 
 def t_search(args: dict) -> dict:
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     query = args.get("query") or ""
     limit = int(args.get("limit") or 30)
-    acc = _find(name)
-    if not acc:
-        return err(f"account '{name}' not found")
     if not query:
         return err("query is required")
     conn = _imap(acc)
@@ -188,13 +211,15 @@ def t_search(args: dict) -> dict:
 
 
 def t_fetch(args: dict) -> dict:
-    """REVEAL-tier: pull a full message body."""
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     msg_id = args.get("id") or ""
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
-    if not name or not msg_id:
-        return err("account and id are required")
+    if not msg_id:
+        return err("id is required")
     summary = f"Email: read full body of message {msg_id} from account '{name}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
@@ -204,7 +229,7 @@ def t_fetch(args: dict) -> dict:
     redeemed = Consent.verify(confirm, "email", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
-    acc = _find(redeemed["account"])
+    acc = _pick_account(redeemed["account"])
     if not acc:
         return err("account not found")
     conn = _imap(acc)
@@ -270,16 +295,17 @@ def _save_draft(account: dict, to: str, subject: str, body: str) -> tuple[bool, 
 
 
 def t_draft(args: dict) -> dict:
-    """ACT-tier: create a draft. Drafts are reversible; sends are not.
-    The agent CANNOT directly send — that's email.send_direct, gated."""
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     to = args.get("to") or ""
     subject = args.get("subject") or ""
     body = args.get("body") or ""
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
-    if not all([name, to, subject]):
-        return err("account, to, subject required")
+    if not all([to, subject]):
+        return err("to and subject are required")
     summary = f"Email: create DRAFT to {to} via '{name}', subject '{subject}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
@@ -290,7 +316,7 @@ def t_draft(args: dict) -> dict:
     redeemed = Consent.verify(confirm, "email", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
-    acc = _find(redeemed["account"])
+    acc = _pick_account(redeemed["account"])
     if not acc:
         return err("account not found")
     saved, info = _save_draft(acc, redeemed["to"], redeemed["subject"], redeemed["body"])
@@ -303,21 +329,22 @@ def t_draft(args: dict) -> dict:
 
 
 def t_send_direct(args: dict) -> dict:
-    """ACT+ tier: send mail directly. Off by default; requires the
-    dashboard to opt-in via HOMEBRAIN_EMAIL_SEND_DIRECT=true."""
     if not SEND_DIRECT_ENABLED:
         return err(
             "email.send_direct is disabled",
             hint="Enable in HomeBrain dashboard → Connections → Email → Settings",
         )
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     to = args.get("to") or ""
     subject = args.get("subject") or ""
     body = args.get("body") or ""
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
-    if not all([name, to, subject]):
-        return err("account, to, subject required")
+    if not all([to, subject]):
+        return err("to and subject are required")
     summary = f"Email: SEND to {to} via '{name}', subject '{subject}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
@@ -328,7 +355,7 @@ def t_send_direct(args: dict) -> dict:
     redeemed = Consent.verify(confirm, "email", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
-    acc = _find(redeemed["account"])
+    acc = _pick_account(redeemed["account"])
     if not acc:
         return err("account not found")
 
@@ -362,13 +389,15 @@ def t_send_direct(args: dict) -> dict:
 
 
 def t_archive(args: dict) -> dict:
-    """ACT-tier (low risk): mark seen + move to Archive folder."""
-    name = args.get("account") or ""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
     msg_id = args.get("id") or ""
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
-    if not name or not msg_id:
-        return err("account and id required")
+    if not msg_id:
+        return err("id is required")
     summary = f"Email: archive message {msg_id} on account '{name}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
@@ -378,15 +407,15 @@ def t_archive(args: dict) -> dict:
     redeemed = Consent.verify(confirm, "email", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
-    acc = _find(redeemed["account"])
-    if not acc:
+    redeem_acc = _pick_account(redeemed["account"])
+    if not redeem_acc:
         return err("account not found")
-    conn = _imap(acc)
+    conn = _imap(redeem_acc)
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
         conn.select("INBOX")
-        archive = acc.get("archive_folder") or "Archive"
+        archive = redeem_acc.get("archive_folder") or "Archive"
         try:
             conn.create(archive)
         except Exception:
@@ -403,44 +432,83 @@ def t_archive(args: dict) -> dict:
             pass
 
 
+def t_flag(args: dict) -> dict:
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
+    msg_id = args.get("id") or ""
+    remove = bool(args.get("remove", False))
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not msg_id:
+        return err("id is required")
+    action = "unflag" if remove else "flag"
+    summary = f"Email: {action} message {msg_id} on account '{name}'"
+    if not confirm:
+        action_id = Consent.issue("email", summary,
+                                  {"account": name, "id": msg_id,
+                                   "remove": remove}, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "email", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_acc = _pick_account(redeemed["account"])
+    if not redeem_acc:
+        return err("account not found")
+    conn = _imap(redeem_acc)
+    if not conn:
+        return unavailable("could not connect to IMAP")
+    try:
+        conn.select("INBOX")
+        op = "-FLAGS" if redeemed.get("remove") else "+FLAGS"
+        conn.store(redeemed["id"].encode(), op, r"(\Flagged)")
+        audit("email", "flag", account=redeemed["account"],
+              id=redeemed["id"], remove=redeemed.get("remove", False))
+        return ok(flagged=not redeemed.get("remove"), id=redeemed["id"])
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
 TOOLS = [
     {"name": "email.list_accounts",
      "description": "List configured email accounts (names only — never credentials).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "email.list_unread",
-     "description": "List unread messages from one account. Returns headers only (from, subject, date) — never bodies.",
+     "description": "List unread messages. Returns headers only (from, subject, date) — never bodies.",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
-                                    "limit": {"type": "integer"}},
-                     "required": ["account"]}},
+                                    "limit": {"type": "integer"}}}},
     {"name": "email.search",
-     "description": "IMAP TEXT search across one account. Returns headers only.",
+     "description": "IMAP TEXT search. Returns headers only.",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "query": {"type": "string"},
                                     "limit": {"type": "integer"}},
-                     "required": ["account", "query"]}},
+                     "required": ["query"]}},
     {"name": "email.fetch",
-     "description": "REVEAL-tier: fetch a full message body. Requires consent token. Audited.",
+     "description": "Fetch a full message body. Consent-gated and audited.",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
-                     "required": ["account", "id"]}},
+                     "required": ["id"]}},
     {"name": "email.draft",
-     "description": "ACT-tier: create a DRAFT (never sends). Requires consent token.",
+     "description": "Create a DRAFT (never sends). Consent-gated.",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "to": {"type": "string"},
                                     "subject": {"type": "string"},
                                     "body": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
-                     "required": ["account", "to", "subject"]}},
+                     "required": ["to", "subject"]}},
     {"name": "email.send_direct",
      "description": (
-         "ACT+ tier: send a message directly. Disabled by default. Enable "
-         "in HomeBrain dashboard → Connections → Email → Settings. Requires "
-         "consent token even when enabled."
+         "Send a message directly. Disabled by default — enable in "
+         "HomeBrain dashboard → Connections → Email → Settings. Consent-gated."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
@@ -448,14 +516,23 @@ TOOLS = [
                                     "subject": {"type": "string"},
                                     "body": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
-                     "required": ["account", "to", "subject"]}},
+                     "required": ["to", "subject"]}},
     {"name": "email.archive",
-     "description": "ACT-tier: archive a message (mark seen + move to Archive folder).",
+     "description": "Archive a message (mark seen + move to Archive folder). Consent-gated.",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
-                     "required": ["account", "id"]}},
+                     "required": ["id"]}},
+    {"name": "email.flag",
+     "description": "Flag or unflag a message (IMAP \\Flagged). Consent-gated.",
+     "inputSchema": {"type": "object",
+                     "properties": {"account": {"type": "string"},
+                                    "id": {"type": "string"},
+                                    "remove": {"type": "boolean",
+                                               "description": "true to unflag (default false)"},
+                                    "confirmation_token": {"type": "string"}},
+                     "required": ["id"]}},
 ]
 
 
@@ -467,6 +544,7 @@ DISPATCH = {
     "email.draft": t_draft,
     "email.send_direct": t_send_direct,
     "email.archive": t_archive,
+    "email.flag": t_flag,
 }
 
 
@@ -478,4 +556,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-email", "0.1.0", TOOLS, dispatch)
+    serve("homebrain-email", "0.2.0", TOOLS, dispatch)
