@@ -470,6 +470,54 @@ def t_notes_create(args: dict) -> dict:
     return ok(account=redeem_account["name"], id=n.get("id"), title=n.get("title"))
 
 
+def t_notes_update(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    nid = args.get("id")
+    if nid is None:
+        return err("id is required")
+    title = args.get("title") or ""
+    content = args.get("content") or ""
+    category = args.get("category")
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    summary = (f"Nextcloud ({account['name']}): update note {nid}"
+               f"{f' ({title})' if title else ''}")
+    payload = {"account": account["name"], "id": int(nid),
+               "title": title, "content": content}
+    if category is not None:
+        payload["category"] = category
+    if not confirm:
+        action_id = Consent.issue("nextcloud", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    body_dict: dict = {}
+    if redeemed.get("title"):
+        body_dict["title"] = redeemed["title"]
+    if redeemed.get("content"):
+        body_dict["content"] = redeemed["content"]
+    if "category" in redeemed:
+        body_dict["category"] = redeemed["category"]
+    body = json.dumps(body_dict).encode()
+    code, resp, _ = _http(redeem_account, "PUT",
+                          f"/index.php/apps/notes/api/v1/notes/{int(redeemed['id'])}",
+                          body=body,
+                          headers={"Content-Type": "application/json"})
+    if code != 200:
+        return err(f"note update failed: {code}")
+    try:
+        n = json.loads(resp)
+    except json.JSONDecodeError:
+        n = {}
+    audit("nextcloud", "notes.update", account=redeem_account["name"],
+          note_id=redeemed["id"])
+    return ok(account=redeem_account["name"], id=n.get("id"), title=n.get("title"))
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": ("Configured account name to act on. Omit when only one "
@@ -545,6 +593,18 @@ TOOLS = [
                                     "account": _ACCOUNT_PROP,
                                     "confirmation_token": {"type": "string"}},
                      "required": ["title", "content"]}},
+    {"name": "nc.notes_update",
+     "description": ("Update an existing Nextcloud note by id. Only fields "
+                     "you provide (title, content, category) are changed. "
+                     "Consent-gated."),
+     "inputSchema": {"type": "object",
+                     "properties": {"id": {"type": "integer"},
+                                    "title": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "category": {"type": "string"},
+                                    "account": _ACCOUNT_PROP,
+                                    "confirmation_token": {"type": "string"}},
+                     "required": ["id"]}},
 ]
 
 
@@ -558,6 +618,7 @@ DISPATCH = {
     "nc.notes_list": t_notes_list,
     "nc.notes_get": t_notes_get,
     "nc.notes_create": t_notes_create,
+    "nc.notes_update": t_notes_update,
 }
 
 
@@ -569,4 +630,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-nextcloud", "0.2.0", TOOLS, dispatch)
+    serve("homebrain-nextcloud", "0.3.0", TOOLS, dispatch)
