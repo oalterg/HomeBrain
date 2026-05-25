@@ -1200,10 +1200,12 @@ patch_openclaw_config() {
         # behind the session, so dropping device-identity here does
         # not weaken our auth posture — it just unblocks the LAN flow.
         .gateway.controlUi.allowInsecureAuth = true |
-        # MCP tool approval routing: send approval prompts back to the
-        # same channel session that initiated the tool call. Without this,
-        # channel users (WhatsApp, Telegram) get "Approval system unavailable"
-        # when calling HA/NC tools that require consent.
+        # MCP consent gate: disabled by default so HomeBrain's MCP servers
+        # work on stock OpenClaw without our upstream PR. The top-level
+        # approvals config is pre-wired for when the PR lands — flip
+        # mcp.approvals.enabled to true and channel users get /approve
+        # prompts routed back to their DM session.
+        .mcp.approvals.enabled = false |
         .approvals.exec.enabled = true |
         .approvals.exec.mode = "session" |
         .approvals.plugin.enabled = true |
