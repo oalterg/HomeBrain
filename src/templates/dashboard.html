@@ -1103,6 +1103,21 @@
             </div>
             {% endif %}
 
+            <!-- Nuclear Reset / Danger Zone (last card in Settings) -->
+            <div class="card" style="grid-column: 1 / -1; border: 2px solid var(--danger);">
+                <h3 style="color: var(--danger);">Danger Zone — Nuclear Reset</h3>
+                <p style="color:var(--text-dim); font-size:0.9em;">
+                    This performs a <strong>complete factory reset</strong>. All your data (Nextcloud files, Home Assistant configuration, Vaultwarden vault, OpenClaw memory, AI models, etc.) will be <strong>permanently destroyed</strong>.
+                </p>
+                <p style="color:var(--text-dim); font-size:0.88em; margin-bottom:14px;">
+                    Your external backup drive at <code>/mnt/backup</code> will <strong>not</strong> be touched. The device will reboot when finished.
+                </p>
+                <button class="btn-danger" onclick="showNuclearModal()" style="background:var(--danger); color:white; border-color:var(--danger);">
+                    Nuclear Reset / Factory Wipe Device
+                </button>
+                <small style="display:block; margin-top:8px; color:var(--danger);">This action is irreversible.</small>
+            </div>
+
         </div>
     </div>
 
@@ -1117,6 +1132,7 @@
                         <option value="backup">Backup Log</option>
                         <option value="restore">Restore Log</option>
                         <option value="update">Manager Update Log</option>
+                        <option value="nuclear">Nuclear Reset Log</option>
                     </optgroup>
                     <optgroup label="Service Containers">
                         <option value="nextcloud">Nextcloud Container</option>

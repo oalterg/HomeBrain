@@ -31,7 +31,7 @@ The Pangolin remote-access tunnel is available in both editions; the AI stack on
 | GPU | AMD Radeon RX 6000-series, 8 GB VRAM | AMD Radeon RX 9060 XT or newer, **16 GB VRAM** |
 | Network | Ethernet | Ethernet (Gigabit) |
 
-Inference runs on Vulkan via Mesa RADV — no ROCm install required. See [BENCHMARKS.md](BENCHMARKS.md) for measured throughput across quantizations on a Radeon RX 9060 XT.
+Inference runs on Vulkan via Mesa RADV — no ROCm install required. See [BENCHMARKS.md](docs/BENCHMARKS.md) for measured throughput across quantizations on a Radeon RX 9060 XT.
 
 ### HomeCloud (AI-disabled)
 
@@ -73,10 +73,11 @@ No tunnel. Services available on the local network at `homebrain.local` (mDNS) o
 - **Privacy-first**: All data stays on your hardware. No telemetry, no cloud sync, no vendor lock-in.
 - **One-command provisioning**: A browser-based setup wizard handles passwords, tunnel credentials, model selection, and deployment mode.
 - **Local AI assistant**: [OpenClaw](https://openclaw.ai) runs a WhatsApp-connected agent backed by local llama.cpp inference. Default model is Qwen3.6-35B-A3B (MoE); lighter quantizations selectable from the dashboard.
-- **Tuned inference**: Vulkan-RADV configuration tuned for AMD RDNA3/RDNA4 — selective MoE expert offload, q8_0 KV cache, flash attention, `RADV_PERFTEST=rm_kq=1`. ~29 t/s generation, ~750 t/s prompt processing on a 16 GB card at 131K context. See [BENCHMARKS.md](BENCHMARKS.md).
+- **Tuned inference**: Vulkan-RADV configuration tuned for AMD RDNA3/RDNA4 — selective MoE expert offload, q8_0 KV cache, flash attention, `RADV_PERFTEST=rm_kq=1`. ~29 t/s generation, ~750 t/s prompt processing on a 16 GB card at 131K context. See [BENCHMARKS.md](docs/BENCHMARKS.md).
 - **Automated backups**: Scheduled snapshots with configurable retention. Covers Nextcloud data, Home Assistant config, and OpenClaw agent workspace/memory.
 - **Reliability hardening**: AMD GPU runtime power management disabled (VRAM stays resident between requests), systemd crash-loop protection, sleep inhibitor.
 - **Dashboard**: Real-time GPU utilisation, VRAM, and temperature; log viewer for all services; in-place updates via pinned `versions.json`.
+- **Nuclear Reset**: Full factory wipe from the dashboard (Settings → Danger Zone). Destroys all user data and generates a fresh master password. External backups are untouched. See [docs/plans/NUCLEAR_RESET.md](docs/plans/NUCLEAR_RESET.md).
 
 ---
 
@@ -174,16 +175,16 @@ HomeBrain / HomeCloud
 └── OpenClaw           (systemd, x86 GPU)  — AI assistant + WhatsApp (HomeBrain only)
 ```
 
-Updates are pinned in [`config/versions.json`](config/versions.json) and applied via the dashboard's "Update" button — bumping the pinned `llama_cpp.tag` automatically re-downloads and restarts the inference binary on the next update click. See [BENCHMARKS.md](BENCHMARKS.md) for the inference tuning rationale and [TESTING.md](TESTING.md) for the E2E verification checklist used before every merge to `main`.
+Updates are pinned in [`config/versions.json`](config/versions.json) and applied via the dashboard's "Update" button — bumping the pinned `llama_cpp.tag` automatically re-downloads and restarts the inference binary on the next update click. See [BENCHMARKS.md](docs/BENCHMARKS.md) for the inference tuning rationale and [TESTING.md](docs/TESTING.md) for the E2E verification checklist used before every merge to `main`.
 
 ---
 
 ## Documentation
 
-- [BENCHMARKS.md](BENCHMARKS.md) — measured throughput across quantizations, hardware tuning notes
-- [ROADMAP.md](ROADMAP.md) — planned features and shipped releases
-- [TESTING.md](TESTING.md) — E2E verification checklist
-- [CLAUDE.md](CLAUDE.md) — repo conventions for AI-assisted contribution
+- [BENCHMARKS.md](docs/BENCHMARKS.md) — measured throughput across quantizations, hardware tuning notes
+- [ROADMAP.md](docs/ROADMAP.md) — planned features and shipped releases
+- [TESTING.md](docs/TESTING.md) — E2E verification checklist
+- [AGENTS.md](AGENTS.md) — repo conventions for AI-assisted contribution
 
 ---
 
