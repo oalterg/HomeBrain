@@ -926,6 +926,41 @@
                 </details>
             </div>
 
+            <div class="card" id="channels-card" style="grid-column: 1 / -1;">
+                <h3>Messaging channels</h3>
+                <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
+                    How people reach your agent. Link a messenger so you can chat from your phone.
+                </p>
+                <div id="channel-rows" class="row-list"></div>
+                <small id="channel-msg" style="display:block; margin-top:6px; min-height:1em; color:var(--text-dim); font-size:0.88em;"></small>
+
+                <div hidden id="details-telegram" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
+                        <input type="text" id="tg-token" placeholder="Bot token from @BotFather (e.g. 123456789:ABCdef...)" onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramAdd(); }">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="channelTelegramAdd()">Link</button>
+                        <button onclick="closeForm('details-telegram')" aria-label="Close">&times;</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        Open Telegram &rarr; search <strong>@BotFather</strong> &rarr; send <code>/newbot</code> &rarr; follow the prompts &rarr; paste the token above.
+                    </small>
+                </div>
+
+                <div hidden id="details-whatsapp" class="conn-form">
+                    <p style="margin:0 0 8px; color:var(--text-dim); font-size:0.9em;">
+                        WhatsApp linking requires scanning a QR code. After enabling the channel below,
+                        open the <strong>AI Chat</strong> and ask: <em>&ldquo;link my WhatsApp&rdquo;</em> &mdash;
+                        or scan the QR from a terminal with <code>openclaw channels login whatsapp</code>.
+                    </p>
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="channelWhatsAppEnable()">Enable WhatsApp channel</button>
+                        <button onclick="closeForm('details-whatsapp')" aria-label="Close">&times;</button>
+                    </div>
+                    <small id="wa-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
+                </div>
+            </div>
+
             <div class="card">
                 <h3>Personal AI Assistant</h3>
                 <p style="margin-bottom:18px;">Run a fully private AI assistant on your device. Inference and chat stay entirely local. Live status appears on the Status tab.</p>
@@ -1203,7 +1238,7 @@
                 // Agent, Whisper) — fetching it at init means those rows
                 // populate immediately instead of staying skeleton until
                 // someone opens the Settings tab.
-                await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh()]);
+                await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
@@ -1217,6 +1252,7 @@
             setInterval(vaultDocsRefresh, 30000);
             setInterval(vaultMcpRefresh, 30000);
             setInterval(connRefresh, 15000);
+            setInterval(channelRefresh, 15000);
             
             setInterval(() => {
                 const logsTab = document.getElementById('logs');
@@ -1342,6 +1378,120 @@
             const hint = document.getElementById('ha-local-hint');
             if (id === 'details-ha' && hint) hint.style.display = 'none';
         }
+        // ── Channel linking ─────────────────────────────────────────────
+        const CHANNEL_LABELS = {
+            telegram: { name: 'Telegram', sub: 'Bot via @BotFather' },
+            whatsapp: { name: 'WhatsApp', sub: 'Linked Devices (QR code)' },
+        };
+        async function channelRefresh() {
+            try {
+                const r = await fetch('/api/channels/status', { credentials: 'include' });
+                if (!r.ok) return;
+                const d = await r.json();
+                const rows = document.getElementById('channel-rows');
+                if (!rows) return;
+                rows.innerHTML = '';
+                for (const ch of (d.channels || [])) {
+                    const meta = CHANNEL_LABELS[ch.key] || { name: ch.key, sub: '' };
+                    let badge;
+                    if (ch.key === 'whatsapp' && ch.linked) {
+                        badge = '<span class="status-badge status-running">linked</span>';
+                    } else if (ch.enabled) {
+                        badge = '<span class="status-badge status-running">active</span>';
+                    } else if (ch.configured) {
+                        badge = '<span class="status-badge status-unknown">configured</span>';
+                    } else {
+                        badge = '<span class="status-badge status-stopped">not linked</span>';
+                    }
+                    const buttons = [];
+                    if (ch.key === 'telegram') {
+                        if (!ch.configured) {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('details-telegram','tg-token')">Link&hellip;</button>`);
+                        } else {
+                            buttons.push(`<button onclick="channelRemove('telegram')">Unlink</button>`);
+                        }
+                    }
+                    if (ch.key === 'whatsapp') {
+                        if (!ch.configured) {
+                            buttons.push(`<button class="btn-primary" onclick="channelWhatsAppLink()">Link&hellip;</button>`);
+                        } else {
+                            buttons.push(`<button onclick="channelWhatsAppLink()">Re-link&hellip;</button>`);
+                            buttons.push(`<button onclick="channelRemove('whatsapp')">Unlink</button>`);
+                        }
+                    }
+                    rows.insertAdjacentHTML('beforeend',
+                        `<div class="row-item">
+                           <div class="row-main">
+                             <strong>${meta.name}</strong>
+                             <span class="row-meta">${meta.sub}</span>
+                           </div>
+                           <div style="display:flex; gap:6px; align-items:center;">${badge}${buttons.join('')}</div>
+                         </div>`);
+                }
+            } catch (e) { console.warn('channelRefresh failed', e); }
+        }
+
+        async function channelTelegramAdd() {
+            const token = document.getElementById('tg-token').value.trim();
+            if (!token) return;
+            const msg = document.getElementById('channel-msg');
+            msg.innerText = 'Validating token...';
+            try {
+                const r = await fetch('/api/channels/telegram/add', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token }),
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    msg.innerText = `Linked @${d.bot_username || 'bot'}. Restarting agent...`;
+                    closeForm('details-telegram');
+                    document.getElementById('tg-token').value = '';
+                } else {
+                    msg.innerText = d.error || 'Failed';
+                }
+            } catch (e) { msg.innerText = 'Error: ' + e; }
+            channelRefresh();
+        }
+
+        async function channelRemove(key) {
+            if (!confirm(`Unlink ${(CHANNEL_LABELS[key]||{}).name || key}?`)) return;
+            const msg = document.getElementById('channel-msg');
+            msg.innerText = 'Removing...';
+            try {
+                await fetch(`/api/channels/${key}/remove`, {
+                    method: 'POST', credentials: 'include',
+                });
+                msg.innerText = 'Removed. Restarting agent...';
+            } catch (e) { msg.innerText = 'Error: ' + e; }
+            channelRefresh();
+        }
+
+        async function channelWhatsAppLink() {
+            openDetails('details-whatsapp');
+        }
+
+        async function channelWhatsAppEnable() {
+            const msg = document.getElementById('wa-msg');
+            msg.innerText = 'Enabling...';
+            try {
+                const r = await fetch('/api/channels/whatsapp/add', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    msg.innerText = 'WhatsApp channel enabled. Restarting agent... Now open AI Chat and say "link my WhatsApp" to scan the QR code.';
+                    closeForm('details-whatsapp');
+                } else {
+                    msg.innerText = d.error || 'Failed';
+                }
+            } catch (e) { msg.innerText = 'Error: ' + e; }
+            channelRefresh();
+        }
+
+        // ── Integration labels ─────────────────────────────────────────────
         const CONN_LABELS = {
             self:          { name: 'Self-tools',     sub: 'Backups, status, restart' },
             homeassistant: { name: 'Home Assistant', sub: 'Lights, scenes, automations' },
