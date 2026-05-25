@@ -163,7 +163,8 @@ rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true
 write_status "running" "Nuclear reset in progress — generating new credentials..."
 
 log "Generating new master password..."
-NEW_PASS=$(head -c 100 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 16)
+NEW_PASS=$(head -c 100 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9') || true
+NEW_PASS="${NEW_PASS:0:16}"
 
 if [[ ${#NEW_PASS} -lt 16 ]]; then
     die "Failed to generate secure password from /dev/urandom"

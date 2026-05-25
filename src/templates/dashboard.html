@@ -2872,13 +2872,14 @@
                         wipe_ai_runtime: wipeRuntime
                     })
                 });
-                const data = await res.json();
 
                 if (res.status === 429) {
                     alert('Rate limited: only 1 attempt per 10 minutes is allowed.');
                     closeNuclearModal();
                     return;
                 }
+
+                const data = await res.json();
 
                 if (!res.ok) {
                     alert('Error: ' + (data.error || 'Unknown error'));
