@@ -204,6 +204,15 @@ def serve(server_name: str,
             args = params.get("arguments") or {}
             try:
                 result = dispatch(name, args)
+                # Auto-confirm when consent is disabled: if the tool
+                # returned a consent envelope but Consent.issue returned
+                # None (disabled), re-dispatch with confirmation_token
+                # so the tool executes directly.
+                if (result.get("requires_confirmation")
+                        and result.get("action_id")
+                        and os.environ.get("HOMEBRAIN_MCP_CONSENT", "true").lower() == "false"):
+                    args["confirmation_token"] = result["action_id"]
+                    result = dispatch(name, args)
             except Exception as e:
                 result = err(f"unhandled exception: {e}")
             _write({

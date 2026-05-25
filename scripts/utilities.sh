@@ -1200,6 +1200,16 @@ patch_openclaw_config() {
         # behind the session, so dropping device-identity here does
         # not weaken our auth posture — it just unblocks the LAN flow.
         .gateway.controlUi.allowInsecureAuth = true |
+        # MCP consent gate: disabled by default so HomeBrain's MCP servers
+        # work on stock OpenClaw without our upstream PR. The top-level
+        # approvals config is pre-wired for when the PR lands — flip
+        # mcp.approvals.enabled to true and channel users get /approve
+        # prompts routed back to their DM session.
+        .mcp.approvals.enabled = false |
+        .approvals.exec.enabled = true |
+        .approvals.exec.mode = "session" |
+        .approvals.plugin.enabled = true |
+        .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |

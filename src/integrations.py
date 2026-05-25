@@ -69,6 +69,12 @@ MCP_NAMES = {
 # Order matters for the dashboard card.
 INTEGRATION_ORDER = ["self", "homeassistant", "nextcloud", "vault", "email"]
 
+# Channels that HomeBrain can link via the dashboard (separate from MCP
+# integrations — channels are messaging bridges, not tool servers).
+CHANNEL_ORDER = ["telegram", "whatsapp"]
+TELEGRAM_API_BASE = "https://api.telegram.org/bot"
+OPENCLAW_GATEWAY_BASE = "http://127.0.0.1:18789"
+
 
 # ---------------------------------------------------------------------------
 # Helpers — env, files, derivation
@@ -288,6 +294,13 @@ def _openclaw_daemon_restart() -> None:
 # MCP server specs
 # ---------------------------------------------------------------------------
 
+def _mcp_consent_env() -> dict:
+    """Return env vars that control MCP consent behavior."""
+    data = _read_openclaw_config()
+    enabled = data.get("mcp", {}).get("approvals", {}).get("enabled", False)
+    return {"HOMEBRAIN_MCP_CONSENT": "true" if enabled else "false"}
+
+
 def _spec_self() -> dict:
     return {
         "command": PYTHON_BIN,
@@ -296,6 +309,7 @@ def _spec_self() -> dict:
             "HOMEBRAIN_BASE_URL": "http://127.0.0.1:80",
             "HOMEBRAIN_SELF_TOKEN_FILE": SELF_TOKEN_FILE,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -314,6 +328,7 @@ def _spec_homeassistant() -> dict | None:
             "HA_ACCOUNTS_FILE": HA_ACCOUNTS_FILE,
             "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -329,6 +344,7 @@ def _spec_nextcloud() -> dict | None:
             "NC_ACCOUNTS_FILE": NC_ACCOUNTS_FILE,
             "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -364,6 +380,7 @@ def _spec_email() -> dict | None:
             "HOMEBRAIN_EMAIL_KEY": _email_fernet_key(),
             "HOMEBRAIN_EMAIL_SEND_DIRECT": send_direct,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -845,6 +862,178 @@ def _require_session_or_bearer() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Channel linking — Telegram + WhatsApp
+# ---------------------------------------------------------------------------
+# Channels are messaging bridges (not MCP tool servers). Their config lives
+# directly in openclaw.json under .channels.<id> and .plugins.entries.<id>.
+# We read/write the JSON file directly — channels don't need the heavy
+# `openclaw mcp set` path.
+
+import urllib.request
+import urllib.error
+
+
+def _read_openclaw_config() -> dict:
+    try:
+        with open(_OPENCLAW_CONFIG_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_openclaw_channel(channel_id: str, channel_cfg: dict,
+                            enable_plugin: bool = True) -> None:
+    _ensure_dir(OPENCLAW_DIR)
+    try:
+        with open(_OPENCLAW_CONFIG_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+
+    channels = data.setdefault("channels", {})
+    channels[channel_id] = channel_cfg
+
+    if enable_plugin:
+        plugins = data.setdefault("plugins", {})
+        entries = plugins.setdefault("entries", {})
+        entries[channel_id] = {"enabled": True}
+
+    # Sync allowFrom → commands.ownerAllowFrom so the user can run
+    # /approve and other owner commands from the same channel.
+    allow_from = channel_cfg.get("allowFrom", [])
+    if allow_from:
+        commands = data.setdefault("commands", {})
+        existing = set(commands.get("ownerAllowFrom", []))
+        existing.update(allow_from)
+        commands["ownerAllowFrom"] = sorted(existing)
+
+    with open(_OPENCLAW_CONFIG_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _remove_openclaw_channel(channel_id: str) -> None:
+    try:
+        with open(_OPENCLAW_CONFIG_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    channels = data.get("channels", {})
+    channels.pop(channel_id, None)
+    plugins = data.get("plugins", {})
+    entries = plugins.get("entries", {})
+    entries.pop(channel_id, None)
+    with open(_OPENCLAW_CONFIG_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _channel_status(channel_id: str) -> dict:
+    data = _read_openclaw_config()
+    ch = data.get("channels", {}).get(channel_id, {})
+    plugin = data.get("plugins", {}).get("entries", {}).get(channel_id, {})
+    configured = bool(ch)
+    enabled = ch.get("enabled", False) and plugin.get("enabled", False)
+    info: dict[str, Any] = {
+        "key": channel_id,
+        "configured": configured,
+        "enabled": enabled,
+    }
+    if channel_id == "telegram" and configured:
+        info["has_token"] = bool(ch.get("botToken"))
+    if channel_id == "whatsapp":
+        auth = _whatsapp_auth_status()
+        info["linked"] = auth.get("linked", False)
+        if configured:
+            info["dm_policy"] = ch.get("dmPolicy", "disabled")
+    return info
+
+
+def _validate_telegram_token(token: str) -> dict:
+    url = f"{TELEGRAM_API_BASE}{token}/getMe"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+        if body.get("ok") and body.get("result"):
+            bot = body["result"]
+            return {"ok": True,
+                    "bot_name": bot.get("first_name", ""),
+                    "bot_username": bot.get("username", "")}
+        return {"ok": False, "error": body.get("description", "Unknown error")}
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read())
+            return {"ok": False, "error": body.get("description", f"HTTP {e.code}")}
+        except Exception:
+            return {"ok": False, "error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _whatsapp_auth_status() -> dict:
+    """Check WhatsApp auth state by looking for session files."""
+    auth_dir = os.path.join(OPENCLAW_DIR, "whatsapp-auth", "default")
+    creds = os.path.join(auth_dir, "creds.json")
+    if os.path.exists(creds):
+        try:
+            with open(creds) as f:
+                data = json.load(f)
+            if data.get("me", {}).get("id"):
+                return {"linked": True, "id": data["me"]["id"]}
+        except Exception:
+            pass
+    return {"linked": False}
+
+
+def _gateway_token() -> str | None:
+    """Read the OpenClaw gateway bearer token from openclaw.json."""
+    data = _read_openclaw_config()
+    token = data.get("gateway", {}).get("auth", {}).get("token")
+    return token if isinstance(token, str) and token.strip() else None
+
+
+def _gateway_whatsapp_login(action: str = "start",
+                            force: bool = False,
+                            current_qr: str | None = None) -> dict:
+    """Call the gateway's channel login endpoint to generate/poll WhatsApp QR.
+
+    Returns the raw result from the gateway — includes qrDataUrl for
+    direct <img> embedding in the dashboard."""
+    bearer = _gateway_token()
+    if not bearer:
+        return {"error": "Gateway auth token not found in openclaw.json"}
+    url = f"{OPENCLAW_GATEWAY_BASE}/api/channels/login/whatsapp/{action}"
+    payload: dict[str, Any] = {}
+    if action == "start":
+        payload["force"] = force
+        payload["timeoutMs"] = 30000
+    elif action == "wait":
+        payload["timeoutMs"] = 60000
+        if current_qr:
+            payload["currentQrDataUrl"] = current_qr
+    try:
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {bearer}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read())
+            return {"error": body.get("error", f"HTTP {e.code}")}
+        except Exception:
+            return {"error": f"Gateway returned HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
 
@@ -1237,6 +1426,99 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/audit/<server>",
                      "integrations_audit_tail",
                      audit_tail, methods=["GET"])
+
+    # ---- Channel linking (Telegram + WhatsApp) ----------------------------
+
+    def channels_status():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        return jsonify({
+            "channels": [_channel_status(k) for k in CHANNEL_ORDER],
+        })
+
+    def telegram_add():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        token = (body.get("token") or "").strip()
+        if not token:
+            return jsonify({"error": "Bot token is required"}), 400
+        validation = _validate_telegram_token(token)
+        if not validation["ok"]:
+            return jsonify({"error": validation["error"]}), 400
+        _write_openclaw_channel("telegram", {
+            "enabled": True,
+            "botToken": token,
+            "dmPolicy": "pairing",
+        })
+        _openclaw_daemon_restart()
+        return jsonify({
+            "status": "linked",
+            "bot_name": validation.get("bot_name", ""),
+            "bot_username": validation.get("bot_username", ""),
+        })
+
+    def telegram_remove():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        _remove_openclaw_channel("telegram")
+        _openclaw_daemon_restart()
+        return jsonify({"status": "removed"})
+
+    def whatsapp_add():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        _write_openclaw_channel("whatsapp", {
+            "enabled": True,
+            "dmPolicy": "pairing",
+        })
+        _openclaw_daemon_restart()
+        return jsonify({"status": "configured"})
+
+    def whatsapp_qr():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get("force", False))
+        result = _gateway_whatsapp_login(action="start", force=force)
+        return jsonify(result)
+
+    def whatsapp_qr_wait():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        current_qr = body.get("currentQrDataUrl")
+        result = _gateway_whatsapp_login(
+            action="wait",
+            current_qr=current_qr if isinstance(current_qr, str) else None,
+        )
+        return jsonify(result)
+
+    def whatsapp_remove():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        _remove_openclaw_channel("whatsapp")
+        _openclaw_daemon_restart()
+        return jsonify({"status": "removed"})
+
+    app.add_url_rule("/api/channels/status",
+                     "channels_status", channels_status, methods=["GET"])
+    app.add_url_rule("/api/channels/telegram/add",
+                     "telegram_add",
+                     limiter.limit("5 per minute")(telegram_add),
+                     methods=["POST"])
+    app.add_url_rule("/api/channels/telegram/remove",
+                     "telegram_remove", telegram_remove, methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/add",
+                     "whatsapp_add", whatsapp_add, methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/qr",
+                     "whatsapp_qr",
+                     limiter.limit("3 per minute")(whatsapp_qr),
+                     methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/qr/wait",
+                     "whatsapp_qr_wait", whatsapp_qr_wait, methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/remove",
+                     "whatsapp_remove", whatsapp_remove, methods=["POST"])
 
     # Post-provision self-heal: reconcile_all_mcp() was historically only
     # triggered by the user clicking "Apply" in Connections, which left
