@@ -966,6 +966,46 @@ def _whatsapp_auth_status() -> dict:
     return {"linked": False}
 
 
+def _gateway_whatsapp_login(action: str = "start",
+                            force: bool = False,
+                            current_qr: str | None = None) -> dict:
+    """Call the gateway's channel login endpoint to generate/poll WhatsApp QR.
+
+    Returns the raw result from the gateway — includes qrDataUrl for
+    direct <img> embedding in the dashboard."""
+    bearer = _self_token()
+    if not bearer:
+        return {"error": "Self-MCP token not available"}
+    url = f"{OPENCLAW_GATEWAY_BASE}/api/channels/login/whatsapp/{action}"
+    payload: dict[str, Any] = {}
+    if action == "start":
+        payload["force"] = force
+        payload["timeoutMs"] = 30000
+    elif action == "wait":
+        payload["timeoutMs"] = 60000
+        if current_qr:
+            payload["currentQrDataUrl"] = current_qr
+    try:
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {bearer}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read())
+            return {"error": body.get("error", f"HTTP {e.code}")}
+        except Exception:
+            return {"error": f"Gateway returned HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # Flask routes
 # ---------------------------------------------------------------------------
@@ -1408,15 +1448,24 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         _openclaw_daemon_restart()
         return jsonify({"status": "configured"})
 
-    def whatsapp_status():
+    def whatsapp_qr():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
-        ch_status = _channel_status("whatsapp")
-        auth = _whatsapp_auth_status()
-        ch_status["linked"] = auth.get("linked", False)
-        if auth.get("id"):
-            ch_status["phone_id"] = auth["id"]
-        return jsonify(ch_status)
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get("force", False))
+        result = _gateway_whatsapp_login(action="start", force=force)
+        return jsonify(result)
+
+    def whatsapp_qr_wait():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        current_qr = body.get("currentQrDataUrl")
+        result = _gateway_whatsapp_login(
+            action="wait",
+            current_qr=current_qr if isinstance(current_qr, str) else None,
+        )
+        return jsonify(result)
 
     def whatsapp_remove():
         if not session.get("authenticated"):
@@ -1435,8 +1484,12 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "telegram_remove", telegram_remove, methods=["POST"])
     app.add_url_rule("/api/channels/whatsapp/add",
                      "whatsapp_add", whatsapp_add, methods=["POST"])
-    app.add_url_rule("/api/channels/whatsapp/status",
-                     "whatsapp_status", whatsapp_status, methods=["GET"])
+    app.add_url_rule("/api/channels/whatsapp/qr",
+                     "whatsapp_qr",
+                     limiter.limit("3 per minute")(whatsapp_qr),
+                     methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/qr/wait",
+                     "whatsapp_qr_wait", whatsapp_qr_wait, methods=["POST"])
     app.add_url_rule("/api/channels/whatsapp/remove",
                      "whatsapp_remove", whatsapp_remove, methods=["POST"])
 

@@ -475,10 +475,25 @@
                     <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
                     {% if has_gpu %}
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
-                    {% endif %}
-                </div>
+            {% endif %}
+
+            <!-- Nuclear Reset / Danger Zone -->
+            <div class="card" style="grid-column: 1 / -1; border: 2px solid var(--danger);">
+                <h3 style="color: var(--danger);">Danger Zone — Nuclear Reset</h3>
+                <p style="color:var(--text-dim); font-size:0.9em;">
+                    This performs a <strong>complete factory reset</strong>. All your data (Nextcloud files, Home Assistant configuration, Vaultwarden vault, OpenClaw memory, AI models, etc.) will be <strong>permanently destroyed</strong>.
+                </p>
+                <p style="color:var(--text-dim); font-size:0.88em; margin-bottom:14px;">
+                    Your external backup drive at <code>/mnt/backup</code> will <strong>not</strong> be touched. The device will reboot when finished.
+                </p>
+                <button class="btn-danger" onclick="showNuclearModal()" style="background:var(--danger); color:white; border-color:var(--danger);">
+                    Nuclear Reset / Factory Wipe Device
+                </button>
+                <small style="display:block; margin-top:8px; color:var(--danger);">This action is irreversible.</small>
             </div>
 
+        </div>
+    </div>
             <div class="card" id="vault-card">
                 <h3>HomeBrain Vault</h3>
                 <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
@@ -948,16 +963,16 @@
                 </div>
 
                 <div hidden id="details-whatsapp" class="conn-form">
-                    <p style="margin:0 0 8px; color:var(--text-dim); font-size:0.9em;">
-                        WhatsApp linking requires scanning a QR code. After enabling the channel below,
-                        open the <strong>AI Chat</strong> and ask: <em>&ldquo;link my WhatsApp&rdquo;</em> &mdash;
-                        or scan the QR from a terminal with <code>openclaw channels login whatsapp</code>.
-                    </p>
-                    <div style="display:flex; gap:8px;">
-                        <button class="btn-primary" onclick="channelWhatsAppEnable()">Enable WhatsApp channel</button>
-                        <button onclick="closeForm('details-whatsapp')" aria-label="Close">&times;</button>
+                    <div id="wa-qr-container" style="text-align:center; padding:12px 0;">
+                        <p id="wa-qr-msg" style="color:var(--text-dim); margin:0 0 8px;">Generating QR code&hellip;</p>
+                        <img id="wa-qr-img" hidden style="max-width:260px; border-radius:8px; margin:0 auto; display:block; image-rendering:pixelated;">
                     </div>
-                    <small id="wa-msg" style="display:block; margin-top:6px; color:var(--text-dim);"></small>
+                    <div style="display:flex; gap:8px; justify-content:center;">
+                        <button onclick="closeForm('details-whatsapp'); waQrStop();">&times; Cancel</button>
+                    </div>
+                    <small style="display:block; margin-top:8px; color:var(--text-dim); text-align:center;">
+                        Open <strong>WhatsApp</strong> on your phone &rarr; <strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong> &rarr; scan this QR.
+                    </small>
                 </div>
             </div>
 
@@ -1467,29 +1482,84 @@
             channelRefresh();
         }
 
-        async function channelWhatsAppLink() {
-            openDetails('details-whatsapp');
-        }
+        let waQrPolling = false;
 
-        async function channelWhatsAppEnable() {
-            const msg = document.getElementById('wa-msg');
-            msg.innerText = 'Enabling...';
+        async function channelWhatsAppLink() {
+            const msg = document.getElementById('wa-qr-msg');
+            const img = document.getElementById('wa-qr-img');
+            msg.innerText = 'Enabling WhatsApp channel...';
+            img.hidden = true;
+            openDetails('details-whatsapp');
+            // Ensure channel config exists
             try {
-                const r = await fetch('/api/channels/whatsapp/add', {
+                await fetch('/api/channels/whatsapp/add', {
                     method: 'POST', credentials: 'include',
                     headers: { 'Content-Type': 'application/json' },
                     body: '{}',
                 });
+            } catch (e) { /* ok if already exists */ }
+            // Request QR from gateway
+            msg.innerText = 'Generating QR code...';
+            try {
+                const r = await fetch('/api/channels/whatsapp/qr', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force: true }),
+                });
                 const d = await r.json();
-                if (r.ok) {
-                    msg.innerText = 'WhatsApp channel enabled. Restarting agent... Now open AI Chat and say "link my WhatsApp" to scan the QR code.';
-                    closeForm('details-whatsapp');
+                if (d.qrDataUrl) {
+                    img.src = d.qrDataUrl;
+                    img.hidden = false;
+                    msg.innerText = 'Scan this QR code with WhatsApp:';
+                    waQrPoll(d.qrDataUrl);
+                } else if (d.connected) {
+                    msg.innerText = 'WhatsApp is already linked!';
+                    setTimeout(() => closeForm('details-whatsapp'), 2000);
+                    channelRefresh();
                 } else {
-                    msg.innerText = d.error || 'Failed';
+                    msg.innerText = d.message || d.error || 'Could not generate QR. Is the WhatsApp plugin installed?';
                 }
             } catch (e) { msg.innerText = 'Error: ' + e; }
-            channelRefresh();
         }
+
+        async function waQrPoll(currentQr) {
+            waQrPolling = true;
+            const msg = document.getElementById('wa-qr-msg');
+            const img = document.getElementById('wa-qr-img');
+            while (waQrPolling) {
+                await new Promise(r => setTimeout(r, 3000));
+                if (!waQrPolling) break;
+                try {
+                    const r = await fetch('/api/channels/whatsapp/qr/wait', {
+                        method: 'POST', credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ currentQrDataUrl: currentQr }),
+                    });
+                    const d = await r.json();
+                    if (d.connected) {
+                        msg.innerText = 'WhatsApp linked successfully!';
+                        img.hidden = true;
+                        waQrPolling = false;
+                        setTimeout(() => closeForm('details-whatsapp'), 2000);
+                        channelRefresh();
+                        document.getElementById('channel-msg').innerText = 'WhatsApp linked!';
+                        return;
+                    }
+                    if (d.qrDataUrl && d.qrDataUrl !== currentQr) {
+                        img.src = d.qrDataUrl;
+                        currentQr = d.qrDataUrl;
+                        msg.innerText = 'QR refreshed — scan the new code:';
+                    }
+                    if (d.error) {
+                        msg.innerText = d.error;
+                        waQrPolling = false;
+                        return;
+                    }
+                } catch (e) { /* retry on network error */ }
+            }
+        }
+
+        function waQrStop() { waQrPolling = false; }
 
         // ── Integration labels ─────────────────────────────────────────────
         const CONN_LABELS = {
@@ -2909,6 +2979,188 @@
                 .replace(/'/g, "&#039;");
         }
 
+        // ============================================================
+        // Nuclear Reset (Factory Wipe) — Full E2E implementation
+        // ============================================================
+        let nuclearModal = null;
+
+        function showNuclearModal() {
+            if (nuclearModal) nuclearModal.remove();
+
+            nuclearModal = document.createElement('div');
+            nuclearModal.id = 'nuclear-modal';
+            nuclearModal.style.cssText = `
+                position: fixed; top:0; left:0; width:100%; height:100%;
+                background: rgba(0,0,0,0.75); z-index: 99999;
+                display:flex; align-items:center; justify-content:center;
+                font-family: var(--font-ui);
+            `;
+            nuclearModal.innerHTML = `
+                <div style="background:var(--surface); border:3px solid var(--danger); border-radius:12px; width:92%; max-width:520px; padding:24px; color:var(--text); box-shadow:0 10px 40px rgba(0,0,0,0.5);">
+                    <h2 style="margin:0 0 12px; color:var(--danger); font-size:1.35em;">⚠️ Nuclear Reset — Permanent Factory Wipe</h2>
+                    
+                    <div style="background:var(--danger-soft); border-left:4px solid var(--danger); padding:12px; margin-bottom:16px; font-size:0.92em;">
+                        <strong>This will permanently destroy:</strong><br>
+                        • All Nextcloud files &amp; configuration<br>
+                        • All Home Assistant automations &amp; history<br>
+                        • Your entire HomeBrain Vault (passwords, TOTP, attachments)<br>
+                        • OpenClaw agent memory, chats, and all integrations<br>
+                        • Downloaded AI models (by default)<br>
+                        • Every secret and runtime state on this device
+                    </div>
+                    
+                    <p style="font-size:0.9em; color:var(--text-dim); margin-bottom:16px;">
+                        Your external backup drive (<code>/mnt/backup</code>) will <strong>NOT</strong> be touched.<br>
+                        The device will automatically reboot when complete.
+                    </p>
+
+                    <div style="margin-bottom:14px;">
+                        <label style="font-size:0.85em; color:var(--text-dim); display:block; margin-bottom:4px;">Current Master Password</label>
+                        <input type="password" id="nuclear-current-pw" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2);" autocomplete="current-password">
+                    </div>
+
+                    <div style="margin-bottom:14px;">
+                        <label style="font-size:0.85em; color:var(--text-dim); display:block; margin-bottom:4px;">
+                            Type exactly: <code style="background:var(--surface-2); padding:1px 5px; border-radius:3px;">DESTROY ALL DATA</code>
+                        </label>
+                        <input type="text" id="nuclear-phrase" placeholder="DESTROY ALL DATA" style="width:100%; padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--surface-2); font-family:monospace;">
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:0.92em; cursor:pointer;">
+                            <input type="checkbox" id="nuclear-wipe-models" checked>
+                            <span>Delete downloaded AI models (saves 10–30 GB, requires re-download later)</span>
+                        </label>
+                    </div>
+                    <div style="margin-bottom:18px;">
+                        <label style="display:flex; align-items:center; gap:8px; font-size:0.92em; cursor:pointer; color:var(--text-dim);">
+                            <input type="checkbox" id="nuclear-wipe-runtime">
+                            <span>Also delete AI runtime binaries (llama-server / whisper-server) — forces slow rebuild</span>
+                        </label>
+                    </div>
+
+                    <div style="display:flex; gap:10px; margin-top:8px;">
+                        <button onclick="closeNuclearModal()" style="flex:1; background:transparent; border:1px solid var(--border); color:var(--text); padding:11px;">Cancel</button>
+                        <button onclick="performNuclearReset()" style="flex:1.4; background:var(--danger); color:white; border:1px solid var(--danger); padding:11px; font-weight:600;">I UNDERSTAND — WIPE EVERYTHING</button>
+                    </div>
+                    <div id="nuclear-error" style="color:var(--danger); font-size:0.85em; margin-top:10px; min-height:1em;"></div>
+                </div>
+            `;
+            document.body.appendChild(nuclearModal);
+
+            // Focus first field
+            setTimeout(() => {
+                const pw = document.getElementById('nuclear-current-pw');
+                if (pw) pw.focus();
+            }, 50);
+        }
+
+        function closeNuclearModal() {
+            if (nuclearModal) {
+                nuclearModal.remove();
+                nuclearModal = null;
+            }
+        }
+
+        async function performNuclearReset() {
+            const errEl = document.getElementById('nuclear-error');
+            errEl.textContent = '';
+
+            const currentPw = document.getElementById('nuclear-current-pw').value;
+            const phrase    = document.getElementById('nuclear-phrase').value;
+            const wipeModels = document.getElementById('nuclear-wipe-models').checked;
+            const wipeRuntime = document.getElementById('nuclear-wipe-runtime').checked;
+
+            if (!currentPw) {
+                errEl.textContent = 'Current master password is required.';
+                return;
+            }
+            if (phrase !== 'DESTROY ALL DATA') {
+                errEl.textContent = 'You must type exactly "DESTROY ALL DATA".';
+                return;
+            }
+
+            const btns = nuclearModal.querySelectorAll('button');
+            btns.forEach(b => b.disabled = true);
+
+            try {
+                const res = await fetch('/api/system/nuclear-reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        current_password: currentPw,
+                        confirmation_phrase: phrase,
+                        wipe_ai_models: wipeModels,
+                        wipe_ai_runtime: wipeRuntime
+                    })
+                });
+
+                const data = await res.json();
+
+                if (res.ok && data.status === 'started') {
+                    closeNuclearModal();
+                    // Show blocking full-screen progress
+                    showNuclearProgressScreen();
+                } else {
+                    errEl.textContent = data.error || 'Request failed.';
+                    btns.forEach(b => b.disabled = false);
+                }
+            } catch (e) {
+                errEl.textContent = 'Network error. Please try again.';
+                btns.forEach(b => b.disabled = false);
+            }
+        }
+
+        function showNuclearProgressScreen() {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:999999;display:flex;align-items:center;justify-content:center;color:white;font-family:monospace;';
+            overlay.innerHTML = `
+                <div style="text-align:center; max-width:520px; padding:20px;">
+                    <div style="font-size:2.2em; margin-bottom:16px; color:#ff4444;">☢ NUCLEAR RESET IN PROGRESS</div>
+                    <div id="nuclear-progress-msg" style="font-size:1.1em; margin-bottom:20px; line-height:1.5;">
+                        Stopping all services and destroying data...<br>
+                        This may take 30–90 seconds.
+                    </div>
+                    <div style="font-size:0.9em; opacity:0.7;">
+                        The device will automatically reboot when complete.<br>
+                        Do not power off.
+                    </div>
+                    <div style="margin-top:30px; font-size:0.8em; opacity:0.6;">
+                        Status: <span id="nuclear-task-status">running</span>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            // Poll task status until we see success or the page stops responding
+            const poll = setInterval(async () => {
+                try {
+                    const r = await fetch('/api/task_status', { credentials: 'include' });
+                    const s = await r.json();
+                    const msgEl = document.getElementById('nuclear-progress-msg');
+                    const stEl  = document.getElementById('nuclear-task-status');
+
+                    if (s.status === 'success') {
+                        clearInterval(poll);
+                        if (msgEl) msgEl.innerHTML = 'Reset complete.<br>Device is rebooting now...';
+                        if (stEl) stEl.textContent = 'rebooting';
+                        // The page will stop responding shortly
+                    } else if (s.status === 'error') {
+                        clearInterval(poll);
+                        if (msgEl) msgEl.textContent = 'An error occurred. Check logs after reboot.';
+                    } else if (stEl) {
+                        stEl.textContent = s.status || 'running';
+                    }
+                } catch (e) {
+                    // Connection lost = reboot in progress. That's expected.
+                    clearInterval(poll);
+                }
+            }, 1500);
+        }
+
+        // Expose for console debugging if needed
+        window.showNuclearModal = showNuclearModal;
 
         init();
     </script>
