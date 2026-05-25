@@ -966,6 +966,13 @@ def _whatsapp_auth_status() -> dict:
     return {"linked": False}
 
 
+def _gateway_token() -> str | None:
+    """Read the OpenClaw gateway bearer token from openclaw.json."""
+    data = _read_openclaw_config()
+    token = data.get("gateway", {}).get("auth", {}).get("token")
+    return token if isinstance(token, str) and token.strip() else None
+
+
 def _gateway_whatsapp_login(action: str = "start",
                             force: bool = False,
                             current_qr: str | None = None) -> dict:
@@ -973,9 +980,9 @@ def _gateway_whatsapp_login(action: str = "start",
 
     Returns the raw result from the gateway — includes qrDataUrl for
     direct <img> embedding in the dashboard."""
-    bearer = _self_token()
+    bearer = _gateway_token()
     if not bearer:
-        return {"error": "Self-MCP token not available"}
+        return {"error": "Gateway auth token not found in openclaw.json"}
     url = f"{OPENCLAW_GATEWAY_BASE}/api/channels/login/whatsapp/{action}"
     payload: dict[str, Any] = {}
     if action == "start":
