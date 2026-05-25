@@ -887,6 +887,15 @@ def _write_openclaw_channel(channel_id: str, channel_cfg: dict,
         entries = plugins.setdefault("entries", {})
         entries[channel_id] = {"enabled": True}
 
+    # Sync allowFrom → commands.ownerAllowFrom so the user can run
+    # /approve and other owner commands from the same channel.
+    allow_from = channel_cfg.get("allowFrom", [])
+    if allow_from:
+        commands = data.setdefault("commands", {})
+        existing = set(commands.get("ownerAllowFrom", []))
+        existing.update(allow_from)
+        commands["ownerAllowFrom"] = sorted(existing)
+
     with open(_OPENCLAW_CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
