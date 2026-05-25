@@ -82,6 +82,16 @@
       }
     }
   },
+  "approvals": {
+    "exec": {
+      "enabled": true,
+      "mode": "session"
+    },
+    "plugin": {
+      "enabled": true,
+      "mode": "session"
+    }
+  },
   "gateway": {
     "port": 18789,
     "mode": "local",

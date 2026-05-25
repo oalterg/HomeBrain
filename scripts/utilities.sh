@@ -1200,6 +1200,14 @@ patch_openclaw_config() {
         # behind the session, so dropping device-identity here does
         # not weaken our auth posture — it just unblocks the LAN flow.
         .gateway.controlUi.allowInsecureAuth = true |
+        # MCP tool approval routing: send approval prompts back to the
+        # same channel session that initiated the tool call. Without this,
+        # channel users (WhatsApp, Telegram) get "Approval system unavailable"
+        # when calling HA/NC tools that require consent.
+        .approvals.exec.enabled = true |
+        .approvals.exec.mode = "session" |
+        .approvals.plugin.enabled = true |
+        .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
