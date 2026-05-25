@@ -8,6 +8,7 @@ import subprocess
 import threading
 import json
 import hashlib
+import hmac
 import logging
 import shlex
 import tempfile
@@ -161,6 +162,7 @@ SCRIPT_RESTORE = f"{INSTALL_DIR}/scripts/restore.sh"
 SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
 SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_tunnels.sh"
 SCRIPT_UTILITIES = f"{INSTALL_DIR}/scripts/utilities.sh"
+SCRIPT_NUCLEAR   = f"{INSTALL_DIR}/scripts/nuclear_reset.sh"
 INSTALL_CREDS_PATH = f"{INSTALL_DIR}/install_creds.json"
 STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
@@ -172,6 +174,7 @@ LOG_FILES = {
     "restore": f"{LOG_DIR}/restore.log",
     "update": f"{LOG_DIR}/manager_update.log",
     "manager": f"{LOG_DIR}/manager.log",
+    "nuclear": f"{LOG_DIR}/nuclear_reset.log",
 }
 
 JOURNAL_SERVICES = {"openclaw", "llama-server"}
@@ -2948,6 +2951,64 @@ def redis_configure():
         target=run_background_task, args=("Configure Redis", cmd, "setup")
     ).start()
     return jsonify({"status": "started"})
+
+
+# --- Routes: Nuclear Reset (Factory Wipe) ---
+# EXTREMELY DANGEROUS — only after full multi-factor confirmation in the UI.
+@app.route("/api/system/nuclear-reset", methods=["POST"])
+@limiter.limit("1 per 10 minutes")
+def nuclear_reset():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "Another task is already running"}), 409
+
+    data = request.get_json(silent=True) or {}
+
+    # 1. Verify current master password (constant-time comparison)
+    env = get_env_config()
+    current_pw = data.get("current_password", "")
+    expected_pw = env.get("MANAGER_PASSWORD", "")
+    if not current_pw or not expected_pw or not hmac.compare_digest(current_pw, expected_pw):
+        time.sleep(2)
+        return jsonify({"error": "Invalid current password"}), 401
+
+    # 2. Verify exact confirmation phrase (case-sensitive, no trimming)
+    if data.get("confirmation_phrase") != "DESTROY ALL DATA":
+        return jsonify({"error": "Confirmation phrase did not match exactly"}), 400
+
+    # 3. Read wipe flags (defaults per plan)
+    wipe_models  = bool(data.get("wipe_ai_models", True))
+    wipe_runtime = bool(data.get("wipe_ai_runtime", False))
+
+    # 4. Ensure script is executable
+    subprocess.run(["chmod", "+x", SCRIPT_NUCLEAR], check=False)
+
+    # 5. Launch the nuclear script in background
+    # We pass the two booleans as arguments (the script treats any non-"true" as false)
+    # Log primarily to dedicated nuclear log (also visible in setup log via the UI if needed)
+    nuclear_log = LOG_FILES.get("nuclear", LOG_FILES["setup"])
+    cmd = (
+        f"bash {shlex.quote(SCRIPT_NUCLEAR)} "
+        f"{shlex.quote('true' if wipe_models else 'false')} "
+        f"{shlex.quote('true' if wipe_runtime else 'false')} "
+        f">> {shlex.quote(nuclear_log)} 2>&1"
+    )
+
+    threading.Thread(
+        target=run_background_task,
+        args=("Nuclear Reset (Factory Wipe)", cmd, "setup")
+    ).start()
+
+    # Immediately invalidate this session (device will reboot anyway)
+    session.clear()
+
+    return jsonify({
+        "status": "started",
+        "message": "Nuclear reset initiated. Device will reboot when complete."
+    })
+
 
 # --- Routes: FTP Management ---
 @app.route("/api/ftp/users", methods=["GET"])

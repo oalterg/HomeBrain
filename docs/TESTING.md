@@ -236,6 +236,37 @@ default Vault bootstrap.
 
 ---
 
+## Nuclear Reset (Destructive — Run Last on Test Hardware)
+
+**Prerequisites**
+- A freshly provisioned device that has real user data:
+  - At least a few files uploaded to Nextcloud
+  - At least one custom entity or automation in Home Assistant
+  - At least one credential in the HomeBrain Vault
+  - (GPU devices) Some OpenClaw chat history or agent memory
+  - An external backup drive mounted at `/mnt/backup` with at least one prior backup
+
+**Test Matrix** (execute on both Local and Remote modes; GPU and non-GPU devices)
+
+- [ ] Trigger with wrong master password → rejected with clear error
+- [ ] Trigger with correct password but mistyped or missing phrase → rejected
+- [ ] Successful trigger using **default options** (AI models wiped, runtime kept)
+- [ ] After reboot:
+  - Only the factory password (device label) allows login
+  - The standard "new credentials" handover screen appears with a **brand new** master password
+  - No old Nextcloud files, no old HA config, empty Vault, no `.openclaw` workspace remain
+  - AI models directory is gone (on GPU devices)
+  - External backup drive is still mounted and previous archives are readable
+- [ ] Repeat with "Also delete AI runtime binaries" checked → after reset the `ai-runtime/` directory is empty (forces reinstall on next AI enable)
+- [ ] Power-loss / kill simulation: interrupt the nuclear script (or pull power) mid-run, reboot, re-trigger nuclear reset → second run completes cleanly without leaving the device in a broken state
+- [ ] Rate-limit verification: second attempt within 10 minutes is rejected with a clear message
+- [ ] Old browser sessions/cookies are fully invalidated after the reset + reboot (trying to use an old session returns 401 and redirects to login)
+- [ ] `journalctl -u homebrain-manager` and `/var/log/homebrain/manager.log` contain a clear "NUCLEAR RESET INITIATED" banner with timestamp
+
+All items in this section must pass on real hardware before the PR is eligible for merge.
+
+---
+
 ## Sign-off checklist
 
 Complete before merging to `main`:

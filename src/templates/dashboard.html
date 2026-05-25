@@ -1103,6 +1103,68 @@
             </div>
             {% endif %}
 
+            <!-- Nuclear Reset / Danger Zone (last card in Settings) -->
+            <div class="card" style="grid-column: 1 / -1; border: 2px solid var(--danger);">
+                <h3 style="color: var(--danger);">Danger Zone — Nuclear Reset</h3>
+                <p style="color:var(--text-dim); font-size:0.9em;">
+                    This performs a <strong>complete factory reset</strong>. All your data (Nextcloud files, Home Assistant configuration, Vaultwarden vault, OpenClaw memory, AI models, etc.) will be <strong>permanently destroyed</strong>.
+                </p>
+                <p style="color:var(--text-dim); font-size:0.88em; margin-bottom:14px;">
+                    Your external backup drive at <code>/mnt/backup</code> will <strong>not</strong> be touched. The device will reboot when finished.
+                </p>
+                <button class="btn-danger" onclick="showNuclearModal()" style="background:var(--danger); color:white; border-color:var(--danger);">
+                    Nuclear Reset / Factory Wipe Device
+                </button>
+                <small style="display:block; margin-top:8px; color:var(--danger);">This action is irreversible.</small>
+            </div>
+
+            <!-- Nuclear Reset Confirmation Modal (hidden by default) -->
+            <div id="nuclear-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; align-items:center; justify-content:center;">
+                <div style="background:var(--bg); border:2px solid var(--danger); border-radius:8px; padding:28px; max-width:520px; width:90%; max-height:90vh; overflow-y:auto;">
+                    <h3 style="color:var(--danger); margin-top:0;">This action cannot be undone.</h3>
+                    <p style="font-size:0.9em; color:var(--text-dim);">The following will be <strong>permanently destroyed</strong>:</p>
+                    <ul style="font-size:0.85em; color:var(--text-dim); margin:8px 0 16px 16px;">
+                        <li>All Nextcloud files and database</li>
+                        <li>Home Assistant configuration and history</li>
+                        <li>Vaultwarden vault (all saved passwords)</li>
+                        <li>OpenClaw memory, chats, and workspace</li>
+                        <li>All integration tokens and secrets</li>
+                        <li>AI models (unless unchecked below)</li>
+                    </ul>
+                    <p style="font-size:0.85em; color:var(--text-dim); margin-bottom:16px;">
+                        Your external backup drive at <code>/mnt/backup</code> will <strong>not</strong> be touched.
+                    </p>
+
+                    <label style="font-size:0.88em;">Current Master Password</label>
+                    <input type="password" id="nuclear-password" autocomplete="off" style="width:100%; margin-bottom:12px;">
+
+                    <label style="font-size:0.88em;">Type <code>DESTROY ALL DATA</code> to confirm</label>
+                    <input type="text" id="nuclear-phrase" autocomplete="off" placeholder="DESTROY ALL DATA" style="width:100%; margin-bottom:14px;">
+
+                    <div style="margin-bottom:14px;">
+                        <label style="font-size:0.85em; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="checkbox" id="nuclear-wipe-models" checked>
+                            Delete downloaded AI models (~10–30 GB, requires re-download)
+                        </label>
+                        <label style="font-size:0.85em; display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px;">
+                            <input type="checkbox" id="nuclear-wipe-runtime">
+                            Also delete AI runtime binaries (forces slow reinstall)
+                        </label>
+                    </div>
+
+                    <p style="font-size:0.84em; color:var(--danger); font-weight:500; margin-bottom:16px;">
+                        After reset the device will reboot. You will need the factory password on the device label to log in again.
+                    </p>
+
+                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                        <button onclick="closeNuclearModal()" style="background:var(--bg-secondary);">Cancel</button>
+                        <button id="nuclear-submit-btn" class="btn-danger" onclick="executeNuclearReset()" disabled style="background:var(--danger); color:white; border-color:var(--danger);">
+                            I understand — Perform Nuclear Reset
+                        </button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -1117,6 +1179,7 @@
                         <option value="backup">Backup Log</option>
                         <option value="restore">Restore Log</option>
                         <option value="update">Manager Update Log</option>
+                        <option value="nuclear">Nuclear Reset Log</option>
                     </optgroup>
                     <optgroup label="Service Containers">
                         <option value="nextcloud">Nextcloud Container</option>
@@ -2759,6 +2822,91 @@
                 .replace(/'/g, "&#039;");
         }
 
+        // --- Nuclear Reset Modal ---
+        function showNuclearModal() {
+            const modal = document.getElementById('nuclear-modal');
+            modal.style.display = 'flex';
+            document.getElementById('nuclear-password').value = '';
+            document.getElementById('nuclear-phrase').value = '';
+            document.getElementById('nuclear-wipe-models').checked = true;
+            document.getElementById('nuclear-wipe-runtime').checked = false;
+            document.getElementById('nuclear-submit-btn').disabled = true;
+        }
+
+        function closeNuclearModal() {
+            document.getElementById('nuclear-modal').style.display = 'none';
+        }
+
+        function validateNuclearForm() {
+            const pw = document.getElementById('nuclear-password').value;
+            const phrase = document.getElementById('nuclear-phrase').value;
+            document.getElementById('nuclear-submit-btn').disabled = !(pw.length > 0 && phrase === 'DESTROY ALL DATA');
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const pwEl = document.getElementById('nuclear-password');
+            const phraseEl = document.getElementById('nuclear-phrase');
+            if (pwEl) pwEl.addEventListener('input', validateNuclearForm);
+            if (phraseEl) phraseEl.addEventListener('input', validateNuclearForm);
+        });
+
+        async function executeNuclearReset() {
+            const pw = document.getElementById('nuclear-password').value;
+            const phrase = document.getElementById('nuclear-phrase').value;
+            const wipeModels = document.getElementById('nuclear-wipe-models').checked;
+            const wipeRuntime = document.getElementById('nuclear-wipe-runtime').checked;
+
+            if (phrase !== 'DESTROY ALL DATA') return;
+
+            document.getElementById('nuclear-submit-btn').disabled = true;
+            document.getElementById('nuclear-submit-btn').textContent = 'Initiating...';
+
+            try {
+                const res = await fetch('/api/system/nuclear-reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        current_password: pw,
+                        confirmation_phrase: phrase,
+                        wipe_ai_models: wipeModels,
+                        wipe_ai_runtime: wipeRuntime
+                    })
+                });
+
+                if (res.status === 429) {
+                    alert('Rate limited: only 1 attempt per 10 minutes is allowed.');
+                    closeNuclearModal();
+                    return;
+                }
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                    document.getElementById('nuclear-submit-btn').disabled = false;
+                    document.getElementById('nuclear-submit-btn').textContent = 'I understand — Perform Nuclear Reset';
+                    return;
+                }
+
+                closeNuclearModal();
+                const banner = document.getElementById('global-status');
+                if (banner) {
+                    banner.innerText = 'Nuclear reset in progress — device will reboot...';
+                    banner.dataset.state = 'busy';
+                }
+                document.body.innerHTML = `
+                    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; text-align:center; font-family:system-ui;">
+                        <h2 style="color:var(--danger, #b91c1c);">Nuclear Reset In Progress</h2>
+                        <p>All data is being destroyed. The device will reboot when finished.</p>
+                        <p style="margin-top:20px; color:var(--text-dim, #666);">This page will stop responding shortly.<br>
+                        Wait 60–90 seconds, then reconnect and log in with the <strong>factory password</strong> on the device label.</p>
+                    </div>`;
+            } catch (e) {
+                alert('Request failed: ' + e.message);
+                document.getElementById('nuclear-submit-btn').disabled = false;
+                document.getElementById('nuclear-submit-btn').textContent = 'I understand — Perform Nuclear Reset';
+            }
+        }
 
         init();
     </script>
