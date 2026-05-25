@@ -8,6 +8,7 @@ import subprocess
 import threading
 import json
 import hashlib
+import hmac
 import logging
 import shlex
 import tempfile
@@ -2965,11 +2966,12 @@ def nuclear_reset():
 
     data = request.get_json(silent=True) or {}
 
-    # 1. Verify current master password
+    # 1. Verify current master password (constant-time comparison)
     env = get_env_config()
     current_pw = data.get("current_password", "")
-    if not current_pw or current_pw != env.get("MANAGER_PASSWORD"):
-        time.sleep(2)  # timing attack mitigation
+    expected_pw = env.get("MANAGER_PASSWORD", "")
+    if not current_pw or not expected_pw or not hmac.compare_digest(current_pw, expected_pw):
+        time.sleep(2)
         return jsonify({"error": "Invalid current password"}), 401
 
     # 2. Verify exact confirmation phrase (case-sensitive, no trimming)

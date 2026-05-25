@@ -12,8 +12,8 @@ set -euo pipefail
 #   - Destroys ALL Docker named volumes
 #   - Wipes all user data (Nextcloud, HA, Vault, OpenClaw workspace, tokens, etc.)
 #   - Optionally wipes AI models (default) and/or AI runtime binaries
-#   - Deletes .env and all setup markers
-#   - Generates a brand new master password
+#   - Deletes .env, .secret_key, and all setup markers
+#   - Generates a brand new master password (via /dev/urandom)
 #   - Writes fresh install_creds.json for the standard handover flow
 #   - Reboots the device
 #
@@ -33,6 +33,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+
+# Load .env to get correct data paths (NEXTCLOUD_DATA_DIR, VAULT_DATA_DIR, etc.)
+# On re-run after power loss .env may already be deleted — that's fine, defaults apply.
+if [[ -f "$ENV_FILE" ]]; then
+    set -a; source "$ENV_FILE"; set +a
+fi
 
 LOCK_FILE="/var/run/homebrain-nuclear-reset.lock"
 STATUS_FILE="/tmp/homebrain_task_status.json"
@@ -84,21 +90,33 @@ write_status "running" "Nuclear reset in progress — stopping services..."
 
 log "Stopping OpenClaw daemon (if running)..."
 sudo -u homebrain openclaw daemon stop 2>/dev/null || true
-pkill -f "openclaw" 2>/dev/null || true
+pkill -x "openclaw" 2>/dev/null || true
 
 log "Stopping llama-server and whisper-server..."
 systemctl stop llama-server whisper-server whisper-proxy 2>/dev/null || true
 systemctl disable llama-server whisper-server whisper-proxy 2>/dev/null || true
 
 log "Stopping Docker stack..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2>/dev/null || true
+if [[ -f "$ENV_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2>/dev/null || true
+else
+    docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+fi
 
 # --- 2. Destroy Docker named volumes -----------------------------------
 
+write_status "running" "Nuclear reset in progress — destroying volumes..."
+
 log "Removing all Docker named volumes..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v --remove-orphans 2>/dev/null || true
+if [[ -f "$ENV_FILE" ]]; then
+    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v --remove-orphans 2>/dev/null || true
+else
+    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+fi
 
 # --- 3. Wipe host user data (the nuclear part) -------------------------
+
+write_status "running" "Nuclear reset in progress — wiping user data..."
 
 log "Wiping Nextcloud data..."
 rm -rf -- "${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}" 2>/dev/null || true
@@ -109,7 +127,6 @@ rm -rf -- "${VAULT_DATA_DIR:-/home/homebrain/vault-data}" 2>/dev/null || true
 log "Wiping OpenClaw workspace, tokens, and MCP state..."
 rm -rf -- "${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw" 2>/dev/null || true
 
-# AI models (default: wipe)
 if [[ "$WIPE_AI_MODELS" == "true" ]]; then
     log "Wiping AI models (as requested)..."
     rm -rf -- "${HOMEBRAIN_HOME:-/home/homebrain}/models" 2>/dev/null || true
@@ -117,7 +134,6 @@ else
     log "Preserving AI models (user opted out)."
 fi
 
-# AI runtime binaries (default: keep)
 if [[ "$WIPE_AI_RUNTIME" == "true" ]]; then
     log "Wiping AI runtime binaries (as requested)..."
     rm -rf -- "${HOMEBRAIN_HOME:-/home/homebrain}/ai-runtime" 2>/dev/null || true
@@ -127,8 +143,11 @@ fi
 
 # --- 4. Erase all runtime configuration & markers ----------------------
 
-log "Removing .env and all setup state..."
+write_status "running" "Nuclear reset in progress — erasing configuration..."
+
+log "Removing .env, .secret_key, and all setup state..."
 rm -f "$ENV_FILE" 2>/dev/null || true
+rm -f "$INSTALL_DIR/.secret_key" 2>/dev/null || true
 rm -f "$INSTALL_DIR/.setup_complete" 2>/dev/null || true
 rm -f "$INSTALL_DIR/.setup_started" 2>/dev/null || true
 rm -f "$INSTALL_DIR/install_creds.json" 2>/dev/null || true
@@ -139,21 +158,19 @@ rm -f "$INSTALL_DIR/docker-compose.override.yml" 2>/dev/null || true
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true
 
-# Clean any stale status file
-rm -f "$STATUS_FILE" 2>/dev/null || true
-
 # --- 5. Generate brand new master password & handover credentials ------
 
+write_status "running" "Nuclear reset in progress — generating new credentials..."
+
 log "Generating new master password..."
-ALPHABET="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-NEW_PASS=""
-for i in {1..16}; do
-    NEW_PASS+="${ALPHABET:RANDOM%${#ALPHABET}:1}"
-done
+NEW_PASS=$(head -c 100 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9' | head -c 16)
+
+if [[ ${#NEW_PASS} -lt 16 ]]; then
+    die "Failed to generate secure password from /dev/urandom"
+fi
 
 log "Writing fresh install_creds.json for new setup flow..."
 
-# Use atomic write (mkstemp + rename) for safety
 CREDS_TMP=$(mktemp)
 cat > "$CREDS_TMP" <<EOF
 {
@@ -167,7 +184,6 @@ EOF
 chmod 600 "$CREDS_TMP"
 chown root:root "$CREDS_TMP"
 
-# Atomic move into place
 mv "$CREDS_TMP" "$INSTALL_DIR/install_creds.json"
 
 log "New master password generated and staged for handover."
@@ -182,7 +198,6 @@ sync
 log "=== NUCLEAR RESET COMPLETE — REBOOTING IN 5 SECONDS ==="
 sleep 5
 
-# Remove lock (tmpfs will be cleared anyway)
 rm -f "$LOCK_FILE"
 
 reboot

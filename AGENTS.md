@@ -10,9 +10,8 @@ HomeBrain is a self-hosted home automation system targeting x86_64 Ubuntu server
 scripts/           Bash scripts: provision.sh, deploy.sh, backup.sh, restore.sh, update.sh, utilities.sh, common.sh
 src/               Flask app (app.py ~1750 lines), migration.py, templates/
 config/            .env.template, platform_models.json, systemd units, udev rules
+docs/              BENCHMARKS.md, ROADMAP.md, TESTING.md, plans/
 docker-compose.yml Service definitions with profiles (pangolin, cloudflare-nc, cloudflare-ha)
-ROADMAP.md         Planned features and shipped releases
-TESTING.md         E2E verification checklist — follow this before merging
 ```
 
 ## Key Concepts
@@ -41,7 +40,7 @@ TESTING.md         E2E verification checklist — follow this before merging
 
 ## Testing Requirements
 
-**Follow [TESTING.md](TESTING.md) for all E2E verification.**
+**Follow [docs/TESTING.md](docs/TESTING.md) for all E2E verification.**
 
 Critical rule: Test on real hardware before merging anything that touches provisioning, services, the dashboard, or the AI stack.
 
