@@ -294,6 +294,13 @@ def _openclaw_daemon_restart() -> None:
 # MCP server specs
 # ---------------------------------------------------------------------------
 
+def _mcp_consent_env() -> dict:
+    """Return env vars that control MCP consent behavior."""
+    data = _read_openclaw_config()
+    enabled = data.get("mcp", {}).get("approvals", {}).get("enabled", False)
+    return {"HOMEBRAIN_MCP_CONSENT": "true" if enabled else "false"}
+
+
 def _spec_self() -> dict:
     return {
         "command": PYTHON_BIN,
@@ -302,6 +309,7 @@ def _spec_self() -> dict:
             "HOMEBRAIN_BASE_URL": "http://127.0.0.1:80",
             "HOMEBRAIN_SELF_TOKEN_FILE": SELF_TOKEN_FILE,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -320,6 +328,7 @@ def _spec_homeassistant() -> dict | None:
             "HA_ACCOUNTS_FILE": HA_ACCOUNTS_FILE,
             "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -335,6 +344,7 @@ def _spec_nextcloud() -> dict | None:
             "NC_ACCOUNTS_FILE": NC_ACCOUNTS_FILE,
             "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
@@ -370,6 +380,7 @@ def _spec_email() -> dict | None:
             "HOMEBRAIN_EMAIL_KEY": _email_fernet_key(),
             "HOMEBRAIN_EMAIL_SEND_DIRECT": send_direct,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            **_mcp_consent_env(),
         },
     }
 
