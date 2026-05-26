@@ -97,6 +97,7 @@ rsync -a --delete \
 --exclude='docker-compose.override.yml' \
 --exclude='.git' \
 --exclude='version.json' \
+--exclude='venv' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
 
 # Update pinned deps when versions.json changed in this release

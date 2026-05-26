@@ -1200,7 +1200,7 @@ patch_openclaw_config() {
         # behind the session, so dropping device-identity here does
         # not weaken our auth posture — it just unblocks the LAN flow.
         .gateway.controlUi.allowInsecureAuth = true |
-        # MCP consent gate: disabled by default so HomeBrain's MCP servers
+        # MCP consent gate: disabled by default so the HomeBrain MCP servers
         # work on stock OpenClaw without our upstream PR. The top-level
         # approvals config is pre-wired for when the PR lands — flip
         # mcp.approvals.enabled to true and channel users get /approve
