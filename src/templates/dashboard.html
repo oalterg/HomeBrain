@@ -475,25 +475,9 @@
                     <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
                     {% if has_gpu %}
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
-            {% endif %}
-
-            <!-- Nuclear Reset / Danger Zone -->
-            <div class="card" style="grid-column: 1 / -1; border: 2px solid var(--danger);">
-                <h3 style="color: var(--danger);">Danger Zone — Nuclear Reset</h3>
-                <p style="color:var(--text-dim); font-size:0.9em;">
-                    This performs a <strong>complete factory reset</strong>. All your data (Nextcloud files, Home Assistant configuration, Vaultwarden vault, OpenClaw memory, AI models, etc.) will be <strong>permanently destroyed</strong>.
-                </p>
-                <p style="color:var(--text-dim); font-size:0.88em; margin-bottom:14px;">
-                    Your external backup drive at <code>/mnt/backup</code> will <strong>not</strong> be touched. The device will reboot when finished.
-                </p>
-                <button class="btn-danger" onclick="showNuclearModal()" style="background:var(--danger); color:white; border-color:var(--danger);">
-                    Nuclear Reset / Factory Wipe Device
-                </button>
-                <small style="display:block; margin-top:8px; color:var(--danger);">This action is irreversible.</small>
+                    {% endif %}
+                </div>
             </div>
-
-        </div>
-    </div>
             <div class="card" id="vault-card">
                 <h3>HomeBrain Vault</h3>
                 <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
@@ -1152,6 +1136,17 @@
                 </div>
             </div>
             {% endif %}
+
+            <div class="card" style="grid-column: 1 / -1; border: 1px solid var(--danger); margin-top: 24px;">
+                <h3 style="color: var(--danger);">Factory Reset</h3>
+                <p style="color:var(--text-dim); font-size:0.9em; margin-bottom:14px;">
+                    Permanently erase all data — Nextcloud files, Home Assistant config, Vault, OpenClaw memory, and AI models.
+                    Your backup drive (<code>/mnt/backup</code>) is not affected. The device reboots into a fresh setup.
+                </p>
+                <button class="btn-danger" onclick="showNuclearModal()" style="background:var(--danger); color:white; border-color:var(--danger);">
+                    Factory Reset Device
+                </button>
+            </div>
 
         </div>
     </div>
