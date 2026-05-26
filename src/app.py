@@ -639,6 +639,25 @@ def get_lan_ip():
         return "localhost"
 
 
+def _is_lan_request():
+    """True when the browser reached the dashboard via a LAN address."""
+    try:
+        host = request.host.split(":", 1)[0].lower()
+    except RuntimeError:
+        return False
+    if host in ("localhost", "127.0.0.1", "[::1]"):
+        return True
+    if host.endswith(".local"):
+        return True
+    if re.match(r"^10\.", host):
+        return True
+    if re.match(r"^192\.168\.", host):
+        return True
+    if re.match(r"^172\.(1[6-9]|2[0-9]|3[01])\.", host):
+        return True
+    return False
+
+
 def calculate_sha256(filepath):
     sha256_hash = hashlib.sha256()
     with open(filepath, "rb") as f:
@@ -875,11 +894,14 @@ def index():
     local = is_local_mode()
     deployment_mode = "local" if local else "remote"
 
-    # Compute service URLs based on mode
-    if local:
-        lan_ip = get_lan_ip()
-        nc_url = f"http://{lan_ip}:8080"
-        ha_url = f"http://{lan_ip}:8123"
+    # Compute service URLs.  When the browser reached us on a LAN address
+    # (IP, .local mDNS) serve local URLs so the links work even when
+    # the tunnel is down — regardless of the configured deployment mode.
+    lan_access = _is_lan_request()
+    if local or lan_access:
+        host = request.host.split(":", 1)[0] if lan_access else get_lan_ip()
+        nc_url = f"http://{host}:8080"
+        ha_url = f"http://{host}:8123"
     else:
         nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
         ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
@@ -2333,22 +2355,20 @@ def _vault_public_url():
     In remote mode, always use the configured tunnel URL.
     """
     env = get_env_config()
-    if not is_local_mode():
+    if not is_local_mode() and not _is_lan_request():
         domain = env.get("VAULT_DOMAIN")
         if domain:
             return domain
         pd = env.get("PANGOLIN_DOMAIN")
         return f"https://vault.{pd}" if pd else ""
 
-    # Local mode: prefer the user's request hostname so the link is
-    # reachable from their browser.
+    # Local / LAN access: derive from the request hostname so the link
+    # matches how the user reached the dashboard.
     https_port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
     host = ""
     try:
-        # request.host is "<host>:<port>" — strip the dashboard's port.
         host = request.host.split(":", 1)[0]
     except RuntimeError:
-        # Outside a request context (e.g. background task) — fall back to env.
         pass
     if not host:
         host = "homebrain.local"
