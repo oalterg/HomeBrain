@@ -6,6 +6,20 @@ HomeBrain bundles **Nextcloud** (file sync), **Home Assistant** (smart home), an
 
 ---
 
+## Screenshots
+
+<!-- screenshots are live captures of the HomeBrain management dashboard, taken via Playwright automation -->
+
+Light theme (default):
+
+![HomeBrain Dashboard — Light Theme](res/screenshot.png)
+
+Dark theme:
+
+![HomeBrain Dashboard — Dark Theme](res/screenshot_dark_theme.png)
+
+---
+
 ## Editions
 
 The same codebase ships in two flavors, picked automatically by the architecture detector at provision time — no flag to set:
@@ -61,9 +75,11 @@ Accessible from anywhere via a **Pangolin** self-hosted tunnel (no static IP, no
 ### 🏠 Local Network Only
 No tunnel. Services available on the local network at `homebrain.local` (mDNS) or by LAN IP. No registration or external credentials required.
 
-- `http://homebrain.local`      → HomeBrain Dashboard (port 80)
-- `http://homebrain.local:8080` → Nextcloud
-- `http://homebrain.local:8123` → Home Assistant
+| Service | URL |
+|---------|-----|
+| HomeBrain Dashboard | `http://homebrain.local` |
+| Nextcloud | `http://homebrain.local:8080` |
+| Home Assistant | `http://homebrain.local:8123` |
 
 ---
 
