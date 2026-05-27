@@ -1287,7 +1287,8 @@ setup_openclaw() {
 
     local needs_npm_install=true
     if command -v openclaw >/dev/null 2>&1 \
-       && [[ "$installed_oc_version" == "$OPENCLAW_VERSION" ]]; then
+       && [[ "$installed_oc_version" == "$OPENCLAW_VERSION" ]] \
+       && openclaw --version >/dev/null 2>&1; then
         log_info "OpenClaw already at ${OPENCLAW_VERSION}. Skipping npm install."
         needs_npm_install=false
     fi

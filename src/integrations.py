@@ -1458,6 +1458,29 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             "bot_username": validation.get("bot_username", ""),
         })
 
+    def telegram_pair():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        code = (body.get("code") or "").strip().upper()
+        if not code or len(code) < 4 or len(code) > 16:
+            return jsonify({"error": "Invalid pairing code"}), 400
+        try:
+            proc = subprocess.run(
+                ["sudo", "-u", "homebrain", "openclaw",
+                 "pairing", "approve", "telegram", code, "--notify"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if proc.returncode == 0:
+                return jsonify({"status": "approved", "output": proc.stdout.strip()})
+            return jsonify({
+                "error": (proc.stderr or proc.stdout or "Approval failed").strip(),
+            }), 400
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Pairing approval timed out"}), 504
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     def telegram_remove():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
@@ -1494,6 +1517,29 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         )
         return jsonify(result)
 
+    def whatsapp_pair():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        code = (body.get("code") or "").strip().upper()
+        if not code or len(code) < 4 or len(code) > 16:
+            return jsonify({"error": "Invalid pairing code"}), 400
+        try:
+            proc = subprocess.run(
+                ["sudo", "-u", "homebrain", "openclaw",
+                 "pairing", "approve", "whatsapp", code, "--notify"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if proc.returncode == 0:
+                return jsonify({"status": "approved", "output": proc.stdout.strip()})
+            return jsonify({
+                "error": (proc.stderr or proc.stdout or "Approval failed").strip(),
+            }), 400
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Pairing approval timed out"}), 504
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     def whatsapp_remove():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
@@ -1507,6 +1553,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "telegram_add",
                      limiter.limit("5 per minute")(telegram_add),
                      methods=["POST"])
+    app.add_url_rule("/api/channels/telegram/pair",
+                     "telegram_pair",
+                     limiter.limit("10 per minute")(telegram_pair),
+                     methods=["POST"])
     app.add_url_rule("/api/channels/telegram/remove",
                      "telegram_remove", telegram_remove, methods=["POST"])
     app.add_url_rule("/api/channels/whatsapp/add",
@@ -1517,6 +1567,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      methods=["POST"])
     app.add_url_rule("/api/channels/whatsapp/qr/wait",
                      "whatsapp_qr_wait", whatsapp_qr_wait, methods=["POST"])
+    app.add_url_rule("/api/channels/whatsapp/pair",
+                     "whatsapp_pair",
+                     limiter.limit("10 per minute")(whatsapp_pair),
+                     methods=["POST"])
     app.add_url_rule("/api/channels/whatsapp/remove",
                      "whatsapp_remove", whatsapp_remove, methods=["POST"])
 
