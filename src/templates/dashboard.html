@@ -478,6 +478,37 @@
                     {% endif %}
                 </div>
             </div>
+
+            {% if has_gpu %}
+            <div class="card">
+                <h3>AI Assistant</h3>
+                <div class="row-list">
+                    <div class="row-item">
+                        <div class="row-main"><strong>Inference Engine</strong><span class="row-meta">llama-server · :8001</span></div>
+                        <span id="sys-llama-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item">
+                        <div class="row-main"><strong>AI Agent</strong><span class="row-meta">OpenClaw</span></div>
+                        <span id="sys-openclaw-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item">
+                        <div class="row-main">
+                            <strong>Integrations</strong>
+                            <span class="row-meta">
+                                <span id="sys-integrations-meta">What the agent can reach</span> ·
+                                <a href="#" onclick="openTab('settings'); document.getElementById('integrations-card').scrollIntoView({behavior:'smooth', block:'start'}); return false;" style="color:var(--accent); text-decoration:none;">manage&nbsp;&rarr;</a>
+                            </span>
+                        </div>
+                        <span id="sys-integrations-status" class="skeleton sk-mid"></span>
+                    </div>
+                    <div class="row-item" id="whisper-row" style="display:none;">
+                        <div class="row-main"><strong>Speech-to-Text</strong><span class="row-meta">Whisper</span></div>
+                        <span id="sys-whisper-status" class="skeleton sk-mid"></span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="card" id="vault-card">
                 <h3>HomeBrain Vault</h3>
                 <p style="margin-bottom:14px; color:var(--text-dim); font-size:0.9em;">
@@ -518,34 +549,6 @@
                     <div class="progress-bg">
                         <div class="progress-fill" id="gpu-vram-bar"></div>
                         <div class="progress-text" id="gpu-vram-text">Checking...</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <h3>AI Assistant</h3>
-                <div class="row-list">
-                    <div class="row-item">
-                        <div class="row-main"><strong>Inference Engine</strong><span class="row-meta">llama-server · :8001</span></div>
-                        <span id="sys-llama-status" class="skeleton sk-mid"></span>
-                    </div>
-                    <div class="row-item">
-                        <div class="row-main"><strong>AI Agent</strong><span class="row-meta">OpenClaw</span></div>
-                        <span id="sys-openclaw-status" class="skeleton sk-mid"></span>
-                    </div>
-                    <div class="row-item">
-                        <div class="row-main">
-                            <strong>Integrations</strong>
-                            <span class="row-meta">
-                                <span id="sys-integrations-meta">What the agent can reach</span> ·
-                                <a href="#" onclick="openTab('settings'); document.getElementById('integrations-card').scrollIntoView({behavior:'smooth', block:'start'}); return false;" style="color:var(--accent); text-decoration:none;">manage&nbsp;&rarr;</a>
-                            </span>
-                        </div>
-                        <span id="sys-integrations-status" class="skeleton sk-mid"></span>
-                    </div>
-                    <div class="row-item" id="whisper-row" style="display:none;">
-                        <div class="row-main"><strong>Speech-to-Text</strong><span class="row-meta">Whisper</span></div>
-                        <span id="sys-whisper-status" class="skeleton sk-mid"></span>
                     </div>
                 </div>
             </div>
