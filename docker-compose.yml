@@ -80,24 +80,23 @@ services:
       retries: 5
 
   caddy:
-    # Profile-gated: only starts when DEPLOYMENT_MODE=local. In remote mode
-    # Pangolin terminates TLS at the public edge and Caddy is unused; gating
-    # it on the profile keeps port 8443 free and reduces attack surface.
-    profiles:
-      - vault-lan-https
+    # Always runs: provides local HTTPS access to Vault and Nextcloud so LAN
+    # links work even when the tunnel is down.  In remote mode Pangolin
+    # terminates TLS at the public edge; Caddy is the LAN fallback.
     image: caddy:2.11.3-alpine
     restart: unless-stopped
     ports:
       - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
+      - "${NC_LOCAL_HTTPS_PORT:-8444}:8444"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      # Substituted into Caddyfile so the SAN list covers the box's LAN IP.
       - VAULT_LAN_IP=${VAULT_LAN_IP:-127.0.0.2}
     depends_on:
       - vaultwarden
+      - nextcloud
     logging:
       driver: "json-file"
       options:

@@ -235,15 +235,10 @@ get_tunnel_profiles() {
     echo "${profiles}"
 }
 
-# Vault profile: Caddy LAN-HTTPS edge only runs in local-mode installs.
-# In remote mode the tunnel terminates TLS at the public edge and Caddy is
-# pure dead weight + extra port-bind, so we gate it behind a profile.
+# Caddy (LAN HTTPS edge) now always runs — no profile gate.
+# Kept as a stub so deploy.sh / redeploy_tunnels.sh don't break.
 get_vault_profiles() {
-    if is_local_mode && [[ "${VAULT_ENABLED:-true}" != "false" ]]; then
-        echo "--profile vault-lan-https"
-    else
-        echo ""
-    fi
+    echo ""
 }
 
 # Returns 0 (true) when running in local/LAN-only mode.
