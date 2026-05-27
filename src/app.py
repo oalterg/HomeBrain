@@ -129,6 +129,26 @@ def get_gpu_stats() -> dict:
         pass
     return result
 
+def get_cpu_temp() -> float | None:
+    """CPU temperature in °C.  Checks hwmon first (k10temp on AMD, coretemp
+    on Intel), then falls back to thermal_zone (RPi / ARM)."""
+    import glob as _glob
+    for hwmon in _glob.glob("/sys/class/hwmon/hwmon*/"):
+        try:
+            name = open(f"{hwmon}name").read().strip()
+        except OSError:
+            continue
+        if name in ("k10temp", "coretemp", "cpu_thermal"):
+            try:
+                return round(int(open(f"{hwmon}temp1_input").read().strip()) / 1000, 1)
+            except (OSError, ValueError):
+                continue
+    try:
+        return round(int(open("/sys/class/thermal/thermal_zone0/temp").read().strip()) / 1000, 1)
+    except (OSError, ValueError):
+        return None
+
+
 def get_models():
     """Load flat model list from platform_models.json."""
     models_path = os.path.join(INSTALL_DIR, 'config', 'platform_models.json')
@@ -1040,6 +1060,9 @@ def system_status():
                 used = total_delta - idle_delta
                 cpu_load = round(100.0 * used / total_delta, 1)
             services["cpu_load"] = cpu_load
+            cpu_temp = get_cpu_temp()
+            if cpu_temp is not None:
+                services["cpu_temp"] = cpu_temp
 
             # RAM
             # Because we used quoted EOF, $2 and $3 are preserved literally for awk here:
