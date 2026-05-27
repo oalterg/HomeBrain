@@ -900,7 +900,8 @@ def index():
     lan_access = _is_lan_request()
     if local or lan_access:
         host = request.host.split(":", 1)[0] if lan_access else get_lan_ip()
-        nc_url = f"http://{host}:8080"
+        nc_https_port = env.get("NC_LOCAL_HTTPS_PORT", "8444")
+        nc_url = f"https://{host}:{nc_https_port}"
         ha_url = f"http://{host}:8123"
     else:
         nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"

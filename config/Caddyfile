@@ -45,3 +45,18 @@ homebrain.local:8443, vault.homebrain.local:8443, 127.0.0.1:8443, {$VAULT_LAN_IP
 		header_up X-Forwarded-Proto https
 	}
 }
+
+# Nextcloud LAN HTTPS — mirrors the Vault block above.  NC sets
+# overwriteprotocol=https for the tunnel, which breaks plain-HTTP local
+# access (it redirects to HTTPS on the HTTP port).  Caddy terminates TLS
+# here so the redirect lands correctly.
+homebrain.local:8444, nc.homebrain.local:8444, 127.0.0.1:8444, {$VAULT_LAN_IP:127.0.0.2}:8444 {
+	tls internal
+
+	@health path /healthz
+	respond @health 200
+
+	reverse_proxy nextcloud:80 {
+		header_up X-Forwarded-Proto https
+	}
+}
