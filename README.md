@@ -21,7 +21,7 @@ One command installs it. A browser wizard configures it. You own the whole thing
 - **Your messenger becomes the interface** — the agent doubles as a de facto tunnel into your home stack. Ask it for a file and it sends it. Ask it to turn off the lights and it does. No VPN, no port forwarding, no app to install — just message it. For most day-to-day use, the Pangolin tunnel is optional.
 - **One-command setup** — bootstrap, configure through a browser wizard, reboot. That's it.
 - **Encrypted remote access** — for full web UI access to Nextcloud, Home Assistant, and Vault from outside your network, Pangolin tunnels everything end-to-end through your own infrastructure. No static IP, no middleman.
-- **Automated backups** — scheduled snapshots with configurable retention covering every service, including agent memory.
+- **Full backup & restore** — scheduled snapshots with configurable retention, covering Nextcloud files, Home Assistant config, Vault, and AI agent memory. Restore from the dashboard in one click — or from the CLI on a fresh machine. External drive detection built in.
 
 ---
 
@@ -36,20 +36,6 @@ One command installs it. A browser wizard configures it. You own the whole thing
 | **llama-server** | Local LLM inference on Vulkan (no ROCm required) |
 | **Whisper** | Speech-to-text for voice messages |
 | **Pangolin** | Self-hosted encrypted tunnel for remote access |
-
----
-
-## Screenshots
-
-<!-- screenshots are live captures of the HomeBrain management dashboard, taken via Playwright automation -->
-
-Light theme (default):
-
-![HomeBrain Dashboard — Light Theme](res/screenshot.png)
-
-Dark theme:
-
-![HomeBrain Dashboard — Dark Theme](res/screenshot_dark_theme.png)
 
 ---
 
