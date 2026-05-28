@@ -1,7 +1,7 @@
 {
   "llama_cpp": {
-    "tag": "b9186",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9186/llama-b9186-bin-ubuntu-vulkan-x64.tar.gz"
+    "tag": "b9381",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9381/llama-b9381-bin-ubuntu-vulkan-x64.tar.gz"
   },
   "whisper_cpp": {
     "git_ref": "v1.8.4"

@@ -9,7 +9,7 @@
 | RAM       | 32 GB DDR4 |
 | Backend   | Vulkan (RADV / GFX1200) |
 | OS        | Ubuntu 24.04 (x86_64) |
-| llama.cpp | b8996 (upgraded from b8951; non-Q5_K_XL/Q4 rows in this table still measured on b8951) |
+| llama.cpp | **b9186** in production (history: b8951 → b8996 → b9186; the Results-table rows below were measured on b8951/b8996). b9297 and b9381 evaluated 2026-05-28 — see version + MTP sections. |
 | RADV env  | `RADV_PERFTEST=rm_kq=1` (set via systemd drop-in) |
 | Mesa      | 25.2.8 (Ubuntu 25.10) |
 | Kernel    | Linux 6.17 |
@@ -167,6 +167,8 @@ Hardware: RX 9060 XT + Ryzen 5 5600, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b
 
 Three interleaved baselines (17.21 / 17.25 / 17.26) and two n=3 reruns (both 25.14) confirm stability. Adopted **n_max=2** in `platform_models.json`.
 
+> **⚠️ Correction (2026-05-28):** The two conclusions below ("27B win" and "35B MTP net negative") were both measured *at one fixed context per model* and are now known to be context-dependent artifacts. The 27B "+48%" figure was taken below the MTP context cliff; the 35B "net negative" sweep was run entirely at production ctx=131072, above it. See [MTP re-investigation — the context-size cliff](#mtp-re-investigation--the-context-size-cliff-b9186-2026-05-28) for the corrected picture. The raw numbers in the two tables below are still valid *at the context they were measured at*; the generalized verdicts are not.
+
 ### 35B-A3B (MoE) — MTP is net negative in every config
 
 Cross-product of quant × CPU-expert-offload depth × KV cache, with and without MTP n=2. Each row is the mean of 3 runs; baselines were re-measured between MTP runs to control for thermal drift.
@@ -200,3 +202,167 @@ Cross-product of quant × CPU-expert-offload depth × KV cache, with and without
 - 27B IQ4_XS: switch to MTP-GGUF + `--spec-type draft-mtp --spec-draft-n-max 2`. Stored as Phase-4 in `platform_models.json`.
 - 35B-A3B (all quants): **do not enable MTP.** Keep current configs.
 - llama.cpp tag bumped to b9186 in `versions.json` (first tagged release with the merged PR).
+
+## MTP re-investigation — the context-size cliff (b9186, 2026-05-28)
+
+Follow-up to the question: *can MTP be enhanced by sweeping `--spec-draft-n-max`, or is VRAM-headroom pressure holding it below the unsloth-advertised speedup?* And separately: *does 35B-A3B Q5_K_XL MTP really never help?*
+
+Method: `scripts/bench-upgrade.sh` — for each cell, restart llama-server clean (waiting for VRAM to drain <500 MiB), warm up, then 3× deterministic 512-token `/completion` probes with a raw chat-template prompt (bypasses thinking mode), reading `timings.predicted_per_second`. Server flags held at production-realistic `-fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 4096 -ub 2048`. Same hardware, b9186, docker stack up.
+
+### Answer 1 — it is NOT VRAM headroom. It is a context-size cliff.
+
+27B-MTP (n=2, predictable prompt), context swept while everything else held constant:
+
+| ctx | TG (t/s) | VRAM used | Headroom |
+|----:|---------:|----------:|---------:|
+| 8K  | **29.89** | 16,032 | 272 MiB |
+| 16K | **29.96** | 15,884 | 420 MiB |
+| 32K | **29.96** | 16,222 | **82 MiB** |
+| 49K (prod) | **17.45** | 15,722 | **582 MiB** |
+
+This kills the VRAM-pressure hypothesis outright: the **32K cell ran at the tightest headroom of the whole sweep (82 MiB) yet held full speed (29.96)**, while the 49K cell had *7× more* headroom (582 MiB) and collapsed to 17.45. More free VRAM, worse throughput — the opposite of a headroom effect. The break is a hard cliff somewhere between 32K and 49K of allocated context.
+
+### Answer 2 — n_max sweeping can't rescue a cell that's already over the cliff.
+
+27B-MTP n_max sweep, all at the production ctx=49152 (predictable prompt):
+
+| `--spec-draft-n-max` | TG (t/s) |
+|---|---:|
+| 1 | 15.89 |
+| 2 | 17.43 |
+| 3 | 16.81 |
+| 4 | 16.77 |
+
+Everything sits in the 16–17 band — no n_max value recovers the lost speed, because the limiter is the context the verify pass runs over, not the draft depth. (Below the cliff the n_max curve from the original sweep still applies: n=2 is the sweet spot, n≥6 collapses.)
+
+### Why the production 27B sees almost no MTP benefit
+
+Production runs the 27B at **ctx=49152 — above the cliff.** Re-measuring base vs MTP n=2 at that exact context, across prompt types:
+
+| Prompt | Base | MTP n=2 | Δ |
+|--------|-----:|--------:|---:|
+| predictable | 17.15 | 17.50 | +2.0% |
+| code        | 17.14 | 18.71 | +9.2% |
+| creative    | 17.14 | 16.27 | −5.1% |
+
+Net ≈ break-even. The original sweep's "+48% (25.55 t/s)" was real but measured *below* the cliff; at the shipped 49K context the MTP head is essentially dead weight (and slightly negative on unpredictable output). **The +75% that MTP can deliver only materializes at ctx≤32K** (17.15 base → ~29.96 with MTP).
+
+### Answer 3 — 35B-A3B Q5_K_XL MTP DOES help, below the cliff
+
+The earlier "MTP net negative in every config" sweep was run entirely at production ctx=131072. Re-run at ctx=32768 (Q5_K_XL, `-ot blk.20-39`, q4 KV, predictable prompt):
+
+| Config | TG (t/s) | Δ vs base |
+|--------|---------:|----------:|
+| base       | 28.65 | — |
+| MTP n=2    | 34.76 | **+21.3%** |
+| MTP n=3    | 36.13 | **+26.1%** |
+
+Same offload, same KV, same prompt as the negative rows in the prior section — the *only* change is context (131K → 32K), and MTP flips from −2.5% to +26%. So the prior "MoE architecture defeats MTP / CPU-expert step is serial" hypothesis was wrong: **it was the context, not the MoE.** Below the cliff, MTP helps the 35B too, and unlike the 27B it keeps climbing to n=3.
+
+### Unifying conclusion
+
+> **Update (later same day):** the conclusion in this paragraph holds **on b9186**, but the 35B half of it was a llama.cpp bug, not a hardware limit. On **b9381** the MoE cliff is gone and 35B MTP scales to 131K (+31% in production). The DeltaNet 27B cliff is real and remains on b9381. See [b9381 fixes MoE MTP](#b9381-fixes-moe-mtp--the-flagship-gets-31-2026-05-28). Read the paragraph below as the b9186 picture.
+
+On b9186, MTP speedup is **gated by allocated context length, not by VRAM headroom and not by dense-vs-MoE architecture.** Below ~32K context, MTP delivers large gains on both models (27B +75%, 35B +26%); at the contexts we actually ship (27B 49K, 35B 131K) the speculative verify pass — whose cost scales with sequence length (DeltaNet SSM state for the 27B, attention for the 35B) — eats the draft savings and MTP regresses to break-even or worse. Tuning `--spec-draft-n-max` only moves the needle *below* the cliff; over it, no draft-depth setting helps. (The 35B "attention" half of this turned out to be the fixable bug; the 27B DeltaNet half is genuine.)
+
+### Actionable implications (not yet applied)
+
+- **27B IQ4_XS:** ships `--spec-type draft-mtp --spec-draft-n-max 2` at ctx=49152 — i.e. it pays for the MTP GGUF and gets ≈+2% for it (49152 is over the cliff). Dropping `context_window` 49152 → 32768 (keeping n_max=2 + q4 KV) unlocks **+75% TG (17.1 → ~30 t/s)** at the cost of 16K context. For the home-automation agent 32K is likely ample; **worth a decision.** Do **not** also raise n_max or switch to q8 KV — either change re-crosses the speculative ceiling and collapses TG back to ~17. If 49K context must stay, MTP buys nothing there and the plain IQ4_XS GGUF would do. See [27B cliff localization & parameter tuning](#27b-cliff-localization--parameter-tuning-b9186-2026-05-28).
+- **35B-A3B:** *(superseded — this was the b9186 finding)* On b9186 MTP only paid off at ctx≤32K. On **b9381 the cliff is fixed** and MTP gives +31% at the full 131K production context — see [b9381 fixes MoE MTP](#b9381-fixes-moe-mtp--the-flagship-gets-31-2026-05-28). The flagship default should move to b9381 + MTP-GGUF + n=2 + `-ub 2048` (pending sign-off).
+
+### 27B cliff localization & parameter tuning (b9186, 2026-05-28)
+
+Follow-up: locate the cliff precisely and find the params that maximize TG at the maximum context that still accelerates. Script: `scripts/bench-27b-cliff.sh` (Pass 1 = ctx sweep, Pass 2 = edge + tuning). All cells MTP, predictable prompt, 3 runs.
+
+**Pass 1 — where does it break?** (MTP n=2, q4 KV, ub2048)
+
+| ctx | TG (t/s) | headroom | |
+|----:|---------:|---------:|--|
+| 32768 | **29.99** | 118 MiB | accelerated |
+| 33792 | **29.96** | 85 MiB | accelerated |
+| 34816 | **29.92** | 58 MiB | accelerated |
+| 36864 | 17.52 | 93 MiB | **collapsed → baseline** |
+| 40960 | 17.47 | 737 MiB | collapsed |
+| 45056 | 17.49 | 661 MiB | collapsed |
+| 49152 | 17.47 | 584 MiB | collapsed |
+
+The cliff sits **between 34816 and 36864 tokens**. Past it, MTP TG snaps to the plain-baseline ~17.5 t/s (27B base measured 17.1 at ctx=40960 — i.e. MTP gives essentially nothing over the cliff). Headroom is irrelevant: the collapsed 40K–49K cells had 6–8× more free VRAM than the still-accelerated 34816 cell.
+
+**Pass 2 — tuning at/below the cliff**
+
+| Config (ctx=32768 unless noted) | TG (t/s) | Note |
+|---|---:|---|
+| n_max=1 | 25.67 | underspeculates |
+| **n_max=2** | **29.99** | **optimal** |
+| n_max=3 | 16.91 | **collapsed** |
+| n_max=4 | 16.78 | collapsed |
+| n=2, KV q8_0 | 17.21 | **collapsed** — q8 KV kills acceleration |
+| n=3, KV q8_0 | 16.87 | collapsed |
+| n=3, code prompt | 19.80 | (n=3 already collapsed; realistic-prompt sanity) |
+
+**Mechanism.** The acceleration is governed by a **fixed speculative budget** that is consumed jointly by (context length) + (draft depth `n_max`) + (KV-cache bytes-per-token). Cross any of the three thresholds and llama.cpp silently stops speculating and falls back to plain autoregressive decode (~17.5 t/s):
+- raising ctx past ~35K (at n=2, q4) → collapse;
+- raising n_max to ≥3 (at ctx=32768, q4) → collapse;
+- switching KV q4→q8 (which doubles cache bytes, at ctx=32768, n=2) → collapse.
+
+This unifies every "cliff" observation: it is not VRAM headroom, not the MoE-vs-dense split, and not prompt content — it is a single allocation ceiling. **The fast operating point is the corner just under that ceiling: ctx ≤ ~34816, n_max=2, KV q4_0** → ~30 t/s (+75% over the 17.1 baseline). For a round, comfortably-margined production value use **ctx=32768**.
+
+### Version check — b9186 vs b9297 vs b9381 (latest)
+
+Two newer releases were A/B'd against the shipped b9186 under server-realistic, production-identical flags (`scripts/bench-version.sh`, same harness as the production rows: TG = 256-tok gen on a short prompt, PP = ~1.5k-tok prompt). b9186 baselines reproduce the documented production figures (35B 29.15 TG, 27B 17.13 TG), confirming the harness.
+
+| Build | 35B Q5_K_XL (ctx 131K, prod) | 27B IQ4_XS (ctx 49K, prod) |
+|---|---|---|
+| | TG / PP | TG / PP |
+| b9186 (shipped) | 29.15 / 599 | 17.13 / 430 |
+| **b9381 (latest)** | 29.41 / 584 | 17.20 / 428 |
+| Δ | **+0.9% / −2.5%** | **+0.4% / −0.4%** |
+
+- b9297 (built to `~/bench-upgrade/b9297/`) showed the same flat picture — the movement seen in an earlier llama-bench-only pass did not translate to server throughput.
+- **For the *vanilla* (non-MTP) path, b9381 is performance-neutral**: every delta is inside run-to-run noise (TG stdev ≤ 0.1).
+
+**But this is not the whole story.** b9381 also *fixes MoE MTP at high context* — a change that is worth far more than any vanilla delta. See [b9381 fixes MoE MTP — the flagship gets +31%](#b9381-fixes-moe-mtp--the-flagship-gets-31-2026-05-28) below. The version decision turns on whether we want that win, not on vanilla throughput. The latest binary is staged at `~/bench-upgrade/b9381/`.
+
+## b9381 fixes MoE MTP — the flagship gets +31% (2026-05-28)
+
+Re-running the MTP experiment on the latest binary (b9381) instead of b9186 changes the 35B conclusion completely. **The "MTP context cliff" for the MoE model was a llama.cpp bug, fixed upstream between b9186 and b9381.** On b9381 the 35B-A3B has *no cliff through 131K*:
+
+| ctx | base (b9381, q4/ub2048, greedy) | MTP n=2 | MTP n=3 |
+|----:|--------------------------------:|--------:|--------:|
+| 32768 | 29.17 | 34.43 (+18%) | 35.21 (+21%) |
+| 49152 | 29.38 | 39.03 (+33%) | 35.17 (+20%) |
+| **131072** | 29.37 | **38.81 (+32%)** | 34.97 (+19%) |
+
+Compare b9186, where 35B MTP at 131K was *negative*. The DeltaNet **27B is not fixed** — on b9381 it still collapses past ~35K (MTP n=2 @ 49152 = 18 t/s, and PP even degrades to ~55 t/s). So the upstream fix is specific to the MoE/attention speculative path, not the DeltaNet SSM path.
+
+### Deployable production config (validated, production-faithful)
+
+The numbers above are greedy (max acceptance, q4 KV). Production runs **q8 KV, `-ub 4096`, and `temp=1.0`** sampling. Re-measured under the *exact* production flags on b9381 (3 runs, real = the prod sampler with `presence_penalty 1.5` on a natural code-gen prompt):
+
+| Config (ctx 131072, prod samplers) | greedy TG | **real TG** | VRAM | Δ real |
+|---|---:|---:|---:|---:|
+| base, q8, `-ub 4096` | 28.81 | 28.71 | 15470 | — |
+| MTP n=2, q8, **`-ub 4096`** | — | — | — | **OOM** (`vk::DeviceLostError`) |
+| base, q8, `-ub 2048` | 28.94 | 28.81 | 15604 | — |
+| **MTP n=2, q8, `-ub 2048`** | 42.93 | **37.70** | 16202 | **+30.9%** |
+| base, q4, `-ub 2048` | 28.71 | 28.62 | 15984 | — |
+| MTP n=2, q4, `-ub 2048` | 43.02 | 36.81 | 16210 | +28.6% |
+| MTP n=3, q4, `-ub 2048` | 42.26 | 31.46 | 16021 | +9.9%¹ |
+
+¹ n=3 wins on greedy but loses on the real sampler — at `temp=1.0` the deeper draft's acceptance drops faster than the extra-token payoff. **n=2 is optimal in production.**
+
+**Findings**
+- MTP at the *current* production config (q8 + `-ub 4096`) **OOMs** — the MTP draft head needs ~600 MiB that the `-ub 4096` compute buffer is already using. Dropping to **`-ub 2048` frees exactly enough** and keeps q8 KV (best numerics). Fits at 16202 / 16304 MiB.
+- **Net win: 28.81 → 37.70 t/s real (+31%) on the flagship at full 131K context** on *structured/code/tool* output, with one model swap + two flag changes. Greedy upper bound is +48%.
+- **Gain is workload-dependent.** MTP acceptance tracks output predictability: high on code/JSON/tool-calls (the agent's bread-and-butter, +20–31%), but on free-form *prose* a live test generated at **28.5 t/s ≈ base** (≈neutral). MTP never regressed below base in any test — so this is a win-or-neutral change, weighted toward the agent's typical structured traffic.
+- `-ub 2048` vs `-ub 4096` costs ~24% PP on long prompts (≈751 → ≈575 t/s, per the tuning log). For a generation-bound agent the TG gain dominates; for prompt-heavy batch use weigh the PP loss.
+- **VRAM verified, not just projected.** Measured live with the full stack (whisper resident — which itself uses only ~56 MiB on GPU) under sustained generation: **16205 / 16304 MiB, rock-stable, no spikes (≈99 MiB headroom)**. KV is pre-allocated at ctx=131072 so it does not grow at runtime. No `vk::DeviceLostError`. The earlier "~500 MiB whisper" alarm was a one-off transcription compute spike, not resident footprint.
+
+### Production change (applied 2026-05-29)
+
+Applied to capture the flagship win:
+- `versions.json`: `llama_cpp.tag` **b9186 → b9381**.
+- `platform_models.json`: **added** model `Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL` (MTP GGUF, `--spec-type draft-mtp --spec-draft-n-max 2`, `-ub 2048`, q8 KV, `-ot blk.20-39`, ctx 131072, full samplers) and made it the default. The base `Qwen3.6-35B-A3B-UD-Q5_K_XL` entry is **kept** so rollback is a single `/api/ai/model/switch` back to it (no version revert needed).
+- `platform_models.json`: 27B `Qwen3.6-27B-IQ4_XS` `context_window` **49152 → 32768** to bring it under the DeltaNet MTP cliff (+75% TG when 27B is selected). b9381 does **not** fix the DeltaNet cliff — that change is the b9186 analysis and stands.
+
+Deployed via the manager update path (pulls `main`, installs b9381, restarts) + a model switch to the MTP entry. Rollback path: `POST /api/ai/model/switch {"model_id":"Qwen3.6-35B-A3B-UD-Q5_K_XL"}`.
