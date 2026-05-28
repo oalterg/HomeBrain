@@ -45,7 +45,7 @@ The same codebase, two runtime profiles — detected automatically:
 
 | | **HomeBrain** | **HomeCloud** |
 |---|---|---|
-| Target | x86_64 + AMD GPU | Raspberry Pi 4/5 or any x86 box |
+| Target | x86_64 + AMD GPU | Architecture-agnostic (ARM or x86_64) |
 | AI stack | Full (LLM + whisper + OpenClaw) | — |
 | Cloud + smart home | Nextcloud · Home Assistant · Vault | Nextcloud · Home Assistant · Vault |
 | Tunnel | Optional — agent on messenger covers most remote use | Optional |
@@ -68,7 +68,7 @@ If there's a GPU, you get a personal AI agent. If there isn't, you still get a p
 
 Inference runs on Vulkan via Mesa RADV — no ROCm install required. ~29 tok/s generation, ~750 tok/s prompt processing at 131K context. See [BENCHMARKS.md](docs/BENCHMARKS.md).
 
-**HomeCloud** — Raspberry Pi 5 (8 GB) with an SSD, or any lightweight x86 mini-PC.
+**HomeCloud** — architecture-agnostic; runs on ARM or x86_64. Reference build: Raspberry Pi 5 (8 GB) with an SSD, running Raspberry Pi OS (Trixie, 64-bit).
 
 ---
 
@@ -78,14 +78,17 @@ Inference runs on Vulkan via Mesa RADV — no ROCm install required. ~29 tok/s g
 # 1. Bootstrap (Ubuntu 24.04+ / RPi OS 64-bit)
 curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | sudo bash
 
-# 2. Open the setup wizard in your browser
-#    http://<server-ip>
+# 2. Provision the device
+sudo /opt/homebrain/scripts/provision.sh
 
 # 3. Reboot
 sudo reboot
+
+# 4. Open the setup wizard in your browser to finish guided setup
+#    http://<server-ip>
 ```
 
-The wizard walks you through deployment mode (LAN or tunnel), passwords, and model selection. For headless installs, `provision.sh` accepts everything as arguments — see [Installation docs](#headless-provisioning) below.
+After the reboot, the browser wizard walks you through deployment mode (LAN or tunnel), passwords, and model selection. For headless installs, `provision.sh` accepts everything as arguments — see [Installation docs](#headless-provisioning) below.
 
 ### Headless Provisioning
 
