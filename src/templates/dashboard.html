@@ -961,6 +961,19 @@
                     </small>
                 </div>
 
+                <div hidden id="details-telegram-pair" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
+                        <input type="text" id="tg-pair-code" placeholder="Pairing code (e.g. U43BU8JG)" style="text-transform:uppercase;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramPair(); }">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="channelTelegramPair()">Approve</button>
+                        <button onclick="closeForm('details-telegram-pair')" aria-label="Close">&times;</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        Send any message to your bot on Telegram. It will reply with a pairing code &mdash; paste it above to approve.
+                    </small>
+                </div>
+
                 <div hidden id="details-whatsapp" class="conn-form">
                     <div id="wa-qr-container" style="text-align:center; padding:12px 0;">
                         <p id="wa-qr-msg" style="color:var(--text-dim); margin:0 0 8px;">Generating QR code&hellip;</p>
@@ -971,6 +984,19 @@
                     </div>
                     <small style="display:block; margin-top:8px; color:var(--text-dim); text-align:center;">
                         Open <strong>WhatsApp</strong> on your phone &rarr; <strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong> &rarr; scan this QR.
+                    </small>
+                </div>
+
+                <div hidden id="details-whatsapp-pair" class="conn-form">
+                    <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
+                        <input type="text" id="wa-pair-code" placeholder="Pairing code" style="text-transform:uppercase;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelWhatsAppPair(); }">
+                    </div>
+                    <div style="margin-top:8px; display:flex; gap:8px;">
+                        <button class="btn-primary" onclick="channelWhatsAppPair()">Approve</button>
+                        <button onclick="closeForm('details-whatsapp-pair')" aria-label="Close">&times;</button>
+                    </div>
+                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
+                        Send any message to your agent on WhatsApp. If it replies with a pairing code, paste it above to approve.
                     </small>
                 </div>
             </div>
@@ -1441,6 +1467,7 @@
                         if (!ch.configured) {
                             buttons.push(`<button class="btn-primary" onclick="openDetails('details-telegram','tg-token')">Link&hellip;</button>`);
                         } else {
+                            buttons.push(`<button class="btn-primary" onclick="openDetails('details-telegram-pair','tg-pair-code')">Pair&hellip;</button>`);
                             buttons.push(`<button onclick="channelRemove('telegram')">Unlink</button>`);
                         }
                     }
@@ -1449,6 +1476,7 @@
                             buttons.push(`<button class="btn-primary" onclick="channelWhatsAppLink()">Link&hellip;</button>`);
                         } else {
                             buttons.push(`<button onclick="channelWhatsAppLink()">Re-link&hellip;</button>`);
+                            buttons.push(`<button onclick="openDetails('details-whatsapp-pair','wa-pair-code')">Pair&hellip;</button>`);
                             buttons.push(`<button onclick="channelRemove('whatsapp')">Unlink</button>`);
                         }
                     }
@@ -1482,6 +1510,52 @@
                     document.getElementById('tg-token').value = '';
                 } else {
                     msg.innerText = d.error || 'Failed';
+                }
+            } catch (e) { msg.innerText = 'Error: ' + e; }
+            channelRefresh();
+        }
+
+        async function channelTelegramPair() {
+            const code = document.getElementById('tg-pair-code').value.trim();
+            if (!code) return;
+            const msg = document.getElementById('channel-msg');
+            msg.innerText = 'Approving pairing...';
+            try {
+                const r = await fetch('/api/channels/telegram/pair', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code }),
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    msg.innerText = 'Paired! You can now chat with your agent on Telegram.';
+                    closeForm('details-telegram-pair');
+                    document.getElementById('tg-pair-code').value = '';
+                } else {
+                    msg.innerText = d.error || 'Pairing failed';
+                }
+            } catch (e) { msg.innerText = 'Error: ' + e; }
+            channelRefresh();
+        }
+
+        async function channelWhatsAppPair() {
+            const code = document.getElementById('wa-pair-code').value.trim();
+            if (!code) return;
+            const msg = document.getElementById('channel-msg');
+            msg.innerText = 'Approving pairing...';
+            try {
+                const r = await fetch('/api/channels/whatsapp/pair', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code }),
+                });
+                const d = await r.json();
+                if (r.ok) {
+                    msg.innerText = 'Paired! You can now chat with your agent on WhatsApp.';
+                    closeForm('details-whatsapp-pair');
+                    document.getElementById('wa-pair-code').value = '';
+                } else {
+                    msg.innerText = d.error || 'Pairing failed';
                 }
             } catch (e) { msg.innerText = 'Error: ' + e; }
             channelRefresh();
