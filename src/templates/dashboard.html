@@ -917,7 +917,8 @@
                             <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()" style="flex:1;">Enable for agent</button>
                             <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
                         </div>
-                        <div id="vault-mcp-unlock-row" style="display:none; gap:8px;">
+                        <div id="vault-mcp-unlock-row" style="display:none; gap:8px; flex-wrap:wrap;">
+                            <input type="email" id="vault-mcp-email" placeholder="Vault account email" style="flex:1 1 100%; margin-bottom:0; display:none;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); document.getElementById('vault-mcp-pw').focus(); }">
                             <input type="password" id="vault-mcp-pw" placeholder="Vault master password" style="flex:1; margin-bottom:0;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); vaultMcpUnlock(); }">
                             <button class="btn-primary" onclick="vaultMcpUnlock()" style="flex-shrink:0;">Unlock</button>
                             <button onclick="closeForm('vault-mcp')" aria-label="Close">✕</button>
@@ -2024,7 +2025,7 @@
                 if (signupsEl) {
                     signupsEl.classList.remove('skeleton','sk-mid','sk-wide','sk-small');
                     signupsEl.className = 'status-badge status-' + (v.signups_allowed ? 'starting' : 'running');
-                    signupsEl.innerText = v.signups_allowed ? 'Open' : 'Locked';
+                    signupsEl.innerText = v.signups_allowed ? 'Open' : 'Closed';
                 }
 
                 const openLink = document.getElementById('vault-open');
@@ -2090,6 +2091,7 @@
             const lockRow = document.getElementById('vault-mcp-lock-row');
             const wireRow = document.getElementById('vault-mcp-wire-row');
             const wireBtn = document.getElementById('vault-mcp-wire-btn');
+            const emailEl = document.getElementById('vault-mcp-email');
             if (!cli) return;
             try {
                 const r = await fetch('/api/vault/mcp/status', { credentials: 'include' });
@@ -2106,6 +2108,13 @@
                 if (lockRow) lockRow.style.display = d.unlocked ? 'flex' : 'none';
                 if (wireRow) wireRow.style.display = d.openclaw_available && !d.openclaw_wired ? 'flex' : 'none';
                 if (wireBtn) wireBtn.innerText = d.openclaw_wired ? 'Disable for agent' : 'Enable for agent';
+                // Surface email field only on first unlock (bw needs `login`).
+                // Prefill with the single vault user's email when we know it.
+                if (emailEl) {
+                    const showEmail = d.needs_login && !d.unlocked;
+                    emailEl.style.display = showEmail ? '' : 'none';
+                    if (showEmail && !emailEl.value && d.known_email) emailEl.value = d.known_email;
+                }
             } catch (e) { /* silent */ }
         }
 
@@ -2132,21 +2141,29 @@
 
         async function vaultMcpUnlock() {
             const pw = document.getElementById('vault-mcp-pw');
+            const emailEl = document.getElementById('vault-mcp-email');
             const msg = document.getElementById('vault-mcp-msg');
             const v = (pw && pw.value) || '';
             if (!v) { if (msg) msg.innerText = 'Enter your vault master password.'; return; }
+            const body = { master_password: v };
+            if (emailEl && emailEl.style.display !== 'none' && emailEl.value.trim()) {
+                body.email = emailEl.value.trim();
+            }
             if (msg) msg.innerText = 'Unlocking…';
             try {
                 const r = await fetch('/api/vault/mcp/unlock', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     credentials: 'include',
-                    body: JSON.stringify({ master_password: v })
+                    body: JSON.stringify(body)
                 });
                 const d = await r.json();
                 if (pw) pw.value = '';
-                if (!r.ok) { if (msg) msg.innerText = 'Error: ' + (d.error || r.statusText); }
-                else {
+                if (!r.ok) {
+                    let txt = 'Error: ' + (d.error || r.statusText);
+                    if (d.detail) txt += ' — ' + d.detail;
+                    if (msg) msg.innerText = txt;
+                } else {
                     if (msg) msg.innerText = '';
                     document.getElementById('conn-msg').innerText = 'Vault unlocked. The agent can search and create entries.';
                     closeForm('vault-mcp');

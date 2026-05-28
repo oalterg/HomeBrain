@@ -2578,6 +2578,81 @@ VAULT_MCP_SESSION_FILE = os.path.join(
 )
 
 
+def _vault_bw_url():
+    """The URL the bw CLI on this box uses to reach the local vault.
+
+    Always loopback to the Caddy TLS edge — Vaultwarden insists on HTTPS,
+    and Caddy's `tls internal` cert for 127.0.0.1 has a matching IP SAN.
+    Talking to the public VAULT_DOMAIN would route through Pangolin/Traefik
+    and present the wrong cert (TRAEFIK DEFAULT CERT), which is what made
+    every `bw unlock` fail with "self-signed certificate" before.
+    """
+    env = get_env_config()
+    port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
+    return f"https://127.0.0.1:{port}"
+
+
+def _vault_bw_env(extra=None):
+    """Env for invoking bw on this box.
+
+    We hit Caddy's `tls internal` cert at 127.0.0.1. Node refuses both
+    plain HTTP for bw and won't accept the Caddy CA chain through
+    NODE_EXTRA_CA_CERTS for IP-SAN certs in the version we ship, so we
+    disable the check for the bw subprocess. Safe because the destination
+    is loopback — a MITM there already implies code execution as root.
+    """
+    e = {**os.environ, "NODE_TLS_REJECT_UNAUTHORIZED": "0"}
+    if extra:
+        e.update(extra)
+    return e
+
+
+def _vault_first_user_email():
+    """Return the email of the (typically single) vault user, or "".
+    Used so the unlock form does not need to ask for the email."""
+    env = get_env_config()
+    db_pass = env.get("VAULT_DB_PASSWORD", "")
+    db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+    db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+    if not db_pass:
+        return ""
+    try:
+        db_cid = subprocess.check_output(
+            f"docker compose -f {COMPOSE_FILE} ps -q db",
+            shell=True, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if not db_cid:
+            return ""
+        out = subprocess.check_output(
+            ["docker", "exec", "-e", f"MYSQL_PWD={db_pass}", db_cid,
+             "mariadb", "-u", db_user, "-N", "-s", "-e",
+             f"SELECT email FROM `{db_name}`.users ORDER BY created_at LIMIT 1;"],
+            stderr=subprocess.DEVNULL, timeout=4,
+        ).decode().strip()
+        return out
+    except Exception:
+        return ""
+
+
+def _vault_bw_status():
+    """Run `bw status` as the homebrain user (whose bw state the MCP uses).
+    Returns the parsed JSON dict, or {} on failure."""
+    try:
+        r = subprocess.run(
+            ["sudo", "-u", "homebrain", "bw", "status"],
+            capture_output=True, text=True, timeout=10,
+            env=_vault_bw_env(),
+        )
+        if r.returncode == 0:
+            try:
+                return json.loads(r.stdout)
+            except json.JSONDecodeError:
+                pass
+    except Exception:
+        pass
+    return {}
+
+
 @app.route("/api/vault/mcp/status")
 def vault_mcp_status():
     if not session.get("authenticated"):
@@ -2585,9 +2660,12 @@ def vault_mcp_status():
     info = {
         "session_file": VAULT_MCP_SESSION_FILE,
         "unlocked": False,
+        "bw_status": "unknown",
         "bw_installed": False,
         "openclaw_wired": False,
         "openclaw_available": shutil.which("openclaw") is not None,
+        "needs_login": False,
+        "known_email": "",
     }
     info["bw_installed"] = shutil.which("bw") is not None
     if info["openclaw_available"]:
@@ -2599,27 +2677,41 @@ def vault_mcp_status():
             info["openclaw_wired"] = "homebrain-vault" in out
         except Exception:
             pass
-    if os.path.exists(VAULT_MCP_SESSION_FILE) and info["bw_installed"]:
-        try:
-            tok = open(VAULT_MCP_SESSION_FILE).read().strip()
-            r = subprocess.run(
-                ["bw", "status"],
-                capture_output=True, text=True, timeout=5,
-                env={**os.environ, "BW_SESSION": tok},
-            )
-            if r.returncode == 0:
-                info["unlocked"] = json.loads(r.stdout).get("status") == "unlocked"
-        except Exception:
-            pass
+    if info["bw_installed"]:
+        bw_state = _vault_bw_status()
+        info["bw_status"] = bw_state.get("status", "unknown")
+        info["needs_login"] = info["bw_status"] == "unauthenticated"
+        if os.path.exists(VAULT_MCP_SESSION_FILE):
+            try:
+                tok = open(VAULT_MCP_SESSION_FILE).read().strip()
+                r = subprocess.run(
+                    ["sudo", "-u", "homebrain", "bw", "status"],
+                    capture_output=True, text=True, timeout=10,
+                    env=_vault_bw_env({"BW_SESSION": tok}),
+                )
+                if r.returncode == 0:
+                    info["unlocked"] = json.loads(r.stdout).get("status") == "unlocked"
+            except Exception:
+                pass
+    info["known_email"] = _vault_first_user_email()
     return jsonify(info)
 
 
 @app.route("/api/vault/mcp/unlock", methods=["POST"])
 @limiter.limit("5 per minute")
 def vault_mcp_unlock():
-    """Run `bw unlock` with the supplied master password and persist the
-    resulting session token at VAULT_MCP_SESSION_FILE (mode 0600). The
-    password is never logged or stored."""
+    """Authenticate bw to the local vault and persist a usable BW_SESSION at
+    VAULT_MCP_SESSION_FILE (mode 0600). Runs bw as the homebrain user so
+    cached vault data lands where the openclaw MCP server can read it.
+
+    Flow:
+      * `bw config server` → loopback Caddy URL
+      * `bw status`
+        - "unauthenticated" → `bw login --raw <email> <pw>` (email from
+          request body or, falling back, the single vault user in the DB)
+        - "locked" / "unlocked" → `bw unlock --raw <pw>`
+
+    The password is never logged or persisted."""
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
     if shutil.which("bw") is None:
@@ -2632,27 +2724,63 @@ def vault_mcp_unlock():
     master_pw = data.get("master_password", "")
     if not master_pw:
         return jsonify({"error": "master_password required"}), 400
+    email = (data.get("email") or "").strip().lower()
 
-    env = get_env_config()
-    public = env.get("VAULT_DOMAIN") or _vault_public_url()
-    if not public:
+    env_cfg = get_env_config()
+    if env_cfg.get("VAULT_ENABLED", "true").lower() == "false":
         return jsonify({"error": "vault not provisioned"}), 503
+    bw_url = _vault_bw_url()
+    bw_env = _vault_bw_env()
 
-    # Configure bw to point at our self-hosted server (idempotent).
+    # Point bw at the local vault. Idempotent; safe to re-run every call.
     try:
         subprocess.run(
-            ["bw", "config", "server", public],
-            capture_output=True, timeout=5,
-        )
-        proc = subprocess.run(
-            ["bw", "unlock", "--raw", master_pw],
-            capture_output=True, text=True, timeout=10,
+            ["sudo", "-u", "homebrain", "bw", "config", "server", bw_url],
+            capture_output=True, timeout=10, env=bw_env,
         )
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "bw unlock timed out"}), 504
+        return jsonify({"error": "bw config timed out"}), 504
+
+    bw_state = _vault_bw_status()
+    status_str = bw_state.get("status", "")
+
+    try:
+        if status_str == "unauthenticated":
+            if not email:
+                email = _vault_first_user_email()
+            if not email:
+                return jsonify({
+                    "error": "email required",
+                    "detail": "bw has not been logged in yet — provide the "
+                              "vault account email.",
+                }), 400
+            proc = subprocess.run(
+                ["sudo", "-u", "homebrain", "bw", "login", "--raw",
+                 email, master_pw],
+                capture_output=True, text=True, timeout=30, env=bw_env,
+            )
+            failure_label = "login failed"
+        else:
+            proc = subprocess.run(
+                ["sudo", "-u", "homebrain", "bw", "unlock", "--raw", master_pw],
+                capture_output=True, text=True, timeout=15, env=bw_env,
+            )
+            failure_label = "unlock failed"
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "bw operation timed out"}), 504
 
     if proc.returncode != 0:
-        return jsonify({"error": "unlock failed", "detail": proc.stderr.strip()[:200]}), 401
+        # `bw` prints a hard error line we can surface — usually
+        # "Username or password is incorrect" or a server-reachability hint.
+        detail = (proc.stderr or proc.stdout or "").strip()
+        # Drop Node deprecation noise from the surfaced message.
+        detail = "\n".join(
+            ln for ln in detail.splitlines()
+            if "DeprecationWarning" not in ln
+            and "NODE_TLS_REJECT_UNAUTHORIZED" not in ln
+            and "trace-deprecation" not in ln
+        ).strip()
+        return jsonify({"error": failure_label, "detail": detail[:300]}), 401
 
     token = proc.stdout.strip()
     if not token:
@@ -2664,7 +2792,6 @@ def vault_mcp_unlock():
         os.write(fd, token.encode())
     finally:
         os.close(fd)
-    # Best-effort chown to homebrain so the openclaw daemon can read it.
     try:
         import pwd
         hb_uid = pwd.getpwnam("homebrain").pw_uid
@@ -2685,15 +2812,17 @@ def vault_mcp_wire_up():
     if shutil.which("openclaw") is None:
         return jsonify({"error": "openclaw CLI not found"}), 503
 
-    env = get_env_config()
-    public_url = env.get("VAULT_DOMAIN") or _vault_public_url()
     spec = {
         "command": "/usr/bin/python3",
         "args": [f"{INSTALL_DIR}/scripts/mcp-vault.py"],
         "env": {
-            "VAULT_URL": public_url,
+            "VAULT_URL": _vault_bw_url(),
             "VAULT_SESSION_FILE": VAULT_MCP_SESSION_FILE,
             "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log",
+            # bw on this box talks to Caddy's `tls internal` cert on
+            # 127.0.0.1; Node's hostname check rejects the IP-SAN cert.
+            # Loopback only — MITM impossible without root.
+            "NODE_TLS_REJECT_UNAUTHORIZED": "0",
         },
     }
     try:
@@ -2750,7 +2879,10 @@ def vault_mcp_lock():
     try:
         if os.path.exists(VAULT_MCP_SESSION_FILE):
             os.remove(VAULT_MCP_SESSION_FILE)
-        subprocess.run(["bw", "lock"], capture_output=True, timeout=5)
+        subprocess.run(
+            ["sudo", "-u", "homebrain", "bw", "lock"],
+            capture_output=True, timeout=10, env=_vault_bw_env(),
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"status": "locked"})
