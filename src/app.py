@@ -2592,19 +2592,17 @@ def _vault_bw_url():
     return f"https://127.0.0.1:{port}"
 
 
-def _vault_bw_env(extra=None):
-    """Env for invoking bw on this box.
-
-    We hit Caddy's `tls internal` cert at 127.0.0.1. Node refuses both
-    plain HTTP for bw and won't accept the Caddy CA chain through
-    NODE_EXTRA_CA_CERTS for IP-SAN certs in the version we ship, so we
-    disable the check for the bw subprocess. Safe because the destination
-    is loopback — a MITM there already implies code execution as root.
-    """
-    e = {**os.environ, "NODE_TLS_REJECT_UNAUTHORIZED": "0"}
-    if extra:
-        e.update(extra)
-    return e
+def _vault_bw_argv(*bw_args, session=None):
+    """Build a `sudo -u homebrain env … bw …` argv that survives sudo's
+    env-stripping. We need NODE_TLS_REJECT_UNAUTHORIZED=0 (loopback Caddy
+    presents an IP-SAN cert that Node's hostname check rejects; safe
+    because the destination is 127.0.0.1 — MITM there already implies
+    code execution as root) and optionally BW_SESSION inside the bw
+    process's environment, not just the sudo wrapper's."""
+    extra_env = ["NODE_TLS_REJECT_UNAUTHORIZED=0"]
+    if session:
+        extra_env.append(f"BW_SESSION={session}")
+    return ["sudo", "-u", "homebrain", "env", *extra_env, "bw", *bw_args]
 
 
 def _vault_first_user_email():
@@ -2634,14 +2632,13 @@ def _vault_first_user_email():
         return ""
 
 
-def _vault_bw_status():
+def _vault_bw_status(session=None):
     """Run `bw status` as the homebrain user (whose bw state the MCP uses).
     Returns the parsed JSON dict, or {} on failure."""
     try:
         r = subprocess.run(
-            ["sudo", "-u", "homebrain", "bw", "status"],
+            _vault_bw_argv("status", session=session),
             capture_output=True, text=True, timeout=10,
-            env=_vault_bw_env(),
         )
         if r.returncode == 0:
             try:
@@ -2685,9 +2682,8 @@ def vault_mcp_status():
             try:
                 tok = open(VAULT_MCP_SESSION_FILE).read().strip()
                 r = subprocess.run(
-                    ["sudo", "-u", "homebrain", "bw", "status"],
+                    _vault_bw_argv("status", session=tok),
                     capture_output=True, text=True, timeout=10,
-                    env=_vault_bw_env({"BW_SESSION": tok}),
                 )
                 if r.returncode == 0:
                     info["unlocked"] = json.loads(r.stdout).get("status") == "unlocked"
@@ -2730,13 +2726,12 @@ def vault_mcp_unlock():
     if env_cfg.get("VAULT_ENABLED", "true").lower() == "false":
         return jsonify({"error": "vault not provisioned"}), 503
     bw_url = _vault_bw_url()
-    bw_env = _vault_bw_env()
 
     # Point bw at the local vault. Idempotent; safe to re-run every call.
     try:
         subprocess.run(
-            ["sudo", "-u", "homebrain", "bw", "config", "server", bw_url],
-            capture_output=True, timeout=10, env=bw_env,
+            _vault_bw_argv("config", "server", bw_url),
+            capture_output=True, timeout=10,
         )
     except subprocess.TimeoutExpired:
         return jsonify({"error": "bw config timed out"}), 504
@@ -2755,15 +2750,14 @@ def vault_mcp_unlock():
                               "vault account email.",
                 }), 400
             proc = subprocess.run(
-                ["sudo", "-u", "homebrain", "bw", "login", "--raw",
-                 email, master_pw],
-                capture_output=True, text=True, timeout=30, env=bw_env,
+                _vault_bw_argv("login", "--raw", email, master_pw),
+                capture_output=True, text=True, timeout=30,
             )
             failure_label = "login failed"
         else:
             proc = subprocess.run(
-                ["sudo", "-u", "homebrain", "bw", "unlock", "--raw", master_pw],
-                capture_output=True, text=True, timeout=15, env=bw_env,
+                _vault_bw_argv("unlock", "--raw", master_pw),
+                capture_output=True, text=True, timeout=15,
             )
             failure_label = "unlock failed"
     except subprocess.TimeoutExpired:
@@ -2880,8 +2874,8 @@ def vault_mcp_lock():
         if os.path.exists(VAULT_MCP_SESSION_FILE):
             os.remove(VAULT_MCP_SESSION_FILE)
         subprocess.run(
-            ["sudo", "-u", "homebrain", "bw", "lock"],
-            capture_output=True, timeout=10, env=_vault_bw_env(),
+            _vault_bw_argv("lock"),
+            capture_output=True, timeout=10,
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
