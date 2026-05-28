@@ -971,6 +971,54 @@ def _validate_telegram_token(token: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
+def _clean_openclaw_error(stderr: str, stdout: str) -> str:
+    """Distil a user-facing message from OpenClaw CLI error output.
+
+    The CLI prints boilerplate around the actual cause, e.g.:
+        [openclaw] Could not start the CLI.
+        [openclaw] Reason: No pending pairing request found for code "X".
+        [openclaw] Debug: set OPENCLAW_DEBUG=1 ...
+        [openclaw] Try: openclaw doctor
+    Prefer the "Reason:" line; otherwise fall back to the first meaningful
+    line, then to the raw text.
+    """
+    text = (stderr or stdout or "").strip()
+    for line in text.splitlines():
+        line = line.strip()
+        marker = "Reason:"
+        if marker in line:
+            return line.split(marker, 1)[1].strip()
+    for line in text.splitlines():
+        line = line.strip()
+        if line and "Could not start the CLI" not in line:
+            return line.removeprefix("[openclaw]").strip()
+    return text or "Approval failed"
+
+
+def _approve_pairing(channel: str, code: str) -> tuple[dict, int]:
+    """Run `openclaw pairing approve <channel> <code>` as the homebrain user.
+
+    Returns (json_body, http_status). Shared by the Telegram and WhatsApp
+    pairing endpoints.
+    """
+    code = (code or "").strip().upper()
+    if not code or not (4 <= len(code) <= 16) or not code.isalnum():
+        return {"error": "Invalid pairing code"}, 400
+    try:
+        proc = subprocess.run(
+            ["sudo", "-u", "homebrain", "openclaw",
+             "pairing", "approve", channel, code, "--notify"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return {"error": "Pairing approval timed out"}, 504
+    except Exception as e:  # pragma: no cover - defensive
+        return {"error": str(e)}, 500
+    if proc.returncode == 0:
+        return {"status": "approved", "output": proc.stdout.strip()}, 200
+    return {"error": _clean_openclaw_error(proc.stderr, proc.stdout)}, 400
+
+
 def _whatsapp_auth_status() -> dict:
     """Check WhatsApp auth state by looking for session files."""
     auth_dir = os.path.join(OPENCLAW_DIR, "whatsapp-auth", "default")
@@ -1462,24 +1510,8 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         body = request.get_json(silent=True) or {}
-        code = (body.get("code") or "").strip().upper()
-        if not code or len(code) < 4 or len(code) > 16:
-            return jsonify({"error": "Invalid pairing code"}), 400
-        try:
-            proc = subprocess.run(
-                ["sudo", "-u", "homebrain", "openclaw",
-                 "pairing", "approve", "telegram", code, "--notify"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if proc.returncode == 0:
-                return jsonify({"status": "approved", "output": proc.stdout.strip()})
-            return jsonify({
-                "error": (proc.stderr or proc.stdout or "Approval failed").strip(),
-            }), 400
-        except subprocess.TimeoutExpired:
-            return jsonify({"error": "Pairing approval timed out"}), 504
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        payload, status = _approve_pairing("telegram", body.get("code", ""))
+        return jsonify(payload), status
 
     def telegram_remove():
         if not session.get("authenticated"):
@@ -1521,24 +1553,8 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         body = request.get_json(silent=True) or {}
-        code = (body.get("code") or "").strip().upper()
-        if not code or len(code) < 4 or len(code) > 16:
-            return jsonify({"error": "Invalid pairing code"}), 400
-        try:
-            proc = subprocess.run(
-                ["sudo", "-u", "homebrain", "openclaw",
-                 "pairing", "approve", "whatsapp", code, "--notify"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if proc.returncode == 0:
-                return jsonify({"status": "approved", "output": proc.stdout.strip()})
-            return jsonify({
-                "error": (proc.stderr or proc.stdout or "Approval failed").strip(),
-            }), 400
-        except subprocess.TimeoutExpired:
-            return jsonify({"error": "Pairing approval timed out"}), 504
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        payload, status = _approve_pairing("whatsapp", body.get("code", ""))
+        return jsonify(payload), status
 
     def whatsapp_remove():
         if not session.get("authenticated"):
