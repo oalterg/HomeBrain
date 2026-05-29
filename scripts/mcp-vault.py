@@ -103,6 +103,18 @@ def _session_or_unavail() -> tuple[str | None, dict | None]:
     return session, None
 
 
+def _sync(session: str) -> None:
+    """Pull the latest vault state from the server into the local CLI cache.
+
+    The `bw` CLI serves reads (`list`, `get`) from a local encrypted cache,
+    not from the server. Items created or edited in the web vault only live
+    server-side until a sync, so without this every read path would silently
+    miss them. Best-effort: a transient sync failure falls back to the cache
+    rather than failing the whole call.
+    """
+    _bw("sync", session=session)
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -125,10 +137,14 @@ def t_search(args: dict) -> dict:
     session, ebody = _session_or_unavail()
     if ebody is not None:
         return ebody
+    _sync(session)
     q = (args.get("query") or "").strip()
-    if not q:
-        return err("query is required")
-    rc, out, bw_err = _bw("list", "items", "--search", q, session=session)
+    if q:
+        rc, out, bw_err = _bw("list", "items", "--search", q, session=session)
+    else:
+        # No query → list every item. Lets the agent answer "show me all my
+        # logins" instead of being limited to keyword search.
+        rc, out, bw_err = _bw("list", "items", session=session)
     if rc != 0:
         return err(bw_err.strip() or "search failed")
     try:
@@ -146,7 +162,7 @@ def t_search(args: dict) -> dict:
             "uris": uris,
             "folder_id": it.get("folderId"),
         })
-    audit("vault", "search", query=q, hits=len(results))
+    audit("vault", "search", query=q or "(all)", hits=len(results))
     return ok(results=results, total=len(results))
 
 
@@ -173,6 +189,7 @@ def t_reveal(args: dict) -> dict:
         return err("confirmation_token invalid or expired")
 
     rid = redeemed["item_id"]
+    _sync(session)
     rc, out, bw_err = _bw("get", "item", rid, session=session)
     if rc != 0:
         return err(bw_err.strip() or "item not found")
@@ -197,6 +214,7 @@ def t_list_folders(_args: dict) -> dict:
     session, ebody = _session_or_unavail()
     if ebody is not None:
         return ebody
+    _sync(session)
     rc, out, bw_err = _bw("list", "folders", session=session)
     if rc != 0:
         return err(bw_err.strip() or "list_folders failed")
@@ -275,15 +293,17 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "vault.search",
      "description": (
-         "Search the local HomeBrain Vault by free-text query. Returns "
-         "metadata only (name, username, URI). No secrets are revealed."
+         "List or search HomeBrain Vault items. Omit `query` to list every "
+         "item in the vault; pass `query` to filter by free-text. Returns "
+         "metadata only (name, username, URI) — no secrets. Always reflects "
+         "the latest server state, including items added via the web vault."
      ),
      "inputSchema": {
          "type": "object",
          "properties": {
-             "query": {"type": "string", "description": "Free-text query"},
+             "query": {"type": "string",
+                       "description": "Optional free-text filter. Omit to list all items."},
          },
-         "required": ["query"],
      }},
     {"name": "vault.reveal",
      "description": (
@@ -341,4 +361,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-vault", "0.2.0", TOOLS, dispatch)
+    serve("homebrain-vault", "0.3.0", TOOLS, dispatch)
