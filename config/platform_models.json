@@ -6,15 +6,15 @@
       "filename": "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL.gguf",
       "min_size_bytes": 26000000000,
-      "context_window": 131072,
-      "min_healthy_vram_mb": 15300,
-      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "context_window": 65536,
+      "min_healthy_vram_mb": 15500,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {
         "tg_ts": 37.7,
         "tg_ts_prose": 28.5,
         "pp_ts": 575,
-        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q4 KV, -ub 2048, ctx 131072, full prod samplers, whisper resident",
-        "notes": "Default. MTP speculative decoding via b9381 (upstream fix for MoE MTP at high ctx — b9186 could not do this). +31% real TG on structured/code/tool output (28.8 -> 37.7), ~neutral on creative prose (28.5). KV is q4_0 (not q8): the q8 config sits at 99.4% VRAM and the moment the KV cache grows past ~25K tokens the Vulkan compute buffer is evicted to GTT and TG collapses 43 -> 31 until restart (see docs/BENCHMARKS.md 'compute-buffer eviction'). q4 KV frees ~640 MiB so the compute buffer stays resident — sustained 43 t/s greedy / ~37 real even after deep-context use, verified by stress test (27K-token prompt then re-measure). Requires -ub 2048 (not 4096): -ub 4096 + MTP OOMs (vk::DeviceLostError). Stable at ~15645/16304 MiB VRAM with whisper resident. Trades ~24% PP (751 -> 575) for the TG gain. Rollback: switch to Qwen3.6-35B-A3B-UD-Q5_K_XL. See docs/BENCHMARKS.md."
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q8 KV, -ub 2048, ctx 65536, full prod samplers, whisper resident",
+        "notes": "Default. MTP speculative decoding via b9381 (upstream fix for MoE MTP at high ctx — b9186 could not do this). Sustained 43 t/s greedy / ~37 real (+31%) on structured/code/tool output, ~neutral on creative prose (28.5). CONTEXT IS 65536, NOT 131072: at 131072 the model+KV-reservation+compute-buffer exceeds 16 GB headroom, and a single deep prompt evicts the ~690 MiB Vulkan compute buffer to GTT — TG collapses 43 -> 31 until restart (q4 KV does not save it; only reducing ctx does). At ctx 65536 the compute buffer stays resident: verified eviction-proof across two consecutive 27K-token stress prompts, VRAM flat at ~15801/16304 MiB. q8 KV (best numerics) — at the 65536 cap q8 beats q4 (same speed). Requires -ub 2048 (not 4096): -ub 4096 + MTP OOMs (vk::DeviceLostError). Trades ~24% PP (751 -> 575) and half the max context for the sustained TG gain. Rollback: switch to Qwen3.6-35B-A3B-UD-Q5_K_XL (base, 131072, ~28.8 t/s). See docs/BENCHMARKS.md."
       },
       "default": true
     },

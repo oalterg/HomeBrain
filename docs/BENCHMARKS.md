@@ -367,9 +367,9 @@ Applied to capture the flagship win:
 
 Deployed via the manager update path (pulls `main`, installs b9381, restarts) + a model switch to the MTP entry. Rollback path: `POST /api/ai/model/switch {"model_id":"Qwen3.6-35B-A3B-UD-Q5_K_XL"}`.
 
-> **Correction (2026-05-30):** the MTP entry originally shipped with **q8 KV**, which proved unstable (see "compute-buffer eviction" below) — the +50% decayed to break-even under real use. The shipped config was changed to **q4_0 KV** (`--cache-type-k/v q4_0`), keeping ctx 131072 and delivering a *sustained* +50% greedy / +31% real. The VRAM-settle gate and `verify_llama_allocation` guard were added in the same change.
+> **Correction (2026-05-30):** the MTP entry originally shipped at **ctx 131072**, which proved unstable (see "compute-buffer eviction" below) — the +50% decayed to break-even under real use. A first attempt dropped KV to q4_0 (still 131072); it tested stable on a clean box but **still evicts** once the GPU has accumulated session state (VRAM fragmentation / GTT pressure) — 131072 is simply not robustly stable for MTP on this 16 GB card. The shipped config is **q8 KV at ctx 65536**, verified eviction-proof across two consecutive 27K-token stress prompts. The VRAM-settle gate and `verify_llama_allocation` guard were added in the same change. Trade accepted: half the max context for a *sustained* (non-decaying) +50%.
 
-### Compute-buffer eviction — why the q8/131072 win wasn't real, and the q4 fix (found 2026-05-29/30)
+### Compute-buffer eviction — why the 131072 win wasn't real, and the ctx-65536 fix (found 2026-05-29/30)
 
 A follow-up A/B on the **live** server surfaced a trap: the q8/131072 config delivers +50% only for the first few minutes after a restart, then decays to ≈break-even under real use. Two faces of the same root cause (the config sits at **99.4% VRAM, ~100 MiB under the 16,304 MiB ceiling**):
 
@@ -387,17 +387,21 @@ A follow-up A/B on the **live** server surfaced a trap: the q8/131072 config del
 
 (Distinct from the *greedy-vs-real* gap, which is MTP draft **acceptance** — compute/sampling — and is VRAM-independent.)
 
-**Fix: headroom.** Moving more experts to CPU (`-ot blk.18-39`, `16-39`) did **not** help — at ctx 131072 the full KV still evicts the buffer regardless of expert placement. Only reducing the KV footprint does. Stress-sweep (fresh → 27K stress → sustained):
+**Fix: reduce context (not KV type, not expert placement).** Moving more experts to CPU (`-ot blk.18-39`, `16-39`) did **not** help — at ctx 131072 the full KV/attention reservation still evicts the buffer regardless of expert placement. Dropping KV to q4_0 at 131072 looked stable on a freshly-drained box but **evicts once the session accumulates GPU state** (it was stable in an early sweep, then evicted an hour later under identical flags — the only variable was transient driver/VRAM state). The robust lever is **context length**, because llama.cpp sizes the KV reservation and attention scratch to `n_ctx` at load — smaller ctx leaves real headroom. Stress-sweep (fresh → 27K stress → sustained; later runs are on a session-fragmented GPU = worst case):
 
 | Config | fresh | sustained (post-stress) | VRAM after stress | verdict |
 |---|---:|---:|---:|---|
 | q8 / ctx 131072 (original) | 43.1 | **30.8** | 15518 (evicts) | ❌ decays |
-| q8 / ctx 65536 | 43.1 | **43.0** | 15785 (stable) | ✅ half context |
-| **q4 / ctx 131072** | 43.0 | **43.0** | 15645 (stable) | ✅ **shipped** |
+| q4 / ctx 131072 | 43.0 | **30.9** | 14902 (evicts) | ❌ decays under real conditions |
+| q4 / ctx 49152 | 34.8 | **43.0** | 15339 (stable) | ✅ |
+| q4 / ctx 65536 | 43.1 | **43.1** | 15492 (stable) | ✅ |
+| **q8 / ctx 65536** | 43.1 | **43.1** | 15811 (stable) | ✅ **shipped** — survives 2× 27K stress, best numerics |
 
-**q4_0 KV** frees ~640 MiB — enough that the compute buffer stays resident through full-context growth — while **keeping the full 131072 window**. Sustained 43 t/s greedy / ~37 real, verified to survive the exact stress that collapses q8. The q4 attention-precision cost is modest and acceptable for the agent workload; q8/65536 is the alternative if max numerics matter more than context length.
+At the 65536 cap, q8 KV matches q4 on speed while keeping best numerics, so q8 is shipped. `context_window` is set to 65536; 64K is ample for the home/agent workload. (If a future config genuinely needs 131072, the only stable option there is the **base** model — no MTP, ~28.8 t/s — since it has no compute buffer to evict.)
 
-**Guards also shipped (defense-in-depth for the startup case):**
+**Guards also shipped (defense-in-depth for the startup-starvation case):**
 - `config/llama-server.service` — `ExecStartPre` **VRAM-settle gate**: before allocating, wait (≤120 s) until non-llama VRAM use drains below 300 MiB (whisper idle ≈ 56 MiB), so a model-switch's old instance has fully released VRAM first.
 - `scripts/utilities.sh` `verify_llama_allocation()` — after the health check on the model-switch/update path, if the process came up below the model's `min_healthy_vram_mb` watermark, restart (the gate holds the retry until VRAM drains) and re-check, up to 2×; never fails the caller, logs loudly.
-- `config/platform_models.json` — the MTP entry declares `"min_healthy_vram_mb": 15300` (below the ~15645 stable reading, above a starved start). Models without the field skip the check.
+- `config/platform_models.json` — the MTP entry declares `"min_healthy_vram_mb": 15500` (below the ~15801 stable reading, above a starved start). Models without the field skip the check.
+
+> Note: the gate/watermark guard the *startup-starvation* face. The *runtime eviction* face is fixed structurally by the ctx-65536 headroom above (there is no resident-buffer to evict once it fits with margin) — guards can't fix runtime eviction, only the config can.
