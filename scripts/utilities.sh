@@ -752,6 +752,7 @@ setup_llama_server() {
     # (they were baked in by generate_llama_service, no need to keep in .env)
     local CTX_SIZE="8192"
     local EXTRA_FLAGS=""
+    local MIN_HEALTHY_VRAM=""
     if [[ -f "$MODELS_FILE" ]] && [[ -n "$MODEL_NAME" ]]; then
         # Derive model id from filename (strip extension)
         local model_id
@@ -761,6 +762,12 @@ setup_llama_server() {
             "$MODELS_FILE" 2>/dev/null || echo "8192")
         EXTRA_FLAGS=$(jq -r --arg id "$model_id" \
             '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags // ""' \
+            "$MODELS_FILE" 2>/dev/null || echo "")
+        # Optional: healthy-allocation VRAM watermark. When set, a successful
+        # start that comes up well below this value means the Vulkan compute
+        # buffer was starved by VRAM pressure (see verify_llama_allocation).
+        MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" \
+            '(.models[] | select(.id == $id) | .min_healthy_vram_mb) // empty' \
             "$MODELS_FILE" 2>/dev/null || echo "")
     fi
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
@@ -781,8 +788,9 @@ setup_llama_server() {
         systemctl daemon-reload
         systemctl enable llama-server
         systemctl restart llama-server
-        wait_for_llama_health "$HEALTH_URL" 600
-        return $?
+        wait_for_llama_health "$HEALTH_URL" 600 || return 1
+        verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
+        return 0
     fi
 
     # --- [2/5] & [3/5] Install binary (platform-specific) ---
@@ -807,8 +815,9 @@ setup_llama_server() {
     systemctl daemon-reload
     systemctl enable --now llama-server
 
-    wait_for_llama_health "$HEALTH_URL" 600
-    return $?
+    wait_for_llama_health "$HEALTH_URL" 600 || return 1
+    verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
+    return 0
 }
 
 # Helper: poll llama-server health endpoint
@@ -833,6 +842,53 @@ wait_for_llama_health() {
     log_error "llama-server did not pass health check within ${timeout}s."
     log_error "Check: journalctl -u llama-server -n 50"
     return 1
+}
+
+# Helper: VRAM currently used on the discrete GPU, in MiB (echoes 0 if unreadable).
+# Picks the first DRM card whose total VRAM exceeds 4 GiB so an integrated GPU
+# (small carve-out) is never mistaken for the inference card.
+_gpu_vram_used_mb() {
+    local d
+    for d in /sys/class/drm/card*/device; do
+        [[ -r "$d/mem_info_vram_used" ]] || continue
+        [[ "$(cat "$d/mem_info_vram_total" 2>/dev/null || echo 0)" -gt 4294967296 ]] || continue
+        echo $(( $(cat "$d/mem_info_vram_used") / 1048576 ))
+        return 0
+    done
+    echo 0
+}
+
+# Helper: guard against silent compute-buffer starvation.
+# The MTP flagship config sits ~100 MiB under the 16 GB ceiling. If llama-server
+# allocates while another GPU consumer is busy (whisper mid-transcription) or a
+# prior instance has not finished releasing VRAM, the Vulkan backend quietly
+# shrinks its compute buffer (warns only) — and MTP loses its entire speedup
+# (~43 -> ~27 t/s) while paradoxically using *less* VRAM. The unit's ExecStartPre
+# VRAM gate prevents this on a clean start; this is the belt-and-braces check on
+# the model-switch / update path (which is how the degraded server first shipped).
+# When the model declares a healthy-allocation watermark, a start that lands well
+# below it is restarted (ExecStartPre holds the retry until VRAM drains).
+# Never fails the caller: a degraded-but-serving model still answers requests.
+verify_llama_allocation() {
+    local health_url="$1" min_vram="$2"
+    [[ -n "$min_vram" && "$min_vram" != "null" && "$min_vram" -gt 0 ]] 2>/dev/null || return 0
+    local attempt used
+    for attempt in 1 2 3; do
+        sleep 5  # let the allocation settle after the health endpoint comes up
+        used=$(_gpu_vram_used_mb)
+        if [[ "$used" -ge "$min_vram" ]]; then
+            log_info "llama-server allocation OK (${used} MiB ≥ ${min_vram} MiB healthy watermark)."
+            return 0
+        fi
+        log_warn "llama-server came up degraded: ${used} MiB < ${min_vram} MiB healthy watermark — Vulkan compute buffer likely starved by VRAM pressure."
+        if [[ "$attempt" -lt 3 ]]; then
+            log_warn "Restarting llama-server (retry ${attempt}/2); ExecStartPre will wait for VRAM to drain first..."
+            systemctl restart llama-server
+            wait_for_llama_health "$health_url" 600 || { log_error "llama-server failed health check during degradation retry."; return 0; }
+        fi
+    done
+    log_warn "llama-server still below the healthy VRAM watermark after retries; serving in a degraded state. Inspect 'journalctl -u llama-server' for 'compute buffer size … does not match expectation' and free GPU memory before the next restart."
+    return 0
 }
 
 # --- Helper: Setup whisper-server (speech-to-text) ---

@@ -356,13 +356,48 @@ The numbers above are greedy (max acceptance, q4 KV). Production runs **q8 KV, `
 - **Net win: 28.81 → 37.70 t/s real (+31%) on the flagship at full 131K context** on *structured/code/tool* output, with one model swap + two flag changes. Greedy upper bound is +48%.
 - **Gain is workload-dependent.** MTP acceptance tracks output predictability: high on code/JSON/tool-calls (the agent's bread-and-butter, +20–31%), but on free-form *prose* a live test generated at **28.5 t/s ≈ base** (≈neutral). MTP never regressed below base in any test — so this is a win-or-neutral change, weighted toward the agent's typical structured traffic.
 - `-ub 2048` vs `-ub 4096` costs ~24% PP on long prompts (≈751 → ≈575 t/s, per the tuning log). For a generation-bound agent the TG gain dominates; for prompt-heavy batch use weigh the PP loss.
-- **VRAM verified, not just projected.** Measured live with the full stack (whisper resident — which itself uses only ~56 MiB on GPU) under sustained generation: **16205 / 16304 MiB, rock-stable, no spikes (≈99 MiB headroom)**. KV is pre-allocated at ctx=131072 so it does not grow at runtime. No `vk::DeviceLostError`. The earlier "~500 MiB whisper" alarm was a one-off transcription compute spike, not resident footprint.
+- **VRAM (initial reading — later found unstable, see "compute-buffer eviction" below).** A fresh start measures 16205 / 16304 MiB. This was *misread* as "rock-stable": KV at 131072 is **not** fully pre-allocated, it grows with use, and at 99.4% occupancy that growth evicts the compute buffer. The ~37.7 real figure here is the **fresh-restart** number; sustained throughput under real use needed the q4-KV fix below. (whisper resident is ~56 MiB; the earlier "~500 MiB whisper" alarm was a one-off transcription spike, not resident footprint.)
 
 ### Production change (applied 2026-05-29)
 
 Applied to capture the flagship win:
 - `versions.json`: `llama_cpp.tag` **b9186 → b9381**.
-- `platform_models.json`: **added** model `Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL` (MTP GGUF, `--spec-type draft-mtp --spec-draft-n-max 2`, `-ub 2048`, q8 KV, `-ot blk.20-39`, ctx 131072, full samplers) and made it the default. The base `Qwen3.6-35B-A3B-UD-Q5_K_XL` entry is **kept** so rollback is a single `/api/ai/model/switch` back to it (no version revert needed).
+- `platform_models.json`: **added** model `Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL` (MTP GGUF, `--spec-type draft-mtp --spec-draft-n-max 2`, `-ub 2048`, `-ot blk.20-39`, ctx 131072, full samplers) and made it the default. The base `Qwen3.6-35B-A3B-UD-Q5_K_XL` entry is **kept** so rollback is a single `/api/ai/model/switch` back to it (no version revert needed).
 - `platform_models.json`: 27B `Qwen3.6-27B-IQ4_XS` `context_window` **49152 → 32768** to bring it under the DeltaNet MTP cliff (+75% TG when 27B is selected). b9381 does **not** fix the DeltaNet cliff — that change is the b9186 analysis and stands.
 
 Deployed via the manager update path (pulls `main`, installs b9381, restarts) + a model switch to the MTP entry. Rollback path: `POST /api/ai/model/switch {"model_id":"Qwen3.6-35B-A3B-UD-Q5_K_XL"}`.
+
+> **Correction (2026-05-30):** the MTP entry originally shipped with **q8 KV**, which proved unstable (see "compute-buffer eviction" below) — the +50% decayed to break-even under real use. The shipped config was changed to **q4_0 KV** (`--cache-type-k/v q4_0`), keeping ctx 131072 and delivering a *sustained* +50% greedy / +31% real. The VRAM-settle gate and `verify_llama_allocation` guard were added in the same change.
+
+### Compute-buffer eviction — why the q8/131072 win wasn't real, and the q4 fix (found 2026-05-29/30)
+
+A follow-up A/B on the **live** server surfaced a trap: the q8/131072 config delivers +50% only for the first few minutes after a restart, then decays to ≈break-even under real use. Two faces of the same root cause (the config sits at **99.4% VRAM, ~100 MiB under the 16,304 MiB ceiling**):
+
+**1. Startup starvation.** If llama-server allocates while VRAM is momentarily tight — whisper mid-transcription, or the previous instance still releasing ~15 GB during a `systemctl restart` — it can't get the full ~3.6 GiB Vulkan compute buffer. It does **not** fail and does **not** reduce `-ngl` (`common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort`); it **silently shrinks the buffer** (warns only). Confirmed in the degraded server's shutdown log: `Vulkan0 compute buffer size of 776.33 MiB, does not match expectation of 3656.33 MiB`.
+
+**2. Runtime eviction (the dominant one).** Even a cleanly-started server degrades the moment the KV cache grows. KV at 131072 is **not** fully pre-allocated — it grows with context. A single deep prompt pushes total VRAM over the ceiling and the driver evicts the compute buffer to GTT (system RAM over PCIe), where it **stays until restart**. Proven by stress test (restart → 27K-token prompt → re-measure shallow):
+
+| Server state | greedy TG | VRAM |
+|---|---:|---:|
+| fresh restart | **43.5** | 16208 |
+| after one 27K-token prompt | 31.7 | 15518 |
+| every shallow request afterwards | **30.8** (stuck) | 15518 |
+
+**Signature is paradoxical: the degraded server uses *less* VRAM (15518) than the healthy one (16208)** — the ~690 MiB "missing" is the compute buffer, now in GTT. A concurrent request (the server runs `--parallel 1`) triggers the same eviction. This is the real reason the first deploy under-delivered: the "+50%" was a cool-fresh-restart transient.
+
+(Distinct from the *greedy-vs-real* gap, which is MTP draft **acceptance** — compute/sampling — and is VRAM-independent.)
+
+**Fix: headroom.** Moving more experts to CPU (`-ot blk.18-39`, `16-39`) did **not** help — at ctx 131072 the full KV still evicts the buffer regardless of expert placement. Only reducing the KV footprint does. Stress-sweep (fresh → 27K stress → sustained):
+
+| Config | fresh | sustained (post-stress) | VRAM after stress | verdict |
+|---|---:|---:|---:|---|
+| q8 / ctx 131072 (original) | 43.1 | **30.8** | 15518 (evicts) | ❌ decays |
+| q8 / ctx 65536 | 43.1 | **43.0** | 15785 (stable) | ✅ half context |
+| **q4 / ctx 131072** | 43.0 | **43.0** | 15645 (stable) | ✅ **shipped** |
+
+**q4_0 KV** frees ~640 MiB — enough that the compute buffer stays resident through full-context growth — while **keeping the full 131072 window**. Sustained 43 t/s greedy / ~37 real, verified to survive the exact stress that collapses q8. The q4 attention-precision cost is modest and acceptable for the agent workload; q8/65536 is the alternative if max numerics matter more than context length.
+
+**Guards also shipped (defense-in-depth for the startup case):**
+- `config/llama-server.service` — `ExecStartPre` **VRAM-settle gate**: before allocating, wait (≤120 s) until non-llama VRAM use drains below 300 MiB (whisper idle ≈ 56 MiB), so a model-switch's old instance has fully released VRAM first.
+- `scripts/utilities.sh` `verify_llama_allocation()` — after the health check on the model-switch/update path, if the process came up below the model's `min_healthy_vram_mb` watermark, restart (the gate holds the retry until VRAM drains) and re-check, up to 2×; never fails the caller, logs loudly.
+- `config/platform_models.json` — the MTP entry declares `"min_healthy_vram_mb": 15300` (below the ~15645 stable reading, above a starved start). Models without the field skip the check.
