@@ -267,6 +267,32 @@ All items in this section must pass on real hardware before the PR is eligible f
 
 ---
 
+## Update / downgrade guard
+
+`update.sh` refuses to move the stack backwards (Nextcloud cannot start on an
+older image once its data has migrated; a half-applied manager downgrade 500s
+with `'platform' is undefined`). The decision logic lives in `common.sh` and is
+unit-tested with no Docker/network/root required:
+
+```bash
+bash scripts/tests/test_update_guard.sh   # must end with "failed: 0"
+```
+
+On real hardware, verify read-only (no update is executed):
+
+- [ ] Inspect current state: `cat /opt/homebrain/version.json` and
+      `grep -Eo 'nextcloud:[0-9]+\.[0-9]+\.[0-9]+' /opt/homebrain/docker-compose.yml`
+- [ ] **Downgrade is blocked:** from a beta/dev install, trigger a `stable`
+      update to an older tag (e.g. `sudo bash scripts/update.sh stable v1.1.0`).
+      It must abort *before* rsync with "Refusing downgrade: …" and exit 1; the
+      dashboard and Nextcloud stay untouched.
+- [ ] **Forward/equal still works:** a normal `beta`/`dev` → `main` update (or
+      `stable` → newer tag) proceeds as before and the stack comes back healthy.
+- [ ] **Override path:** `sudo ALLOW_DOWNGRADE=1 bash scripts/update.sh stable v1.1.0`
+      logs the override warning and proceeds (only with a backup in hand).
+
+---
+
 ## Sign-off checklist
 
 Complete before merging to `main`:

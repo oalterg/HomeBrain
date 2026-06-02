@@ -21,6 +21,43 @@ log_info "Channel: ${1:-stable} | Target: ${2:-main}"
 CHANNEL="${1:-stable}"
 TARGET_REF="${2:-main}"
 
+# --- Downgrade guard ------------------------------------------------------
+# Gathers the installed vs. target version signals and aborts the update if it
+# would move the stack backwards (see detect_downgrade in common.sh for why
+# that is unrecoverable). Call with the path to the TARGET docker-compose.yml
+# so we can compare the Nextcloud image tag; an empty/missing path falls back
+# to the release-version signal alone. Honours ALLOW_DOWNGRADE=1 as a
+# deliberate, backup-in-hand override.
+abort_if_downgrade() {
+    local target_compose="${1:-}"
+
+    local inst_channel="" inst_ref=""
+    if [[ -f "$INSTALL_DIR/version.json" ]] && command -v jq >/dev/null 2>&1; then
+        inst_channel=$(jq -r '.channel // empty' "$INSTALL_DIR/version.json" 2>/dev/null || echo "")
+        inst_ref=$(jq -r '.ref // empty' "$INSTALL_DIR/version.json" 2>/dev/null || echo "")
+    fi
+
+    local inst_nc="" tgt_nc=""
+    [[ -f "$INSTALL_DIR/docker-compose.yml" ]] && inst_nc=$(parse_nc_tag "$INSTALL_DIR/docker-compose.yml")
+    [[ -n "$target_compose" && -f "$target_compose" ]] && tgt_nc=$(parse_nc_tag "$target_compose")
+
+    local reason
+    if reason=$(detect_downgrade "$inst_channel" "$inst_ref" "$CHANNEL" "$TARGET_REF" "$inst_nc" "$tgt_nc"); then
+        if [[ "${ALLOW_DOWNGRADE:-0}" == "1" ]]; then
+            log_warn "DOWNGRADE OVERRIDE (ALLOW_DOWNGRADE=1): $reason"
+            log_warn "Proceeding anyway — Nextcloud and/or the dashboard may break. Hope you have a backup."
+            return 0
+        fi
+        log_error "Refusing downgrade: $reason"
+        log_error "HomeBrain updates are one-way: Nextcloud will not start on an older image once"
+        log_error "its data has migrated, and the dashboard breaks on a mixed code tree."
+        log_error "To go back, restore a pre-upgrade backup instead:"
+        log_error "    sudo bash $INSTALL_DIR/scripts/restore.sh"
+        log_error "If you understand the risk and have a backup, re-run with ALLOW_DOWNGRADE=1."
+        exit 1
+    fi
+}
+
 # 0. Self-Update Check
 # Ensure we start clean even if a previous run aborted without cleanup
 SELF_TMP_DIR="/tmp/homebrain_self_update"
@@ -41,6 +78,18 @@ curl -L -f -s --max-time 30 --retry 3 --retry-delay 5 "$BASE_URL/update.sh" -o "
 curl -L -f -s --max-time 30 --retry 3 --retry-delay 5 "$BASE_URL/common.sh" -o "$SELF_TMP_DIR/common.sh" || { log_error "Failed to fetch new common script"; exit 1; }
 
 chmod +x "$SELF_TMP_DIR/update.sh"
+
+# Downgrade guard (Layer 1) — MUST run before the self-update re-exec below.
+# A stable->old update self-updates to the target's update.sh and exec's it;
+# older scripts have no guard, so checking here is the only place that protects
+# the re-exec. Fetch the target docker-compose.yml (one level up from BASE_URL)
+# for the authoritative Nextcloud tag; if that fetch fails we still catch the
+# common beta->stable / older-tag cases from version.json alone.
+RAW_ROOT="${BASE_URL%/scripts}"
+TARGET_COMPOSE="$SELF_TMP_DIR/target-compose.yml"
+curl -L -f -s --max-time 30 --retry 2 --retry-delay 3 "$RAW_ROOT/docker-compose.yml" -o "$TARGET_COMPOSE" \
+    || { log_warn "Could not fetch target docker-compose.yml; checking release version only."; rm -f "$TARGET_COMPOSE"; }
+abort_if_downgrade "$TARGET_COMPOSE"
 
 CURRENT_UPDATE="$SCRIPT_DIR/update.sh"
 CURRENT_COMMON="$SCRIPT_DIR/common.sh"
@@ -73,6 +122,12 @@ curl -L -f -s --max-time 60 --retry 3 --retry-delay 5 "$URL" -o "$TEMP_DIR/updat
 log_info "Extracting..."
 mkdir -p "$TEMP_DIR/extract"
 tar -xzf "$TEMP_DIR/update.tar.gz" --strip-components=1 -C "$TEMP_DIR/extract" || { log_error "Extraction failed"; exit 1; }
+
+# Downgrade guard (Layer 2) — authoritative, network-free re-check now that the
+# real target tree is on disk. Runs before the destructive rsync so a downgrade
+# that slipped past the best-effort Layer 1 fetch still aborts before any data
+# or code is touched.
+abort_if_downgrade "$TEMP_DIR/extract/docker-compose.yml"
 
 # 4. Atomic File Sync
 log_info "Applying file updates, preserving configuration..."

@@ -21,6 +21,81 @@ log_warn() { echo "[WARN] $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
 
+# --- Downgrade Protection ---
+# HomeBrain's update path is one-way. Two things make a downgrade unsafe:
+#   1. Nextcloud migrates its data + config version forward the first time a
+#      newer image boots, then *refuses to start* on an older image
+#      ("update needed" / "version of the data is higher than the docker
+#      image version"). There is no supported automated rollback.
+#   2. The Flask manager's templates and app.py move together; a partially- or
+#      fully-applied downgrade leaves new templates rendered by an old app.py
+#      that lacks the inject_platform() context processor, so every page 500s
+#      with `'platform' is undefined`.
+# The only safe way back is restore.sh from a pre-upgrade backup, so we refuse
+# downgrades up front instead of letting them corrupt state.
+
+# version_lt A B -> exit 0 (true) if version A is strictly older than B.
+# Pure bash dot-segment compare: no `sort -V`, so it behaves identically on the
+# Linux targets and on a macOS dev box running the test suite. Non-numeric
+# trailing junk in a segment (e.g. "0-rc1") is stripped to its leading digits.
+version_lt() {
+    if [ "$1" = "$2" ]; then return 1; fi
+    local IFS=.
+    # shellcheck disable=SC2206  # word-splitting on '.' is intentional here
+    local -a a=($1) b=($2)
+    local i max=${#a[@]}
+    if [ "${#b[@]}" -gt "$max" ]; then max=${#b[@]}; fi
+    for ((i = 0; i < max; i++)); do
+        local ai="${a[i]:-0}" bi="${b[i]:-0}"
+        ai="${ai%%[!0-9]*}"; bi="${bi%%[!0-9]*}"
+        ai=$((10#${ai:-0})); bi=$((10#${bi:-0}))
+        if ((ai < bi)); then return 0; fi
+        if ((ai > bi)); then return 1; fi
+    done
+    return 1
+}
+
+# parse_nc_tag FILE -> echoes the x.y.z Nextcloud version from a docker-compose
+# file (ignores the "-apache" image suffix). Empty if not found.
+parse_nc_tag() {
+    grep -Eo 'nextcloud:[0-9]+\.[0-9]+\.[0-9]+' "$1" 2>/dev/null | head -n1 | cut -d: -f2
+}
+
+# detect_downgrade <inst_channel> <inst_ref> <tgt_channel> <tgt_ref> \
+#                  <inst_nc_tag> <tgt_nc_tag>
+# Echoes a human-readable reason and returns 0 when moving installed->target is
+# a downgrade; returns 1 (silent) otherwise. Pure function — no I/O beyond the
+# reason on stdout — so it is exhaustively unit-tested.
+detect_downgrade() {
+    local inst_channel="$1" inst_ref="$2" tgt_channel="$3" tgt_ref="$4"
+    local inst_nc="$5" tgt_nc="$6"
+
+    # 1. Nextcloud is the unrecoverable one — check it first and report loudest.
+    if [ -n "$inst_nc" ] && [ -n "$tgt_nc" ] && version_lt "$tgt_nc" "$inst_nc"; then
+        echo "Nextcloud ${inst_nc} -> ${tgt_nc} (data already migrated to ${inst_nc}; the older image will refuse to start)"
+        return 0
+    fi
+
+    # 2. HomeBrain release regression. update.sh treats every non-"stable"
+    #    channel (beta, dev, ...) as the bleeding edge: it builds from main,
+    #    which is at or ahead of every stable tag. So any non-stable -> stable
+    #    move is a downgrade by definition. stable -> stable compares the tags.
+    if [ -n "$inst_channel" ]; then
+        if [ "$inst_channel" != "stable" ] && [ "$tgt_channel" = "stable" ]; then
+            echo "${inst_channel} (tracks main) -> stable ${tgt_ref} (main is ahead of every stable release)"
+            return 0
+        fi
+        if [ "$inst_channel" = "stable" ] && [ "$tgt_channel" = "stable" ] \
+            && [ -n "$inst_ref" ] && [ -n "$tgt_ref" ] \
+            && version_lt "${tgt_ref#v}" "${inst_ref#v}"; then
+            echo "release ${inst_ref} -> ${tgt_ref}"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # --- GPU Detection ---
 # HomeBrain's AI stack (llama-server) targets x86_64 with AMD/Nvidia/Intel GPU.
 # aarch64 targets (HomeCloud/RPi) are always treated as no-GPU — their on-die
