@@ -1292,6 +1292,28 @@ run_as_admin() {
         "$@"
 }
 
+# Install HomeBrain-owned OpenClaw plugins from the repo
+# (config/openclaw-plugins/). These add dashboard-facing functionality that
+# stock upstream OpenClaw does not expose as a gateway HTTP route — currently
+# the WhatsApp QR login flow consumed by src/integrations.py — WITHOUT forking
+# OpenClaw itself. Each plugin dir carries an openclaw.plugin.json manifest;
+# `openclaw plugins install` stages it and (for plugins with no required
+# configSchema, like ours) enables it in plugins.entries. Idempotent via
+# --force. Runs as the homebrain user so it writes to ~/.openclaw.
+install_homebrain_openclaw_plugins() {
+    local plugins_root="${SCRIPT_DIR}/../config/openclaw-plugins"
+    [[ -d "$plugins_root" ]] || return 0
+    local dir pid
+    for dir in "$plugins_root"/*/; do
+        [[ -f "${dir}openclaw.plugin.json" ]] || continue
+        pid=$(basename "$dir")
+        log_info "Installing HomeBrain OpenClaw plugin: ${pid}"
+        if ! run_as_admin openclaw plugins install "${dir%/}" --force >/dev/null 2>&1; then
+            log_warn "Failed to install HomeBrain plugin '${pid}'. Dashboard features that depend on it may be unavailable until the next setup run."
+        fi
+    done
+}
+
 setup_openclaw() {
     log_info "=== Setting up OpenClaw AI Assistant ==="
     load_env
@@ -1393,12 +1415,19 @@ setup_openclaw() {
         fi
     fi
 
-    # Channel plugins (matrix, nextcloud-talk, telegram, signal, etc.)
-    # are intentionally NOT pre-installed here. The agent's `channels`
-    # self-config tool installs them on demand from the official-external
-    # catalog when the user actually wants a given messenger — which keeps
-    # fresh provisioning fast and avoids cluttering the OpenClaw UI with
-    # never-configured channel cards.
+    # Channel plugins: Telegram ships INSIDE core OpenClaw, so it needs no
+    # install. WhatsApp is a separate `@openclaw/whatsapp` plugin that is NOT
+    # bundled and is intentionally NOT pre-installed here — keeping fresh
+    # provisioning fast and avoiding never-configured channel cards. On stock
+    # upstream OpenClaw the install is HomeBrain's responsibility (the fork's
+    # `channels` self-config tool is absent): the dashboard installs it lazily
+    # and pinned on first link — `openclaw plugins install @openclaw/whatsapp@<v>`
+    # where <v> is config/versions.json:openclaw_whatsapp.version, kept peer-
+    # compatible with the openclaw pin — in src/integrations.py. That install is
+    # backgrounded (too slow for the gunicorn worker timeout) and the dashboard
+    # polls through an "installing" state. The WhatsApp QR login *route* is
+    # provided separately by the homebrain-whatsapp-login plugin installed below,
+    # independent of the channel plugin.
 
     # --- [2/3] Write config ---
     log_info "[2/3] Writing config..."
@@ -1424,6 +1453,13 @@ setup_openclaw() {
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
+
+    # Install HomeBrain-owned plugins (e.g. the WhatsApp QR login HTTP route)
+    # AFTER the config write above: `openclaw plugins install` mutates
+    # plugins.entries in openclaw.json, so running it before the first-install
+    # template copy would clobber the enablement. The daemon start below then
+    # picks up the freshly-registered routes.
+    install_homebrain_openclaw_plugins
 
     # --- [3/3] Register and start daemon ---
     log_info "[3/3] Registering and starting daemon..."

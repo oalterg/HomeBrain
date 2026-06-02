@@ -75,6 +75,21 @@ CHANNEL_ORDER = ["telegram", "whatsapp"]
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 OPENCLAW_GATEWAY_BASE = "http://127.0.0.1:18789"
 
+# WhatsApp is a separate OpenClaw channel plugin (Telegram is bundled in core,
+# WhatsApp is not). On stock upstream OpenClaw it must be installed on demand —
+# see _install_whatsapp_plugin_locked(). It installs as an npm-spec plugin into
+# <OPENCLAW_DIR>/npm/node_modules/@openclaw/whatsapp.
+VERSIONS_FILE = os.path.join(INSTALL_DIR, "config", "versions.json")
+WHATSAPP_PLUGIN_PKG = "@openclaw/whatsapp"
+WHATSAPP_PLUGIN_DIR = os.path.join(
+    OPENCLAW_DIR, "npm", "node_modules", "@openclaw", "whatsapp")
+# Floor used only if config/versions.json is unreadable. Keep peer-compatible
+# with the pinned openclaw version (see config/versions.json:openclaw_whatsapp).
+_DEFAULT_WHATSAPP_VERSION = "2026.5.12"
+# Cross-worker lock so concurrent dashboard requests (3 gunicorn workers) don't
+# launch overlapping npm installs into the same dir.
+_WHATSAPP_INSTALL_LOCK = "/tmp/homebrain-whatsapp-install.lock"
+
 
 # ---------------------------------------------------------------------------
 # Helpers — env, files, derivation
@@ -1034,6 +1049,89 @@ def _whatsapp_auth_status() -> dict:
     return {"linked": False}
 
 
+# --- WhatsApp channel-plugin install (stock OpenClaw) ----------------------
+# Telegram ships inside core OpenClaw; WhatsApp does not — it's a separate
+# `@openclaw/whatsapp` channel plugin. The homebrain-whatsapp-login plugin
+# (installed at provision) provides the QR *route*, but it 404s with
+# "WhatsApp plugin is not installed" until the channel plugin itself is present.
+# We install it lazily the first time the user links WhatsApp.
+
+def _whatsapp_plugin_installed() -> bool:
+    """True once @openclaw/whatsapp is on disk (fast; just a file check)."""
+    return os.path.exists(os.path.join(WHATSAPP_PLUGIN_DIR, "package.json"))
+
+
+def _whatsapp_plugin_spec() -> str:
+    """`@openclaw/whatsapp@<pinned>` — pinned so we never pull a newer build
+    whose peerDependencies/compat.pluginApi outrun the installed openclaw
+    (e.g. 2026.5.28 requires openclaw>=2026.5.28). Prefer the dedicated pin,
+    fall back to the openclaw version, then to a safe floor."""
+    version = ""
+    try:
+        with open(VERSIONS_FILE) as f:
+            data = json.load(f)
+        version = (data.get("openclaw_whatsapp", {}).get("version")
+                   or data.get("openclaw", {}).get("version") or "")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        version = ""
+    if not version:
+        version = _DEFAULT_WHATSAPP_VERSION
+    return f"{WHATSAPP_PLUGIN_PKG}@{version}" if version else WHATSAPP_PLUGIN_PKG
+
+
+def _install_whatsapp_plugin_locked() -> None:
+    """Install the WhatsApp channel plugin as the homebrain user.
+
+    Runs `openclaw plugins install @openclaw/whatsapp@<pin>` (an npm fetch +
+    dependency build that routinely takes 20-60 s — far past the gunicorn
+    worker timeout), so this is only ever called from a background thread.
+    A non-blocking flock dedupes overlapping installs across gunicorn workers;
+    if another worker holds it we simply return (it's doing the work)."""
+    import fcntl
+    try:
+        fd = open(_WHATSAPP_INSTALL_LOCK, "w")
+    except OSError:
+        return
+    try:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return  # another worker is already installing
+        if _whatsapp_plugin_installed():
+            return
+        spec = _whatsapp_plugin_spec()
+        logging.info("installing WhatsApp channel plugin: %s", spec)
+        try:
+            proc = subprocess.run(
+                ["sudo", "-u", "homebrain", "openclaw", "plugins", "install", spec],
+                capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode == 0 and _whatsapp_plugin_installed():
+                logging.info("WhatsApp channel plugin installed")
+            else:
+                logging.warning(
+                    "WhatsApp plugin install failed (rc=%s): %s",
+                    proc.returncode,
+                    _clean_openclaw_error(proc.stderr, proc.stdout),
+                )
+        except subprocess.TimeoutExpired:
+            logging.warning("WhatsApp plugin install timed out")
+        except Exception as e:  # pragma: no cover - defensive
+            logging.warning("WhatsApp plugin install error: %s", e)
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        fd.close()
+
+
+def _ensure_whatsapp_plugin_async() -> None:
+    """Kick off the install in the background and return immediately. The
+    thread self-dedupes via flock, so calling this on every retry is safe."""
+    threading.Thread(target=_install_whatsapp_plugin_locked, daemon=True).start()
+
+
 def _gateway_token() -> str | None:
     """Read the OpenClaw gateway bearer token from openclaw.json."""
     data = _read_openclaw_config()
@@ -1523,6 +1621,18 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     def whatsapp_add():
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
+        # WhatsApp needs its channel plugin on disk. Provisioning does not
+        # pre-install it, so the first link triggers a one-time install. That
+        # install is too slow to run inline (gunicorn worker timeout), so we
+        # do it in the background and tell the client to retry — the dashboard
+        # polls this endpoint through the "installing" state before asking for
+        # the QR. Once present, configuring is fast.
+        if not _whatsapp_plugin_installed():
+            _ensure_whatsapp_plugin_async()
+            return jsonify({
+                "status": "installing",
+                "message": "Installing WhatsApp support (one-time, may take a minute)…",
+            }), 202
         _write_openclaw_channel("whatsapp", {
             "enabled": True,
             "dmPolicy": "pairing",
