@@ -278,6 +278,13 @@ docker compose --env-file "$ENV_FILE" $(get_compose_args) pull || { log_error "D
 profiles=$(get_tunnel_profiles)
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || { log_error "Docker up failed"; exit 1; }
 
+# 6c. Nextcloud schema reconcile — a docker image bump lands new code in the
+# html volume, but the DB migration still has to run. The image entrypoint's
+# auto-upgrade is skipped when the container isn't recreated and can be left
+# incomplete after a recovery, stranding NC on the "use the command line
+# updater" page. reconcile_nextcloud is an idempotent no-op when nothing pends.
+reconcile_nextcloud
+
 # 7. Write Version File
 cat > "$INSTALL_DIR/version.json" <<EOF
 {

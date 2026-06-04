@@ -72,6 +72,14 @@ safe "stable re-run same tag"           stable v1.1.0 stable v1.1.0 32.0.9 32.0.
 safe "fresh install (no signals)"       ""   ""      stable v1.1.0 ""     32.0.3
 safe "beta->beta, NC unknown"           beta main   beta main   ""     ""
 
+echo "== nc_status_needs_upgrade =="
+needs() { if printf '%s' "$2" | nc_status_needs_upgrade; then ok "$1"; else bad "$1 (expected needs-upgrade)"; fi; }
+clean() { if printf '%s' "$2" | nc_status_needs_upgrade; then bad "$1 (expected up-to-date)"; else ok "$1"; fi; }
+needs "needsDbUpgrade: true"  "$(printf -- '  - installed: true\n  - needsDbUpgrade: true\n  - maintenance: false\n')"
+clean "needsDbUpgrade: false" "$(printf -- '  - installed: true\n  - needsDbUpgrade: false\n  - maintenance: false\n')"
+clean "field absent"          "$(printf -- '  - installed: true\n  - versionstring: 32.0.9\n')"
+needs "tab-indented true"     "$(printf -- '\t- needsDbUpgrade:   true\n')"
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

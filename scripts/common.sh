@@ -560,6 +560,66 @@ configure_nc_ha_proxy_settings() {
     fi
 }
 
+# nc_status_needs_upgrade — reads `occ status` output on stdin and returns 0
+# (true) when a Nextcloud DB schema upgrade is pending. Pure/testable; the
+# docker plumbing lives in reconcile_nextcloud below.
+nc_status_needs_upgrade() {
+    grep -qiE 'needsDbUpgrade:[[:space:]]*true'
+}
+
+# reconcile_nextcloud — run Nextcloud's pending DB schema migration if needed.
+#
+# A docker image bump only copies the new code into the html volume; the schema
+# migration still has to run. The stock image entrypoint auto-runs `occ upgrade`
+# on container (re)creation, but that is skipped when the image tag is unchanged
+# (compose doesn't recreate the container) and can be left incomplete after a
+# downgrade-recovery roll-forward. Either way Nextcloud is stranded on its
+# "Please use the command line updater because updating via browser is disabled
+# in config.php" page — the docker image disables the web updater on purpose.
+#
+# Running it here makes the appliance self-heal without the user ever needing a
+# shell. Idempotent: a no-op (just an `occ status` probe) when nothing is pending.
+reconcile_nextcloud() {
+    local nc_cid
+    nc_cid=$(get_nc_cid)
+    if [[ -z "$nc_cid" ]]; then
+        log_warn "Nextcloud container not found; skipping schema reconcile."
+        return 0
+    fi
+
+    # occ is unavailable until the entrypoint finishes copying code on a fresh
+    # image, so poll briefly for a usable status before deciding.
+    local status="" tries=0
+    while ((tries < 30)); do
+        if status=$(docker exec -u www-data "$nc_cid" php occ status 2>/dev/null) && [[ -n "$status" ]]; then
+            break
+        fi
+        status=""
+        tries=$((tries + 1))
+        sleep 2
+    done
+
+    if [[ -z "$status" ]]; then
+        log_warn "Nextcloud occ not responsive; skipping schema reconcile."
+        return 0
+    fi
+
+    # Run `occ upgrade` unconditionally (matching restore.sh): it is a fast no-op
+    # when nothing is pending ("Nextcloud is already latest version"), so the
+    # repair never depends on parsing the exact status field — whatever left the
+    # instance needing a migration, this clears it. nc_status_needs_upgrade is
+    # used only to phrase the log.
+    if printf '%s' "$status" | nc_status_needs_upgrade; then
+        log_info "Nextcloud reports a pending DB schema upgrade — running occ upgrade..."
+    else
+        log_info "Reconciling Nextcloud schema (occ upgrade; no-op if already current)..."
+    fi
+    docker exec -u www-data "$nc_cid" php occ upgrade \
+        || log_warn "occ upgrade returned non-zero (often 'no upgrade required') — check Nextcloud logs."
+    docker exec -u www-data "$nc_cid" php occ maintenance:mode --off >/dev/null 2>&1 || true
+    log_info "Nextcloud schema reconcile complete."
+}
+
 configure_nextcloud_redis() {
     local nc_cid=$(get_nc_cid)
     
