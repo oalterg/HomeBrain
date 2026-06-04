@@ -1301,7 +1301,11 @@ run_as_admin() {
 # configSchema, like ours) enables it in plugins.entries. Idempotent via
 # --force. Runs as the homebrain user so it writes to ~/.openclaw.
 install_homebrain_openclaw_plugins() {
-    local plugins_root="${SCRIPT_DIR}/../config/openclaw-plugins"
+    # Optional $1 overrides the plugins root. Callers that source this file from
+    # a different working tree (e.g. update.sh, where sourcing resets SCRIPT_DIR
+    # to that script's $0 — the self-update temp dir after re-exec) MUST pass the
+    # root explicitly, else the SCRIPT_DIR-relative default misses the tree.
+    local plugins_root="${1:-${SCRIPT_DIR}/../config/openclaw-plugins}"
     [[ -d "$plugins_root" ]] || return 0
     local dir pid
     for dir in "$plugins_root"/*/; do
