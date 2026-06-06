@@ -1579,8 +1579,17 @@ def revert_tunnel_provider():
     update_env_var("PANGOLIN_ENDPOINT", factory.get("PANGOLIN_ENDPOINT", ""))
     update_env_var("NEWT_ID", factory.get("NEWT_ID", ""))
     update_env_var("NEWT_SECRET", factory.get("NEWT_SECRET", ""))
-    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", factory.get("NC_DOMAIN", ""))
-    update_env_var("HA_TRUSTED_DOMAINS", factory.get("HA_DOMAIN", ""))
+    # Derive trusted domains from the factory PANGOLIN_DOMAIN rather than the
+    # legacy NC_DOMAIN/HA_DOMAIN keys: provision.sh (remote mode) rewrites
+    # factory_config without those keys, so reading them here would blank the
+    # trusted domains on revert. Mirrors the /api/tunnel revert + start_setup map.
+    main_dom = factory.get("PANGOLIN_DOMAIN", "")
+    update_env_var("PANGOLIN_DOMAIN", main_dom)
+    update_env_var("MANAGER_DOMAIN", main_dom)
+    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}" if main_dom else "")
+    update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}" if main_dom else "")
+    update_env_var("VAULT_TRUSTED_DOMAINS", f"vault.{main_dom}" if main_dom else "")
+    update_env_var("VAULT_DOMAIN", f"https://vault.{main_dom}" if main_dom else "")
 
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"

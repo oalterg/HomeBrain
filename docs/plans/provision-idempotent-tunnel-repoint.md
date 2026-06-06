@@ -1,6 +1,7 @@
 # Make `provision.sh` idempotently repoint a box to a new Pangolin tunnel
 
-**Status:** design / findings — implementation deferred ("later")
+**Status:** G1–G4 shipped (PR #100). G5/G6/G8 shipped (PR #102). G7/G9 deferred (rationale below).
+G10 already satisfied. Related: vault DB-identity fix (PR #101).
 **Date:** 2026-06-06
 **Context:** Operator wants to repoint a live, data-loaded box (e.g. prod RPi5 HomeCloud) to a
 new Pangolin tunnel + domain, keeping Nextcloud/Vault/HA data intact, by running `provision.sh`
@@ -109,6 +110,28 @@ the data-safety contract at the top of provision.sh.
 - `nextcloud-data` 83G (real users incl. `OliAidana`,`admin`), `vault-data` present; all 7 containers up; **no GPU**.
 - Deployed code: channel `beta`, ref `e8d68da`; `/opt/homebrain` is **not** a git repo (tarball deploy) — box code can differ from a dev checkout; verify scripts on the box before relying on them.
 - `redeploy_tunnels.sh`: no destructive ops. `deploy.sh` wipe gate guarded by `.setup_complete` (`deploy.sh:31`).
+
+## Resolution log
+
+- **G1–G4** — shipped in PR #100 (named flags, merged-config mode detection, .env propagation +
+  redeploy on already-set-up boxes).
+- **G5** — fixed in PR #102: `revert_tunnel_provider` now derives trusted domains from factory
+  `PANGOLIN_DOMAIN` (+ vault domain/manager domain) instead of the dropped `NC_DOMAIN`/`HA_DOMAIN`.
+  Confirmed those were the only consumers of the legacy keys.
+- **G6** — addressed in PR #102 via `verify_newt_connected` (post-redeploy check; warns if the new
+  tunnel didn't come up rather than pre-flighting, which is impractical with a single newt container).
+- **G8** — addressed in PR #102 via `print_pangolin_resource_guide`, which prints the resource→target
+  map with **correct** targets (container internal ports / bridge gateway). This also corrected a wrong
+  hint in the original PR #100 reminder (`nc -> 8080`) that led an operator to misconfigure nc as
+  `nextcloud:8080` (should be `nextcloud:80`) and get a 404.
+- **G7** — deferred: only affects GPU/x86 boxes running OpenClaw (which may have stored old public
+  URLs); cannot be E2E-verified without a GPU target, and the box this work was driven on has no GPU.
+- **G9** — deferred: registrar re-activation only applies when `REGISTRAR_URL` is set; not configured
+  on the target, so it would be untested speculation.
+- **G10** — already satisfied: the repoint path uses `redeploy_tunnels.sh` (no wipe logic) and
+  deploy.sh's wipe branch is gated on the absence of `.setup_complete`; documented in provision.sh §7.
+- Related: **PR #101** persists `VAULT_DB_USER`/`VAULT_DB_NAME` in `provision_vault.sh` (vaultwarden
+  crash-loop root cause found live).
 
 ## Target one-command UX (after G1–G4)
 
