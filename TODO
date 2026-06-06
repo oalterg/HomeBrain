@@ -1,0 +1,3 @@
+- Make provision.sh idempotently repoint a box to a new Pangolin tunnel (update .env + redeploy,
+  not just factory_config). Full gap analysis (G1–G10) + verified prod facts:
+  docs/plans/provision-idempotent-tunnel-repoint.md
