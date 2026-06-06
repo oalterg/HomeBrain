@@ -328,6 +328,51 @@ is_local_mode() {
     return 1
 }
 
+# Best-effort confirmation that newt established the Pangolin tunnel after a
+# (re)deploy. A wrong NEWT_ID/SECRET/ENDPOINT leaves the box reachable on the
+# LAN but silently unreachable remotely, so we surface that loudly rather than
+# letting the operator discover it via a dead public URL. Returns non-zero (and
+# warns) if no successful connection shows up in newt's recent logs.
+verify_newt_connected() {
+    local cid
+    cid=$(docker compose $(get_compose_args) ps -q newt 2>/dev/null || true)
+    if [[ -z "$cid" ]]; then
+        log_warn "newt container not running — remote tunnel is down (LAN access unaffected)."
+        return 1
+    fi
+    local i
+    for i in 1 2 3 4 5 6; do
+        if docker logs --since 5m "$cid" 2>&1 | grep -q "Tunnel connection to server established"; then
+            log_info "newt tunnel connection to Pangolin confirmed."
+            return 0
+        fi
+        sleep 5
+    done
+    log_warn "newt did NOT report a successful tunnel connection within ~30s."
+    log_warn "Verify NEWT_ID / NEWT_SECRET / PANGOLIN_ENDPOINT — the box is still reachable on the LAN."
+    log_warn "Logs: docker logs ${cid}"
+    return 1
+}
+
+# Print the Pangolin org-side resources the operator must create for a tunnel
+# domain. provision.sh cannot configure the Pangolin server, and the targets are
+# easy to get wrong: newt runs on the homebrain_default Docker network, so it
+# reaches the service containers by NAME on their INTERNAL ports — NOT the host-
+# published ports (nc's host 8080 maps to container :80; vault's 8082 is even
+# loopback-only). The manager is a host process, reached via the bridge gateway.
+print_pangolin_resource_guide() {
+    local dom="$1"
+    local gw
+    gw=$(docker network inspect homebrain_default \
+            --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+    gw="${gw:-172.18.0.1}"
+    log_warn "Pangolin resources to configure for https://${dom} (targets are HTTP; TLS ends at the edge):"
+    log_warn "  ${dom} (root, manager) -> ${gw}:80        (host process — use the bridge gateway, not a name)"
+    log_warn "  nc.${dom}              -> nextcloud:80     (container internal port — NOT host 8080)"
+    log_warn "  ha.${dom}              -> homeassistant:8123"
+    log_warn "  vault.${dom}           -> vaultwarden:80   (host 8082 is loopback-only — use the name)"
+}
+
 wait_for_healthy() {
     local service_name="$1"
     local timeout_seconds="$2"

@@ -329,8 +329,11 @@ if [[ "$PROVISION_MODE" == "remote" && -f "$INSTALL_DIR/.setup_complete" && -f "
         else
             log_warn "redeploy_tunnels.sh reported issues; inspect $LOG_DIR/main_setup.log."
         fi
-        log_warn "Remote access now flips to the new tunnel. Confirm the Pangolin org defines resources:"
-        log_warn "  ${_dom} (root) -> manager:80 · nc.${_dom} -> 8080 · ha.${_dom} -> 8123 · vault.${_dom} -> 8082"
+        # Confirm the new tunnel actually came up, then remind the operator of the
+        # Pangolin org-side resources only they can configure (with correct targets).
+        log_warn "Remote access now flips to the new tunnel."
+        verify_newt_connected || true
+        print_pangolin_resource_guide "${_dom}"
     else
         log_info "--no-apply: .env updated but tunnel not redeployed. Run scripts/redeploy_tunnels.sh to apply."
     fi
