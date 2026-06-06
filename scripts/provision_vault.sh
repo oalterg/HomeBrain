@@ -19,6 +19,19 @@ load_env
 
 : "${MASTER_PASSWORD:?MASTER_PASSWORD must be set in .env before vault provisioning}"
 
+# --- 0. DB identity (name + user) ---
+# These have stable defaults, but they MUST be written to .env because Compose
+# builds DATABASE_URL=mysql://${VAULT_DB_USER}:...@db/${VAULT_DB_NAME} with no
+# defaults of its own. .env.template ships them, but a box whose .env predates
+# that (or was generated without the template) would leave them blank — Compose
+# then expands an empty user/db and vaultwarden falls back to root-with-no-
+# password, crash-looping on "Access denied". Persist them here so the script is
+# self-sufficient regardless of template state.
+VAULT_DB_NAME="${VAULT_DB_NAME:-vaultwarden}"
+VAULT_DB_USER="${VAULT_DB_USER:-vaultwarden_user}"
+update_env_var "VAULT_DB_NAME" "$VAULT_DB_NAME"
+update_env_var "VAULT_DB_USER" "$VAULT_DB_USER"
+
 VAULT_DATA_DIR_DEFAULT="${HOMEBRAIN_HOME}/vault-data"
 
 # --- 1. Data directory ---
