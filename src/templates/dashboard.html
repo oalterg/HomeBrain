@@ -1163,6 +1163,40 @@
                         <div id="ftp-user-list" style="min-height:50px;">Loading...</div>
                     </div>
                 </div>
+
+                <div id="ftp-recipe" style="margin-top:18px; padding:14px 16px; border:1px solid var(--border); border-radius:8px; background:var(--surface-sunken); font-size:0.9em; display:none;">
+                    <div style="font-weight:600; margin-bottom:8px;">📷 Enter these in your camera's FTP settings</div>
+                    <div style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; align-items:baseline;">
+                        <span style="color:var(--text-dim);">Server / Host</span><span><code id="ftp-recipe-host">…</code></span>
+                        <span style="color:var(--text-dim);">Port</span><span><code>21</code></span>
+                        <span style="color:var(--text-dim);">Mode</span><span><code>Passive (PASV)</code> &nbsp;<span style="color:var(--text-faint);">— "Auto" also works</span></span>
+                        <span style="color:var(--text-dim);">Username</span><span><code>your FTP user above</code></span>
+                        <span style="color:var(--text-dim);">Remote folder</span><span><code>/</code> &nbsp;<span style="color:var(--text-faint);">— uploads land in that user's Nextcloud <code>uploads</code> folder</span></span>
+                    </div>
+                    <div id="ftp-recipe-warn" style="margin-top:10px; color:var(--warning); display:none;">
+                        ⚠️ Use the <b>IP address</b> shown above — cameras can't reach <code>homebrain.local</code>.
+                        For a target that never changes, pin a fixed address in <b>Network</b> below.
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" style="grid-column: 1 / -1;">
+                <h3>Network <span style="font-weight:400; color:var(--text-dim); font-size:0.85em;">— stable address for cameras &amp; devices</span></h3>
+                <p style="margin-bottom:14px;">Cameras and many smart devices can't use <code>homebrain.local</code> — they need a numeric IP. Pin a fixed address so the IP your camera points at never changes.</p>
+                <div id="net-status" style="margin-bottom:14px; font-size:0.92em;">Loading network status…</div>
+
+                <div id="net-pin-form" style="display:none; align-items:end; gap:12px; flex-wrap:wrap;">
+                    <div><label style="margin-bottom:4px;">Fixed IP address</label><input type="text" id="net-ip" style="margin-bottom:0; width:160px;"></div>
+                    <button onclick="pinNetwork()" class="btn-primary" style="margin-bottom:0;">Use this fixed address</button>
+                    <button onclick="revertDhcp()" id="net-dhcp-btn" style="margin-bottom:0; display:none;">Back to automatic (DHCP)</button>
+                </div>
+
+                <div id="net-confirm" style="display:none; margin-top:14px; padding:14px 16px; border:1px solid var(--warning); border-radius:8px; background:var(--surface-sunken);">
+                    <div style="font-weight:600;">Confirm the new address</div>
+                    <div id="net-confirm-msg" style="margin:8px 0; font-size:0.92em;"></div>
+                    <button onclick="confirmNetwork()" class="btn-primary" style="margin-bottom:0;">Keep this address</button>
+                    <span id="net-countdown" style="margin-left:12px; color:var(--text-dim);"></span>
+                </div>
             </div>
 
             {% if ha_domain %}
@@ -1341,6 +1375,7 @@
                 loadSerialDevices();
                 loadFtpUsers();
                 populateFtpNcUserSelect();
+                loadNetworkStatus();
                 connRefresh();
                 vaultMcpRefresh();
             }
@@ -2668,7 +2703,10 @@
             try {
                 const res = await fetch('/api/ftp/users', { credentials: 'include' });
                 const users = await res.json();
-                
+
+                const recipe = document.getElementById('ftp-recipe');
+                if (recipe) recipe.style.display = users.length ? 'block' : 'none';
+
                 if (users.length === 0) {
                     el.innerHTML = '<em style="color:var(--text-faint);">No FTP users configured.</em>';
                     return;
@@ -2704,6 +2742,106 @@
                 triggerAction('/api/ftp/delete', 'Delete FTP User', { ftp_user: user });
                 setTimeout(loadFtpUsers, 3000);
             }
+        }
+
+        // --- Network / FTP-recipe Logic ---
+        let _netInfo = null;
+        let _netCountdownTimer = null;
+
+        async function loadNetworkStatus() {
+            const statusEl = document.getElementById('net-status');
+            try {
+                const res = await fetch('/api/network/info', { credentials: 'include' });
+                const n = await res.json();
+                if (n.error) { statusEl.textContent = 'Network status unavailable: ' + n.error; return; }
+                _netInfo = n;
+
+                const isStatic = (n.method === 'manual');
+                statusEl.innerHTML =
+                    `Current address: <code>${n.ip}</code> ` +
+                    `<span style="color:var(--text-dim);">(${isStatic ? 'fixed / static' : 'automatic / DHCP'})</span>`;
+
+                // Populate the camera recipe (server host = the numeric IP).
+                const host = document.getElementById('ftp-recipe-host');
+                if (host) host.textContent = n.ip;
+                const warn = document.getElementById('ftp-recipe-warn');
+                if (warn) warn.style.display = isStatic ? 'none' : 'block';
+
+                // Pin form
+                document.getElementById('net-pin-form').style.display = 'flex';
+                const ipInput = document.getElementById('net-ip');
+                if (document.activeElement !== ipInput) ipInput.value = n.suggested || n.ip;
+                document.getElementById('net-dhcp-btn').style.display = isStatic ? 'inline-block' : 'none';
+
+                // If a change is awaiting confirmation (e.g. we just reconnected at
+                // the new address), surface the confirm panel automatically.
+                if (n.pending) showConfirmPanel(n.ip, null);
+            } catch (e) {
+                statusEl.textContent = 'Network status unavailable (offline?).';
+            }
+        }
+
+        function showConfirmPanel(newIp, revertSeconds) {
+            document.getElementById('net-confirm').style.display = 'block';
+            document.getElementById('net-confirm-msg').innerHTML =
+                `The box is now reachable at <a href="http://${newIp}/"><code>${newIp}</code></a>. ` +
+                `Click <b>Keep this address</b> to make it permanent. If you don't, it reverts to DHCP automatically.`;
+            if (_netCountdownTimer) clearInterval(_netCountdownTimer);
+            if (revertSeconds) {
+                let left = revertSeconds;
+                const cd = document.getElementById('net-countdown');
+                const tick = () => {
+                    cd.textContent = left > 0 ? `auto-revert in ${left}s` : 'reverting…';
+                    if (left-- <= 0) clearInterval(_netCountdownTimer);
+                };
+                tick();
+                _netCountdownTimer = setInterval(tick, 1000);
+            }
+        }
+
+        async function pinNetwork() {
+            const ip = document.getElementById('net-ip').value.trim();
+            if (!_netInfo) return;
+            if (!confirm(`Pin this box to ${ip}?\n\nThe box's address will change. You'll need to reconnect at http://${ip}/ and click "Keep this address" within ~3 minutes, or it automatically reverts to DHCP.\n\nRemember to update your camera's FTP server to ${ip} afterwards.`)) return;
+            const body = { ip, prefix: _netInfo.prefix || '24', gateway: _netInfo.gateway, dns: _netInfo.dns, revert: 180 };
+            try {
+                const res = await fetch('/api/network/pin', {
+                    method: 'POST', credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+                if (!res.ok) { alert('Could not pin address: ' + (data.error || res.status)); return; }
+                showConfirmPanel(data.new_ip, data.revert_seconds);
+                // The current page may lose the box when the IP flips; nudge the user over.
+                setTimeout(() => { window.location.href = data.new_url; }, (data.revert_seconds > 20 ? 6000 : 3000));
+            } catch (e) {
+                // Expected: the connection may drop as the IP changes. Guide the user.
+                showConfirmPanel(ip, body.revert);
+            }
+        }
+
+        async function confirmNetwork() {
+            try {
+                const res = await fetch('/api/network/confirm', { method: 'POST', credentials: 'include' });
+                const data = await res.json();
+                if (!res.ok) { alert('Confirm failed: ' + (data.error || res.status)); return; }
+                if (_netCountdownTimer) clearInterval(_netCountdownTimer);
+                document.getElementById('net-confirm').style.display = 'none';
+                document.getElementById('net-countdown').textContent = '';
+                alert('Fixed address saved. Point your camera at this IP.');
+                loadNetworkStatus();
+            } catch (e) {
+                alert('Confirm failed — are you connected to the box at its new address?');
+            }
+        }
+
+        async function revertDhcp() {
+            if (!confirm('Revert to automatic addressing (DHCP)? The IP may change again.')) return;
+            try {
+                await fetch('/api/network/dhcp', { method: 'POST', credentials: 'include' });
+                alert('Reverting to DHCP. The box address may change.');
+            } catch (e) { /* connection may drop as IP changes */ }
         }
 
         // --- Zigbee Logic ---

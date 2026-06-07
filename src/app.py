@@ -3235,12 +3235,21 @@ def setup_ftp():
     # Ensure utility script is executable
     subprocess.run(["chmod", "+x", SCRIPT_UTILITIES])
 
-    # Pass password securely? 
-    # For simplicity in this context, we pass as arg, but in high security 
-    # we would write to temp file or pipe. Since this is local root, args are acceptable-ish
-    # but strictly speaking visible in ps. 
-    # Use shlex to prevent injection.
-    cmd = f"bash {SCRIPT_UTILITIES} setup {shlex.quote(nc_user)} {shlex.quote(ftp_user)} {shlex.quote(ftp_pass)} >> {LOG_FILES['setup']} 2>&1"
+    # Write the password to a private temp file (0600) and pass only its path —
+    # this keeps the secret out of argv (and therefore out of `ps`). utilities.sh
+    # reads then shreds the file.
+    fd, pass_file = tempfile.mkstemp(prefix="hb_ftp_", suffix=".pw")
+    try:
+        os.write(fd, ftp_pass.encode())
+    finally:
+        os.close(fd)
+    os.chmod(pass_file, 0o600)
+
+    cmd = (
+        f"bash {shlex.quote(SCRIPT_UTILITIES)} setup "
+        f"{shlex.quote(nc_user)} {shlex.quote(ftp_user)} {shlex.quote(pass_file)} "
+        f">> {LOG_FILES['setup']} 2>&1"
+    )
 
     threading.Thread(
         target=run_background_task, args=("Setup FTP Server", cmd, "setup")
@@ -3263,6 +3272,108 @@ def delete_ftp():
         target=run_background_task, args=("Delete FTP User", cmd, "setup")
     ).start()
     return jsonify({"status": "started"})
+
+
+# --- Routes: Network (stable address for cameras) ---
+# Cameras can't resolve mDNS (.local) and consumer routers often can't reserve a
+# DHCP lease, so a fixed IP on the box is the reliable way to keep a camera's FTP
+# target valid. Pinning uses a confirm-or-revert guard (see utilities.sh) so a bad
+# address self-heals back to DHCP rather than locking the box off the network.
+_IPV4_RE = re.compile(r"^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$")
+
+def _valid_ipv4(s):
+    m = _IPV4_RE.match((s or "").strip())
+    return bool(m) and all(0 <= int(g) <= 255 for g in m.groups())
+
+@app.route("/api/network/info", methods=["GET"])
+def api_network_info():
+    """Current addressing (iface, method, ip, gateway, dns) + a suggested free static IP."""
+    try:
+        out = subprocess.check_output(
+            ["bash", SCRIPT_UTILITIES, "network_info"], text=True, timeout=20
+        ).strip()
+        return Response(out, mimetype="application/json")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/network/pin", methods=["POST"])
+@limiter.limit("10 per minute")
+def api_network_pin():
+    """Apply a static IP to the running device with an auto-revert guard.
+
+    The box's IP changes ~2s after this returns, so the client must reconnect at
+    the new address and POST /api/network/confirm before the revert window
+    elapses, or addressing rolls back to DHCP automatically.
+    """
+    data = request.json or {}
+    ip = (data.get("ip") or "").strip()
+    prefix = str(data.get("prefix") or "24").strip()
+    gateway = (data.get("gateway") or "").strip()
+    dns = (data.get("dns") or gateway).strip()
+    try:
+        revert = str(max(30, min(600, int(data.get("revert", 180)))))
+    except (TypeError, ValueError):
+        revert = "180"
+
+    if not _valid_ipv4(ip):
+        return jsonify({"error": "Invalid IP address"}), 400
+    if not _valid_ipv4(gateway):
+        return jsonify({"error": "Invalid gateway"}), 400
+    if not prefix.isdigit() or not (1 <= int(prefix) <= 32):
+        return jsonify({"error": "Invalid prefix length"}), 400
+    if not dns or any(not _valid_ipv4(d) for d in dns.split()):
+        return jsonify({"error": "Invalid DNS server"}), 400
+
+    subprocess.run(["chmod", "+x", SCRIPT_UTILITIES])
+    try:
+        # network_pin schedules a detached applier and returns immediately, so
+        # this call does not block on the IP change itself.
+        subprocess.check_output(
+            ["bash", SCRIPT_UTILITIES, "network_pin", ip, prefix, gateway, dns, revert],
+            text=True, timeout=15, stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": (e.output or "").strip() or "Failed to schedule static IP"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({
+        "status": "applying",
+        "new_ip": ip,
+        "new_url": f"http://{ip}/",
+        "revert_seconds": int(revert),
+    })
+
+@app.route("/api/network/confirm", methods=["POST"])
+@limiter.limit("10 per minute")
+def api_network_confirm():
+    """Persist the pending static IP and cancel the auto-revert guard."""
+    try:
+        subprocess.check_output(
+            ["bash", SCRIPT_UTILITIES, "network_confirm"], text=True, timeout=30,
+            stderr=subprocess.STDOUT,
+        )
+        return jsonify({"status": "confirmed"})
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": (e.output or "").strip() or "Confirm failed"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/network/dhcp", methods=["POST"])
+@limiter.limit("10 per minute")
+def api_network_dhcp():
+    """Revert addressing to automatic (DHCP)."""
+    subprocess.run(["chmod", "+x", SCRIPT_UTILITIES])
+    try:
+        subprocess.check_output(
+            ["bash", SCRIPT_UTILITIES, "network_dhcp"], text=True, timeout=30,
+            stderr=subprocess.STDOUT,
+        )
+        return jsonify({"status": "reverting"})
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": (e.output or "").strip() or "Revert failed"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     try:
