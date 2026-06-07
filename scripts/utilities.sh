@@ -266,6 +266,75 @@ EOF
     fi
 
     mkdir -p "$USER_CONFIG_DIR"
+
+    # During login vsftpd chdir()s into the guest user's home dir (www-data → /var/www)
+    # BEFORE applying local_root, and a failed chdir there is fatal. On a Docker-only
+    # host there is no host Apache, so /var/www never gets created and every login dies
+    # with "500 OOPS: cannot change directory:/var/www" — which cameras (e.g. Reolink)
+    # surface as a generic "FTP error 19". Ensure the guest home exists so login can
+    # proceed far enough to honour the per-user local_root.
+    mkdir -p /var/www
+}
+
+# --- Helper: Open/close firewall for FTP (only when ufw is active) ---
+# vsftpd needs the control port (21) plus the passive data range advertised in
+# the config (pasv_min_port..pasv_max_port). provision.sh opens the web ports but
+# not these, so on any box with ufw active the camera's data channel silently
+# fails. Open them lazily when FTP is actually configured.
+_ftp_firewall() {
+    local action="$1" # allow | delete
+    command -v ufw >/dev/null 2>&1 || return 0
+    ufw status 2>/dev/null | grep -q "Status: active" || return 0
+    if [ "$action" = "allow" ]; then
+        ufw allow 21/tcp comment 'HomeBrain FTP control' >/dev/null 2>&1 || true
+        ufw allow 40000:50000/tcp comment 'HomeBrain FTP passive' >/dev/null 2>&1 || true
+        log_info "Opened firewall for FTP (21/tcp + 40000-50000/tcp)."
+    else
+        ufw delete allow 21/tcp >/dev/null 2>&1 || true
+        ufw delete allow 40000:50000/tcp >/dev/null 2>&1 || true
+        log_info "Closed FTP firewall ports (no FTP users remain)."
+    fi
+}
+
+# --- Helper: Write an FTP user into the password file ---
+# pam_pwdfile authenticates against crypt(3) hashes. Prefer bcrypt ($2y$) — it is
+# crypt-compatible on modern glibc/libxcrypt and far stronger than the legacy DES
+# crypt (-d) this previously used (DES silently truncates passwords to 8 chars).
+# Fall back to DES only if this htpasswd build lacks bcrypt support.
+_ftp_write_user() {
+    local user="$1" pass="$2"
+    local algo="-B"
+    if ! htpasswd -nbB _probe _probe >/dev/null 2>&1; then
+        algo="-d"
+        log_warn "htpasswd lacks bcrypt support; falling back to DES crypt."
+    fi
+    if [ ! -f "$FTP_PASSWD_FILE" ]; then
+        htpasswd -b "$algo" -c "$FTP_PASSWD_FILE" "$user" "$pass"
+    else
+        htpasswd -b "$algo" "$FTP_PASSWD_FILE" "$user" "$pass"
+    fi
+    chmod 600 "$FTP_PASSWD_FILE"
+}
+
+# --- Helper: Self-test a freshly configured FTP user ---
+# Performs a real loopback login + passive STOR with the user's own credentials,
+# exactly as a camera would. This catches misconfigurations (missing guest home,
+# bad chroot, incompatible password hash, wrong perms) that leave vsftpd "active"
+# but unusable — the failure mode that surfaced on cameras as "FTP error 19".
+_ftp_selftest() {
+    local user="$1" pass="$2" upload_dir="$3"
+    command -v curl >/dev/null 2>&1 || { log_warn "curl missing; skipping FTP self-test."; return 0; }
+    local tmp marker="/.homebrain_selftest"
+    tmp=$(mktemp)
+    echo "homebrain-ftp-selftest" > "$tmp"
+    local rc=0
+    # -f makes curl return non-zero on any FTP error (login/chroot/STOR failure).
+    if ! curl -fsS --connect-timeout 10 --ftp-pasv -T "$tmp" \
+            "ftp://${user}:${pass}@127.0.0.1${marker}" >/dev/null 2>&1; then
+        rc=1
+    fi
+    rm -f "$tmp" "${upload_dir}${marker}"
+    return $rc
 }
 
 # --- Action: Setup FTP User ---
@@ -294,13 +363,8 @@ setup_ftp_user() {
         chown -R www-data:www-data "$upload_dir"
     fi
 
-    # 3. Add/Update Virtual FTP User
-    # Use -B to verify bcrypt compatibility if needed, but md5 (-d) is standard for pam_pwdfile
-    if [ ! -f "$FTP_PASSWD_FILE" ]; then
-        htpasswd -b -c -d "$FTP_PASSWD_FILE" "$ftp_user" "$ftp_pass"
-    else
-        htpasswd -b -d "$FTP_PASSWD_FILE" "$ftp_user" "$ftp_pass"
-    fi
+    # 3. Add/Update Virtual FTP User (bcrypt-hashed, see _ftp_write_user)
+    _ftp_write_user "$ftp_user" "$ftp_pass"
 
     # 4. Map FTP User to NC User Directory
     # We store the NC user in a comment for the API to read back later
@@ -354,7 +418,18 @@ EOF
 
     systemctl enable --now "$service_name"
     systemctl restart vsftpd
-    
+
+    # 6. Open firewall (no-op unless ufw is active)
+    _ftp_firewall allow
+
+    # 7. Verify the user can actually log in and upload — fail loudly if not, so
+    # the dashboard reports a real error instead of a misleading "active" state.
+    if _ftp_selftest "$ftp_user" "$ftp_pass" "$upload_dir"; then
+        log_info "FTP self-test passed: login + passive upload OK for '$ftp_user'."
+    else
+        die "FTP self-test FAILED for '$ftp_user': vsftpd is running but rejected a real upload. Check that '$upload_dir' exists and is owned by www-data, and see /var/log/vsftpd.log."
+    fi
+
     log_info "FTP User '$ftp_user' mapped to Nextcloud user '$nc_user' successfully."
 }
 
@@ -372,9 +447,130 @@ delete_ftp_user() {
     
     # Note: We do NOT stop the sync service because multiple FTP users might map to the same NC user.
     # Service cleanup is left manual or handled by a deeper logic if needed.
-    
+
     systemctl restart vsftpd
+
+    # Close the FTP firewall ports once the last user is gone.
+    if [ ! -d "$USER_CONFIG_DIR" ] || [ -z "$(ls -A "$USER_CONFIG_DIR" 2>/dev/null)" ]; then
+        _ftp_firewall delete
+    fi
+
     log_info "FTP User '$ftp_user' deleted."
+}
+
+# --- Network: static-IP pinning (camera-friendly stable address) -------------
+# Cameras can't resolve mDNS (.local), and consumer routers (e.g. the stock
+# Starlink router) often can't reserve DHCP leases, so the box's address can
+# drift and break a camera that was pointed at the old IP. These actions let the
+# dashboard pin a fixed address with a confirm-or-revert safety guard: the change
+# is applied to the *running device only* (not yet saved), then automatically
+# rolled back unless the dashboard — reachable only at the NEW address — confirms
+# within a time window. This makes a remote/headless reconfigure safe: a wrong
+# address self-heals back to DHCP instead of bricking access to the box.
+NET_PENDING_FILE="/run/homebrain-net-pending"
+NET_CONFIRM_SENTINEL="/run/homebrain-net-confirmed"
+
+_net_primary_iface() {
+    ip route show default 2>/dev/null | awk '/default/ {print $5; exit}' || true
+}
+
+_net_active_con() {
+    local iface="$1"
+    nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null \
+        | awk -F: -v i="$iface" '$2==i{print $1; exit}' || true
+}
+
+_net_suggest_static() {
+    # Suggest a free address low in the subnet — below the range home routers
+    # typically hand out via DHCP, minimising the chance of a future collision.
+    local base="$1" cur="$2" o
+    for o in 10 11 12 15 20 5 8 25 30; do
+        [ "$o" = "$cur" ] && continue
+        if ! ping -c1 -W1 "${base}.${o}" >/dev/null 2>&1; then
+            echo "${base}.${o}"; return 0
+        fi
+    done
+    echo ""
+}
+
+network_info() {
+    local iface addr ip4 prefix gw dns con method base cur suggest
+    iface=$(_net_primary_iface)
+    if [ -z "$iface" ]; then echo '{"error":"no default interface"}'; return 0; fi
+    addr=$(ip -4 -o addr show dev "$iface" scope global 2>/dev/null | awk '{print $4; exit}' || true)
+    ip4=${addr%/*}; prefix=${addr#*/}
+    gw=$(ip route show default 2>/dev/null | awk '/default/ {print $3; exit}' || true)
+    dns=$(nmcli -g IP4.DNS device show "$iface" 2>/dev/null | head -1 || true)
+    [ -z "$dns" ] && dns="$gw"
+    con=$(_net_active_con "$iface")
+    method=$(nmcli -g ipv4.method connection show "$con" 2>/dev/null || true)
+    base=${ip4%.*}; cur=${ip4##*.}
+    suggest=$(_net_suggest_static "$base" "$cur")
+    local pending="false"
+    [ -f "$NET_PENDING_FILE" ] && pending="true"
+    printf '{"iface":"%s","method":"%s","ip":"%s","prefix":"%s","gateway":"%s","dns":"%s","suggested":"%s","hostname":"%s","pending":%s}\n' \
+        "$iface" "${method:-auto}" "$ip4" "${prefix:-24}" "$gw" "$dns" "$suggest" "$(hostname)" "$pending"
+}
+
+network_pin() {
+    local ip="$1" prefix="$2" gw="$3" dns="${4:-}" revert="${5:-180}"
+    [ -n "$ip" ] && [ -n "$prefix" ] && [ -n "$gw" ] || die "network_pin: ip, prefix and gateway are required"
+    local iface con
+    iface=$(_net_primary_iface)
+    [ -z "$iface" ] && die "No primary network interface found"
+    con=$(_net_active_con "$iface")
+    [ -z "$con" ] && die "No active NetworkManager connection on $iface"
+    [ -z "$dns" ] && dns="$gw"
+
+    rm -f "$NET_CONFIRM_SENTINEL"
+    # Stash desired config so 'network_confirm' can persist it without re-passing args.
+    printf '%s\n%s\n%s\n%s\n%s\n' "$con" "$ip" "$prefix" "$gw" "$dns" > "$NET_PENDING_FILE"
+    chmod 600 "$NET_PENDING_FILE"
+
+    # Detached applier (survives the dropped HTTP/SSH connection and a manager
+    # restart): apply to the running device only, then roll back to the saved
+    # DHCP profile via 'device reapply' unless confirmed in time.
+    local applier; applier=$(mktemp /run/homebrain-netapply.XXXXXX)
+    cat > "$applier" <<APPLY
+#!/bin/bash
+sleep 2
+nmcli device modify "$iface" ipv4.method manual ipv4.addresses "$ip/$prefix" ipv4.gateway "$gw" ipv4.dns "$dns" >/dev/null 2>&1
+sleep $revert
+if [ ! -f "$NET_CONFIRM_SENTINEL" ]; then
+    nmcli device reapply "$iface" >/dev/null 2>&1
+fi
+rm -f "$applier"
+APPLY
+    chmod +x "$applier"
+    setsid bash "$applier" </dev/null >/dev/null 2>&1 &
+    log_info "Static IP $ip/$prefix scheduled on $iface (auto-revert in ${revert}s unless confirmed)."
+    echo "applying"
+}
+
+network_confirm() {
+    [ -f "$NET_PENDING_FILE" ] || die "No pending network change to confirm"
+    local con ip prefix gw dns
+    { read -r con; read -r ip; read -r prefix; read -r gw; read -r dns; } < "$NET_PENDING_FILE"
+    touch "$NET_CONFIRM_SENTINEL"
+    nmcli connection modify "$con" ipv4.method manual ipv4.addresses "$ip/$prefix" \
+        ipv4.gateway "$gw" ipv4.dns "$dns" ipv4.may-fail no
+    nmcli connection up "$con" >/dev/null 2>&1 || true
+    rm -f "$NET_PENDING_FILE"
+    log_info "Static IP $ip/$prefix confirmed and persisted on '$con'."
+    echo "confirmed"
+}
+
+network_dhcp() {
+    local iface con
+    iface=$(_net_primary_iface)
+    con=$(_net_active_con "$iface")
+    [ -z "$con" ] && die "No active NetworkManager connection"
+    touch "$NET_CONFIRM_SENTINEL"   # cancel any in-flight revert guard
+    nmcli connection modify "$con" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns ""
+    nmcli connection up "$con" >/dev/null 2>&1 || true
+    rm -f "$NET_PENDING_FILE"
+    log_info "Reverted '$con' to automatic addressing (DHCP)."
+    echo "dhcp"
 }
 
 # --- Action: Activate Tunnels (Post-Setup) ---
@@ -1919,10 +2115,29 @@ case "${1:-}" in
         configure_nextcloud_redis
         ;;
     setup)
-        setup_ftp_user "${2}" "${3}" "${4}"
+        # $4 is the path to a 0600 file holding the password — keeps the secret
+        # out of argv (and therefore out of `ps`). Read it, shred it, then setup.
+        _ftp_pass_file="${4}"
+        [ -f "$_ftp_pass_file" ] || die "FTP password file not found: $_ftp_pass_file"
+        _ftp_pass="$(cat "$_ftp_pass_file")"
+        shred -u "$_ftp_pass_file" 2>/dev/null || rm -f "$_ftp_pass_file"
+        setup_ftp_user "${2}" "${3}" "$_ftp_pass"
+        unset _ftp_pass
         ;;
     delete)
         delete_ftp_user "${2}"
+        ;;
+    network_info)
+        network_info
+        ;;
+    network_pin)
+        network_pin "${2}" "${3}" "${4}" "${5:-}" "${6:-180}"
+        ;;
+    network_confirm)
+        network_confirm
+        ;;
+    network_dhcp)
+        network_dhcp
         ;;
     activate_tunnels)
         activate_tunnels
@@ -1973,7 +2188,7 @@ case "${1:-}" in
         migrate_to_consolidated_layout
         ;;
     *)
-        echo "Usage: $0 {setup <nc_user> <ftp_user> <ftp_pass> | delete <ftp_user>}"
+        echo "Usage: $0 {setup <nc_user> <ftp_user> <pass_file> | delete <ftp_user> | network_info | network_pin <ip> <prefix> <gw> [dns] [revert_secs] | network_confirm | network_dhcp}"
         exit 1
         ;;
 esac
