@@ -31,6 +31,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 ### Near-term
 
 - **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
+- **Master-password recovery phrase** *(in progress, `feat/recovery-phrase` branch)* — A memorable word passphrase as the generated master password (B1), plus an independent word-based recovery code (B2) that resets the master password across the whole stack if it's forgotten. Stored only as a scrypt hash; shown once. LAN-only by default. P1 (mint/store/show) and P2 (verify + dashboard-login recovery) implemented and unit/integration-tested; P3 (full-stack live rotation) pending real-hardware E2E. See [`RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md).
 - **HomeBrain Vault** *(in progress, `vault-integration` branch)* — Self-hosted Vaultwarden password manager: Bitwarden-compatible clients, MariaDB-backed, dashboard-managed bootstrap, Pangolin-tunnelled, backup-integrated. Document attachments via Vaultwarden + (P5) Nextcloud encrypted folder.
 
 ### Medium-term

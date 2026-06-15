@@ -246,6 +246,15 @@
                             </div>
                         </div>
 
+                        ${data.recovery_phrase ? `
+                        <div class="creds-block">
+                            <span class="creds-label">Recovery Phrase</span>
+                            <div class="creds-password">${data.recovery_phrase}</div>
+                            <p style="font-size: 0.82em; color: var(--text-dim); margin: 10px 0 0;">
+                                Write these words down and keep them safe. They are your only way back in if you forget the master password — and they are shown only once. They reset administrative access; they do not unlock individual vault items.
+                            </p>
+                        </div>` : ''}
+
                         <p style="font-size: 0.9em; color: var(--text-dim); margin-bottom: 25px;">
                             This password provides full administrative access to your Dashboard, Nextcloud, and Home Assistant.
                         </p>

@@ -236,6 +236,56 @@ default Vault bootstrap.
 
 ---
 
+## Master-password recovery phrase
+
+Design: [`plans/RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md). The recovery core
+is unit-tested with no Docker/network/root required:
+
+```bash
+python3 scripts/tests/test_recovery.py    # must end with "9/9 passed"
+```
+
+On real hardware:
+
+**P1 — mint / store / show**
+- [ ] Fresh provision → the setup success page shows a **6-word recovery phrase**
+      distinct from the master password. The generated master password is itself
+      a hyphen-joined word passphrase (B1).
+- [ ] After clicking through (creds cleaned up), reloading does NOT re-show
+      either secret.
+- [ ] `grep RECOVERY_ /opt/homebrain/.env` shows `RECOVERY_SCRYPT_HASH` etc. but
+      **no plaintext phrase** anywhere on disk.
+- [ ] Settings → **Recovery Phrase** card shows "configured"; "Regenerate"
+      reveals a new phrase once and the old one stops verifying.
+
+**P2 — verify + dashboard-login recovery (do this from the LAN)**
+- [ ] Log out. On the login gate, **Forgot your password?** reveals the recovery
+      form. A wrong phrase is rejected (with a ~2s delay); the correct phrase +
+      a new password returns "Recovery accepted".
+- [ ] Log in with the **new** password. Old password no longer works.
+- [ ] Attempt recovery over the **remote tunnel** with `RECOVERY_ALLOW_REMOTE=false`
+      → refused (403). Set it `true` → allowed.
+- [ ] Exceed the rate limit (>5 attempts/hour) → throttled.
+
+**P3 — full-stack rotation** *(merge gate — verify on BOTH x86 and RPi)*
+- [ ] After a recovery reset, check `/var/log/homebrain/setup.log` for
+      "Master password rotation complete".
+- [ ] **Nextcloud** admin login works with the new password.
+- [ ] **Home Assistant** admin login works (or, if the HA auth CLI step warned,
+      HA still logs in with the old password and can be changed via HA → Profile).
+- [ ] **MariaDB** root authenticates with the new password
+      (`docker exec -e MYSQL_PWD=<new> <db> mariadb -u root -e 'SELECT 1'`).
+- [ ] **Vault** admin-panel SSO button works (token re-derived); **OpenClaw**
+      gateway reachable on a GPU box (token re-derived).
+- [ ] A per-user **Vault** item created before recovery still requires that
+      user's own unchanged password and still decrypts — recovery did NOT touch
+      E2E vaults.
+- [ ] **Abort safety:** kill `rotate_master_password.sh` after the MariaDB step
+      but before completion → the box stays loginable; re-running recovery is
+      idempotent and completes.
+
+---
+
 ## Nuclear Reset (Destructive — Run Last on Test Hardware)
 
 **Prerequisites**

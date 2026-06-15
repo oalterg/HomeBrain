@@ -19,6 +19,7 @@ from datetime import timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort, stream_with_context
 import migration
 import integrations
+import recovery
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_sock import Sock
@@ -183,6 +184,7 @@ SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
 SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_tunnels.sh"
 SCRIPT_UTILITIES = f"{INSTALL_DIR}/scripts/utilities.sh"
 SCRIPT_NUCLEAR   = f"{INSTALL_DIR}/scripts/nuclear_reset.sh"
+SCRIPT_ROTATE    = f"{INSTALL_DIR}/scripts/rotate_master_password.sh"
 INSTALL_CREDS_PATH = f"{INSTALL_DIR}/install_creds.json"
 STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
@@ -441,6 +443,14 @@ def security_middleware():
     # module checks the bearer token itself; we just have to bypass the
     # session gate so it gets a chance to.
     if request.path.startswith('/api/integrations/self/'):
+        return
+
+    # 3c. Recovery-phrase break-glass. These must work while the user is locked
+    # out, so they bypass the session gate exactly like /login. The handlers
+    # enforce their own protections (LAN-origin, strict rate-limit, the phrase
+    # itself). Only the pre-auth pair is whitelisted; status/regenerate stay
+    # gated because they are management actions for an already-logged-in user.
+    if request.path in ('/api/recovery/verify', '/api/recovery/reset'):
         return
 
     # 4. Default: Block & Show Login Gate
@@ -739,19 +749,41 @@ def start_setup():
             update_env_var("VAULT_DOMAIN",               f"https://vault.{pan_domain}")
 
     env_config = get_env_config()
-    
+
     # 1. Get master password
     master_pass = env_config.get('MASTER_PASSWORD')
-    
-    # 2. Generation
+
+    # 2. Generation (B1: memorable hyphen-joined word passphrase). Falls back to
+    #    the legacy 16-char random token if the wordlist is unavailable, so a
+    #    missing asset can never block provisioning.
     if not master_pass:
-        alphabet = string.ascii_letters + string.digits
-        master_pass = ''.join(secrets.choice(alphabet) for _ in range(16))
-    
+        try:
+            master_pass = recovery.generate_password()
+        except recovery.RecoveryError as e:
+            logging.warning(f"Recovery wordlist unavailable, using random password: {e}")
+            alphabet = string.ascii_letters + string.digits
+            master_pass = ''.join(secrets.choice(alphabet) for _ in range(16))
+
+    # 2b. Mint an INDEPENDENT recovery phrase (B2). Stored only as a scrypt hash
+    #     in .env; the plaintext is shown once on the success page (carried in
+    #     install_creds.json, wiped by cleanup_credentials) and never persisted.
+    #     Best-effort: a failure here must not abort setup.
+    recovery_phrase = None
+    try:
+        recovery_phrase = recovery.generate_phrase()
+        record = recovery.build_recovery_record(
+            recovery_phrase, recovery.DEFAULT_PHRASE_WORDS, time.time())
+        for k, v in record.items():
+            update_env_var(k, v)
+    except Exception as e:
+        logging.warning(f"Could not mint recovery phrase during setup: {e}")
+        recovery_phrase = None
+
     # 3. Write to install_creds.json
     creds_data = {
         "username": "admin",
         "password": master_pass,
+        "recovery_phrase": recovery_phrase,
         "domain": env_config.get('PANGOLIN_DOMAIN'),
         "generated_at": time.time()
     }
@@ -760,7 +792,7 @@ def start_setup():
         json.dump(creds_data, f)
 
     # 4. Assign master password to all services
-    for key in ["MASTER_PASSWORD", "MANAGER_PASSWORD", "NEXTCLOUD_ADMIN_PASSWORD", 
+    for key in ["MASTER_PASSWORD", "MANAGER_PASSWORD", "NEXTCLOUD_ADMIN_PASSWORD",
                 "MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "HA_ADMIN_PASSWORD"]:
         update_env_var(key, master_pass)
 
@@ -3189,6 +3221,146 @@ def nuclear_reset():
     })
 
 
+# --- Routes: Recovery Phrase ---
+# Break-glass recovery for a forgotten master password. See
+# docs/plans/RECOVERY_PHRASE.md. The verify/reset pair is reachable pre-auth
+# (whitelisted in security_middleware) but LAN-origin-only by default and
+# strictly rate-limited; status/regenerate are management actions for a
+# logged-in user. The phrase is an INDEPENDENT secret stored only as a scrypt
+# hash — recovery rotates the master password across the stack; it does NOT
+# decrypt per-user Vaultwarden vaults (those are end-to-end encrypted).
+
+RECOVERY_REMOTE_ENV = "RECOVERY_ALLOW_REMOTE"
+
+
+def _recovery_configured():
+    env = get_env_config()
+    return bool(env.get("RECOVERY_SCRYPT_HASH") and env.get("RECOVERY_SCRYPT_SALT")
+                and env.get("RECOVERY_PARAMS"))
+
+
+def _recovery_origin_allowed():
+    """Recovery is LAN-only unless RECOVERY_ALLOW_REMOTE=true in .env."""
+    if _is_lan_request():
+        return True
+    return get_env_config().get(RECOVERY_REMOTE_ENV, "false").lower() == "true"
+
+
+def _verify_recovery_phrase(phrase):
+    env = get_env_config()
+    return recovery.verify_phrase(
+        phrase,
+        env.get("RECOVERY_SCRYPT_SALT", ""),
+        env.get("RECOVERY_SCRYPT_HASH", ""),
+        env.get("RECOVERY_PARAMS", ""),
+    )
+
+
+@app.route("/api/recovery/verify", methods=["POST"])
+@limiter.limit("5 per hour")
+def recovery_verify():
+    """Non-committal check of a recovery phrase (drives the reset-form UX)."""
+    if not _recovery_origin_allowed():
+        return jsonify({"error": "Recovery is restricted to local network access."}), 403
+    if not _recovery_configured():
+        return jsonify({"error": "No recovery phrase is configured on this device."}), 404
+    data = request.get_json(silent=True) or {}
+    if _verify_recovery_phrase(data.get("phrase", "")):
+        return jsonify({"valid": True})
+    time.sleep(2)  # match the login-handler timing penalty
+    return jsonify({"valid": False, "error": "Recovery phrase did not match."}), 401
+
+
+@app.route("/api/recovery/reset", methods=["POST"])
+@limiter.limit("5 per hour")
+def recovery_reset():
+    """Verify the phrase, restore dashboard login immediately, then rotate the
+    whole stack in the background."""
+    if not _recovery_origin_allowed():
+        return jsonify({"error": "Recovery is restricted to local network access."}), 403
+    if not _recovery_configured():
+        return jsonify({"error": "No recovery phrase is configured on this device."}), 404
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "Another task is already running"}), 409
+
+    data = request.get_json(silent=True) or {}
+    phrase = data.get("phrase", "")
+    new_password = data.get("new_password", "")
+
+    # Re-verify here — never trust a prior /verify call (stateless across workers).
+    if not _verify_recovery_phrase(phrase):
+        time.sleep(2)
+        return jsonify({"error": "Recovery phrase did not match."}), 401
+
+    if not recovery.is_valid_new_password(new_password):
+        return jsonify({"error": f"Invalid new password. {recovery.NEW_PASSWORD_RULE}"}), 400
+
+    # 1. Restore dashboard access immediately and independently. MANAGER_PASSWORD
+    #    is login-only (no container consumes it), so this cannot desync anything
+    #    and guarantees the user is back in even if the stack rotation below
+    #    partially fails. Then drop the (now stale) session.
+    update_env_var("MANAGER_PASSWORD", new_password)
+    session.clear()
+
+    # 2. Hand the new password to the rotation script via a 0600 temp file
+    #    (never argv/env), and run it as a tracked background task. The script
+    #    shreds the file on exit.
+    fd, secrets_path = tempfile.mkstemp(prefix="hb_rotate_", suffix=".tmp")
+    try:
+        os.write(fd, new_password.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(secrets_path, 0o600)
+
+    subprocess.run(["chmod", "+x", SCRIPT_ROTATE], check=False)
+    cmd = (
+        f"bash {shlex.quote(SCRIPT_ROTATE)} {shlex.quote(secrets_path)} "
+        f">> {shlex.quote(LOG_FILES['setup'])} 2>&1"
+    )
+    threading.Thread(
+        target=run_background_task,
+        args=("Master Password Rotation", cmd, "setup")
+    ).start()
+
+    # Out-of-band security event: the root credential was reset via recovery.
+    logging.warning("SECURITY: master password reset via recovery phrase from %s",
+                    request.remote_addr)
+
+    return jsonify({
+        "status": "started",
+        "message": ("Recovery accepted. Log in with your new password — "
+                    "the full stack rotation is finishing in the background.")
+    })
+
+
+@app.route("/api/recovery/status", methods=["GET"])
+def recovery_status():
+    env = get_env_config()
+    return jsonify({
+        "configured": _recovery_configured(),
+        "created_at": env.get("RECOVERY_CREATED_AT"),
+        "word_count": env.get("RECOVERY_WORD_COUNT"),
+        "wordlist_ok": recovery.wordlist_ok(),
+        "remote_allowed": env.get(RECOVERY_REMOTE_ENV, "false").lower() == "true",
+    })
+
+
+@app.route("/api/recovery/regenerate", methods=["POST"])
+@limiter.limit("5 per hour")
+def recovery_regenerate():
+    """Mint a NEW phrase, return it once, replace the stored hash. The old
+    phrase can never be revealed (only its hash is stored) — only regenerated."""
+    try:
+        phrase = recovery.generate_phrase()
+        record = recovery.build_recovery_record(
+            phrase, recovery.DEFAULT_PHRASE_WORDS, time.time())
+        for k, v in record.items():
+            update_env_var(k, v)
+    except Exception as e:
+        return jsonify({"error": f"Could not generate recovery phrase: {e}"}), 500
+    return jsonify({"status": "ok", "recovery_phrase": phrase})
+
+
 # --- Routes: FTP Management ---
 @app.route("/api/ftp/users", methods=["GET"])
 def list_ftp_users():
@@ -3500,16 +3672,81 @@ def custom_401(e):
         color: var(--danger);
         min-height: 1.1em;
       }
+      .linkbtn {
+        display: inline;
+        width: auto;
+        margin: 18px 0 0;
+        padding: 0;
+        background: none;
+        border: none;
+        color: var(--text-dim);
+        font-size: 0.82rem;
+        font-weight: 500;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      .linkbtn:hover { background: none; color: var(--accent); }
+      input[type="text"], textarea {
+        width: 100%;
+        padding: 11px 13px;
+        font-size: 0.95rem;
+        font-family: inherit;
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        outline: none;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+      textarea { resize: vertical; min-height: 64px; margin-bottom: 10px; }
+      input[type="text"]:focus, textarea:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+      .field-label {
+        display: block;
+        font-size: 0.8rem;
+        color: var(--text-dim);
+        margin: 12px 0 5px;
+      }
+      .rule { font-size: 0.78rem; color: var(--text-dim); margin: 6px 0 0; }
+      .ok { margin: 14px 0 0; font-size: 0.85rem; color: var(--accent); min-height: 1.1em; }
+      .hidden { display: none; }
     </style>
     </head><body>
     <main class="card">
-      <h1>{{ title }}</h1>
-      <p class="hint">{{ hint }}</p>
-      <form id="f" autocomplete="on">
-        <input type="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
-        <button type="submit">Unlock</button>
-        <p class="err" id="err"></p>
-      </form>
+      <div id="login-view">
+        <h1>{{ title }}</h1>
+        <p class="hint">{{ hint }}</p>
+        <form id="f" autocomplete="on">
+          <input type="password" name="password" placeholder="Password" required autofocus autocomplete="current-password">
+          <button type="submit">Unlock</button>
+          <p class="err" id="err"></p>
+        </form>
+        {% if show_recovery %}
+        <button type="button" class="linkbtn" id="show-recovery">Forgot your password?</button>
+        {% endif %}
+      </div>
+
+      {% if show_recovery %}
+      <div id="recovery-view" class="hidden">
+        <h1>Recover Access</h1>
+        <p class="hint">Enter your recovery phrase and choose a new master password. This resets access to the Dashboard, Nextcloud and Home Assistant — it cannot decrypt individual vault items.</p>
+        <form id="rf" autocomplete="off">
+          <label class="field-label" for="rec-phrase">Recovery phrase</label>
+          <textarea id="rec-phrase" name="phrase" placeholder="six words separated by spaces" required autocomplete="off" spellcheck="false"></textarea>
+          <label class="field-label" for="rec-pw">New master password</label>
+          <input type="password" id="rec-pw" name="new_password" placeholder="New password" required autocomplete="new-password">
+          <label class="field-label" for="rec-pw2">Confirm new password</label>
+          <input type="password" id="rec-pw2" placeholder="Repeat new password" required autocomplete="new-password">
+          <p class="rule">{{ password_rule }}</p>
+          <button type="submit">Reset password</button>
+          <p class="err" id="rec-err"></p>
+          <p class="ok" id="rec-ok"></p>
+        </form>
+        <button type="button" class="linkbtn" id="back-login">&larr; Back to login</button>
+      </div>
+      {% endif %}
     </main>
     <script>
       document.getElementById('f').addEventListener('submit', async (e) => {
@@ -3526,8 +3763,47 @@ def custom_401(e):
         }
       });
     </script>
+    {% if show_recovery %}
+    <script>
+      const loginView = document.getElementById('login-view');
+      const recView = document.getElementById('recovery-view');
+      document.getElementById('show-recovery').addEventListener('click', () => {
+        loginView.classList.add('hidden'); recView.classList.remove('hidden');
+      });
+      document.getElementById('back-login').addEventListener('click', () => {
+        recView.classList.add('hidden'); loginView.classList.remove('hidden');
+      });
+      document.getElementById('rf').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const err = document.getElementById('rec-err');
+        const ok = document.getElementById('rec-ok');
+        err.textContent = ''; ok.textContent = '';
+        const phrase = document.getElementById('rec-phrase').value;
+        const pw = document.getElementById('rec-pw').value;
+        const pw2 = document.getElementById('rec-pw2').value;
+        if (pw !== pw2) { err.textContent = 'Passwords do not match'; return; }
+        try {
+          const r = await fetch('/api/recovery/reset', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ phrase: phrase, new_password: pw })
+          });
+          const d = await r.json();
+          if (d.status === 'started') {
+            ok.textContent = 'Recovery accepted. Returning to login…';
+            setTimeout(() => location.reload(), 3500);
+          } else {
+            err.textContent = d.error || 'Recovery failed';
+          }
+        } catch (ex) {
+          err.textContent = 'Network error — try again';
+        }
+      });
+    </script>
+    {% endif %}
     </body></html>
-    """, title=title, hint=hint), 401)
+    """, title=title, hint=hint,
+         show_recovery=(is_setup_complete() and _recovery_configured()),
+         password_rule=recovery.NEW_PASSWORD_RULE), 401)
     
     # Prevent browser caching of the login gate
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

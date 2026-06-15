@@ -1213,6 +1213,21 @@
             </div>
             {% endif %}
 
+            <div class="card" id="recovery-card" style="grid-column: 1 / -1;">
+                <h3>Recovery Phrase</h3>
+                <p style="color:var(--text-dim); font-size:0.9em; margin-bottom:14px;">
+                    A short sequence of words that can reset your master password if you ever forget it — your only way back in without wiping the device. It is stored only as a one-way hash, so it can be shown once when you generate it and never again. Recovering restores admin access to the Dashboard, Nextcloud and Home Assistant; it does not unlock individual Vault items.
+                </p>
+                <p id="recovery-status-line" style="font-size:0.9em; margin-bottom:14px; color:var(--text-dim);">Checking…</p>
+                <button id="recovery-gen-btn" onclick="regenerateRecovery()">Generate recovery phrase</button>
+                <div id="recovery-reveal" style="display:none; margin-top:16px;">
+                    <label style="font-size:0.72em; color:var(--text-dim); text-transform:uppercase; letter-spacing:1.4px; font-family:var(--font-mono);">Your recovery phrase — write it down now</label>
+                    <div id="recovery-phrase-box" style="font-family:var(--font-mono); font-size:1.4em; color:var(--warning); word-break:break-word; margin-top:6px; padding:12px 14px; background:var(--bg); border:1px dashed var(--border-strong); border-radius:6px;"></div>
+                    <p style="font-size:0.82em; color:var(--text-dim); margin-top:8px;">This phrase will not be shown again. Store it somewhere safe and offline (the device label is a good place).</p>
+                </div>
+                <p id="recovery-msg" style="min-height:1em; font-size:0.88em; color:var(--text-dim); margin-top:8px;"></p>
+            </div>
+
             <div class="card" style="grid-column: 1 / -1; border: 1px solid var(--danger); margin-top: 24px;">
                 <h3 style="color: var(--danger);">Factory Reset</h3>
                 <p style="color:var(--text-dim); font-size:0.9em; margin-bottom:14px;">
@@ -1324,7 +1339,7 @@
                 // Agent, Whisper) — fetching it at init means those rows
                 // populate immediately instead of staying skeleton until
                 // someone opens the Settings tab.
-                await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh()]);
+                await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(), vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(), loadRecoveryStatus()]);
                 // Load heavy stuff lazily or on tab open
             } catch (err) {
                 console.error("Initial fetch failed:", err);
@@ -3227,6 +3242,56 @@
         }
 
         // ============================================================
+        // Recovery Phrase — status + (re)generate (shown once)
+        async function loadRecoveryStatus() {
+            const line = document.getElementById('recovery-status-line');
+            const btn = document.getElementById('recovery-gen-btn');
+            if (!line) return;
+            try {
+                const r = await fetch('/api/recovery/status', { credentials: 'include' });
+                const d = await r.json();
+                if (!d.wordlist_ok) {
+                    line.innerHTML = '⚠ Recovery wordlist unavailable on this device — contact support.';
+                    if (btn) btn.disabled = true;
+                    return;
+                }
+                if (d.configured) {
+                    let when = '';
+                    if (d.created_at) {
+                        try { when = ' (set ' + new Date(parseInt(d.created_at, 10) * 1000).toLocaleDateString() + ')'; } catch (e) {}
+                    }
+                    line.innerHTML = '✓ A recovery phrase is configured' + when + '.';
+                    if (btn) btn.textContent = 'Regenerate recovery phrase';
+                } else {
+                    line.innerHTML = 'No recovery phrase is set. Generate one now so you can recover access if you forget your master password.';
+                    if (btn) btn.textContent = 'Generate recovery phrase';
+                }
+            } catch (e) { /* leave the placeholder text */ }
+        }
+
+        async function regenerateRecovery() {
+            const btn = document.getElementById('recovery-gen-btn');
+            const msg = document.getElementById('recovery-msg');
+            if (!confirm('Generate a new recovery phrase? Any previous phrase will stop working immediately.')) return;
+            btn.disabled = true; msg.textContent = 'Generating…';
+            try {
+                const r = await fetch('/api/recovery/regenerate', { method: 'POST', credentials: 'include' });
+                const d = await r.json();
+                if (d.status === 'ok' && d.recovery_phrase) {
+                    document.getElementById('recovery-phrase-box').textContent = d.recovery_phrase;
+                    document.getElementById('recovery-reveal').style.display = 'block';
+                    msg.textContent = '';
+                    await loadRecoveryStatus();
+                } else {
+                    msg.textContent = d.error || 'Failed to generate phrase';
+                }
+            } catch (e) {
+                msg.textContent = 'Network error — try again';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
         // Nuclear Reset (Factory Wipe) — Full E2E implementation
         // ============================================================
         let nuclearModal = null;
