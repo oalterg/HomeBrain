@@ -82,11 +82,6 @@
       }
     }
   },
-  "mcp": {
-    "approvals": {
-      "enabled": false
-    }
-  },
   "approvals": {
     "exec": {
       "enabled": true,
