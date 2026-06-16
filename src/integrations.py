@@ -310,10 +310,14 @@ def _openclaw_daemon_restart() -> None:
 # ---------------------------------------------------------------------------
 
 def _mcp_consent_env() -> dict:
-    """Return env vars that control MCP consent behavior."""
-    data = _read_openclaw_config()
-    enabled = data.get("mcp", {}).get("approvals", {}).get("enabled", False)
-    return {"HOMEBRAIN_MCP_CONSENT": "true" if enabled else "false"}
+    """Return env vars that control MCP consent behavior.
+
+    The HomeBrain MCP consent gate is disabled pending our upstream OpenClaw
+    approvals PR. The flag used to live at mcp.approvals.enabled, but stock
+    OpenClaw (>=2026.6) strictly validates the mcp section and rejects that
+    key, so it is no longer persisted there. Until the upstream feature lands,
+    consent is off (its long-standing default)."""
+    return {"HOMEBRAIN_MCP_CONSENT": "false"}
 
 
 def _spec_self() -> dict:
@@ -1035,10 +1039,19 @@ def _approve_pairing(channel: str, code: str) -> tuple[dict, int]:
 
 
 def _whatsapp_auth_status() -> dict:
-    """Check WhatsApp auth state by looking for session files."""
-    auth_dir = os.path.join(OPENCLAW_DIR, "whatsapp-auth", "default")
-    creds = os.path.join(auth_dir, "creds.json")
-    if os.path.exists(creds):
+    """Check WhatsApp auth state by looking for session files.
+
+    @openclaw/whatsapp persists Baileys creds under
+    ~/.openclaw/credentials/whatsapp/default/creds.json; older builds used
+    ~/.openclaw/whatsapp-auth/default/. Check the current path first, then the
+    legacy one, so the dashboard reports the real link state on both."""
+    candidates = [
+        os.path.join(OPENCLAW_DIR, "credentials", "whatsapp", "default", "creds.json"),
+        os.path.join(OPENCLAW_DIR, "whatsapp-auth", "default", "creds.json"),
+    ]
+    for creds in candidates:
+        if not os.path.exists(creds):
+            continue
         try:
             with open(creds) as f:
                 data = json.load(f)
