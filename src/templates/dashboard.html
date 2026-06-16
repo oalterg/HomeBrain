@@ -1633,14 +1633,31 @@
             msg.innerText = 'Enabling WhatsApp channel...';
             img.hidden = true;
             openDetails('details-whatsapp');
-            // Ensure channel config exists
-            try {
-                await fetch('/api/channels/whatsapp/add', {
-                    method: 'POST', credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: '{}',
-                });
-            } catch (e) { /* ok if already exists */ }
+            // Ensure the channel plugin is installed and the channel is
+            // configured. The first time WhatsApp is linked the server installs
+            // the @openclaw/whatsapp channel plugin in the background and replies
+            // 202 {status:'installing'} — poll through that state (up to ~2 min)
+            // before asking for the QR. Once installed this returns immediately.
+            let configured = false;
+            for (let i = 0; i < 40 && !configured; i++) {
+                try {
+                    const ar = await fetch('/api/channels/whatsapp/add', {
+                        method: 'POST', credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: '{}',
+                    });
+                    const ad = await ar.json().catch(() => ({}));
+                    if (ar.ok && ad.status === 'configured') { configured = true; break; }
+                    if (ar.status === 202 || ad.status === 'installing') {
+                        msg.innerText = ad.message || 'Installing WhatsApp support (one-time)…';
+                    }
+                } catch (e) { /* transient — retry */ }
+                await new Promise(r => setTimeout(r, 3000));
+            }
+            if (!configured) {
+                msg.innerText = 'WhatsApp setup is taking longer than expected. Please try again in a moment.';
+                return;
+            }
             // Request QR from gateway
             msg.innerText = 'Generating QR code...';
             try {

@@ -225,6 +225,47 @@ default Vault bootstrap.
 - [ ] Proton account: `docker compose --profile proton-bridge up -d`
       starts Bridge; `imap_host=127.0.0.1`, `imap_port=12143` works.
 
+### Channel linking — Telegram + WhatsApp (stock upstream OpenClaw)
+
+HomeBrain runs **stock npm `openclaw`** (no fork). Telegram is bundled in core;
+WhatsApp is a separate plugin installed on demand. The WhatsApp QR *route* is
+provided by the first-party `homebrain-whatsapp-login` plugin
+(`config/openclaw-plugins/`). Revert any fork systemd-unit swap first
+(see the openclaw-fork-swap runbook) so the gateway runs the npm build.
+
+**Plugin route (provisioned):**
+
+- [ ] `homebrain-whatsapp-login` is installed:
+      `openclaw plugins list` shows it, and it lives under
+      `~/.openclaw/extensions/`.
+- [ ] On a fresh box the WhatsApp channel plugin is **absent**:
+      `~/.openclaw/npm/node_modules/@openclaw/whatsapp` does not exist.
+
+**Telegram (bundled — no install):**
+
+- [ ] Paste a bot token → row flips to configured; daemon restarts.
+- [ ] Send `/pair` from the bot, approve the code in the dashboard
+      (`openclaw pairing approve telegram <code> --notify`) → DM works.
+
+**WhatsApp (lazy channel-plugin install + QR):**
+
+- [ ] Click **Link WhatsApp** on a fresh box → dashboard shows
+      "Installing WhatsApp support…" (the `/api/channels/whatsapp/add`
+      endpoint returns `202 {status:"installing"}`).
+- [ ] Within ~60 s `~/.openclaw/npm/node_modules/@openclaw/whatsapp/package.json`
+      appears; its `version` equals `config/versions.json:openclaw_whatsapp.version`
+      and is peer-compatible with the `openclaw` pin.
+- [ ] After install the dashboard auto-advances to the QR; raw route check:
+      `curl -s -H "Authorization: Bearer $(jq -r .gateway.auth.token ~/.openclaw/openclaw.json)" \
+       -X POST 127.0.0.1:18789/api/channels/login/whatsapp/start` returns
+      JSON containing `qrDataUrl`.
+- [ ] Before the channel plugin is installed, the same curl returns
+      `404 {"error":"WhatsApp plugin is not installed"}` (graceful, not a 500).
+- [ ] Scan the QR with WhatsApp → linked; `~/.openclaw/whatsapp-auth/default/creds.json`
+      gains a `me.id`; the channel row flips to linked.
+- [ ] Re-clicking **Link WhatsApp** after install returns `configured`
+      immediately (no second install; flock prevents overlapping installs).
+
 ### Cross-cutting
 
 - [ ] All `*.token`, `vault.session`, `email_accounts.json` are mode 0600

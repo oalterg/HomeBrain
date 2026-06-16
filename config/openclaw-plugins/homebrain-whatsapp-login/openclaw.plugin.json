@@ -1,0 +1,8 @@
+{
+  "id": "homebrain-whatsapp-login",
+  "name": "HomeBrain WhatsApp Login",
+  "description": "Gateway HTTP route (POST /api/channels/login/whatsapp/{start,wait}) for WhatsApp QR linking, consumed by the HomeBrain dashboard. Replaces the equivalent core route from the OpenClaw fork so HomeBrain can run stock upstream OpenClaw.",
+  "activation": {
+    "onStartup": true
+  }
+}

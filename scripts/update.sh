@@ -182,31 +182,42 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
             bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
         else
-            # Config drift catch-all: the openclaw npm package didn't change but the
-            # patch_openclaw_config jq pipeline in utilities.sh may have (new schema
-            # keys, refreshed allowedOrigins, etc.). Re-patch the existing
-            # openclaw.json and only bounce the daemon when the file actually
-            # changes — the npm install is skipped because the version matched.
+            # Plugin + config drift catch-all. The openclaw npm package didn't
+            # change, but two things still might have and are otherwise ONLY
+            # applied by setup_openclaw (which the version-bump branch above runs
+            # and this one does not):
+            #   1. The bundled HomeBrain plugins under config/openclaw-plugins/
+            #      (e.g. the WhatsApp QR login route). Without re-installing them
+            #      here, a new/changed plugin would rsync into the install dir but
+            #      never register with the gateway.
+            #   2. The patch_openclaw_config jq pipeline in utilities.sh (new
+            #      schema keys, refreshed allowedOrigins, etc.).
+            # Snapshot openclaw.json first, then (re)install plugins (which mutate
+            # plugins.entries) and re-patch config; restart the daemon only when
+            # the file actually changed so a freshly-registered route/schema is
+            # picked up without a needless bounce.
             # After self-update re-exec $SCRIPT_DIR points at /tmp/homebrain_self_update
             # which only has update.sh + common.sh. utilities.sh lives in the rsynced
-            # install dir, so always source from there.
+            # install dir, so always source from there — and pass the plugins root
+            # explicitly, because sourcing it resets SCRIPT_DIR to this script's $0.
             UTILS_FILE="$INSTALL_DIR/scripts/utilities.sh"
             if command -v openclaw >/dev/null 2>&1 && [[ -f "$UTILS_FILE" ]]; then
                 CFG="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/openclaw.json"
                 if [[ -f "$CFG" ]]; then
-                    log_info "Refreshing openclaw.json against current utilities.sh..."
-                    cp "$CFG" "${CFG}.preupdate"
+                    log_info "Refreshing openclaw plugins + config against current install..."
                     # shellcheck disable=SC1090
                     source "$UTILS_FILE"
                     load_env 2>/dev/null || true
                     load_versions 2>/dev/null || true
+                    cp "$CFG" "${CFG}.preupdate"
+                    install_homebrain_openclaw_plugins "$INSTALL_DIR/config/openclaw-plugins"
                     if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
                         if ! cmp -s "${CFG}.preupdate" "$CFG"; then
-                            log_info "openclaw.json changed — restarting daemon to apply."
+                            log_info "openclaw plugins/config changed — restarting daemon to apply."
                             run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
                                 || log_warn "openclaw-gateway restart failed — check logs."
                         else
-                            log_info "openclaw.json already matches expected shape — no daemon restart."
+                            log_info "openclaw plugins/config already current — no daemon restart."
                         fi
                     fi
                     rm -f "${CFG}.preupdate"
