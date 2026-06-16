@@ -199,36 +199,21 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             #      never register with the gateway.
             #   2. The patch_openclaw_config jq pipeline in utilities.sh (new
             #      schema keys, refreshed allowedOrigins, etc.).
-            # Snapshot openclaw.json first, then (re)install plugins (which mutate
-            # plugins.entries) and re-patch config; restart the daemon only when
-            # the file actually changed so a freshly-registered route/schema is
-            # picked up without a needless bounce.
-            # After self-update re-exec $SCRIPT_DIR points at /tmp/homebrain_self_update
-            # which only has update.sh + common.sh. utilities.sh lives in the rsynced
-            # install dir, so always source from there — and pass the plugins root
-            # explicitly, because sourcing it resets SCRIPT_DIR to this script's $0.
+            # Delegate to utilities.sh's `refresh_openclaw` subcommand, run as a
+            # SUBPROCESS — never `source` it. Sourcing utilities.sh executes
+            # common.sh's top-level side effects under this script's `set -e`, and
+            # resets SCRIPT_DIR to this script's $0 (the /tmp self-update dir after
+            # the re-exec), so load_versions' `die` fires on the wrong path and
+            # exits THIS script straight past any `|| true`. A subprocess keeps
+            # utilities.sh's SCRIPT_DIR / set -e / die fully isolated — we only
+            # read its return code. The subcommand snapshots openclaw.json,
+            # (re)installs the bundled plugins + re-patches config, and restarts
+            # the gateway only when the file actually changed.
             UTILS_FILE="$INSTALL_DIR/scripts/utilities.sh"
             if command -v openclaw >/dev/null 2>&1 && [[ -f "$UTILS_FILE" ]]; then
-                CFG="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/openclaw.json"
-                if [[ -f "$CFG" ]]; then
-                    log_info "Refreshing openclaw plugins + config against current install..."
-                    # shellcheck disable=SC1090
-                    source "$UTILS_FILE"
-                    load_env 2>/dev/null || true
-                    load_versions 2>/dev/null || true
-                    cp "$CFG" "${CFG}.preupdate"
-                    install_homebrain_openclaw_plugins "$INSTALL_DIR/config/openclaw-plugins"
-                    if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
-                        if ! cmp -s "${CFG}.preupdate" "$CFG"; then
-                            log_info "openclaw plugins/config changed — restarting daemon to apply."
-                            run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
-                                || log_warn "openclaw-gateway restart failed — check logs."
-                        else
-                            log_info "openclaw plugins/config already current — no daemon restart."
-                        fi
-                    fi
-                    rm -f "${CFG}.preupdate"
-                fi
+                log_info "Refreshing openclaw plugins + config against current install..."
+                bash "$UTILS_FILE" refresh_openclaw \
+                    || log_warn "openclaw plugin/config refresh failed — check logs."
             else
                 log_warn "openclaw config refresh skipped: openclaw=$(command -v openclaw||echo missing) utils=$UTILS_FILE present=$([[ -f $UTILS_FILE ]]&&echo y||echo n)"
             fi
