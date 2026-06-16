@@ -2223,6 +2223,33 @@ case "${1:-}" in
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
         ;;
+    refresh_openclaw)
+        # Re-register the bundled HomeBrain OpenClaw plugins and re-patch
+        # openclaw.json against the current install, restarting the gateway only
+        # if the file actually changed. Invoked by update.sh's no-version-bump
+        # path. MUST be run as a subprocess (not sourced) — see the note there:
+        # as a subprocess our SCRIPT_DIR resolves correctly (so load_versions and
+        # the plugins root point at the real install dir) and any die() stays
+        # contained to this process.
+        load_env 2>/dev/null || true
+        CFG="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/openclaw.json"
+        if [[ ! -f "$CFG" ]]; then
+            log_info "No openclaw.json present — skipping openclaw refresh."
+            exit 0
+        fi
+        cp "$CFG" "${CFG}.preupdate"
+        install_homebrain_openclaw_plugins
+        if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
+            if ! cmp -s "${CFG}.preupdate" "$CFG"; then
+                log_info "openclaw plugins/config changed — restarting daemon to apply."
+                run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
+                    || log_warn "openclaw-gateway restart failed — check logs."
+            else
+                log_info "openclaw plugins/config already current — no daemon restart."
+            fi
+        fi
+        rm -f "${CFG}.preupdate"
+        ;;
     migrate)
         load_env 2>/dev/null || true   # .env may not exist on first provision
         migrate_to_consolidated_layout
