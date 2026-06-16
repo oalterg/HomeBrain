@@ -171,7 +171,14 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             echo "VAULTWARDEN_TAG='${new_vault_tag}'" >> "$ENV_FILE"
         fi
     fi
-    UPDATE_DEPS_SCRIPT="$SCRIPT_DIR/update-deps.sh"
+    # Resolve from INSTALL_DIR, not SCRIPT_DIR: after the self-reload re-exec'd
+    # the new update.sh from /tmp/homebrain_self_update, $SCRIPT_DIR points there
+    # — and only update.sh + common.sh are downloaded into that dir. A
+    # $SCRIPT_DIR-relative path would miss update-deps.sh entirely, so this whole
+    # block (llama/openclaw version bumps AND the plugin/config drift catch-all)
+    # would silently skip on every update that also changes update.sh. The
+    # rsync above already put the current update-deps.sh in place under INSTALL_DIR.
+    UPDATE_DEPS_SCRIPT="$INSTALL_DIR/scripts/update-deps.sh"
     if [[ -f "$UPDATE_DEPS_SCRIPT" ]] && [[ "${HAS_GPU:-false}" == "true" ]]; then
         if [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]]; then
             log_info "llama.cpp: ${old_llama_tag} → ${new_llama_tag}. Updating binary..."
