@@ -405,3 +405,99 @@ At the 65536 cap, q8 KV matches q4 on speed while keeping best numerics, so q8 i
 - `config/platform_models.json` — the MTP entry declares `"min_healthy_vram_mb": 15500` (below the ~15801 stable reading, above a starved start). Models without the field skip the check.
 
 > Note: the gate/watermark guard the *startup-starvation* face. The *runtime eviction* face is fixed structurally by the ctx-65536 headroom above (there is no resident-buffer to evict once it fits with margin) — guards can't fix runtime eviction, only the config can.
+
+## 2026-06-17 — Headroom-relief sweep, b9672 evaluation, and the ≥80K requirement
+
+Goal: increase 35B-A3B TG throughput; hypothesis (user) that "headroom pressure forced lower numbers." Latest upstream **b9672** staged and evaluated against production **b9381**. **New hard constraint:** the OpenClaw harness needs **≥80K context** — the prior "64K is ample" assumption is retired, and the previously-shipped MTP default (ctx 65536) is *below* spec. All cells: RX 9060 XT 16 GB (16,304 MiB), Vulkan/RADV `rm_kq=1`, `--threads 6`, greedy 256-tok TG probe + ~6.8K-tok PP probe, captured with a parameterized JSONL bench harness (server quant×ctx×KV×`-ot`×`-ub` sweep + a deep-prompt eviction stress test).
+
+### The dominant effect is compute-buffer eviction, not raw compute
+
+Every config with **idle headroom below ~250 MiB collapses** (TG and PP crater together) as the Vulkan compute buffer is shrunk at load or evicted to GTT under a deep prompt — independent of build or expert placement. This is the mechanism behind "headroom pressure forced lower numbers."
+
+**whisper-server (large-v3-turbo-q5) holds 777 MiB of VRAM resident.** With it resident, even 32K cells can't fit the `-ub 4096` compute buffer → PP throttles to ~165 t/s across the board. **Freeing whisper (run it `--no-gpu`; speech-to-text is used seldom) is the headroom unlock** → PP recovers to ~700 and the configs below become possible.
+
+### b9672 vs b9381 — NOT an upgrade (identical configs, whisper freed)
+
+| config | b9381 TG / PP / hr | b9672 TG / PP / hr |
+|---|---|---|
+| q5xl 131K ot20 ub4096 q8 | **29.28 / 612 / 832** (healthy) | 23.05 / 220 / 693 (**evicts**) |
+| q5xl 32K ot20 ub4096 q8 | 29.09 / 697 / 1452 | 29.48 / 655 / 1461 |
+| q5xl 32K ot24 ub4096 q8 | 22.06 / 180 / 232 (evicts) | 22.54 / 187 / 235 (evicts) |
+| q6xl 32K ot18 ub4096 q8 | 23.64 / 618 / 309 | 23.62 / 436 / 322 |
+
+b9672 is **equal at sane context** and **worse at 131K** (it idles ~140 MiB heavier → tips into eviction). No throughput reason to upgrade; **b9381 stays**. (b9381 q5xl-131K reproduces the historic 29.2 table → harness validated.)
+
+### Base-quant knee (b9381, whisper freed, 32K, q8 KV)
+
+| quant | best `-ot` | TG | PP | headroom | old-table @131K |
+|---|---|---:|---:|---:|---:|
+| Q5_K_XL | ot21 | **29.67** | 686 | 891 | 29.2 |
+| Q6_K_XL | ot16 | 25.07 | 510 | 1626 | 25.4 |
+| Q8_K_XL | ot14 | **21.74** | 197 | 414 | 18.0 (**+21%**) |
+
+More experts on GPU helps **only while headroom stays > ~250 MiB**; past the knee the allocator gets erratic (Q5 ot22 → TG dips to 26.9 with PP still healthy; ot23 → PP collapses to 178). Base quants are **CPU-expert-bound, not headroom-bound** at sane context — relieving headroom makes them *stable at ceiling*, except **Q8 genuinely recovers +21%** (its old 131K number was the most throttled — the user's hypothesis confirmed, specifically for the heavy quant).
+
+### Context sweep — the ≥80K answer (base Q5, ot20, ub4096, q8, whisper freed)
+
+| ctx | TG | PP | headroom | deep-prompt stress |
+|---:|---:|---:|---:|---|
+| 32768 | 29.09 | 697 | 1452 | safe |
+| 65536 | 29.33 | 688 | ~1136 | safe |
+| **81920** | **29.27** | 696 | 899 | **PASS** — fresh 29.35 → 29.1 after a 61K-tok deep prompt (VRAM stable 16257) |
+| 98304 | 22.71 | 224 | — | **EVICTS** (peak drops 15895→14568) |
+| 131072 | 29.40 | 680 | 832 | healthy on shallow probe but allocator erratic |
+
+**80K (81920) is the largest base-Q5 context that stays eviction-safe** — and it exactly meets the harness requirement. 96K+ evicts.
+
+### MTP-Q5 — the real throughput lever (b9381, whisper freed, n2, ub2048)
+
+| ctx | KV | `-ot` | TG | PP | headroom |
+|---:|---|---|---:|---:|---:|
+| 32768 | q8 | 20 | **38.62** | 598 | 467 |
+| 65536 | q8 | 18 | 36.71 | 532 | 752 |
+| 81920 | q8 | 16 | 34.66 | 541 | 64 (too tight) |
+| 81920 | q8 | 18 | 36.52 | 576 | 103 (too tight) |
+| **81920** | **q4** | **18** | **36.67** | 568 | **501** |
+| 98304 | q8 | 16 | 34.61 | 544 | 71 (too tight) |
+| 131072 | q4 | 16 | 37.49 | 549 | 31 (too tight) |
+
+n=2 > n=3 (acceptance), consistent with prior runs. At 80K, q8 KV is too tight (hr ≤ 103); **q4 KV is what buys the headroom** that keeps MTP eviction-safe at the required context.
+
+### Deep-prompt stress test (b9381, whisper freed, 80K, after a 61K-token prompt)
+
+| config | fresh TG | sustained TG | VRAM after fill | verdict |
+|---|---:|---:|---:|---|
+| **base** q5xl 80K q8 ot20 ub4096 | 29.35 | **29.1** (−0.9%) | 16257 (stable) | ✅ PASS |
+| **MTP** q5xl 80K q4 ot18 ub2048 n2 | 38.42 | **38.31** (−0.3%) | **15038 (stable, hr 1266)** | ✅ PASS |
+
+The q4 KV at 80K keeps the cache so small that VRAM stays at 15038 even with 61K of context filled — **the compute buffer never comes under pressure**, the exact opposite of the 131K MTP eviction that forced the ctx-65536 retreat in May. With whisper off the GPU, MTP is eviction-proof at 80K.
+
+### Conclusion & recommendation
+
+- **Do not upgrade to b9672** — it is not faster and evicts worse at high context. Stay on **b9381**.
+- **Free whisper from VRAM** (`whisper-server --no-gpu`) — the 777 MiB it returns is what makes ≥80K viable.
+- **Two eviction-proof ≥80K configs:**
+  - **Fast (recommended): MTP-Q5 @ 80K, q4 KV, `-ot blk.18-39`, `-ub 2048`, n=2 → 38.3 t/s sustained (+32%).** Trade: q4 KV (vs q8 "best numerics") + MTP is win/neutral by workload (structured/code/tool ≫ prose).
+  - **Safe-numerics: base-Q5 @ 80K, q8 KV, `-ot blk.20-39`, `-ub 4096` → 29.1 t/s sustained.** Best KV precision, no speculation.
+- Both are a large gain over the **current production reality** (base @ 131072 with whisper resident, which sits at ~55 MiB headroom and runs eviction-degraded ~23 t/s), and both satisfy the ≥80K harness requirement that the shipped MTP-65536 default did not.
+
+### Follow-up: did b9672 actually *regress*, or are there undiscovered wins? (gold-standard re-test)
+
+The server A/B above made b9672 *look* like a regression, but that conflated compute with eviction. Re-tested with **`llama-bench`** (no server, no KV-growth, no eviction confound) — 35B Q5, `-ncmoe 20`, q8 KV, `-t 6`, identical on both builds:
+
+| build | batch | pp2048 | tg128 |
+|---|---|---:|---:|
+| b9381 | 4096/4096 | 662.3 | 20.65 |
+| b9381 | 16384/2048 | 659.9 | 20.83 |
+| b9672 | 4096/4096 | 662.7 | **20.91** |
+| b9672 | 16384/2048 | 661.6 | 20.93 |
+
+**b9672 is NOT a compute regression — pp and tg are identical (b9672 a hair *faster* on tg).** The only real difference is **memory footprint**: at the identical 80K config, b9672 idles at **15950 MiB vs b9381's 15405 — +545 MiB heavier**. On a 16 GB card that extra reservation is exactly what tips high-context configs over the ceiling into compute-buffer eviction (it's why b9672 "lost" at 131K in the server A/B). So **stay on b9381 because it's leaner on VRAM, not because it's faster** — there is no compute headroom to gain by upgrading.
+
+**Undiscovered improvements? Tested the circulating RDNA4 (R9700) levers — none transfer to our VRAM-constrained offloaded regime**, because that hardware fits the whole model in 32 GB VRAM while ours offloads 20 expert layers to CPU (the bottleneck is the PCIe/CPU expert path, not GPU compute):
+- `-b 16384 -ub 2048` (claimed +29% PP on 35B MoE): **flat** here (pp 662 → 660, both builds).
+- PCIe ASPM `performance` (claimed +10.8% decode): **flat** (TG 28.7 → 28.7 on the live server) — the link is already pinned at 32 GT/s by `amdgpu.runpm=0` and never enters ASPM low-power during active inference.
+- `rm_kq=1`: already in use (confirmed optimal in the prior upgrade sweep).
+- MoE coopmat tile-geometry tweak (#22598): experimental/unmerged, Strix-Halo-gated, not applicable.
+
+**Bottom line: no regression, no free lunch on either build for the offloaded regime.** The real throughput levers remain MTP (characterised above) and headroom discipline (whisper→CPU, ctx ≤ 80K).

@@ -1,22 +1,22 @@
 {
-  "default": "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL",
+  "default": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
   "models": [
     {
       "id": "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL",
       "filename": "Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main/Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL.gguf",
       "min_size_bytes": 26000000000,
-      "context_window": 65536,
-      "min_healthy_vram_mb": 15500,
-      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "context_window": 81920,
+      "min_healthy_vram_mb": 15000,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(1[89]|2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q4_0 --cache-type-v q4_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {
-        "tg_ts": 37.7,
+        "tg_ts": 38.3,
         "tg_ts_prose": 28.5,
-        "pp_ts": 575,
-        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q8 KV, -ub 2048, ctx 65536, full prod samplers, whisper resident",
-        "notes": "Default. MTP speculative decoding via b9381 (upstream fix for MoE MTP at high ctx — b9186 could not do this). Sustained 43 t/s greedy / ~37 real (+31%) on structured/code/tool output, ~neutral on creative prose (28.5). CONTEXT IS 65536, NOT 131072: at 131072 the model+KV-reservation+compute-buffer exceeds 16 GB headroom, and a single deep prompt evicts the ~690 MiB Vulkan compute buffer to GTT — TG collapses 43 -> 31 until restart (q4 KV does not save it; only reducing ctx does). At ctx 65536 the compute buffer stays resident: verified eviction-proof across two consecutive 27K-token stress prompts, VRAM flat at ~15801/16304 MiB. q8 KV (best numerics) — at the 65536 cap q8 beats q4 (same speed). Requires -ub 2048 (not 4096): -ub 4096 + MTP OOMs (vk::DeviceLostError). Trades ~24% PP (751 -> 575) and half the max context for the sustained TG gain. Rollback: switch to Qwen3.6-35B-A3B-UD-Q5_K_XL (base, 131072, ~28.8 t/s). See docs/BENCHMARKS.md."
+        "pp_ts": 568,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q4 KV, -ub 2048, -ot blk.18-39, ctx 81920, whisper on CPU",
+        "notes": "Fast alternative (+32% over base) at the >=80K context the OpenClaw harness requires. MTP speculative decoding (b9381). Sustained 38.3 t/s, eviction-proof: verified across a 61K-token deep-prompt stress with VRAM flat at ~15038/16304 MiB (headroom ~1266 MiB). REQUIRES q4 KV at 80K — q8 KV is too tight (hr <=103 MiB, evicts) and -ub 4096 + MTP OOMs. Win/neutral by workload (big on structured/code/tool, ~neutral on prose 28.5). Trade vs the base default: q4 KV (lower attention precision than q8) for the speed. Needs whisper off the GPU (--no-gpu). Switch in via /api/ai/model/switch. See docs/BENCHMARKS.md (2026-06-17)."
       },
-      "default": true
+      "default": false
     },
     {
       "id": "Qwen3.6-35B-A3B-UD-Q4_K_M",
@@ -51,14 +51,16 @@
       "filename": "Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
       "min_size_bytes": 26000000000,
-      "context_window": 131072,
+      "context_window": 81920,
+      "min_healthy_vram_mb": 15000,
       "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 4096 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "benchmark": {
-        "tg_ts": 29.20,
-        "pp_ts": 751,
-        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b8996"
+        "tg_ts": 29.1,
+        "pp_ts": 696,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, q8 KV, -ub 4096, -ot blk.20-39, ctx 81920, whisper on CPU",
+        "notes": "DEFAULT (2026-06-17). Base Q5_K_XL at the >=80K context the OpenClaw harness requires, best KV numerics (q8). Sustained 29.1 t/s, eviction-proof: verified across a 61K-token deep-prompt stress with VRAM stable at ~16257/16304 MiB (idle headroom ~900 MiB). Needs whisper off the GPU (--no-gpu) for the headroom — 96K+ evicts, 80K is the safe ceiling. For +32% at the same context (q4 KV trade) switch to Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL. See docs/BENCHMARKS.md (2026-06-17)."
       },
-      "default": false
+      "default": true
     },
     {
       "id": "Qwen3.6-35B-A3B-UD-Q6_K",
