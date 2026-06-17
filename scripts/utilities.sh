@@ -1152,6 +1152,10 @@ generate_whisper_services() {
     local proxy_port=8002      # proxy listens here (any format → WAV)
 
     # --- whisper-server (internal, WAV-only) ---
+    # --no-gpu: run speech-to-text on CPU so the 35B LLM keeps the full 16 GB VRAM
+    # (frees ~777 MiB — the headroom that lets the LLM run >=80K context without
+    # compute-buffer eviction). large-v3-turbo is fast enough on CPU for the seldom
+    # voice-message path. See docs/BENCHMARKS.md (2026-06-17 headroom sweep).
     cat > /etc/systemd/system/whisper-server.service <<EOF
 [Unit]
 Description=whisper.cpp speech-to-text server
@@ -1168,7 +1172,8 @@ ExecStart=${bin_path} \\
   --model ${model_path} \\
   --host 127.0.0.1 \\
   --port ${internal_port} \\
-  --inference-path /v1/audio/transcriptions
+  --inference-path /v1/audio/transcriptions \\
+  --no-gpu
 
 Restart=always
 RestartSec=10
