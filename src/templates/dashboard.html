@@ -302,6 +302,13 @@
         .notice-warning { border-left-color: var(--warning); background: var(--warning-soft); }
         .notice-warning strong { color: var(--warning); }
 
+        /* Brief pulse to point the user at a card after a deep-link jump. */
+        .flash-highlight { animation: flashHl 2.2s ease-out; }
+        @keyframes flashHl {
+            0%, 100% { box-shadow: none; }
+            12%      { box-shadow: 0 0 0 3px var(--warning-soft); border-color: var(--warning); }
+        }
+
         /* Tunnel/preview info panel */
         .info-panel {
             background: var(--surface-2);
@@ -460,6 +467,11 @@
     </div>
 
     <div id="status" class="tab-content active">
+        <div id="recovery-prompt" class="notice notice-warning" style="display:none; margin-bottom:22px;">
+            <strong>⚠ Set up your recovery phrase</strong>
+            <p style="margin:6px 0 12px;">This device has no recovery phrase. If you forget your master password there is no way back into the Dashboard, Nextcloud or Home Assistant short of wiping the device. Setting one up takes a few seconds — it is shown only once, so write it down.</p>
+            <button class="btn-warning" onclick="goToRecoverySetup()">Set up recovery phrase →</button>
+        </div>
         <div class="grid">
             <div class="card">
                 <h3>Services</h3>
@@ -3263,7 +3275,12 @@
         async function loadRecoveryStatus() {
             const line = document.getElementById('recovery-status-line');
             const btn = document.getElementById('recovery-gen-btn');
+            const prompt = document.getElementById('recovery-prompt');
             if (!line) return;
+            // The Status-tab prompt only nags when a phrase is genuinely missing
+            // and can be generated; default to hidden so a failed/again status
+            // probe never strands a stale warning on screen.
+            if (prompt) prompt.style.display = 'none';
             try {
                 const r = await fetch('/api/recovery/status', { credentials: 'include' });
                 const d = await r.json();
@@ -3282,14 +3299,31 @@
                 } else {
                     line.innerHTML = 'No recovery phrase is set. Generate one now so you can recover access if you forget your master password.';
                     if (btn) btn.textContent = 'Generate recovery phrase';
+                    if (prompt) prompt.style.display = 'block';
                 }
             } catch (e) { /* leave the placeholder text */ }
+        }
+
+        // Deep-link from the Status-tab prompt to the Recovery card in Settings.
+        function goToRecoverySetup() {
+            openTab('settings');
+            const card = document.getElementById('recovery-card');
+            if (!card) return;
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.remove('flash-highlight');
+            void card.offsetWidth;              // restart the animation if re-clicked
+            card.classList.add('flash-highlight');
+            setTimeout(() => card.classList.remove('flash-highlight'), 2200);
         }
 
         async function regenerateRecovery() {
             const btn = document.getElementById('recovery-gen-btn');
             const msg = document.getElementById('recovery-msg');
-            if (!confirm('Generate a new recovery phrase? Any previous phrase will stop working immediately.')) return;
+            // Only confirm the destructive case (replacing a working phrase).
+            // First-time generation is exactly what we're nudging the user to do,
+            // so don't gate it behind a "previous phrase will stop working" prompt.
+            const replacing = btn && /regenerate/i.test(btn.textContent || '');
+            if (replacing && !confirm('Generate a new recovery phrase? Your previous phrase will stop working immediately.')) return;
             btn.disabled = true; msg.textContent = 'Generating…';
             try {
                 const r = await fetch('/api/recovery/regenerate', { method: 'POST', credentials: 'include' });
