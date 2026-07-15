@@ -119,6 +119,23 @@
         "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. MTP CLIFF: the draft-mtp speculative path accelerates ONLY at ctx <= ~34816 (cliff between 34816 and 36864); above it TG snaps back to the ~17.5 baseline. ctx was 49152 (over the cliff, MTP gave ~+2%); lowered to 32768 to capture the full MTP gain: ~17.1 -> ~30 t/s (+75%) with n_max=2, q4_0 KV. Crossing any of {ctx>~35K, n_max>=3, q8 KV} silently disables speculation. NOT fixed by b9381 (DeltaNet-specific; the MoE 35B cliff WAS fixed by b9381). See docs/BENCHMARKS.md '27B cliff localization'."
       },
       "default": false
+    },
+    {
+      "id": "Qwen3.5-9B-MTP-Q8_0",
+      "filename": "Qwen3.5-9B-MTP-Q8_0.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-9B-MTP-GGUF/resolve/main/Qwen3.5-9B-Q8_0.gguf",
+      "min_size_bytes": 9500000000,
+      "context_window": 81920,
+      "min_healthy_vram_mb": 14000,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "benchmark": {
+        "tg_ts": 58.8,
+        "tg_ts_real": 47.1,
+        "pp_ts": 1199,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q8_0 KV, -ub 2048, ctx 81920, whisper on CPU",
+        "notes": "Small/fast option: Qwen3.5-9B (NOT Qwen3.6 — no 9B exists in that generation). Hybrid arch like the 27B: 24 linear-attention + 8 full-attention layers, so the KV cache is tiny and -ngl 99 is MANDATORY (partial offload breaks the fused linear-attention kernel). No MTP context cliff on this model (unlike the 27B): speculation works at 80K+ with q8 KV, greedy acceptance ~86%. Sustained 58.8 t/s greedy / ~47-51 t/s production samplers (2x the 35B default, ~1.55x the 35B MTP), PP ~1200. Eviction-proof: 61K-token deep-prompt stress with VRAM flat at 14551/16304 MiB (headroom ~1750). ub4096 and UD-Q8_K_XL both rejected (VRAM cost / -20% TG). Meets the >=80K OpenClaw harness requirement. See docs/BENCHMARKS.md (2026-07-15)."
+      },
+      "default": false
     }
   ],
   "llama_server": {
