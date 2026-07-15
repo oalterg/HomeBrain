@@ -466,6 +466,10 @@
         <button class="tab-btn" onclick="openTab('logs')">Logs</button>
     </div>
 
+    <!-- Health banner — fed by /api/health (homebrain-health.timer). Visible on
+         every tab so problems surface no matter where the user lands. -->
+    <div id="health-banner" class="notice" style="display:none; margin-bottom:22px;"></div>
+
     <div id="status" class="tab-content active">
         <div id="recovery-prompt" class="notice notice-warning" style="display:none; margin-bottom:22px;">
             <strong>⚠ Set up your recovery phrase</strong>
@@ -1358,6 +1362,8 @@
             }
 
             // Start Intervals
+            fetchHealth();
+            setInterval(fetchHealth, 300000); // health.json refreshes every 30 min
             setInterval(fetchStatus, 5000);
             setInterval(loadSystemConfig, 10000); // AI state doesn't churn — 10s is enough
             setInterval(pollTask, 2000);
@@ -1406,6 +1412,30 @@
                 connRefresh();
                 vaultMcpRefresh();
             }
+        }
+
+        async function fetchHealth() {
+            try {
+                const res = await fetch('/api/health', { credentials: 'include' });
+                if (!res.ok) return;
+                const h = await res.json();
+                const el = document.getElementById('health-banner');
+                if (!el) return;
+                const issues = (h.checks || []).filter(c => c.level !== 'ok');
+                if (!issues.length || h.overall === 'ok' || h.overall === 'unknown') {
+                    el.style.display = 'none';
+                    return;
+                }
+                el.classList.remove('notice-warning', 'notice-danger');
+                if (h.overall === 'crit') el.classList.add('notice-danger');
+                else if (h.overall === 'warn') el.classList.add('notice-warning');
+                const heading = h.overall === 'info' ? 'ℹ️ Good to know' : '⚠ Needs attention';
+                el.innerHTML = `<strong>${heading}</strong>` +
+                    '<ul style="margin:6px 0 0 18px; padding:0;">' +
+                    issues.map(c => `<li>${escapeHtml(c.summary)}</li>`).join('') +
+                    '</ul>';
+                el.style.display = 'block';
+            } catch (e) { /* non-fatal — banner just stays hidden */ }
         }
 
         async function fetchStatus() {

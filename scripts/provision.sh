@@ -280,6 +280,14 @@ systemctl enable --now inhibit-sleep.service 2>/dev/null \
     && log_info "Sleep inhibitor service enabled." \
     || log_warn "Failed to enable sleep inhibitor service."
 
+# Deploy and enable the health check timer (proactive owner notifications)
+cp "${SCRIPT_DIR}/../config/homebrain-health.service" /etc/systemd/system/
+cp "${SCRIPT_DIR}/../config/homebrain-health.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-health.timer 2>/dev/null \
+    && log_info "Health check timer enabled." \
+    || log_warn "Failed to enable health check timer."
+
 # --- 6. OpenClaw integration scaffold ---
 # Make sure /home/homebrain/.openclaw/ exists with the right ownership before
 # the dashboard starts wiring MCP servers into it. Idempotent.

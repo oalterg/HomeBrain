@@ -1007,6 +1007,24 @@ def deployment_mode_api():
     return jsonify({"mode": "local" if local else "remote", "tunnelDomain": tunnel_domain})
 
 
+HEALTH_FILE = "/var/lib/homebrain/health.json"
+
+@app.route("/api/health")
+def health_status():
+    """Latest health-check report, written by scripts/healthcheck.py from the
+    homebrain-health.timer. Drives the dashboard banner; the push channel
+    (WhatsApp/Telegram) is handled by the checker itself."""
+    try:
+        with open(HEALTH_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({"overall": "unknown", "checks": []})
+    # A stale report (timer dead > 2h) is itself a signal — surface it.
+    if time.time() - data.get("ts", 0) > 2 * 3600:
+        data["overall"] = "unknown"
+    return jsonify(data)
+
+
 # --- Routes: API Status ---
 @app.route("/api/status")
 def system_status():
