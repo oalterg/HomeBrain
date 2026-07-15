@@ -501,3 +501,80 @@ The server A/B above made b9672 *look* like a regression, but that conflated com
 - MoE coopmat tile-geometry tweak (#22598): experimental/unmerged, Strix-Halo-gated, not applicable.
 
 **Bottom line: no regression, no free lunch on either build for the offloaded regime.** The real throughput levers remain MTP (characterised above) and headroom discipline (whisper→CPU, ctx ≤ 80K).
+
+## 2026-07-15 — Qwen3.5-9B Q8 sweep (small/fast model) + b9990 evaluation
+
+Goal: a small, fast Q8-quantized model as an alternative to the 35B default, at the **≥80K context the OpenClaw harness requires**, with generous headroom (production KV growth has repeatedly caused headroom pressure). Also: re-probe upstream llama.cpp (**b9990**, latest release) against pinned b9381.
+
+**There is no Qwen3.6-9B** — the Qwen3.6 generation is 27B + 35B-A3B only. The 9B lives in the previous generation: **Qwen3.5-9B** (unsloth GGUFs, base + MTP repos; the MTP repo reuses the base filenames, staged locally with a `-MTP-` infix). Architecture is a **hybrid like the 27B**: 32 layers = 24 linear-attention (DeltaNet-style, fixed-size recurrent state) + 8 full-attention (GQA-4, head_dim 256) → KV cache is tiny (~17 KB/token at q8_0, ~4× smaller per token than the 35B), native 256K positions. Same operating constraint as the 27B: `-ngl 99` mandatory (partial offload breaks the fused linear-attention kernel). Q8 candidates: `Q8_0` (9.53 GB) and `UD-Q8_K_XL` (12.97 GB).
+
+Method as in prior sweeps: server cells with greedy 256-tok TG probe (×2), a "real-sampler" probe (temp 1.0, top-p 0.95, top-k 20, presence 1.5, code prompt) exposing MTP acceptance via `timings.draft_n`, ~6.8K-tok PP probe, idle/post VRAM from sysfs (total 16,304 MiB); whisper on CPU; RADV `rm_kq=1`, `-t 6`, `-b 4096`.
+
+### Phase A — b9381, quant × KV × ub × ctx (ctx 81920 unless noted)
+
+| quant | ctx | KV | ub | TG greedy | TG real | PP | idle VRAM | headroom |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| Q8_0 | 80K | q8_0 | 2048 | 32.41 | 31.70 | 1281 | 12836 | 3468 |
+| Q8_0 | 80K | q8_0 | 4096 | 32.39 | 31.66 | 1168 | 15688 | 616 |
+| Q8_0 | 80K | q4_0 | 2048 | 32.41 | 31.70 | 1284 | 12196 | 4108 |
+| Q8_0 | 80K | f16 | 2048 | 32.75 | 31.99 | 1329 | 14036 | 2268 |
+| Q8_0 | 131K | q8_0 | 2048 | 32.40 | 31.68 | 1285 | 13996 | 2308 |
+| UD-Q8_K_XL | 80K | q8_0 | 2048 | 25.87 | 25.39 | 1232 | 15218 | 1086 |
+| UD-Q8_K_XL | 80K | q8_0 | 4096 | 25.80 | 25.34 | 1141 | 14192 | 2112 |
+
+- TG is weight-bandwidth-bound: KV type and ctx are ~free. **UD-Q8_K_XL is 20% slower** (36% more weight bytes) — eliminated.
+- `-ub 4096` costs up to ~2.8 GB VRAM for zero/negative PP gain (dense model; unlike the offloaded MoE) — **`-ub 2048` strictly better**.
+- f16 KV works on this hybrid (no 27B-style mandatory-quantized-KV issue on these builds) and is marginally fastest, but q8_0 buys 1–1.8 GB headroom for <1% TG.
+
+### Phase A, MTP cells (draft-mtp, Q8_0 weights)
+
+| ctx | KV | n_max | TG greedy (acc) | TG real (acc) | PP | idle VRAM | headroom |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 80K | q8_0 | 2 | **60.03 (86.6%)** | **47.09 (59.9%)** | 1199 | 14555 | 1749 |
+| 80K | q4_0 | 2 | 57.29 (80.1%) | 51.34 (70.3%) | 1112 | 15849¹ | 455¹ |
+| 80K | q8_0 | 3 | 60.23 (70.3%) | 49.05 (54.1%) | 1199 | 14600 | 1704 |
+| 80K | q8_0 | 2 +ub4096 | 59.61 (86.6%) | 46.95 (60.4%) | 995 | 16033 | 271 |
+| 131K | q8_0 | 2 | 59.99 (86.6%) | 50.02 (67.3%) | 1211 | 15493 | 811 |
+| 80K (UD-Q8_K_XL) | q8_0 | 2 | 46.13 (88.0%) | 34.12 (54.1%) | 1075 | 16153 | 151 |
+
+¹ anomalous first reading; settled to 15060 after probes.
+
+**Headline: no MTP context cliff on the 9B.** Unlike the 27B (speculation silently disables above ~35K ctx / with q8 KV, still true on b9381), the 9B accelerates at 80K *and* 131K with q8 KV: **+85% greedy (60 vs 32.4), +48–58% real-sampler (47–51 t/s; the spread is acceptance noise at temp 1.0)**. n=2 ≥ n=3 on real workloads (acceptance drops faster than payoff — same as the 35B). Real-sampler TG tracks acceptance (~60–75% → 47–55 t/s), consistent with the acceptance-not-VRAM mechanism established in May.
+
+### b9990 vs b9381 — compute flat, footprint dramatically lighter
+
+`llama-bench` gold standard (Q8_0, `-fa 1`, r=3): b9381 pp2048 **1703.6 ± 2.5** / tg128 **26.31 ± 0.01**; b9990 **1684.0 ± 1.3** / **26.54 ± 0.01** → compute is a wash (−1% PP, +1% TG), same conclusion as the b9672 probe.
+
+But the **server VRAM footprint at identical configs is 2.6–3.2 GB lighter on b9990** — and it is real allocation reduction, not deferred/lazy KV growth (VRAM stays byte-flat through a 107K-token prompt, see stress below):
+
+| config | b9381 idle / hr | b9990 idle / hr | Δ |
+|---|---:|---:|---:|
+| 9B base Q8_0 @80K q8 KV | 12836 / 3468 | **10224 / 6080** | −2612 |
+| 9B MTP @80K q8 KV n2 | 14555 / 1749 | **11369 / 4935** | −3186 |
+| 9B MTP @131K q8 KV n2 | 15493 / 811 | **12761 / 3543** | −2732 |
+
+b9990 TG/PP on the 9B matches or slightly beats b9381 (MTP greedy 61.4–61.5 vs 60.0–60.2).
+
+### Deep-prompt eviction stress (protocol: fresh shallow TG → deep prompt fills KV → re-measure ×2)
+
+| config | deep fill | fresh → sustained TG | VRAM through stress | verdict |
+|---|---|---:|---:|---|
+| b9990 MTP @131K q8 n2 | **107,301 tok** @ 579 t/s | 61.32 → **60.97** (−0.6%) | **12763 flat** (hr 3541) | ✅ PASS |
+| b9990 MTP @80K q8 n2 | 60,901 tok @ 771 t/s | 61.42 → **60.92** (−0.8%) | 11371 flat (hr 4933) | ✅ PASS |
+| b9381 MTP @80K q8 n2 | 60,901 tok @ 763 t/s | 60.08 → **58.75** (−2.2%) | 14551 flat (hr 1752) | ✅ PASS |
+
+### Phase D — the b9990 upgrade question, answered by the production 35B configs
+
+| config on b9990 | fresh TG | deep 61K-tok PP | sustained TG | VRAM | verdict |
+|---|---:|---:|---:|---|---|
+| 35B **base** Q5_K_XL @80K q8 ot20 **ub4096** (the shipped default) | 29.94 | **367** (vs ~700 on b9381) | **22.65 (−24%)** | 15957 → **14948 during fill** | ❌ **EVICTS** |
+| 35B **MTP** Q5_K_XL @80K q4 ot18 ub2048 n2 | 40.71 | 488 | **42.11 (+3.4%)** | 14760–14768 flat (hr 1536) | ✅ PASS (+10% vs 38.3 on b9381) |
+
+The base-default config shows the textbook eviction signature on b9990 (VRAM *drops* ~1 GB during the deep fill as the compute buffer moves to GTT). b9990's allocation rewrite is a big win for the dense-hybrid 9B (−3 GB) and even for 35B-MTP/ub2048 (+10%, stable), but it **regresses the shipped 35B base default** — so **the pin stays at b9381**. (Future lever: a b9990 bump paired with re-tuning the 35B default away from ub4096 — e.g. MTP-as-default at 42 t/s — but that is a separate, deliberate migration, not a free bump.)
+
+### Conclusion & shipped config
+
+- **Shipped (PR): `Qwen3.5-9B-MTP-Q8_0` added to `platform_models.json`** (non-default; switch via `/api/ai/model/switch`): Q8_0 weights, **ctx 81920**, q8_0 KV, `-ub 2048`, draft-mtp n=2, `-ngl 99` — on the pinned b9381: **~59–60 t/s sustained greedy / 47–51 t/s real-sampler / PP ~1200 (deep-fill 763)**, idle 14555 MiB (headroom ~1750), deep-prompt stress PASS. That is **2× the 35B default's 29.1 t/s** and ~1.55× the 35B-MTP option's 38.3, at Q8 numerics with best-precision (q8) KV.
+- **UD-Q8_K_XL rejected** (−20% TG, headroom as low as 151 MiB); **ub4096 rejected** (VRAM cost, no dense-model PP gain); **n=3 rejected** (acceptance).
+- 131072 ctx is stress-clean on b9990 (hr 3541) but only headroom-marginal on b9381 (hr 811, unstressed) — revisit if/when the build moves.
+- **Upstream (b9990) verdict: compute flat, allocator very different** — lighter for dense/ub2048 regimes, evicting for the offloaded ub4096 default. No blind bumps; any move must re-stress every shipped config.
