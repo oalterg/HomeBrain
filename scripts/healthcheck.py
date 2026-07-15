@@ -144,7 +144,8 @@ def check_disk(path, label, check_id):
 
 
 def check_backup(env, now):
-    scheduled = os.path.exists(BACKUP_CRON_FILE)
+    scheduled = os.path.exists(BACKUP_CRON_FILE) or \
+        os.path.exists("/etc/systemd/system/homebrain-backup.timer")
     if not scheduled:
         return {"id": "backup", "level": "warn",
                 "summary": "Automatic backups are not set up"}
