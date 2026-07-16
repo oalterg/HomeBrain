@@ -20,8 +20,8 @@ if ! mountpoint -q "$BACKUP_MOUNTDIR"; then
 fi
 
 if [[ -z "$BACKUP_FILE" ]]; then
-    # Auto-select latest
-    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -name '*backup*.tar.gz' -print0 | xargs -0 ls -t | head -n1)"
+    # Auto-select latest (plain or encrypted)
+    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 \( -name '*backup*.tar.gz' -o -name '*backup*.tar.gz.gpg' \) -print0 | xargs -0 ls -t | head -n1)"
 fi
 
 if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
@@ -40,9 +40,29 @@ if [[ "$ARG_FLAG" != "--no-prompt" ]]; then
     fi
 fi
 
+# --- Encryption Detection ---
+# Encrypted archives (backup.sh with BACKUP_ENCRYPT, the default) end in
+# .tar.gz.gpg. The passphrase is the master password that was current when
+# the archive was MADE — normally the current one, so no input is needed.
+# For archives from before a password rotation (or from another box), the
+# dashboard passes RESTORE_PASSPHRASE_FILE (a root-only temp file, shredded
+# here after reading).
+ENCRYPTED=false
+[[ "$BACKUP_FILE" == *.gpg ]] && ENCRYPTED=true
+RESTORE_PASS="${MASTER_PASSWORD:-}"
+if [[ -n "${RESTORE_PASSPHRASE_FILE:-}" && -f "${RESTORE_PASSPHRASE_FILE}" ]]; then
+    RESTORE_PASS="$(cat "$RESTORE_PASSPHRASE_FILE")"
+    rm -f "$RESTORE_PASSPHRASE_FILE"
+fi
+
 # --- Integrity Check ---
-log_info "Verifying backup integrity..."
-if ! gzip -t "$BACKUP_FILE"; then die "Corrupt backup file."; fi
+# For encrypted archives extraction itself is the integrity check (gpg MDC +
+# gzip CRC), and it happens below — before any service is stopped — so a bad
+# archive or wrong passphrase aborts with the system untouched.
+if [[ "$ENCRYPTED" == "false" ]]; then
+    log_info "Verifying backup integrity..."
+    if ! gzip -t "$BACKUP_FILE"; then die "Corrupt backup file."; fi
+fi
 
 # --- Restore Logic ---
 TMP_DIR=$(mktemp -d -p "${HOMEBRAIN_HOME}")
@@ -52,14 +72,27 @@ if [ ! -d "$TMP_DIR" ]; then
 fi
 
 log_info "Checking for sufficient disk space first"
-REQUIRED_SPACE=$(gzip -l "$BACKUP_FILE" | awk 'NR==2 {print int($2 * 1.1)}' || echo $(( $(du -sb "$BACKUP_FILE" | cut -f1) * 5 )))
+if [[ "$ENCRYPTED" == "true" ]]; then
+    # No gzip trailer to read through gpg; archives are mostly incompressible
+    # media, so compressed ≈ uncompressed. 1.5x gives headroom.
+    REQUIRED_SPACE=$(( $(du -sb "$BACKUP_FILE" | cut -f1) * 3 / 2 ))
+else
+    REQUIRED_SPACE=$(gzip -l "$BACKUP_FILE" | awk 'NR==2 {print int($2 * 1.1)}' || echo $(( $(du -sb "$BACKUP_FILE" | cut -f1) * 5 )))
+fi
 AVAILABLE_SPACE=$(df -B1 "$TMP_DIR" | tail -1 | awk '{print $4}')
 if [ "$REQUIRED_SPACE" -gt "$AVAILABLE_SPACE" ]; then
     die "Insufficient space in $TMP_DIR for extraction (need ${REQUIRED_SPACE} bytes, have ${AVAILABLE_SPACE})."
 fi
 
 log_info "Extracting backup to temporary location $TMP_DIR..."
-tar -xzf "$BACKUP_FILE" -C "$TMP_DIR"
+if [[ "$ENCRYPTED" == "true" ]]; then
+    [[ -n "$RESTORE_PASS" ]] || die "Archive is encrypted but no passphrase is available (set MASTER_PASSWORD or provide one in the dashboard)."
+    gpg --batch --quiet --decrypt --passphrase-fd 3 "$BACKUP_FILE" 3<<<"$RESTORE_PASS" \
+        | tar -xz -C "$TMP_DIR" \
+        || die "Decryption failed — wrong passphrase or corrupt archive. If this backup predates a master-password change, enter the password that was current when it was made."
+else
+    tar -xzf "$BACKUP_FILE" -C "$TMP_DIR"
+fi
 
 # ── Portable instance-secret merge ──────────────────────────────────────────
 # Pull HOMEBRAIN_EMAIL_KEY / HOMEBRAIN_SELF_NONCE from the archive (if

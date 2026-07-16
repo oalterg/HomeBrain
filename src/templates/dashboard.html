@@ -3080,16 +3080,21 @@
             triggerAction('/api/backup/now', 'Manual Backup', { strategy: s });
         }
 
+        let backupIndex = {};  // name -> {encrypted, ...} from /api/backups/list
+
         async function loadBackups() {
             try {
                 const res = await fetch('/api/backups/list', { credentials: 'include' });
                 const list = await res.json();
                 const sel = document.getElementById('backup-list');
                 sel.innerHTML = '';
+                backupIndex = {};
                 list.forEach(b => {
+                    backupIndex[b.name] = b;
                     const opt = document.createElement('option');
                     opt.value = b.name;
-                    opt.innerText = `${b.name} (${b.type}, ${b.size})`;
+                    const lock = b.encrypted ? '🔒 ' : '';
+                    opt.innerText = `${lock}${b.name} (${b.type}, ${b.size})`;
                     sel.appendChild(opt);
                 });
             } catch(e) {}
@@ -3099,9 +3104,16 @@
             const file = document.getElementById('backup-list').value;
             if (!file) return;
             const check = prompt(`DANGER: This will WIPE ALL DATA and restore ${file}.\n\nType 'RESTORE' to confirm:`);
-            if (check === "RESTORE") {
-                triggerAction('/api/restore', 'Restore', { filename: file });
+            if (check !== "RESTORE") return;
+            const payload = { filename: file };
+            if (backupIndex[file] && backupIndex[file].encrypted) {
+                // Normally decrypts with the current master password. Only
+                // needed when the archive predates a password change.
+                const pw = prompt("This backup is encrypted. Leave EMPTY to use the current master password — only enter a password if this backup was made before a master-password change:", "");
+                if (pw === null) return;  // cancelled
+                if (pw) payload.passphrase = pw;
             }
+            triggerAction('/api/restore', 'Restore', payload);
         }
 
         function loadOpenClawBackupStatus() {

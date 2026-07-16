@@ -155,6 +155,27 @@ rsync -a --delete \
 --exclude='venv' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
 
+# 4b. Pre-update snapshot — DB dumps + configs + vault + OpenClaw (everything
+# except the Nextcloud data tree, which updates don't touch), so "restore a
+# pre-upgrade backup" is always possible instead of a hope. Placed AFTER the
+# rsync so the freshly-synced backup.sh (which understands --strategy system)
+# runs, and BEFORE any docker image pull/up or dependency bump — the steps
+# that actually migrate data forward. Non-fatal: a missing backup drive must
+# not make updates impossible, but we warn loudly. SKIP_PREUPDATE_BACKUP=1
+# skips it.
+if [[ -f "$INSTALL_DIR/.setup_complete" && "${SKIP_PREUPDATE_BACKUP:-0}" != "1" ]]; then
+    if mountpoint -q /mnt/backup 2>/dev/null; then
+        log_info "Taking pre-update system snapshot..."
+        if bash "$INSTALL_DIR/scripts/backup.sh" --strategy system; then
+            log_info "Pre-update snapshot complete."
+        else
+            log_warn "PRE-UPDATE SNAPSHOT FAILED — continuing, but there is no fresh restore point for this update."
+        fi
+    else
+        log_warn "No backup drive mounted — skipping pre-update snapshot."
+    fi
+fi
+
 # Update pinned deps when versions.json changed in this release
 if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]; then
     new_llama_tag=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
@@ -258,6 +279,16 @@ fi
 systemctl enable --now homebrain-health.timer 2>/dev/null || true
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
+
+# Migrate backup scheduling cron -> persistent systemd timer. Cron silently
+# skips runs the box sleeps through; the timer catches up on next boot. Only
+# when a cron entry exists (i.e. the user actually configured backups) —
+# never invent a schedule.
+if [[ -f /etc/cron.d/homebrain-backup || -f /etc/cron.d/nextcloud-backup ]]; then
+    log_info "Migrating backup schedule from cron to a persistent systemd timer..."
+    bash "$INSTALL_DIR/scripts/utilities.sh" backup_timer \
+        || log_warn "Backup timer migration failed — cron entry left in place."
+fi
 
 
 # 6b. Layout Migration (idempotent — _detect_migration_work probes first;

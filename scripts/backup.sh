@@ -66,6 +66,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Strategies:
+#   full      — everything: NC data + DB + config + apps, HA, vault, OpenClaw
+#   data_only — NC data + HA config (no DB, no NC config)
+#   system    — everything EXCEPT NC data (DB dumps, configs, vault, OpenClaw).
+#               Small + fast; used by update.sh as the pre-update snapshot.
+case "$STRATEGY" in
+    full|data_only|system) ;;
+    *) die "Unknown backup strategy: $STRATEGY" ;;
+esac
+
 # --- Main Logic ---
 log_info "=== Starting Backup [Strategy: $STRATEGY]: $(date) ==="
 
@@ -94,7 +104,11 @@ wait_for_healthy "db" 60 || die "Database is not healthy, cannot perform backup.
 # ensures valid configuration before querying Docker for database ID
 DB_CID=$(get_tunnel_profiles >/dev/null; docker compose $(get_compose_args) ps -q db)
 
-ESTIMATED_DATA_KB=$(du -sk "$NEXTCLOUD_DATA_DIR" | awk '{print $1}')
+if [[ "$STRATEGY" == "system" ]]; then
+    ESTIMATED_DATA_KB=0  # system snapshots skip the NC data tree
+else
+    ESTIMATED_DATA_KB=$(du -sk "$NEXTCLOUD_DATA_DIR" | awk '{print $1}')
+fi
 # Dynamically estimate DB size
 ESTIMATED_DB_KB=$(docker exec "$DB_CID" mariadb -u "$MYSQL_USER" -p"$MYSQL_PASSWORD" -e "SELECT ROUND(SUM(data_length + index_length) / 1024) AS size_kb FROM information_schema.tables WHERE table_schema='$MYSQL_DATABASE';" 2>/dev/null | tail -1 || echo "102400")
 ESTIMATED_CONFIG_KB=51200  # Conservative for config (50MB)
@@ -111,7 +125,7 @@ while [ "$AVAILABLE_KB" -lt "$ESTIMATED_PEAK_KB" ]; do
     log_warn "Insufficient space (Avail: $((AVAILABLE_KB/1024)) MB, Need: $((ESTIMATED_PEAK_KB/1024)) MB). searching for old backups to purge..."
     
     # Find oldest backup, sort by timestamp asc (oldest on top)
-    OLDEST_BACKUP=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz" -o -name "nextcloud_backup*.tar.gz" \) -printf "%T@ %p\n" | sort -n | head -n1 | awk '{print $2}')
+    OLDEST_BACKUP=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) -printf "%T@ %p\n" | sort -n | head -n1 | awk '{print $2}')
     
     if [[ -z "$OLDEST_BACKUP" ]]; then
         die "CRITICAL: No old backups remain to delete, and space is still insufficient. Aborting."
@@ -129,8 +143,21 @@ done
 DATE="$(date +'%Y-%m-%d_%H-%M-%S')"
 SUFFIX=""
 if [[ "$STRATEGY" == "data_only" ]]; then SUFFIX="_data_only"; fi
+if [[ "$STRATEGY" == "system" ]]; then SUFFIX="_system"; fi
 STAGING_DIR=$(mktemp -d -p "$STAGING_BASE" staging_XXXXXX)
 ARCHIVE_PATH="$BACKUP_MOUNTDIR/homebrain_backup${SUFFIX}_${DATE}.tar.gz"
+
+# Encryption: on unless explicitly disabled. The passphrase is the master
+# password AT BACKUP TIME — each archive is self-contained (gpg stores the
+# s2k salt in the header), so restoring after a master-password rotation just
+# needs the password that was current when the archive was made.
+ENCRYPT=false
+if [[ "${BACKUP_ENCRYPT:-true}" != "false" ]] && [[ -n "${MASTER_PASSWORD:-}" ]]; then
+    ENCRYPT=true
+    ARCHIVE_PATH="${ARCHIVE_PATH}.gpg"
+elif [[ "${BACKUP_ENCRYPT:-true}" != "false" ]]; then
+    log_warn "MASTER_PASSWORD not set — backup will NOT be encrypted."
+fi
 
 mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$STAGING_DIR/nc_config" "$STAGING_DIR/ha_config"
 
@@ -187,8 +214,8 @@ if [[ -n "$HA_CID" ]]; then
     docker stop "$HA_CID"
 fi
 
-# 6. Database Dump (Full Only)
-if [[ "$STRATEGY" == "full" && -n "$DB_CID" ]]; then
+# 6. Database Dump (full + system)
+if [[ "$STRATEGY" != "data_only" && -n "$DB_CID" ]]; then
     log_info "Dumping Nextcloud Database..."
 
     # Health check first
@@ -212,8 +239,8 @@ if [[ "$STRATEGY" == "full" && -n "$DB_CID" ]]; then
     fi
 fi
 
-# 6.5 Nextcloud Apps (Full Only - To backup installed apps like Passwords)
-if [[ "$STRATEGY" == "full" && -n "$NC_CID" ]]; then
+# 6.5 Nextcloud Apps (full + system - To backup installed apps like Passwords)
+if [[ "$STRATEGY" != "data_only" && -n "$NC_CID" ]]; then
     log_info "Syncing Nextcloud Custom User Apps..."
 
     # 1. Identify the volume mounted at /var/www/html
@@ -225,12 +252,16 @@ if [[ "$STRATEGY" == "full" && -n "$NC_CID" ]]; then
         sh -c "if [ -d /volume/custom_apps ]; then cp -a /volume/custom_apps/. /backup/; fi" || die "NC Apps backup failed."
 fi
 
-# 7. Nextcloud Data (Rsync host path)
-log_info "Syncing Nextcloud Data..."
-rsync -a --delete "$NEXTCLOUD_DATA_DIR"/ "$STAGING_DIR/nc_data/" || die "NC Data Sync failed."
+# 7. Nextcloud Data (Rsync host path — skipped for system snapshots)
+if [[ "$STRATEGY" != "system" ]]; then
+    log_info "Syncing Nextcloud Data..."
+    rsync -a --delete "$NEXTCLOUD_DATA_DIR"/ "$STAGING_DIR/nc_data/" || die "NC Data Sync failed."
+else
+    rmdir "$STAGING_DIR/nc_data" 2>/dev/null || true
+fi
 
-# 8. Nextcloud Config (Helper Container - Full Only)
-if [[ "$STRATEGY" == "full" && -n "$NC_CID" ]]; then
+# 8. Nextcloud Config (Helper Container - full + system)
+if [[ "$STRATEGY" != "data_only" && -n "$NC_CID" ]]; then
     log_info "Syncing Nextcloud Config..."
     NC_VOL=$(docker inspect "$NC_CID" --format '{{ range .Mounts }}{{ if eq .Destination "/var/www/html" }}{{ .Name }}{{ end }}{{ end }}')
     docker run --rm -v "${NC_VOL}:/volume:ro" -v "$STAGING_DIR/nc_config":/backup alpine \
@@ -374,20 +405,50 @@ if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw &>/dev/null; then
         || log_warn "OpenClaw daemon restart failed after backup — restart manually if needed"
 fi
 
-# 11. Compress
-log_info "Compressing archive..."
-tar -C "$STAGING_DIR" -czf "$ARCHIVE_PATH" . || die "Compression failed."
+# 11. Compress (+ encrypt)
+if [[ "$ENCRYPT" == "true" ]]; then
+    log_info "Compressing + encrypting archive (AES256, passphrase = master password)..."
+    tar -C "$STAGING_DIR" -cz . | gpg --batch --yes --symmetric \
+        --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
+        --s2k-count 65011712 --compress-algo none \
+        --passphrase-fd 3 -o "$ARCHIVE_PATH" 3<<<"$MASTER_PASSWORD" \
+        || { rm -f "$ARCHIVE_PATH"; die "Compression/encryption failed."; }
+else
+    log_info "Compressing archive (unencrypted — BACKUP_ENCRYPT=false)..."
+    tar -C "$STAGING_DIR" -czf "$ARCHIVE_PATH" . || die "Compression failed."
+fi
 sync
 
-# 12. Retention
+# 12. Verify — read the whole archive back through the full decrypt/decompress
+# pipeline. Catches truncated writes and bad sectors while the staging data
+# still exists. Skippable for huge archives via BACKUP_VERIFY=false.
+if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
+    log_info "Verifying archive integrity..."
+    if [[ "$ENCRYPT" == "true" ]]; then
+        gpg --batch --quiet --decrypt --passphrase-fd 3 "$ARCHIVE_PATH" 3<<<"$MASTER_PASSWORD" \
+            | tar -tz > /dev/null \
+            || { rm -f "$ARCHIVE_PATH"; die "Archive verification FAILED — bad archive deleted."; }
+    else
+        tar -tzf "$ARCHIVE_PATH" > /dev/null \
+            || { rm -f "$ARCHIVE_PATH"; die "Archive verification FAILED — bad archive deleted."; }
+    fi
+    log_info "Archive verified."
+fi
+
+# 13. Retention
 log_info "Applying retention (Keep: $BACKUP_RETENTION)..."
 
-# List both old and new naming schemas, sort by time (newest first), skip first N, delete rest.
-# Uses 'ls -t' to sort by modification time regardless of name.
-# grep -E filters for both patterns.
-find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz" -o -name "nextcloud_backup*.tar.gz" \) -printf "%T@ %p\n" | \
+# List all naming schemas (plain + .gpg), sort by time (newest first), skip
+# first N, delete rest. Pre-update system snapshots are counted separately
+# (keep 2) so update churn can never push real backups out of retention.
+find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) ! -name "homebrain_backup_system_*" -printf "%T@ %p\n" | \
     sort -rn | \
     awk -v keep="$BACKUP_RETENTION" 'NR > keep {print $2}' | \
+    xargs -r rm --
+
+find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f -name "homebrain_backup_system_*.tar.gz*" -printf "%T@ %p\n" | \
+    sort -rn | \
+    awk 'NR > 2 {print $2}' | \
     xargs -r rm --
 
 log_info "=== Backup Complete: $ARCHIVE_PATH ==="

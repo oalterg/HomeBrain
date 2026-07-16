@@ -144,7 +144,8 @@ def check_disk(path, label, check_id):
 
 
 def check_backup(env, now):
-    scheduled = os.path.exists(BACKUP_CRON_FILE)
+    scheduled = os.path.exists(BACKUP_CRON_FILE) or \
+        os.path.exists("/etc/systemd/system/homebrain-backup.timer")
     if not scheduled:
         return {"id": "backup", "level": "warn",
                 "summary": "Automatic backups are not set up"}
@@ -152,8 +153,12 @@ def check_backup(env, now):
         return {"id": "backup", "level": "crit",
                 "summary": "Backup drive is not connected"}
 
-    archives = glob.glob(f"{BACKUP_DIR}/homebrain_backup*.tar.gz*") + \
-        glob.glob(f"{BACKUP_DIR}/nextcloud_backup*.tar.gz*")
+    # Pre-update system snapshots don't contain the user's files — they must
+    # not satisfy "your data is backed up".
+    archives = [a for a in
+                glob.glob(f"{BACKUP_DIR}/homebrain_backup*.tar.gz*") +
+                glob.glob(f"{BACKUP_DIR}/nextcloud_backup*.tar.gz*")
+                if "_system_" not in os.path.basename(a)]
     newest = max((os.path.getmtime(a) for a in archives), default=0)
 
     # A run that started after the last success and isn't recent is a failure.

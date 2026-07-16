@@ -2123,6 +2123,62 @@ migrate_admin_to_homebrain() {
     migrate_to_consolidated_layout
 }
 
+# --- Backup scheduling (systemd timer) ---
+# Replaces the old /etc/cron.d/homebrain-backup entry. Plain cron silently
+# skips runs the box sleeps through — a home appliance that is off at 03:00
+# Sunday simply never backs up (seen live: 38 days without a backup).
+# Persistent=true makes systemd fire a missed run on the next boot instead.
+# Schedule comes from the BACKUP_* vars in .env (written by the dashboard).
+configure_backup_timer() {
+    load_env
+    local minute="${BACKUP_MINUTE:-0}" hour="${BACKUP_HOUR:-3}"
+    local dow="${BACKUP_DAY_WEEK:-*}" dom="${BACKUP_DAY_MONTH:-*}"
+
+    # cron day-of-week (0-6, 0=Sunday) -> systemd weekday name
+    local caldow=""
+    case "$dow" in
+        0) caldow="Sun " ;; 1) caldow="Mon " ;; 2) caldow="Tue " ;;
+        3) caldow="Wed " ;; 4) caldow="Thu " ;; 5) caldow="Fri " ;;
+        6) caldow="Sat " ;; *) caldow="" ;;
+    esac
+    local caldom="*"
+    [[ "$dom" != "*" ]] && caldom=$(printf '%02d' "$dom")
+    local oncal
+    oncal="${caldow}*-*-${caldom} $(printf '%02d' "$hour"):$(printf '%02d' "$minute"):00"
+
+    cat > /etc/systemd/system/homebrain-backup.service <<EOF
+[Unit]
+Description=HomeBrain scheduled backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $INSTALL_DIR/scripts/backup.sh
+StandardOutput=append:$LOG_DIR/backup.log
+StandardError=append:$LOG_DIR/backup.log
+EOF
+
+    cat > /etc/systemd/system/homebrain-backup.timer <<EOF
+[Unit]
+Description=HomeBrain scheduled backup timer
+
+[Timer]
+OnCalendar=$oncal
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now homebrain-backup.timer || die "Failed to enable backup timer."
+
+    # Retire the cron entries this replaces (both naming generations).
+    rm -f /etc/cron.d/homebrain-backup /etc/cron.d/nextcloud-backup
+    log_info "Backup timer configured: OnCalendar=$oncal (Persistent=true)"
+}
+
 # --- Main Dispatch (only when executed directly, not sourced) ---
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
@@ -2134,6 +2190,9 @@ case "${1:-}" in
         ;;
     cron)
         configure_nc_cron
+        ;;
+    backup_timer)
+        configure_backup_timer
         ;;
     pci)
         configure_pci_speed "${2}"
