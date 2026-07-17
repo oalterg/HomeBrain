@@ -592,6 +592,10 @@
                 <p>Manage external USB storage devices.</p>
                 <div id="drive-list" style="margin-bottom:15px;">Loading drives...</div>
                 <button onclick="loadDrives()">Scan for Drives</button>
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; margin-top:12px;">
+                    <input type="checkbox" id="internal-backup" style="width:auto;" onchange="toggleInternalBackup(this.checked)">
+                    <span>No drive — keep backups on the internal disk (pair with Off-site Copy)</span>
+                </label>
 
                 <hr>
                 
@@ -3071,13 +3075,24 @@
 
                 if (d.mounted) {
                     bar.style.width = d.percent + '%';
-                    txt.innerText = `${d.used_gb} GB Used / ${d.total_gb} GB Total`;
+                    txt.innerText = `${d.used_gb} GB Used / ${d.total_gb} GB Total` + (d.internal ? ' (internal disk)' : '');
                     bar.style.backgroundColor = d.percent > 90 ? 'var(--hb-danger)' : 'var(--hb-green)';
                 } else {
                     bar.style.width = '0%';
                     txt.innerText = 'Not Mounted';
                 }
+                const cb = document.getElementById('internal-backup');
+                if (cb) cb.checked = !!d.internal;
             } catch (e) { }
+        }
+
+        async function toggleInternalBackup(enabled) {
+            const res = await fetch('/api/backup/internal', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ enabled: enabled }) });
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert(d.error || 'Could not change backup storage.');
+            }
+            loadDiskStats();
         }
 
         async function loadBackupConfig() {

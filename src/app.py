@@ -618,6 +618,17 @@ def get_env_config():
     return config
 
 
+def backup_storage_dir():
+    """Where archives live: the backup drive, or an internal path in the
+    no-drive mode (BACKUP_INTERNAL=true). Drive-management flows keep using
+    the BACKUP_DIR constant — that is where a physical drive mounts."""
+    return get_env_config().get("BACKUP_MOUNTDIR") or BACKUP_DIR
+
+
+def backup_storage_internal():
+    return get_env_config().get("BACKUP_INTERNAL", "false") == "true"
+
+
 def update_env_var(key, value):
     try:
         # If value is None, remove the line
@@ -1346,14 +1357,18 @@ def format_drive():
 # --- Routes: Backup Config & Stats ---
 @app.route("/api/backup/stats")
 def backup_stats():
-    # Check if mounted
-    if not os.path.ismount(BACKUP_DIR):
-        return jsonify({"mounted": False, "free_gb": 0, "total_gb": 0, "percent": 0})
+    target = backup_storage_dir()
+    internal = backup_storage_internal()
+    if not internal and not os.path.ismount(target):
+        return jsonify({"mounted": False, "internal": False,
+                        "free_gb": 0, "total_gb": 0, "percent": 0})
     try:
-        total, used, free = shutil.disk_usage(BACKUP_DIR)
+        os.makedirs(target, exist_ok=True)
+        total, used, free = shutil.disk_usage(target)
         return jsonify(
             {
                 "mounted": True,
+                "internal": internal,
                 "free_gb": round(free / (1024**3), 2),
                 "total_gb": round(total / (1024**3), 2),
                 "used_gb": round(used / (1024**3), 2),
@@ -1361,7 +1376,22 @@ def backup_stats():
             }
         )
     except:
-        return jsonify({"mounted": False, "error": "Disk check failed"})
+        return jsonify({"mounted": False, "internal": internal, "error": "Disk check failed"})
+
+
+@app.route("/api/backup/internal", methods=["POST"])
+@limiter.limit("5 per minute")
+def backup_internal():
+    enabled = bool(request.json.get("enabled"))
+    if enabled and os.path.ismount(BACKUP_DIR):
+        return jsonify({"error": "A backup drive is connected — use that instead"}), 400
+    if enabled:
+        update_env_var("BACKUP_INTERNAL", "true")
+        update_env_var("BACKUP_MOUNTDIR", "/var/backups/homebrain")
+    else:
+        update_env_var("BACKUP_INTERNAL", "false")
+        update_env_var("BACKUP_MOUNTDIR", "/mnt/backup")
+    return jsonify({"status": "success"})
 
 
 @app.route("/api/backup/config", methods=["GET", "POST"])
@@ -1561,10 +1591,11 @@ def trigger_backup():
 @app.route("/api/backups/list")
 def list_backups():
     backups = []
-    if os.path.exists(BACKUP_DIR):
-        for f in os.listdir(BACKUP_DIR):
+    storage = backup_storage_dir()
+    if os.path.exists(storage):
+        for f in os.listdir(storage):
             if f.endswith(".tar.gz") or f.endswith(".tar.gz.gpg"):
-                path = os.path.join(BACKUP_DIR, f)
+                path = os.path.join(storage, f)
                 try:
                     size = os.path.getsize(path) / (1024 * 1024)
                     # Infer type from filename injected by backup.sh
@@ -1593,7 +1624,7 @@ def trigger_restore():
     if not filename or "/" in filename:
         return jsonify({"error": "Invalid filename"}), 400
 
-    full_path = os.path.join(BACKUP_DIR, filename)
+    full_path = os.path.join(backup_storage_dir(), filename)
 
     # Optional passphrase for encrypted archives made under a DIFFERENT master
     # password (pre-rotation or from another box). Passed via a root-only temp
