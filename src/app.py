@@ -413,13 +413,17 @@ except Exception as e:
 def get_task_status():
     return jsonify(read_status())
 
-# Initialize Limiter with memory storage
-# Uses remote IP for identification.
+# Rate limits live in the stack's Redis (loopback-published) so all gunicorn
+# workers share one counter — in-memory storage counted per worker, turning
+# "5 per minute" into 15. Uses remote IP for identification. If Redis is down
+# (e.g. during boot) the limiter falls back to per-worker memory rather than
+# failing requests.
 limiter = Limiter(
     get_remote_address,
     app=app,
     default_limits=["2000 per minute"], # High limit to prevent dashboard polling blocks
-    storage_uri="memory://"
+    storage_uri="redis://127.0.0.1:6379/1",
+    in_memory_fallback_enabled=True,
 )
 
 # Mount the OpenClaw integrations module — adds /api/integrations/* routes

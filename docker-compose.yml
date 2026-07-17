@@ -24,6 +24,11 @@ services:
   redis:
     image: redis:8.4.3-alpine
     restart: unless-stopped
+    # Loopback-only publish: the manager (gunicorn on the host) uses Redis as
+    # shared rate-limit storage — its 3 workers otherwise each count limits
+    # separately in memory.
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
