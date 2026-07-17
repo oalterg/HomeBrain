@@ -199,6 +199,17 @@ LOG_FILES = {
     "nuclear": f"{LOG_DIR}/nuclear_reset.log",
 }
 
+
+def compose_ps_q(service):
+    """Container ID of a compose service, or "" if not created/running."""
+    try:
+        return subprocess.check_output(
+            ["docker", "compose", "-f", COMPOSE_FILE, "ps", "-q", service],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return ""
+
 JOURNAL_SERVICES = {"openclaw", "llama-server"}
 
 # --- Logging Configuration (Global & Robust) ---
@@ -265,10 +276,7 @@ def _enforce_vault_signups_lockdown():
         return
 
     try:
-        db_cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q db",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        db_cid = compose_ps_q("db")
         if not db_cid:
             return
         out = subprocess.check_output(
@@ -470,7 +478,7 @@ def login():
         # Pre-Setup: Factory Sticker Password
         target_pass = get_factory_password()
 
-    if target_pass and password == target_pass:
+    if target_pass and hmac.compare_digest((password or "").encode(), target_pass.encode()):
         session['authenticated'] = True
         session.permanent = True  # Keep session active across browser restarts
         return jsonify({"status": "success", "redirect": "/"})
@@ -531,6 +539,10 @@ def get_local_version():
     return {"channel": "unknown", "ref": "unknown", "updated_at": "unknown"}
 
 def run_background_task(task_name, command, log_type):
+    # The one deliberate shell=True in this codebase: callers hand over
+    # internally-built command strings with log redirection (>> file 2>&1) and
+    # shlex.quote() at every interpolation. Never pass request data here
+    # unquoted.
     status = {
              "status": "running",
              "message": f"{task_name} in progress...",
@@ -883,17 +895,18 @@ def mount_drive():
     # 2. Get UUID and FSType from the target path
     try:
         # Check UUID/FSType of the identified partition/device
-        uuid_cmd = f"blkid -o value -s UUID {shlex.quote(target_path)}"
-        fstype_cmd = f"blkid -o value -s TYPE {shlex.quote(target_path)}"
-
-        uuid = subprocess.check_output(uuid_cmd, shell=True).decode().strip()
-        fstype = subprocess.check_output(fstype_cmd, shell=True).decode().strip()
+        uuid = subprocess.check_output(
+            ["blkid", "-o", "value", "-s", "UUID", target_path]).decode().strip()
+        fstype = subprocess.check_output(
+            ["blkid", "-o", "value", "-s", "TYPE", target_path]).decode().strip()
 
         if not uuid:
             # Fallback to the original whole-disk path if the partition check failed
             if target_path != drive_path:
-                uuid = subprocess.check_output(f"blkid -o value -s UUID {shlex.quote(drive_path)}", shell=True).decode().strip()
-                fstype = subprocess.check_output(f"blkid -o value -s TYPE {shlex.quote(drive_path)}", shell=True).decode().strip()
+                uuid = subprocess.check_output(
+                    ["blkid", "-o", "value", "-s", "UUID", drive_path]).decode().strip()
+                fstype = subprocess.check_output(
+                    ["blkid", "-o", "value", "-s", "TYPE", drive_path]).decode().strip()
                 if uuid:
                      target_path = drive_path # Use the whole disk path if it has a UUID
             
@@ -1040,17 +1053,17 @@ def system_status():
         # Docker Services Check
         # Get profiles dynamically from common.sh for consistency
         profiles = subprocess.check_output(
-            f"bash -c 'source {INSTALL_DIR}/scripts/common.sh; load_env; "
-            f"echo $(get_tunnel_profiles) $(get_vault_profiles)'",
-            shell=True,
+            ["bash", "-c",
+             f"source {INSTALL_DIR}/scripts/common.sh; load_env; "
+             "echo $(get_tunnel_profiles) $(get_vault_profiles)"],
         ).decode().strip()
 
-        compose_cmd = f"docker compose -f {COMPOSE_FILE} --env-file {ENV_FILE}"
+        compose_cmd = ["docker", "compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE]
         if os.path.exists(OVERRIDE_FILE):
-            compose_cmd += f" -f {OVERRIDE_FILE}"
-        compose_cmd += f" {profiles} ps --format '{{{{.Service}}}}:{{{{.State}}}}:{{{{.Health}}}}'"
+            compose_cmd += ["-f", OVERRIDE_FILE]
+        compose_cmd += profiles.split() + ["ps", "--format", "{{.Service}}:{{.State}}:{{.Health}}"]
 
-        out = subprocess.check_output(compose_cmd, shell=True).decode()
+        out = subprocess.check_output(compose_cmd).decode()
         tunnel_status = "stopped"
 
         for line in out.splitlines():
@@ -1079,8 +1092,8 @@ def system_status():
         # Maintenance Mode Check
         try:
             m_check = subprocess.check_output(
-                f"docker compose -f {COMPOSE_FILE} exec -u www-data nextcloud php occ maintenance:mode",
-                shell=True,
+                ["docker", "compose", "-f", COMPOSE_FILE, "exec", "-u", "www-data",
+                 "nextcloud", "php", "occ", "maintenance:mode"],
             ).decode()
             services["maintenance_mode"] = (
                 "enabled" if "enabled" in m_check else "disabled"
@@ -1116,13 +1129,11 @@ def system_status():
 
             # RAM
             # Because we used quoted EOF, $2 and $3 are preserved literally for awk here:
-            mem_info = (
-                subprocess.check_output(
-                    "free -m | awk '/Mem:/ {print $2 \" \" $3}'", shell=True
-                )
-                .decode()
-                .split()
-            )
+            mem_line = next(
+                line for line in subprocess.check_output(["free", "-m"]).decode().splitlines()
+                if line.startswith("Mem:")
+            ).split()
+            mem_info = mem_line[1:3]  # total, used
             if len(mem_info) == 2:
                 total_mem = int(mem_info[0])
                 used_mem = int(mem_info[1])
@@ -1207,7 +1218,7 @@ def client_log():
 def list_drives():
     try:
         root_dev = (
-            subprocess.check_output("findmnt -n -o SOURCE /", shell=True)
+            subprocess.check_output(["findmnt", "-n", "-o", "SOURCE", "/"])
             .decode()
             .strip()
         )
@@ -1222,7 +1233,7 @@ def list_drives():
         # SATA controller doesn't advertise removable media. TRAN=usb is
         # the truthful signal for an externally-attached drive.
         output = subprocess.check_output(
-            "lsblk -J -o NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT,TRAN", shell=True
+            ["lsblk", "-J", "-o", "NAME,SIZE,TYPE,MODEL,RM,MOUNTPOINT,TRAN"]
         ).decode()
         data = json.loads(output)
 
@@ -1231,14 +1242,12 @@ def list_drives():
         try:
             # Returns e.g. /dev/sda1
             backup_mount_source = (
-                subprocess.check_output(
-                    f"findmnt -n -o SOURCE {BACKUP_DIR} || true", shell=True
-                )
+                subprocess.check_output(["findmnt", "-n", "-o", "SOURCE", BACKUP_DIR])
                 .decode()
                 .strip()
             )
-        except:
-            pass
+        except Exception:
+            pass  # not mounted
 
         system_mounts = {'/', '/boot', '/boot/efi', '/opt/homebrain'}
 
@@ -1781,8 +1790,8 @@ def set_maintenance():
     flag = "--on" if mode == "on" else "--off"
     try:
         subprocess.check_call(
-            f"docker compose -f {COMPOSE_FILE} exec -u www-data nextcloud php occ maintenance:mode {flag}",
-            shell=True,
+            ["docker", "compose", "-f", COMPOSE_FILE, "exec", "-u", "www-data",
+             "nextcloud", "php", "occ", "maintenance:mode", flag],
         )
         return jsonify({"status": "success"})
     except Exception as e:
@@ -1888,8 +1897,8 @@ def trigger_upgrade():
     # We reuse the bash logic to ensure consistency with deploy.sh
     try:
         profiles = subprocess.check_output(
-            f"bash -c 'source {shlex.quote(INSTALL_DIR)}/scripts/common.sh; load_env; get_tunnel_profiles'", 
-            shell=True
+            ["bash", "-c",
+             f"source {INSTALL_DIR}/scripts/common.sh; load_env; get_tunnel_profiles"],
         ).decode().strip()
     except Exception as e:
         logging.error(f"Failed to fetch profiles: {e}")
@@ -2019,13 +2028,14 @@ def do_manager_update():
     except Exception:
         pass
 
-    cmd = (
-        f"echo 'Starting Manager Update ({shlex.quote(channel)})...' > {LOG_FILES['update']}; "
-        f"{SCRIPT_UPDATE} {shlex.quote(channel)} {shlex.quote(target_ref)} >> {LOG_FILES['update']} 2>&1"
-    )
-
     # Fire and forget thread, as the service will restart
-    threading.Thread(target=lambda: subprocess.run(cmd, shell=True)).start()
+    def _run_update():
+        with open(LOG_FILES["update"], "w") as log:
+            log.write(f"Starting Manager Update ({channel})...\n")
+            log.flush()
+            subprocess.run(["bash", SCRIPT_UPDATE, channel, target_ref],
+                           stdout=log, stderr=subprocess.STDOUT)
+    threading.Thread(target=_run_update).start()
 
     return jsonify({
         "status": "started",
@@ -2598,10 +2608,7 @@ def vault_status():
     }
     # Container running?
     try:
-        cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q vaultwarden",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        cid = compose_ps_q("vaultwarden")
         if cid:
             state = subprocess.check_output(
                 ["docker", "inspect", "-f", "{{.State.Health.Status}}", cid],
@@ -2614,10 +2621,7 @@ def vault_status():
     # User count: query the DB directly (avoids the admin-cookie JWT dance).
     if info["container"] in ("running", "healthy"):
         try:
-            db_cid = subprocess.check_output(
-                f"docker compose -f {COMPOSE_FILE} ps -q db",
-                shell=True, stderr=subprocess.DEVNULL,
-            ).decode().strip()
+            db_cid = compose_ps_q("db")
             db_name = env.get("VAULT_DB_NAME", "vaultwarden")
             db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
             db_pass = env.get("VAULT_DB_PASSWORD", "")
@@ -2798,10 +2802,7 @@ def _vault_first_user_email():
     if not db_pass:
         return ""
     try:
-        db_cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q db",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        db_cid = compose_ps_q("db")
         if not db_cid:
             return ""
         out = subprocess.check_output(
@@ -3073,10 +3074,7 @@ def vault_docs_status():
         return jsonify({"error": "unauthenticated"}), 401
     info = {"e2ee_enabled": False, "folder_exists": False, "folder_url": ""}
     try:
-        nc_cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q nextcloud",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        nc_cid = compose_ps_q("nextcloud")
         if not nc_cid:
             return jsonify(info)
         out = subprocess.check_output(
@@ -3122,10 +3120,7 @@ def vault_docs_setup():
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
     try:
-        nc_cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q nextcloud",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        nc_cid = compose_ps_q("nextcloud")
         if not nc_cid:
             return jsonify({"error": "Nextcloud container not running"}), 503
 
@@ -3200,10 +3195,7 @@ def vault_local_ca():
         return ("Local CA is only used in LAN-only deployments. "
                 "Remote-mode installs use Pangolin's public TLS chain."), 404
     try:
-        cid = subprocess.check_output(
-            f"docker compose -f {COMPOSE_FILE} ps -q caddy",
-            shell=True, stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        cid = compose_ps_q("caddy")
         if not cid:
             return "Caddy container not running.", 503
         # Caddy stores its internal CA root at a known path inside the
