@@ -253,9 +253,11 @@ if [[ "$STRATEGY" != "data_only" && -n "$NC_CID" ]]; then
 fi
 
 # 7. Nextcloud Data (Rsync host path — skipped for system snapshots)
+# The "replica" account holds another HomeBrain's off-site archives — backing
+# those up again would double every backup with data the other box already owns.
 if [[ "$STRATEGY" != "system" ]]; then
     log_info "Syncing Nextcloud Data..."
-    rsync -a --delete "$NEXTCLOUD_DATA_DIR"/ "$STAGING_DIR/nc_data/" || die "NC Data Sync failed."
+    rsync -a --delete --exclude=/replica/ "$NEXTCLOUD_DATA_DIR"/ "$STAGING_DIR/nc_data/" || die "NC Data Sync failed."
 else
     rmdir "$STAGING_DIR/nc_data" 2>/dev/null || true
 fi

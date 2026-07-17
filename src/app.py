@@ -1475,6 +1475,49 @@ def backup_offsite_test():
     return jsonify({"status": "success"})
 
 
+@app.route("/api/backup/replica", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def backup_replica():
+    nc_domain = get_env_config().get("NEXTCLOUD_TRUSTED_DOMAINS", "")
+    url = f"https://{nc_domain}/remote.php/dav/files/replica" if nc_domain else ""
+
+    if request.method == "GET":
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "replica_status"],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
+        if result.returncode != 0:
+            return jsonify({"error": "Could not read replica status"}), 500
+        if out.startswith("enabled"):
+            used = out.split("used=", 1)[1] if "used=" in out else "?"
+            return jsonify({"enabled": True, "url": url, "user": "replica", "used": used})
+        return jsonify({"enabled": False})
+
+    action = request.json.get("action", "")
+    if action == "enable":
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "replica_enable"],
+            capture_output=True, text=True, timeout=60,
+        )
+        # The password is shown once to be copied into the sending box's
+        # Off-site form — it is never stored on this box.
+        for line in result.stdout.splitlines():
+            if line.startswith("REPLICA_PASS="):
+                return jsonify({"status": "success", "url": url, "user": "replica",
+                                "pass": line.split("=", 1)[1]})
+        return jsonify({"error": "Could not enable the replica account"}), 500
+    if action == "disable":
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "replica_disable"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return jsonify({"error": "Could not remove the replica account"}), 500
+        return jsonify({"status": "success"})
+    return jsonify({"error": "Invalid action"}), 400
+
+
 # --- Routes: Backup & Restore Execution ---
 @app.route("/api/backup/now", methods=["POST"])
 @limiter.limit("3 per minute")

@@ -165,7 +165,10 @@ if [ "$HAS_NC_DATA" = true ]; then
     log_info "Restoring Nextcloud Data..."
     SRC="$TMP_DIR/nc_data"; [[ ! -d "$SRC" ]] && SRC="$TMP_DIR/data"
 
-    rsync -a --delete "$SRC/" "$NEXTCLOUD_DATA_DIR/" || die "NC Data RSync failed."
+    # Archives never contain the "replica" landing area (see backup.sh) — the
+    # exclude keeps --delete from destroying another HomeBrain's received
+    # archives when this box is restored.
+    rsync -a --delete --exclude=/replica/ "$SRC/" "$NEXTCLOUD_DATA_DIR/" || die "NC Data RSync failed."
     chown -R 33:33 "$NEXTCLOUD_DATA_DIR"
 fi
 
