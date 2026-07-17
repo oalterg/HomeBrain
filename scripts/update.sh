@@ -280,6 +280,16 @@ systemctl enable --now homebrain-health.timer 2>/dev/null || true
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
 
+# OS security patches apply themselves nightly (Debian defaults: security
+# origin only, no automatic reboots — kernel updates wait for the next manual
+# reboot). Idempotent, best-effort.
+command -v unattended-upgrade >/dev/null 2>&1 || apt-get install -y -qq unattended-upgrades 2>/dev/null \
+    || log_warn "unattended-upgrades install failed — OS security patches stay manual."
+if command -v unattended-upgrade >/dev/null 2>&1; then
+    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+        > /etc/apt/apt.conf.d/20auto-upgrades
+fi
+
 # Migrate backup scheduling cron -> persistent systemd timer. Cron silently
 # skips runs the box sleeps through; the timer catches up on next boot. Only
 # when a cron entry exists (i.e. the user actually configured backups) —

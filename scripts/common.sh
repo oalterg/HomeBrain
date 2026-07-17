@@ -429,7 +429,7 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
-    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools"
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades"
     apt-get install -y -qq $common_pkgs
 
     # Install Google Chrome for OpenClaw browser tool (x86 only, non-fatal)
