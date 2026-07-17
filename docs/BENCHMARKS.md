@@ -578,3 +578,20 @@ The base-default config shows the textbook eviction signature on b9990 (VRAM *dr
 - **UD-Q8_K_XL rejected** (−20% TG, headroom as low as 151 MiB); **ub4096 rejected** (VRAM cost, no dense-model PP gain); **n=3 rejected** (acceptance).
 - 131072 ctx is stress-clean on b9990 (hr 3541) but only headroom-marginal on b9381 (hr 811, unstressed) — revisit if/when the build moves.
 - **Upstream (b9990) verdict: compute flat, allocator very different** — lighter for dense/ub2048 regimes, evicting for the offloaded ub4096 default. No blind bumps; any move must re-stress every shipped config.
+
+## 2026-07-17 — 35B production configs: b9381 (pinned) vs current upstream b10032 (Phase E)
+
+Same-day A/B of both shipped 35B configs (exact production flags, ctx 81920) on the pinned b9381 and the current upstream release b10032, on .58 with all services held. Protocol as above: fresh shallow TG → 61K-token deep fill → sustained TG; PASS = sustained ≥90% of fresh.
+
+`llama-bench` compute A/B (Q5_K_XL, `-ncmoe 20 -fa 1 -ctk/-ctv q8_0 -b/-ub 4096`, r=3): b9381 pp2048 **661.9 ± 7.3** / tg128 **22.78 ± 0.01**; b10032 **666.1 ± 7.0** / **22.92 ± 0.08** → **compute flat (+0.6%)**, same as the b9672/b9990 probes.
+
+| cell | config | build | fresh TG | deep 61K-tok PP | sustained TG | VRAM through stress | verdict |
+|---|---|---|---:|---:|---:|---|---|
+| e1 | base Q5_K_XL @80K q8 ot20 ub4096 (default) | b9381 | 27.6 | 419.9 | **29.28 (+6.1%)** | 15402 → 16256 (hr 48) | ✅ PASS |
+| e2 | base (same flags) | b10032 | 29.84 | 367.8 | **22.65 (−24.1%)** | 15959 → **14949 during fill** | ❌ **EVICTS** |
+| e3 | MTP Q5_K_XL @80K q4 ot18 ub2048 n2 | b9381 | 36.5 | 473.3 | **36.67 (+0.5%)** | 15030 → 15035 flat (hr 1269) | ✅ PASS |
+| e4 | MTP (same flags) | b10032 | 36.45 | 483.9 | **36.30 (−0.4%)** | 14566 → 14567 flat (hr 1737) | ✅ PASS |
+
+- **b10032 reproduces b9990's regression exactly**: the shipped base default evicts its compute buffer under deep fill (paradoxical ~1 GB VRAM *drop*, sustained 22.65 ≈ b9990's 22.65). The post-b9381 allocator rewrite is confirmed hostile to the offloaded-MoE + ub4096 regime across two upstream releases — not a one-off.
+- **MTP on b10032 is stable but not faster** in the same-day A/B (36.30 vs 36.67; June's 38.3 and b9990's 42.1 for this config bracket the session-to-session variance — same-day pairs are the only fair read). It does idle **~470 MiB lighter** (hr 1737 vs 1269).
+- **Verdict: pin stays b9381.** Upstream compute is flat and the only shipped-config deltas are neutral-to-negative. Unchanged from the b9990 analysis: a future bump must be paired with re-tuning the 35B default away from ub4096 (or MTP-as-default) and a full re-stress.
