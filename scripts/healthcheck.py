@@ -42,6 +42,7 @@ STATE_FILE = f"{STATE_DIR}/health_state.json"
 BACKUP_DIR = "/mnt/backup"
 BACKUP_LOG = "/var/log/homebrain/backup.log"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
+OFFSITE_STATE = f"{STATE_DIR}/offsite.json"
 HOMEBRAIN_HOME = "/home/homebrain"
 OPENCLAW_DIR = f"{HOMEBRAIN_HOME}/.openclaw"
 OPENCLAW_PORT = 18789
@@ -187,6 +188,27 @@ def check_backup(env, now):
         return {"id": "backup", "level": "warn",
                 "summary": f"Last backup is {days} days old (schedule looks overdue)"}
     return {"id": "backup", "level": "ok", "summary": "Backups are up to date"}
+
+
+def check_offsite(env, now):
+    """Warn-only: the local backup is the data protection; off-site is a copy."""
+    if env.get("OFFSITE_ENABLED", "false").lower() != "true":
+        return None
+    try:
+        with open(OFFSITE_STATE) as f:
+            st = json.load(f)
+    except Exception:
+        return {"id": "offsite", "level": "warn",
+                "summary": "Off-site copy is enabled but has not run yet"}
+    if not st.get("ok"):
+        return {"id": "offsite", "level": "warn",
+                "summary": "The last off-site copy failed — local backups are unaffected"}
+    age = now - st.get("ts", 0)
+    if age > expected_backup_interval(env) + DAY:
+        days = int(age // DAY)
+        return {"id": "offsite", "level": "warn",
+                "summary": f"No off-site copy for {days} days"}
+    return {"id": "offsite", "level": "ok", "summary": "Off-site copy is up to date"}
 
 
 def check_smart():
@@ -416,6 +438,7 @@ def main():
     gpu = has_gpu(env)
     checks = [c for c in [
         check_backup(env, now),
+        check_offsite(env, now),
         check_disk("/", "System disk", "disk_root"),
         check_disk(BACKUP_DIR, "Backup drive", "disk_backup") if os.path.ismount(BACKUP_DIR) else None,
         check_smart(),

@@ -2,14 +2,18 @@
 
 Run:  python3 -m pytest scripts/tests/test_healthcheck.py
 """
+import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import healthcheck  # noqa: E402
 from healthcheck import (  # noqa: E402
     DAY,
     backup_log_outcome,
+    check_offsite,
     compose_message,
     decide_notification,
     disk_level,
@@ -105,6 +109,51 @@ def test_info_level_alerts_once_then_weekly():
     assert decide_notification(prev, "info", NOW) is None
     # ...and info -> ok produces no recovery noise.
     assert decide_notification({"level": "info", "last_notified": NOW}, "ok", NOW) is None
+
+
+def _offsite(env, state=None, now=NOW):
+    """Run check_offsite against a temp state file (or a missing one)."""
+    orig = healthcheck.OFFSITE_STATE
+    try:
+        if state is None:
+            healthcheck.OFFSITE_STATE = "/nonexistent/offsite.json"
+            return check_offsite(env, now)
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            json.dump(state, f)
+            f.flush()
+            healthcheck.OFFSITE_STATE = f.name
+            return check_offsite(env, now)
+    finally:
+        healthcheck.OFFSITE_STATE = orig
+
+
+def test_offsite_disabled_is_silent():
+    assert _offsite({}) is None
+    assert _offsite({"OFFSITE_ENABLED": "false"}) is None
+
+
+def test_offsite_enabled_but_never_ran():
+    c = _offsite({"OFFSITE_ENABLED": "true"})
+    assert c["level"] == "warn" and "has not run" in c["summary"]
+
+
+def test_offsite_last_run_failed():
+    c = _offsite({"OFFSITE_ENABLED": "true"}, {"ts": NOW, "ok": False})
+    assert c["level"] == "warn" and "failed" in c["summary"]
+    # warn-only by design: local backups are the data protection
+    assert "local backups are unaffected" in c["summary"]
+
+
+def test_offsite_stale_and_fresh():
+    env = {"OFFSITE_ENABLED": "true"}  # daily schedule -> stale after 2 days
+    ok = _offsite(env, {"ts": NOW - DAY, "ok": True})
+    assert ok["level"] == "ok"
+    stale = _offsite(env, {"ts": NOW - 3 * DAY, "ok": True})
+    assert stale["level"] == "warn" and "3 days" in stale["summary"]
+    # a weekly schedule tolerates a week-old copy
+    weekly = _offsite({"OFFSITE_ENABLED": "true", "BACKUP_DAY_WEEK": "0"},
+                      {"ts": NOW - 6 * DAY, "ok": True})
+    assert weekly["level"] == "ok"
 
 
 def test_compose_message():

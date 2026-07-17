@@ -2179,6 +2179,24 @@ EOF
     log_info "Backup timer configured: OnCalendar=$oncal (Persistent=true)"
 }
 
+# Probe the configured off-site remote with a real write + delete — the only
+# test that proves backups will actually land there. Called by the dashboard's
+# "Save & test" button after the OFFSITE_* vars are saved to .env.
+offsite_test() {
+    load_env
+    command -v rclone >/dev/null || die "rclone is not installed."
+    [[ "${OFFSITE_TYPE:-}" =~ ^(sftp|webdav|s3)$ ]] || die "Off-site remote is not configured."
+    [[ -n "${OFFSITE_HOST:-}" ]] || die "Off-site host is not set."
+    offsite_env || die "Invalid off-site configuration."
+    local dest="offsite:${OFFSITE_PATH:-homebrain-backups}"
+    local probe=".homebrain-write-test-$$"
+    rclone mkdir "$dest" 2>/dev/null || true
+    printf 'homebrain off-site probe\n' | rclone rcat "$dest/$probe" \
+        || die "Cannot write to the off-site remote — check host, credentials and path."
+    rclone deletefile "$dest/$probe" 2>/dev/null || true
+    log_info "Off-site remote OK (${OFFSITE_TYPE} → ${OFFSITE_PATH:-homebrain-backups})"
+}
+
 # --- Main Dispatch (only when executed directly, not sourced) ---
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
@@ -2193,6 +2211,9 @@ case "${1:-}" in
         ;;
     backup_timer)
         configure_backup_timer
+        ;;
+    offsite_test)
+        offsite_test
         ;;
     pci)
         configure_pci_speed "${2}"
