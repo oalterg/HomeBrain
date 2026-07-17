@@ -43,6 +43,23 @@ abort_if_downgrade() {
 
     local reason
     if reason=$(detect_downgrade "$inst_channel" "$inst_ref" "$CHANNEL" "$TARGET_REF" "$inst_nc" "$tgt_nc"); then
+        # A non-stable box moving onto a stable tag is only a real downgrade
+        # when the tag predates the installed commit. The pure version signals
+        # cannot see ancestry, so ask the GitHub compare API: "behind" or
+        # "identical" means the tag contains the installed ref — a roll-forward
+        # onto the release channel, which is exactly how a box that once took a
+        # beta build gets back onto stable. Network failure leaves the guard
+        # conservative (refuse).
+        if [[ "$inst_channel" != "stable" && "$CHANNEL" == "stable" && -n "$inst_ref" ]]; then
+            local cmp_status=""
+            cmp_status=$(curl -f -s --max-time 20 \
+                "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/compare/${TARGET_REF}...${inst_ref}" \
+                2>/dev/null | jq -r '.status // empty' 2>/dev/null) || cmp_status=""
+            if [[ "$cmp_status" == "behind" || "$cmp_status" == "identical" ]]; then
+                log_info "Channel move ${inst_channel} (${inst_ref}) -> stable ${TARGET_REF} is a roll-forward (the tag contains ${inst_ref}); allowing."
+                return 0
+            fi
+        fi
         if [[ "${ALLOW_DOWNGRADE:-0}" == "1" ]]; then
             log_warn "DOWNGRADE OVERRIDE (ALLOW_DOWNGRADE=1): $reason"
             log_warn "Proceeding anyway — Nextcloud and/or the dashboard may break. Hope you have a backup."
