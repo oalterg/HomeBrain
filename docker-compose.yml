@@ -1,6 +1,6 @@
 services:
   db:
-    image: mariadb:11.4.10
+    image: mariadb:11.4.12
     restart: unless-stopped
     command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
     volumes:
@@ -22,7 +22,7 @@ services:
       retries: 5
   
   redis:
-    image: redis:8.4.3-alpine
+    image: redis:8.6.4-alpine
     restart: unless-stopped
     # Loopback-only publish: the manager (gunicorn on the host) uses Redis as
     # shared rate-limit storage — its 3 workers otherwise each count limits
@@ -38,7 +38,7 @@ services:
       retries: 5
 
   nextcloud:
-    image: nextcloud:32.0.9-apache
+    image: nextcloud:32.0.12-apache
     restart: unless-stopped
     ports:
       - "${NEXTCLOUD_PORT:-8080}:80"
@@ -70,7 +70,7 @@ services:
       retries: 5
 
   homeassistant:
-    image: homeassistant/home-assistant:2025.12.5
+    image: homeassistant/home-assistant:2026.7.2
     restart: unless-stopped
     ports:
       - "${HA_PORT:-8123}:8123"
@@ -88,7 +88,7 @@ services:
     # Always runs: provides local HTTPS access to Vault and Nextcloud so LAN
     # links work even when the tunnel is down.  In remote mode Pangolin
     # terminates TLS at the public edge; Caddy is the LAN fallback.
-    image: caddy:2.11.3-alpine
+    image: caddy:2.11.4-alpine
     restart: unless-stopped
     ports:
       - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
@@ -117,7 +117,7 @@ services:
       retries: 5
 
   vaultwarden:
-    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.35.8}
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.36.0}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULT_PORT:-8082}:80"
@@ -175,7 +175,7 @@ services:
   newt:
     profiles:
       - pangolin
-    image: fosrl/newt:1.8.1
+    image: fosrl/newt:1.14.0
     restart: unless-stopped
     # No docker.sock mount: newt only used it for optional container
     # discovery in the Pangolin UI, and socket API access is root-equivalent
@@ -189,7 +189,7 @@ services:
   cloudflared-nc:
     profiles:
       - cloudflare-nc
-    image: cloudflare/cloudflared:2025.11.1
+    image: cloudflare/cloudflared:2026.7.2
     restart: unless-stopped
     command: tunnel run
     environment:
@@ -201,7 +201,7 @@ services:
   cloudflared-ha:
     profiles:
       - cloudflare-ha
-    image: cloudflare/cloudflared:2025.11.1
+    image: cloudflare/cloudflared:2026.7.2
     restart: unless-stopped
     command: tunnel run
     environment:
