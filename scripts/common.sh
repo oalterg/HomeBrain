@@ -742,7 +742,11 @@ offsite_env() {
 offsite_sync() {
     command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
     offsite_env || return 1
+    # Leading / anchors the patterns to the drive's top level and --max-depth
+    # stops recursion — same scope as local retention's `find -maxdepth 1`.
+    # Without both, archives inside subdirectories would get mirrored too.
     rclone sync "$BACKUP_MOUNTDIR" "offsite:${OFFSITE_PATH:-homebrain-backups}" \
-        --include 'homebrain_backup*.tar.gz*' \
-        --include 'nextcloud_backup*.tar.gz*'
+        --max-depth 1 \
+        --include '/homebrain_backup*.tar.gz*' \
+        --include '/nextcloud_backup*.tar.gz*'
 }
