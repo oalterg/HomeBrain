@@ -1,6 +1,10 @@
 # Product review & improvement plan — July 2026
 
-**Status:** Phase 2 (Trust features) in progress.
+**Status:** Phase 2 complete (#115 #117 #118 + replica target). Phase 3 largely complete;
+Caddy LAN-HTTPS edge deferred — both production boxes are remote-mode (Pangolin
+provides end-to-end TLS) and the edge would entangle the pre-stack bootstrap flow
+where the dashboard must run without containers. Revisit if LAN-only deployments
+become a real user base. Phase 1 (CI) is the known open debt.
 **Date:** 2026-07-15
 **Scope:** Holistic review of the product — reliability, security, engineering foundation,
 missing features — with a phased, minimalist plan. Findings verified against the working
