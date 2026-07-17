@@ -100,7 +100,8 @@ if [[ "$HAS_GPU" == "true" ]]; then
         ufw allow 80/tcp    # Dashboard
         ufw allow 8080/tcp  # Nextcloud
         ufw allow 8123/tcp  # Home Assistant
-        ufw allow 18789/tcp # OpenClaw
+        # No 18789 rule: the OpenClaw gateway binds loopback only and is
+        # reached through the manager's authenticated proxy.
     fi
 
     # Vulkan drivers for AMD GPU (RADV via Mesa, ships in Ubuntu archive)

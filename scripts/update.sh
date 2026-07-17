@@ -290,6 +290,11 @@ if command -v unattended-upgrade >/dev/null 2>&1; then
         > /etc/apt/apt.conf.d/20auto-upgrades
 fi
 
+# Remove the stale OpenClaw firewall allow older provisions added — the
+# gateway binds loopback only and is reached via the manager's proxy, so the
+# rule just advertised a closed port. Idempotent, no-op without ufw.
+command -v ufw >/dev/null 2>&1 && ufw delete allow 18789/tcp >/dev/null 2>&1 || true
+
 # Migrate backup scheduling cron -> persistent systemd timer. Cron silently
 # skips runs the box sleeps through; the timer catches up on next boot. Only
 # when a cron entry exists (i.e. the user actually configured backups) —
