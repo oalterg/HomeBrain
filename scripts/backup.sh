@@ -452,4 +452,23 @@ find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f -name "homebrain_backup_system_*.tar
     xargs -r rm --
 
 log_info "=== Backup Complete: $ARCHIVE_PATH ==="
+
+# 14. Off-site mirror (optional). Deliberately AFTER the Complete marker: the
+# local backup is done, and a slow WAN upload must not make this run look
+# failed or stuck to the health check. Failure is non-fatal — it is recorded
+# in a state file the health check reads, and warned about here.
+if [[ "${OFFSITE_ENABLED:-false}" == "true" ]]; then
+    OFFSITE_STATE="/var/lib/homebrain/offsite.json"
+    mkdir -p /var/lib/homebrain
+    log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
+    if offsite_sync; then
+        printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE}.tmp" \
+            && mv "${OFFSITE_STATE}.tmp" "$OFFSITE_STATE"
+        log_info "Off-site mirror complete."
+    else
+        printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE}.tmp" \
+            && mv "${OFFSITE_STATE}.tmp" "$OFFSITE_STATE"
+        log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."
+    fi
+fi
 # Lock file removed by trap

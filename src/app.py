@@ -1409,6 +1409,72 @@ def backup_config():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/backup/offsite", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def backup_offsite():
+    if request.method == "GET":
+        env = get_env_config()
+        return jsonify(
+            {
+                "enabled": env.get("OFFSITE_ENABLED", "false") == "true",
+                "type": env.get("OFFSITE_TYPE", ""),
+                "host": env.get("OFFSITE_HOST", ""),
+                "user": env.get("OFFSITE_USER", ""),
+                "has_pass": bool(env.get("OFFSITE_PASS", "")),
+                "path": env.get("OFFSITE_PATH", ""),
+            }
+        )
+
+    data = request.json
+    enabled = bool(data.get("enabled"))
+    remote_type = data.get("type", "")
+    host = data.get("host", "").strip()
+    user = data.get("user", "").strip()
+    password = data.get("pass", "")
+    path = data.get("path", "").strip()
+
+    if enabled:
+        if remote_type not in ["sftp", "webdav", "s3"]:
+            return jsonify({"error": "Invalid remote type"}), 400
+        if not host:
+            return jsonify({"error": "Host is required"}), 400
+
+    update_env_var("OFFSITE_ENABLED", "true" if enabled else "false")
+    update_env_var("OFFSITE_TYPE", remote_type)
+    update_env_var("OFFSITE_HOST", host)
+    update_env_var("OFFSITE_USER", user)
+    if password:  # an empty field means "keep the saved password"
+        update_env_var("OFFSITE_PASS", password)
+    update_env_var("OFFSITE_PATH", path)
+
+    if enabled and not shutil.which("rclone"):
+        try:
+            subprocess.run(
+                ["apt-get", "install", "-y", "rclone"],
+                check=True, capture_output=True, text=True, timeout=300,
+            )
+        except Exception:
+            return jsonify({"error": "Could not install rclone"}), 500
+    return jsonify({"status": "success"})
+
+
+@app.route("/api/backup/offsite/test", methods=["POST"])
+@limiter.limit("5 per minute")
+def backup_offsite_test():
+    try:
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "offsite_test"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Connection test timed out"}), 500
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout or "").strip().splitlines()
+        msg = lines[-1].removeprefix("[ERROR] ") if lines else "Connection test failed"
+        return jsonify({"error": msg}), 400
+    return jsonify({"status": "success"})
+
+
 # --- Routes: Backup & Restore Execution ---
 @app.route("/api/backup/now", methods=["POST"])
 @limiter.limit("3 per minute")

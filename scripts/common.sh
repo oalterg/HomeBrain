@@ -692,3 +692,57 @@ configure_nextcloud_redis() {
 
     log_info "Redis configuration applied successfully."
 }
+
+# --- Off-site backup copy ---------------------------------------------------
+# One rclone remote named "offsite", defined entirely by the OFFSITE_* vars
+# from .env — no rclone.conf to manage. Credentials travel via rclone's
+# RCLONE_CONFIG_* environment variables (and stdin for `obscure`), never argv.
+
+offsite_env() {
+    case "${OFFSITE_TYPE:-}" in
+        sftp)
+            local host="${OFFSITE_HOST}" port=""
+            if [[ "$host" == *:* ]]; then port="${host##*:}"; host="${host%%:*}"; fi
+            export RCLONE_CONFIG_OFFSITE_TYPE=sftp
+            export RCLONE_CONFIG_OFFSITE_HOST="$host"
+            [[ -n "$port" ]] && export RCLONE_CONFIG_OFFSITE_PORT="$port"
+            export RCLONE_CONFIG_OFFSITE_USER="${OFFSITE_USER}"
+            RCLONE_CONFIG_OFFSITE_PASS=$(printf '%s' "${OFFSITE_PASS}" | rclone obscure -) || return 1
+            export RCLONE_CONFIG_OFFSITE_PASS
+            ;;
+        webdav)
+            export RCLONE_CONFIG_OFFSITE_TYPE=webdav
+            export RCLONE_CONFIG_OFFSITE_URL="${OFFSITE_HOST}"
+            # Nextcloud speaks chunked upload — required for multi-GB archives.
+            if [[ "${OFFSITE_HOST}" == *remote.php* ]]; then
+                export RCLONE_CONFIG_OFFSITE_VENDOR=nextcloud
+            else
+                export RCLONE_CONFIG_OFFSITE_VENDOR=other
+            fi
+            export RCLONE_CONFIG_OFFSITE_USER="${OFFSITE_USER}"
+            RCLONE_CONFIG_OFFSITE_PASS=$(printf '%s' "${OFFSITE_PASS}" | rclone obscure -) || return 1
+            export RCLONE_CONFIG_OFFSITE_PASS
+            ;;
+        s3)
+            export RCLONE_CONFIG_OFFSITE_TYPE=s3
+            export RCLONE_CONFIG_OFFSITE_PROVIDER=Other
+            export RCLONE_CONFIG_OFFSITE_ENDPOINT="${OFFSITE_HOST}"
+            export RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="${OFFSITE_USER}"
+            export RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="${OFFSITE_PASS}"
+            ;;
+        *)
+            log_warn "Unknown off-site type: '${OFFSITE_TYPE:-}'"
+            return 1
+            ;;
+    esac
+}
+
+# Mirror the local archive set to the remote. Local retention already decides
+# what to keep, so a plain filtered sync gives remote retention for free.
+offsite_sync() {
+    command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    offsite_env || return 1
+    rclone sync "$BACKUP_MOUNTDIR" "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+        --include 'homebrain_backup*.tar.gz*' \
+        --include 'nextcloud_backup*.tar.gz*'
+}

@@ -666,6 +666,47 @@
             </div>
         </div>
 
+        <div class="card" style="margin-top:22px;">
+            <h3>Off-site Copy</h3>
+            <p>Mirror the encrypted backup archives to another machine or cloud storage after each backup.</p>
+            <form onsubmit="saveOffsiteConfig(event)">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; margin-bottom:12px;">
+                    <input type="checkbox" id="os-enabled" style="width:auto;">
+                    <span>Enable off-site copy</span>
+                </label>
+                <div class="grid" style="grid-template-columns: 1fr 2fr; gap:15px;">
+                    <div>
+                        <label>Type</label>
+                        <select id="os-type" onchange="updateOffsiteUI()">
+                            <option value="sftp">SFTP / SSH</option>
+                            <option value="webdav">WebDAV / Nextcloud</option>
+                            <option value="s3">S3-compatible</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label id="os-host-label">Host</label>
+                        <input type="text" id="os-host" autocomplete="off">
+                    </div>
+                </div>
+                <div class="grid" style="grid-template-columns: 1fr 1fr 1fr; gap:15px;">
+                    <div>
+                        <label id="os-user-label">Username</label>
+                        <input type="text" id="os-user" autocomplete="off">
+                    </div>
+                    <div>
+                        <label id="os-pass-label">Password</label>
+                        <input type="password" id="os-pass" autocomplete="new-password">
+                    </div>
+                    <div>
+                        <label id="os-path-label">Remote folder</label>
+                        <input type="text" id="os-path" placeholder="homebrain-backups">
+                    </div>
+                </div>
+                <button type="submit" class="btn-primary" style="width:100%; margin-top:10px;">Save &amp; Test Connection</button>
+                <p id="os-status" style="margin-top:10px; font-size:0.9em;"></p>
+            </form>
+        </div>
+
         {% if has_gpu %}
         <div class="card" style="margin-top: 16px;">
           <div class="card-header">
@@ -694,7 +735,7 @@
               </label>
             </div>
             <p style="margin-top: 12px; font-size: 0.85em; color: var(--text-dim);">
-              Workspace contains conversation history and agent memory. Backups are stored unencrypted.
+              Workspace contains conversation history and agent memory. Backups are encrypted with your master password.
             </p>
           </div>
         </div>
@@ -1397,6 +1438,7 @@
                 loadDrives();
                 loadBackups();
                 loadBackupConfig();
+                loadOffsiteConfig();
                 loadDiskStats();
                 loadOpenClawBackupStatus();
             }
@@ -3078,6 +3120,74 @@
         async function runBackup() {
             const s = document.getElementById('backup-strategy').value;
             triggerAction('/api/backup/now', 'Manual Backup', { strategy: s });
+        }
+
+        async function loadOffsiteConfig() {
+            try {
+                const res = await fetch('/api/backup/offsite', { credentials: 'include' });
+                const d = await res.json();
+                document.getElementById('os-enabled').checked = !!d.enabled;
+                if (d.type) document.getElementById('os-type').value = d.type;
+                document.getElementById('os-host').value = d.host || '';
+                document.getElementById('os-user').value = d.user || '';
+                document.getElementById('os-pass').value = '';
+                document.getElementById('os-pass').placeholder = d.has_pass ? '(unchanged)' : '';
+                document.getElementById('os-path').value = d.path || '';
+                updateOffsiteUI();
+            } catch(e) {}
+        }
+
+        function updateOffsiteUI() {
+            const labels = {
+                sftp:   ['Host (host or host:port)', 'backup.example.com', 'Username', 'Password'],
+                webdav: ['WebDAV URL', 'https://cloud.example.com/remote.php/dav/files/USER', 'Username', 'App password'],
+                s3:     ['Endpoint URL', 'https://s3.example.com', 'Access key ID', 'Secret key'],
+            }[document.getElementById('os-type').value];
+            document.getElementById('os-host-label').innerText = labels[0];
+            document.getElementById('os-host').placeholder = labels[1];
+            document.getElementById('os-user-label').innerText = labels[2];
+            document.getElementById('os-pass-label').innerText = labels[3];
+            document.getElementById('os-path-label').innerText =
+                document.getElementById('os-type').value === 's3' ? 'Bucket / prefix' : 'Remote folder';
+        }
+
+        async function saveOffsiteConfig(e) {
+            e.preventDefault();
+            const status = document.getElementById('os-status');
+            const enabled = document.getElementById('os-enabled').checked;
+            const body = {
+                enabled: enabled,
+                type: document.getElementById('os-type').value,
+                host: document.getElementById('os-host').value,
+                user: document.getElementById('os-user').value,
+                pass: document.getElementById('os-pass').value,
+                path: document.getElementById('os-path').value,
+            };
+            status.style.color = '';
+            status.innerText = 'Saving...';
+            const res = await fetch('/api/backup/offsite', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                status.style.color = 'var(--danger)';
+                status.innerText = d.error || 'Error saving settings.';
+                return;
+            }
+            if (!enabled) {
+                status.innerText = 'Off-site copy disabled.';
+                return;
+            }
+            status.innerText = 'Testing connection...';
+            const t = await fetch('/api/backup/offsite/test', { method: 'POST' });
+            const td = await t.json().catch(() => ({}));
+            if (t.ok) {
+                status.style.color = 'var(--accent)';
+                status.innerText = '✓ Connected — backups will be copied off-site after each run.';
+                document.getElementById('os-pass').value = '';
+                document.getElementById('os-pass').placeholder = '(unchanged)';
+            } else {
+                status.style.color = 'var(--danger)';
+                status.innerText = td.error || 'Connection test failed.';
+            }
         }
 
         let backupIndex = {};  // name -> {encrypted, ...} from /api/backups/list
