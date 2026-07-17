@@ -705,6 +705,26 @@
                 <button type="submit" class="btn-primary" style="width:100%; margin-top:10px;">Save &amp; Test Connection</button>
                 <p id="os-status" style="margin-top:10px; font-size:0.9em;"></p>
             </form>
+            <p style="margin-top:10px; font-size:0.85em; color:var(--text-dim);">
+                Tip: another HomeBrain can be the target — enable "Receive Backups" on that box and enter the WebDAV details it shows here.
+            </p>
+        </div>
+
+        <div class="card" style="margin-top:22px;">
+            <h3>Receive Backups from Another HomeBrain</h3>
+            <p>Creates a dedicated <code>replica</code> account another HomeBrain can use as its off-site target. Received archives don't appear in your files and are excluded from this box's own backups.</p>
+            <div id="replica-status" style="margin-bottom:10px;">Loading...</div>
+            <div id="replica-creds" style="display:none; margin-bottom:10px; padding:12px; border:1px solid var(--border); border-radius:8px;">
+                <strong>Copy these into the other HomeBrain's Off-site Copy form now — the password is shown only once.</strong>
+                <div style="margin-top:8px; font-family:monospace; font-size:0.9em; word-break:break-all;">
+                    <div>WebDAV URL: <span id="replica-url"></span></div>
+                    <div>Username: replica</div>
+                    <div>Password: <span id="replica-pass"></span></div>
+                </div>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button id="replica-btn" onclick="toggleReplica()" disabled>...</button>
+            </div>
         </div>
 
         {% if has_gpu %}
@@ -1439,6 +1459,7 @@
                 loadBackups();
                 loadBackupConfig();
                 loadOffsiteConfig();
+                loadReplicaStatus();
                 loadDiskStats();
                 loadOpenClawBackupStatus();
             }
@@ -3149,6 +3170,56 @@
             document.getElementById('os-pass-label').innerText = labels[3];
             document.getElementById('os-path-label').innerText =
                 document.getElementById('os-type').value === 's3' ? 'Bucket / prefix' : 'Remote folder';
+        }
+
+        let replicaEnabled = false;
+
+        async function loadReplicaStatus() {
+            const status = document.getElementById('replica-status');
+            const btn = document.getElementById('replica-btn');
+            try {
+                const res = await fetch('/api/backup/replica', { credentials: 'include' });
+                const d = await res.json();
+                if (!res.ok) throw new Error(d.error);
+                replicaEnabled = !!d.enabled;
+                if (replicaEnabled) {
+                    status.innerHTML = `<span style="color:var(--accent);">● Active</span> — receiving at <code style="word-break:break-all;">${d.url}</code> (${d.used} used)`;
+                    btn.innerText = 'Disable & Delete Received Archives';
+                    btn.className = 'btn-danger';
+                } else {
+                    status.innerText = 'Not enabled.';
+                    btn.innerText = 'Enable';
+                    btn.className = '';
+                }
+                btn.disabled = false;
+            } catch(e) {
+                status.innerText = 'Status unavailable.';
+            }
+        }
+
+        async function toggleReplica() {
+            const btn = document.getElementById('replica-btn');
+            if (replicaEnabled) {
+                const check = prompt("This deletes the replica account AND every archive received from the other HomeBrain (its own local backups are unaffected).\n\nType 'DELETE' to confirm:");
+                if (check !== 'DELETE') return;
+            }
+            btn.disabled = true;
+            const res = await fetch('/api/backup/replica', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ action: replicaEnabled ? 'disable' : 'enable' }) });
+            const d = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert(d.error || 'Operation failed.');
+                btn.disabled = false;
+                return;
+            }
+            const creds = document.getElementById('replica-creds');
+            if (d.pass) {
+                document.getElementById('replica-url').innerText = d.url;
+                document.getElementById('replica-pass').innerText = d.pass;
+                creds.style.display = 'block';
+            } else {
+                creds.style.display = 'none';
+            }
+            loadReplicaStatus();
         }
 
         async function saveOffsiteConfig(e) {

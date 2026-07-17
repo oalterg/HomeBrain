@@ -2197,6 +2197,54 @@ offsite_test() {
     log_info "Off-site remote OK (${OFFSITE_TYPE} → ${OFFSITE_PATH:-homebrain-backups})"
 }
 
+# --- Action: Receive backups from another HomeBrain -------------------------
+# A dedicated Nextcloud account "replica" is the landing area for another
+# box's off-site archives: single-purpose, revocable, and excluded from this
+# box's own backups (backup.sh/restore.sh skip its data dir). The password is
+# printed once for the sending box's Off-site form and never stored here;
+# enabling again simply rotates it.
+replica_target_enable() {
+    load_env
+    local nc_cid=$(get_nc_cid)
+    [[ -n "$nc_cid" ]] || die "Nextcloud container is not running."
+    local pass
+    pass=$(pwgen -s 24 1) || die "pwgen is not installed."
+    if docker exec -u www-data "$nc_cid" php occ user:info replica >/dev/null 2>&1; then
+        docker exec -u www-data -e OC_PASS="$pass" "$nc_cid" \
+            php occ user:resetpassword --password-from-env replica >/dev/null \
+            || die "Could not reset the replica password."
+    else
+        docker exec -u www-data -e OC_PASS="$pass" "$nc_cid" \
+            php occ user:add --password-from-env --display-name "HomeBrain Replica" replica >/dev/null \
+            || die "Could not create the replica account."
+    fi
+    echo "REPLICA_PASS=$pass"
+}
+
+replica_target_status() {
+    load_env
+    local nc_cid=$(get_nc_cid)
+    [[ -n "$nc_cid" ]] || die "Nextcloud container is not running."
+    if docker exec -u www-data "$nc_cid" php occ user:info replica >/dev/null 2>&1; then
+        local used
+        used=$(du -sh "${NEXTCLOUD_DATA_DIR}/replica" 2>/dev/null | awk '{print $1}')
+        echo "enabled used=${used:-0}"
+    else
+        echo "disabled"
+    fi
+}
+
+# Deletes the replica account AND every archive it received. The sending box
+# keeps its local copies — this only removes the off-site set.
+replica_target_disable() {
+    load_env
+    local nc_cid=$(get_nc_cid)
+    [[ -n "$nc_cid" ]] || die "Nextcloud container is not running."
+    docker exec -u www-data "$nc_cid" php occ user:delete replica >/dev/null \
+        || die "Could not remove the replica account."
+    rm -rf "${NEXTCLOUD_DATA_DIR:?}/replica"
+}
+
 # --- Main Dispatch (only when executed directly, not sourced) ---
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
@@ -2214,6 +2262,15 @@ case "${1:-}" in
         ;;
     offsite_test)
         offsite_test
+        ;;
+    replica_enable)
+        replica_target_enable
+        ;;
+    replica_status)
+        replica_target_status
+        ;;
+    replica_disable)
+        replica_target_disable
         ;;
     pci)
         configure_pci_speed "${2}"
