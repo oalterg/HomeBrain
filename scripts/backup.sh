@@ -80,7 +80,14 @@ esac
 log_info "=== Starting Backup [Strategy: $STRATEGY]: $(date) ==="
 
 # 1. Mount Check
-if ! mountpoint -q "$BACKUP_MOUNTDIR"; then
+# BACKUP_INTERNAL=true (with BACKUP_MOUNTDIR pointing at a root-disk path)
+# is the no-drive mode: archives live on the internal disk purely as the
+# staging set for the off-site mirror — the mirror is the actual protection.
+# The mount check stays mandatory otherwise, so a fallen-off USB drive can
+# never silently fill the root disk.
+if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
+    mkdir -p "$BACKUP_MOUNTDIR"
+elif ! mountpoint -q "$BACKUP_MOUNTDIR"; then
     log_info "Attempting to mount $BACKUP_MOUNTDIR..."
     mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
 fi

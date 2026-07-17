@@ -150,7 +150,10 @@ def check_backup(env, now):
     if not scheduled:
         return {"id": "backup", "level": "warn",
                 "summary": "Automatic backups are not set up"}
-    if not os.path.ismount(BACKUP_DIR):
+    # Internal-storage mode (no drive): the directory lives on the root disk,
+    # so "not mounted" is normal and disk_root covers the space check.
+    internal = env.get("BACKUP_INTERNAL", "false").lower() == "true"
+    if not internal and not os.path.ismount(BACKUP_DIR):
         return {"id": "backup", "level": "crit",
                 "summary": "Backup drive is not connected"}
 
@@ -421,6 +424,7 @@ def has_gpu(env):
 
 
 def main():
+    global BACKUP_DIR
     now = time.time()
     os.makedirs(STATE_DIR, exist_ok=True)
     try:
@@ -428,6 +432,7 @@ def main():
             env = parse_env(f.read())
     except OSError:
         env = {}
+    BACKUP_DIR = env.get("BACKUP_MOUNTDIR", BACKUP_DIR)
     try:
         with open(STATE_FILE) as f:
             state = json.load(f)
