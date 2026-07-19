@@ -21,7 +21,6 @@ plaintext (development mode). The dashboard always sets it on the live box.
 """
 from __future__ import annotations
 
-import base64
 import email
 import imaplib
 import json
@@ -30,7 +29,6 @@ import smtplib
 import sys
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
-from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
