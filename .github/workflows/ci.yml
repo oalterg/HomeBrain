@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (error severity)
+        run: |
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S error scripts/*.sh
+      - name: ruff (syntax errors + real defects)
+        run: |
+          pip install -q ruff
+          # E9 = syntax errors, F = undefined names / unused imports & vars.
+          # Style classes (E7xx) are deliberately not gated.
+          ruff check src/ scripts/ --select E9,F
+      - name: compileall
+        run: python3 -m compileall -q src/ scripts/
+      - name: shell=True gate
+        run: python3 .github/check_shell_true.py
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pytest
+        run: |
+          pip install -q pytest cryptography
+          python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py -q
+      - name: backup encryption round-trip (gpg)
+        run: bash scripts/tests/test_backup_encryption.sh
+      - name: update guard
+        run: bash scripts/tests/test_update_guard.sh
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: |
+          cp config/.env.template .env
+          docker compose -f docker-compose.yml config > /dev/null

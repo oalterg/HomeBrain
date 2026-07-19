@@ -35,7 +35,6 @@ import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402

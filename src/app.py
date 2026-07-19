@@ -1207,7 +1207,7 @@ def get_logs(log_target):
             cmd_list, stderr=subprocess.STDOUT
         ).decode()
         return output
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         return "Failed to fetch docker logs. Service might not be running."
     except Exception as e:
         return f"Error: {str(e)}"
@@ -2148,7 +2148,6 @@ def set_ai_model():
         if not model:
             return jsonify({"error": f"Unknown model: {model_id}"}), 400
 
-        server_defaults = all_models.get("llama_server", {})
         update_env_var("AI_MODEL_ID", model["id"])
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
@@ -2180,7 +2179,6 @@ def switch_ai_model():
         if not model:
             return jsonify({"error": f"Unknown model: {model_id}"}), 400
 
-        server_defaults = all_models.get("llama_server", {})
         update_env_var("AI_MODEL_ID", model["id"])
         update_env_var("AI_MODEL_FILENAME", model["filename"])
         update_env_var("AI_MODEL_URL", model["url"])
@@ -2485,7 +2483,7 @@ def _openclaw_ws_handle(ws, subpath):
     except Exception as e:
         logging.warning("OpenClaw WS upstream connect failed: %s", e)
         try:
-            ws.close(reason=f"upstream_unreachable")
+            ws.close(reason="upstream_unreachable")
         except Exception:
             pass
         return

@@ -13,7 +13,6 @@ import os
 import json
 import urllib.request
 import re
-import sys
 
 WHISPER_UPSTREAM = os.environ.get("WHISPER_UPSTREAM", "http://127.0.0.1:8003")
 PORT = int(os.environ.get("WHISPER_PROXY_PORT", "8002"))
