@@ -181,7 +181,9 @@ rsync -a --delete \
 # not make updates impossible, but we warn loudly. SKIP_PREUPDATE_BACKUP=1
 # skips it.
 if [[ -f "$INSTALL_DIR/.setup_complete" && "${SKIP_PREUPDATE_BACKUP:-0}" != "1" ]]; then
-    if mountpoint -q /mnt/backup 2>/dev/null; then
+    # Internal-storage mode has no mountpoint — backup.sh mkdirs its own dir.
+    if [[ "${BACKUP_INTERNAL:-false}" == "true" ]] \
+        || mountpoint -q "${BACKUP_MOUNTDIR:-/mnt/backup}" 2>/dev/null; then
         log_info "Taking pre-update system snapshot..."
         if bash "$INSTALL_DIR/scripts/backup.sh" --strategy system; then
             log_info "Pre-update snapshot complete."
