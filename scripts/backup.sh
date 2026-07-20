@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/common.sh"
 LOCK_FILE="/var/run/homebrain-backup.lock"
 BACKUP_LOG_FILE="$LOG_DIR/backup.log"
 STRATEGY="full"
+SKIP_OFFSITE="false"
 
 # Parse Args
 while [[ $# -gt 0 ]]; do
@@ -16,6 +17,10 @@ while [[ $# -gt 0 ]]; do
     --strategy)
       STRATEGY="$2"
       shift 2
+      ;;
+    --skip-offsite)
+      SKIP_OFFSITE="true"
+      shift
       ;;
     *)
       shift
@@ -466,7 +471,10 @@ log_info "=== Backup Complete: $ARCHIVE_PATH ==="
 # local backup is done, and a slow WAN upload must not make this run look
 # failed or stuck to the health check. Failure is non-fatal — it is recorded
 # in a state file the health check reads, and warned about here.
-if [[ "${OFFSITE_ENABLED:-false}" == "true" ]]; then
+# --skip-offsite exists for callers that hold the box hostage while this
+# script runs — update.sh's pre-update snapshot would otherwise block the
+# whole update behind a multi-hour WAN mirror. The scheduled backup mirrors.
+if [[ "${OFFSITE_ENABLED:-false}" == "true" && "$SKIP_OFFSITE" != "true" ]]; then
     OFFSITE_STATE="/var/lib/homebrain/offsite.json"
     mkdir -p /var/lib/homebrain
     log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."

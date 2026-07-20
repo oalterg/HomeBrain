@@ -185,7 +185,11 @@ if [[ -f "$INSTALL_DIR/.setup_complete" && "${SKIP_PREUPDATE_BACKUP:-0}" != "1" 
     if [[ "${BACKUP_INTERNAL:-false}" == "true" ]] \
         || mountpoint -q "${BACKUP_MOUNTDIR:-/mnt/backup}" 2>/dev/null; then
         log_info "Taking pre-update system snapshot..."
-        if bash "$INSTALL_DIR/scripts/backup.sh" --strategy system; then
+        # --skip-offsite: this snapshot is a LOCAL rollback point and the
+        # update blocks until backup.sh exits — without the flag a configured
+        # off-site mirror turns every update into a multi-hour WAN upload.
+        # The scheduled backup mirrors on its own cadence.
+        if bash "$INSTALL_DIR/scripts/backup.sh" --strategy system --skip-offsite; then
             log_info "Pre-update snapshot complete."
         else
             log_warn "PRE-UPDATE SNAPSHOT FAILED — continuing, but there is no fresh restore point for this update."
