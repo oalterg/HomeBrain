@@ -43,6 +43,7 @@ BACKUP_DIR = "/mnt/backup"
 BACKUP_LOG = "/var/log/homebrain/backup.log"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
 OFFSITE_STATE = f"{STATE_DIR}/offsite.json"
+REBOOT_REQUIRED_FILE = "/var/run/reboot-required"
 HOMEBRAIN_HOME = "/home/homebrain"
 OPENCLAW_DIR = f"{HOMEBRAIN_HOME}/.openclaw"
 OPENCLAW_PORT = 18789
@@ -340,6 +341,23 @@ def check_update(state, now):
     return {"id": "update", "level": "ok", "summary": "HomeBrain is up to date"}
 
 
+def check_reboot():
+    """unattended-upgrades never reboots on its own (deliberate — this is a
+    NAS), so a kernel/libc patch waits invisibly until the next manual
+    restart. Surface it. warn-only: the box keeps working, just on old code."""
+    if not os.path.exists(REBOOT_REQUIRED_FILE):
+        return {"id": "reboot", "level": "ok", "summary": "No restart pending"}
+    pkgs = []
+    try:
+        with open(REBOOT_REQUIRED_FILE + ".pkgs") as f:
+            pkgs = sorted({line.strip() for line in f if line.strip()})
+    except OSError:
+        pass
+    detail = f" ({', '.join(pkgs[:3])})" if pkgs else ""
+    return {"id": "reboot", "level": "warn",
+            "summary": f"Restart this box to finish OS security updates{detail}"}
+
+
 # ---------------------------------------------------------------------------
 # Push delivery via OpenClaw
 # ---------------------------------------------------------------------------
@@ -451,6 +469,7 @@ def main():
         check_containers(),
         check_openclaw_gateway(gpu),
         check_update(state, now),
+        check_reboot(),
     ] if c]
 
     overall = "ok"
