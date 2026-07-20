@@ -1594,6 +1594,14 @@ setup_openclaw() {
             apt-get install -y -qq nodejs
         fi
 
+        # OpenClaw's engines range moves at PATCH granularity (2026.7.1
+        # wants >=22.22.3; a box provisioned a month earlier has 22.22.2).
+        # The major-version guard above can't see that, so always pull the
+        # latest 22.x from the NodeSource repo — a no-op when current.
+        wait_for_apt_lock
+        DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y -qq nodejs 2>/dev/null \
+            || log_warn "nodejs upgrade failed — openclaw may refuse to run if its engines range moved."
+
         log_info "Node $(node --version)"
         log_info "Installing openclaw@${OPENCLAW_VERSION}..."
         if npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit; then
