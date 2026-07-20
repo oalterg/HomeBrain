@@ -5,7 +5,7 @@ Runs as root from homebrain-health.timer (every 30 min). Evaluates a small,
 fixed set of trust-critical checks — backups, disks, SMART, services,
 containers, updates — writes a machine-readable summary for the dashboard
 banner, and pushes plain-language alerts to the owner through the OpenClaw
-messenger channel (WhatsApp/Telegram) when something *changes*.
+Telegram channel when something *changes*.
 
 Design constraints:
   - stdlib only; no venv, no pip deps (runs via /usr/bin/python3).
@@ -363,17 +363,14 @@ def check_reboot():
 # ---------------------------------------------------------------------------
 
 def resolve_push_target():
-    """(channel, target) for the owner, from the channel allowlists OpenClaw
-    already maintains: whatsapp owners live in openclaw.json allowFrom,
-    telegram pairing lands in credentials/telegram-default-allowFrom.json."""
+    """(channel, target) for the owner. Telegram only: pairing lands in
+    credentials/telegram-default-allowFrom.json; a hand-set allowFrom in
+    openclaw.json is the fallback."""
     try:
         with open(f"{OPENCLAW_DIR}/openclaw.json") as f:
             channels = json.load(f).get("channels", {})
     except Exception:
         return None
-    wa = channels.get("whatsapp", {})
-    if wa.get("enabled") and wa.get("allowFrom"):
-        return ("whatsapp", str(wa["allowFrom"][0]))
     tg = channels.get("telegram", {})
     if tg.get("enabled"):
         for source in (f"{OPENCLAW_DIR}/credentials/telegram-default-allowFrom.json",):

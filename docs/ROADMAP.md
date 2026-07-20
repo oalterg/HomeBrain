@@ -8,7 +8,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### openclaw-integration branch (2026)
 
-- ✅ **OpenClaw AI assistant integration** — WhatsApp-connected local AI via llamacpp
+- ✅ **OpenClaw AI assistant integration** — Telegram-connected local AI via llamacpp
 - ✅ **GPU-gated AI stack** — AI features auto-enabled on GPU detection; RPi/no-GPU paths removed
 - ✅ **Stable OpenClaw gateway token** — derived from MASTER_PASSWORD, persistent across restarts
 - ✅ **Pre-authenticated dashboard link** — OpenClaw dashboard opens directly from HomeBrain (no token re-entry)
@@ -36,7 +36,7 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ### Medium-term
 
-- **OpenClaw integrations** *(in progress, `vault-integration` branch)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), WhatsApp-native consent loop. See [`INTEGRATIONS_PLAN.md`](INTEGRATIONS_PLAN.md).
+- **OpenClaw integrations** *(in progress, `vault-integration` branch)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), chat-native consent loop. See [`INTEGRATIONS_PLAN.md`](INTEGRATIONS_PLAN.md).
 
 ---
 

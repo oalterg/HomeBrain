@@ -3,7 +3,7 @@
 
 Lets OpenClaw operate the HomeBrain box itself — answer "are backups
 working?", trigger a backup, restart a service, tail logs — all from
-WhatsApp without bouncing through the dashboard browser UI.
+Telegram without bouncing through the dashboard browser UI.
 
 Talks to the HomeBrain Flask dashboard over a Unix-domain socket OR over
 HTTP localhost with a shared-secret token derived from MASTER_PASSWORD.

@@ -1056,31 +1056,6 @@
                     </small>
                 </div>
 
-                <div hidden id="details-whatsapp" class="conn-form">
-                    <div id="wa-qr-container" style="text-align:center; padding:12px 0;">
-                        <p id="wa-qr-msg" style="color:var(--text-dim); margin:0 0 8px;">Generating QR code&hellip;</p>
-                        <img id="wa-qr-img" hidden style="max-width:260px; border-radius:8px; margin:0 auto; display:block; image-rendering:pixelated;">
-                    </div>
-                    <div style="display:flex; gap:8px; justify-content:center;">
-                        <button onclick="closeForm('details-whatsapp'); waQrStop();">&times; Cancel</button>
-                    </div>
-                    <small style="display:block; margin-top:8px; color:var(--text-dim); text-align:center;">
-                        Open <strong>WhatsApp</strong> on your phone &rarr; <strong>Linked Devices</strong> &rarr; <strong>Link a Device</strong> &rarr; scan this QR.
-                    </small>
-                </div>
-
-                <div hidden id="details-whatsapp-pair" class="conn-form">
-                    <div style="display:grid; grid-template-columns: 1fr; gap:8px;">
-                        <input type="text" id="wa-pair-code" placeholder="Pairing code" style="text-transform:uppercase;" onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelWhatsAppPair(); }">
-                    </div>
-                    <div style="margin-top:8px; display:flex; gap:8px;">
-                        <button class="btn-primary" onclick="channelWhatsAppPair()">Approve</button>
-                        <button onclick="closeForm('details-whatsapp-pair')" aria-label="Close">&times;</button>
-                    </div>
-                    <small style="display:block; margin-top:6px; color:var(--text-dim);">
-                        Send any message to your agent on WhatsApp. If it replies with a pairing code, paste it above to approve.
-                    </small>
-                </div>
             </div>
 
             <div class="card">
@@ -1600,7 +1575,6 @@
         // ── Channel linking ─────────────────────────────────────────────
         const CHANNEL_LABELS = {
             telegram: { name: 'Telegram', sub: 'Bot via @BotFather' },
-            whatsapp: { name: 'WhatsApp', sub: 'Linked Devices (QR code)' },
         };
         async function channelRefresh() {
             try {
@@ -1613,9 +1587,7 @@
                 for (const ch of (d.channels || [])) {
                     const meta = CHANNEL_LABELS[ch.key] || { name: ch.key, sub: '' };
                     let badge;
-                    if (ch.key === 'whatsapp' && ch.linked) {
-                        badge = '<span class="status-badge status-running">linked</span>';
-                    } else if (ch.enabled) {
+                    if (ch.enabled) {
                         badge = '<span class="status-badge status-running">active</span>';
                     } else if (ch.configured) {
                         badge = '<span class="status-badge status-unknown">configured</span>';
@@ -1629,15 +1601,6 @@
                         } else {
                             buttons.push(`<button class="btn-primary" onclick="openDetails('details-telegram-pair','tg-pair-code')">Pair&hellip;</button>`);
                             buttons.push(`<button onclick="channelRemove('telegram')">Unlink</button>`);
-                        }
-                    }
-                    if (ch.key === 'whatsapp') {
-                        if (!ch.configured) {
-                            buttons.push(`<button class="btn-primary" onclick="channelWhatsAppLink()">Link&hellip;</button>`);
-                        } else {
-                            buttons.push(`<button onclick="channelWhatsAppLink()">Re-link&hellip;</button>`);
-                            buttons.push(`<button onclick="openDetails('details-whatsapp-pair','wa-pair-code')">Pair&hellip;</button>`);
-                            buttons.push(`<button onclick="channelRemove('whatsapp')">Unlink</button>`);
                         }
                     }
                     rows.insertAdjacentHTML('beforeend',
@@ -1698,29 +1661,6 @@
             channelRefresh();
         }
 
-        async function channelWhatsAppPair() {
-            const code = document.getElementById('wa-pair-code').value.trim();
-            if (!code) return;
-            const msg = document.getElementById('channel-msg');
-            msg.innerText = 'Approving pairing...';
-            try {
-                const r = await fetch('/api/channels/whatsapp/pair', {
-                    method: 'POST', credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code }),
-                });
-                const d = await r.json();
-                if (r.ok) {
-                    msg.innerText = 'Paired! You can now chat with your agent on WhatsApp.';
-                    closeForm('details-whatsapp-pair');
-                    document.getElementById('wa-pair-code').value = '';
-                } else {
-                    msg.innerText = d.error || 'Pairing failed';
-                }
-            } catch (e) { msg.innerText = 'Error: ' + e; }
-            channelRefresh();
-        }
-
         async function channelRemove(key) {
             if (!confirm(`Unlink ${(CHANNEL_LABELS[key]||{}).name || key}?`)) return;
             const msg = document.getElementById('channel-msg');
@@ -1733,102 +1673,6 @@
             } catch (e) { msg.innerText = 'Error: ' + e; }
             channelRefresh();
         }
-
-        let waQrPolling = false;
-
-        async function channelWhatsAppLink() {
-            const msg = document.getElementById('wa-qr-msg');
-            const img = document.getElementById('wa-qr-img');
-            msg.innerText = 'Enabling WhatsApp channel...';
-            img.hidden = true;
-            openDetails('details-whatsapp');
-            // Ensure the channel plugin is installed and the channel is
-            // configured. The first time WhatsApp is linked the server installs
-            // the @openclaw/whatsapp channel plugin in the background and replies
-            // 202 {status:'installing'} — poll through that state (up to ~2 min)
-            // before asking for the QR. Once installed this returns immediately.
-            let configured = false;
-            for (let i = 0; i < 40 && !configured; i++) {
-                try {
-                    const ar = await fetch('/api/channels/whatsapp/add', {
-                        method: 'POST', credentials: 'include',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: '{}',
-                    });
-                    const ad = await ar.json().catch(() => ({}));
-                    if (ar.ok && ad.status === 'configured') { configured = true; break; }
-                    if (ar.status === 202 || ad.status === 'installing') {
-                        msg.innerText = ad.message || 'Installing WhatsApp support (one-time)…';
-                    }
-                } catch (e) { /* transient — retry */ }
-                await new Promise(r => setTimeout(r, 3000));
-            }
-            if (!configured) {
-                msg.innerText = 'WhatsApp setup is taking longer than expected. Please try again in a moment.';
-                return;
-            }
-            // Request QR from gateway
-            msg.innerText = 'Generating QR code...';
-            try {
-                const r = await fetch('/api/channels/whatsapp/qr', {
-                    method: 'POST', credentials: 'include',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ force: true }),
-                });
-                const d = await r.json();
-                if (d.qrDataUrl) {
-                    img.src = d.qrDataUrl;
-                    img.hidden = false;
-                    msg.innerText = 'Scan this QR code with WhatsApp:';
-                    waQrPoll(d.qrDataUrl);
-                } else if (d.connected) {
-                    msg.innerText = 'WhatsApp is already linked!';
-                    setTimeout(() => closeForm('details-whatsapp'), 2000);
-                    channelRefresh();
-                } else {
-                    msg.innerText = d.message || d.error || 'Could not generate QR. Is the WhatsApp plugin installed?';
-                }
-            } catch (e) { msg.innerText = 'Error: ' + e; }
-        }
-
-        async function waQrPoll(currentQr) {
-            waQrPolling = true;
-            const msg = document.getElementById('wa-qr-msg');
-            const img = document.getElementById('wa-qr-img');
-            while (waQrPolling) {
-                await new Promise(r => setTimeout(r, 3000));
-                if (!waQrPolling) break;
-                try {
-                    const r = await fetch('/api/channels/whatsapp/qr/wait', {
-                        method: 'POST', credentials: 'include',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ currentQrDataUrl: currentQr }),
-                    });
-                    const d = await r.json();
-                    if (d.connected) {
-                        msg.innerText = 'WhatsApp linked successfully!';
-                        img.hidden = true;
-                        waQrPolling = false;
-                        setTimeout(() => closeForm('details-whatsapp'), 2000);
-                        channelRefresh();
-                        document.getElementById('channel-msg').innerText = 'WhatsApp linked!';
-                        return;
-                    }
-                    if (d.qrDataUrl && d.qrDataUrl !== currentQr) {
-                        img.src = d.qrDataUrl;
-                        currentQr = d.qrDataUrl;
-                        msg.innerText = 'QR refreshed — scan the new code:';
-                    }
-                    if (d.error) {
-                        msg.innerText = d.error;
-                        waQrPolling = false;
-                        return;
-                    }
-                } catch (e) { /* retry on network error */ }
-            }
-        }
-
-        function waQrStop() { waQrPolling = false; }
 
         // ── Integration labels ─────────────────────────────────────────────
         const CONN_LABELS = {

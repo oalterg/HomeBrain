@@ -1040,8 +1040,8 @@ HEALTH_FILE = "/var/lib/homebrain/health.json"
 @app.route("/api/health")
 def health_status():
     """Latest health-check report, written by scripts/healthcheck.py from the
-    homebrain-health.timer. Drives the dashboard banner; the push channel
-    (WhatsApp/Telegram) is handled by the checker itself."""
+    homebrain-health.timer. Drives the dashboard banner; the Telegram push
+    is handled by the checker itself."""
     try:
         with open(HEALTH_FILE) as f:
             data = json.load(f)

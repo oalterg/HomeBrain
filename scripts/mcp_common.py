@@ -3,7 +3,7 @@
 Every HomeBrain integration (Home Assistant, Nextcloud, Vault, Email, Self)
 runs as a stdio MCP subprocess of the OpenClaw daemon. They all speak the
 same JSON-RPC 2.0 wire protocol, return envelopes shaped the same way, and
-share the same WhatsApp-style consent loop for `act`-tier tools.
+share the same chat-message consent loop for `act`-tier tools.
 
 This module factors out everything that would otherwise be copy-pasted into
 five servers:
