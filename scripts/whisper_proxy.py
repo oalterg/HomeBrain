@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Whisper proxy: converts any audio to WAV via ffmpeg, forwards to whisper-server.
 
-whisper-server (whisper.cpp) only supports WAV input. WhatsApp sends voice messages
+whisper-server (whisper.cpp) only supports WAV input. Telegram delivers voice notes
 as OGG/Opus. This proxy sits on port 8002 (the port OpenClaw talks to), converts
 incoming audio to 16kHz mono WAV via ffmpeg, and forwards the request to the
 actual whisper-server on port 8003.

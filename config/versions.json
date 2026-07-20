@@ -9,10 +9,6 @@
   "openclaw": {
     "version": "2026.6.8"
   },
-  "openclaw_whatsapp": {
-    "_comment": "WhatsApp is a separate channel plugin (not bundled in openclaw). Pin MUST stay peer-compatible with openclaw.version above: @openclaw/whatsapp declares peerDependencies.openclaw and compat.pluginApi (e.g. 2026.5.28 requires openclaw>=2026.5.28). Bump this in lockstep with openclaw.version. Telegram is bundled in core and needs no pin.",
-    "version": "2026.6.8"
-  },
   "vaultwarden": {
     "tag": "1.36.0"
   }

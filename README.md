@@ -4,7 +4,7 @@
 
 No subscriptions. No cloud accounts. No data leaves your network.
 
-HomeBrain provisions a complete self-hosted stack on a single machine: **Nextcloud** for files, calendars, and contacts, **Home Assistant** for smart-home automation, **Vaultwarden** for passwords, and — on GPU-equipped hardware — **OpenClaw**, a personal AI agent on WhatsApp or Telegram, powered by local llama.cpp inference. The agent has MCP integrations into every service in the stack: it reads your calendar, controls your lights, fetches your files, and drafts emails — all on-device, all private.
+HomeBrain provisions a complete self-hosted stack on a single machine: **Nextcloud** for files, calendars, and contacts, **Home Assistant** for smart-home automation, **Vaultwarden** for passwords, and — on GPU-equipped hardware — **OpenClaw**, a personal AI agent on Telegram, powered by local llama.cpp inference. The agent has MCP integrations into every service in the stack: it reads your calendar, controls your lights, fetches your files, and drafts emails — all on-device, all private.
 
 One command installs it. A browser wizard configures it. You own the whole thing.
 
@@ -17,7 +17,7 @@ One command installs it. A browser wizard configures it. You own the whole thing
 ## Why HomeBrain
 
 - **Truly private** — files, passwords, conversations, and home automation all run on hardware you control. Zero telemetry, zero cloud dependency.
-- **An AI agent, not just a chatbot** — OpenClaw is a personal agent on WhatsApp or Telegram, backed by a local LLM (Qwen 3.6 35B MoE). It doesn't just answer questions — it acts: reading your calendar, toggling your lights, pulling files from Nextcloud, looking up passwords, sending emails. Every token stays on your hardware.
+- **An AI agent, not just a chatbot** — OpenClaw is a personal agent on Telegram, backed by a local LLM (Qwen 3.6 35B MoE). It doesn't just answer questions — it acts: reading your calendar, toggling your lights, pulling files from Nextcloud, looking up passwords, sending emails. Every token stays on your hardware.
 - **Your messenger becomes the interface** — the agent doubles as a de facto tunnel into your home stack. Ask it for a file and it sends it. Ask it to turn off the lights and it does. No VPN, no port forwarding, no app to install — just message it. For most day-to-day use, the Pangolin tunnel is optional.
 - **One-command setup** — bootstrap, configure through a browser wizard, reboot. That's it.
 - **Encrypted remote access** — for full web UI access to Nextcloud, Home Assistant, and Vault from outside your network, Pangolin tunnels everything end-to-end through your own infrastructure. No static IP, no middleman.
@@ -32,7 +32,7 @@ One command installs it. A browser wizard configures it. You own the whole thing
 | **Nextcloud** | File sync, CalDAV, CardDAV — your personal cloud |
 | **Home Assistant** | Smart-home control and automation |
 | **Vaultwarden** | Bitwarden-compatible password manager |
-| **OpenClaw** | Personal AI agent on WhatsApp / Telegram with MCP access to every service above |
+| **OpenClaw** | Personal AI agent on Telegram with MCP access to every service above |
 | **llama-server** | Local LLM inference on Vulkan (no ROCm required) |
 | **Whisper** | Speech-to-text for voice messages |
 | **Pangolin** | Self-hosted encrypted tunnel for remote access |
@@ -118,7 +118,7 @@ HomeBrain
 ├── Pangolin Newt      Docker         Encrypted tunnel (optional)
 ├── llama-server       systemd        Local LLM inference (GPU only)
 ├── whisper-server     systemd        Speech-to-text (GPU only)
-└── OpenClaw           systemd        AI agent · WhatsApp / Telegram (GPU only)
+└── OpenClaw           systemd        AI agent · Telegram (GPU only)
 ```
 
 Updates are pinned in [`config/versions.json`](config/versions.json) and applied from the dashboard with a single click.

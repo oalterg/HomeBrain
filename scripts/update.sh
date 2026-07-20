@@ -229,16 +229,12 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
             bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
         else
-            # Plugin + config drift catch-all. The openclaw npm package didn't
-            # change, but two things still might have and are otherwise ONLY
-            # applied by setup_openclaw (which the version-bump branch above runs
-            # and this one does not):
-            #   1. The bundled HomeBrain plugins under config/openclaw-plugins/
-            #      (e.g. the WhatsApp QR login route). Without re-installing them
-            #      here, a new/changed plugin would rsync into the install dir but
-            #      never register with the gateway.
-            #   2. The patch_openclaw_config jq pipeline in utilities.sh (new
-            #      schema keys, refreshed allowedOrigins, etc.).
+            # Config drift catch-all. The openclaw npm package didn't change,
+            # but the patch_openclaw_config jq pipeline in utilities.sh (new
+            # schema keys, one-shot migrations, refreshed allowedOrigins, …)
+            # still might have — and it is otherwise ONLY applied by
+            # setup_openclaw (which the version-bump branch above runs and
+            # this one does not).
             # Delegate to utilities.sh's `refresh_openclaw` subcommand, run as a
             # SUBPROCESS — never `source` it. Sourcing utilities.sh executes
             # common.sh's top-level side effects under this script's `set -e`, and
@@ -247,13 +243,14 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             # exits THIS script straight past any `|| true`. A subprocess keeps
             # utilities.sh's SCRIPT_DIR / set -e / die fully isolated — we only
             # read its return code. The subcommand snapshots openclaw.json,
-            # (re)installs the bundled plugins + re-patches config, and restarts
-            # the gateway only when the file actually changed.
+            # re-patches config (which includes one-shot migrations like the
+            # WhatsApp removal), and restarts the gateway only when the file
+            # actually changed.
             UTILS_FILE="$INSTALL_DIR/scripts/utilities.sh"
             if command -v openclaw >/dev/null 2>&1 && [[ -f "$UTILS_FILE" ]]; then
-                log_info "Refreshing openclaw plugins + config against current install..."
+                log_info "Refreshing openclaw config against current install..."
                 bash "$UTILS_FILE" refresh_openclaw \
-                    || log_warn "openclaw plugin/config refresh failed — check logs."
+                    || log_warn "openclaw config refresh failed — check logs."
             else
                 log_warn "openclaw config refresh skipped: openclaw=$(command -v openclaw||echo missing) utils=$UTILS_FILE present=$([[ -f $UTILS_FILE ]]&&echo y||echo n)"
             fi

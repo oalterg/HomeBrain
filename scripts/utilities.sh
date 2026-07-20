@@ -1188,7 +1188,7 @@ EOF
     chmod 644 /etc/systemd/system/whisper-server.service
 
     # --- whisper-proxy (converts OGG/Opus → WAV for whisper-server) ---
-    # WhatsApp sends voice messages as OGG/Opus; whisper.cpp only accepts WAV.
+    # Telegram delivers voice notes as OGG/Opus; whisper.cpp only accepts WAV.
     # The proxy converts via ffmpeg before forwarding to whisper-server.
     local proxy_script="${HOMEBRAIN_HOME}/ai-runtime/whisper-proxy/whisper_proxy.py"
     cp "${SCRIPT_DIR}/whisper_proxy.py" "$proxy_script"
@@ -1422,9 +1422,14 @@ patch_openclaw_config() {
         # We only delete entries that still exactly match our old skeleton —
         # if the user has actually configured one (linked an account,
         # enabled it, added an allowlist entry), the equality check fails
-        # and the entry is preserved. WhatsApp is intentionally not migrated:
-        # earlier installs may have linked it, and the user can clean it up
-        # via the agent (channels(remove, whatsapp)) when they want to.
+        # and the entry is preserved.
+        # WhatsApp is migrated unconditionally: HomeBrain is Telegram-only
+        # now and its plugins are uninstalled (remove_whatsapp_plugins), so
+        # a leftover channel entry would only make the gateway try to load
+        # a channel that no longer exists.
+        del(.channels.whatsapp) |
+        del(.plugins.entries.whatsapp) |
+        del(.plugins.entries["homebrain-whatsapp-login"]) |
         (if (.channels.telegram // null) ==
             {"enabled": false, "dmPolicy": "allowlist", "groupPolicy": "allowlist"}
           then del(.channels.telegram) else . end) |
@@ -1492,29 +1497,17 @@ run_as_admin() {
         "$@"
 }
 
-# Install HomeBrain-owned OpenClaw plugins from the repo
-# (config/openclaw-plugins/). These add dashboard-facing functionality that
-# stock upstream OpenClaw does not expose as a gateway HTTP route — currently
-# the WhatsApp QR login flow consumed by src/integrations.py — WITHOUT forking
-# OpenClaw itself. Each plugin dir carries an openclaw.plugin.json manifest;
-# `openclaw plugins install` stages it and (for plugins with no required
-# configSchema, like ours) enables it in plugins.entries. Idempotent via
-# --force. Runs as the homebrain user so it writes to ~/.openclaw.
-install_homebrain_openclaw_plugins() {
-    # Optional $1 overrides the plugins root. Callers that source this file from
-    # a different working tree (e.g. update.sh, where sourcing resets SCRIPT_DIR
-    # to that script's $0 — the self-update temp dir after re-exec) MUST pass the
-    # root explicitly, else the SCRIPT_DIR-relative default misses the tree.
-    local plugins_root="${1:-${SCRIPT_DIR}/../config/openclaw-plugins}"
-    [[ -d "$plugins_root" ]] || return 0
-    local dir pid
-    for dir in "$plugins_root"/*/; do
-        [[ -f "${dir}openclaw.plugin.json" ]] || continue
-        pid=$(basename "$dir")
-        log_info "Installing HomeBrain OpenClaw plugin: ${pid}"
-        if ! run_as_admin openclaw plugins install "${dir%/}" --force >/dev/null 2>&1; then
-            log_warn "Failed to install HomeBrain plugin '${pid}'. Dashboard features that depend on it may be unavailable until the next setup run."
-        fi
+# One-shot migration: HomeBrain is Telegram-only now. Earlier releases
+# shipped WhatsApp via two plugins — the homebrain-whatsapp-login QR route
+# and the lazily-installed @openclaw/whatsapp channel. Uninstall both so
+# they stop loading (and stop tripping doctor warnings) on upgraded boxes.
+# Best-effort and idempotent: uninstalling an absent plugin just fails
+# quietly. Linked-device credentials under ~/.openclaw are left alone.
+remove_whatsapp_plugins() {
+    command -v openclaw >/dev/null 2>&1 || return 0
+    local pid
+    for pid in homebrain-whatsapp-login @openclaw/whatsapp; do
+        run_as_admin openclaw plugins uninstall "$pid" >/dev/null 2>&1 || true
     done
 }
 
@@ -1619,19 +1612,8 @@ setup_openclaw() {
         fi
     fi
 
-    # Channel plugins: Telegram ships INSIDE core OpenClaw, so it needs no
-    # install. WhatsApp is a separate `@openclaw/whatsapp` plugin that is NOT
-    # bundled and is intentionally NOT pre-installed here — keeping fresh
-    # provisioning fast and avoiding never-configured channel cards. On stock
-    # upstream OpenClaw the install is HomeBrain's responsibility (the fork's
-    # `channels` self-config tool is absent): the dashboard installs it lazily
-    # and pinned on first link — `openclaw plugins install @openclaw/whatsapp@<v>`
-    # where <v> is config/versions.json:openclaw_whatsapp.version, kept peer-
-    # compatible with the openclaw pin — in src/integrations.py. That install is
-    # backgrounded (too slow for the gunicorn worker timeout) and the dashboard
-    # polls through an "installing" state. The WhatsApp QR login *route* is
-    # provided separately by the homebrain-whatsapp-login plugin installed below,
-    # independent of the channel plugin.
+    # Channels: Telegram only, and it ships INSIDE core OpenClaw — no
+    # channel plugin to install, ever.
 
     # --- [2/3] Write config ---
     log_info "[2/3] Writing config..."
@@ -1658,12 +1640,7 @@ setup_openclaw() {
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
 
-    # Install HomeBrain-owned plugins (e.g. the WhatsApp QR login HTTP route)
-    # AFTER the config write above: `openclaw plugins install` mutates
-    # plugins.entries in openclaw.json, so running it before the first-install
-    # template copy would clobber the enablement. The daemon start below then
-    # picks up the freshly-registered routes.
-    install_homebrain_openclaw_plugins
+    remove_whatsapp_plugins
 
     # --- [3/3] Register and start daemon ---
     log_info "[3/3] Registering and starting daemon..."
@@ -1689,7 +1666,7 @@ setup_openclaw() {
     # health — a crash-looping daemon with a stale unit still made the grep
     # match and "OpenClaw is running" got logged for a port that was never
     # bound. /dev/tcp is bash-native and avoids depending on curl/ss/nc here.
-    # 60 s headroom for first-install plugin bundling (acpx, browser, whatsapp
+    # 60 s headroom for first-install plugin bundling (acpx and browser
     # each fetch their bundled deps before the gateway binds).
     local oc_port="${OPENCLAW_PORT:-18789}"
     local retries=0
@@ -2379,8 +2356,15 @@ case "${1:-}" in
             exit 0
         fi
         cp "$CFG" "${CFG}.preupdate"
-        install_homebrain_openclaw_plugins
+        remove_whatsapp_plugins
         if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
+            # patch_openclaw_config rewrites the file as whoever runs this
+            # (root, from update.sh). Restore the gateway user's ownership —
+            # a root-owned 600 config is unreadable to the homebrain-run
+            # gateway, which then crash-loops. Latent until the first refresh
+            # that actually changed the file (the WhatsApp one-shot migration).
+            chown "${HOMEBRAIN_USER:-homebrain}:${HOMEBRAIN_USER:-homebrain}" "$CFG" 2>/dev/null || true
+            chmod 600 "$CFG" 2>/dev/null || true
             if ! cmp -s "${CFG}.preupdate" "$CFG"; then
                 log_info "openclaw plugins/config changed — restarting daemon to apply."
                 run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
