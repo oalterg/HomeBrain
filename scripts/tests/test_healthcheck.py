@@ -14,6 +14,7 @@ from healthcheck import (  # noqa: E402
     DAY,
     backup_log_outcome,
     check_offsite,
+    check_reboot,
     compose_message,
     decide_notification,
     disk_level,
@@ -154,6 +155,28 @@ def test_offsite_stale_and_fresh():
     weekly = _offsite({"OFFSITE_ENABLED": "true", "BACKUP_DAY_WEEK": "0"},
                       {"ts": NOW - 6 * DAY, "ok": True})
     assert weekly["level"] == "ok"
+
+
+def test_reboot_not_pending_is_ok():
+    with tempfile.TemporaryDirectory() as d:
+        healthcheck.REBOOT_REQUIRED_FILE = os.path.join(d, "reboot-required")
+        c = check_reboot()
+        assert c["level"] == "ok"
+
+
+def test_reboot_pending_warns_with_packages():
+    with tempfile.TemporaryDirectory() as d:
+        marker = os.path.join(d, "reboot-required")
+        healthcheck.REBOOT_REQUIRED_FILE = marker
+        open(marker, "w").close()
+        c = check_reboot()
+        assert c["level"] == "warn" and "Restart" in c["summary"]
+        # duplicate package lines collapse; detail lists them
+        with open(marker + ".pkgs", "w") as f:
+            f.write("linux-image-generic\nlibc6\nlinux-image-generic\n")
+        c = check_reboot()
+        assert c["level"] == "warn"
+        assert "libc6" in c["summary"] and c["summary"].count("linux-image") == 1
 
 
 def test_compose_message():
