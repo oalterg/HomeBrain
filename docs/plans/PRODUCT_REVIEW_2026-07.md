@@ -1,10 +1,16 @@
 # Product review & improvement plan — July 2026
 
-**Status:** Phase 2 complete (#115 #117 #118 + replica target). Phase 3 largely complete;
-Caddy LAN-HTTPS edge deferred — both production boxes are remote-mode (Pangolin
-provides end-to-end TLS) and the edge would entangle the pre-stack bootstrap flow
-where the dashboard must run without containers. Revisit if LAN-only deployments
-become a real user base. Phase 1 (CI) is the known open debt.
+**Status:** Phases 1–3 complete (CI shipped in #125; Phase 2 in #115 #117 #118 +
+replica target; Phase 3 hardening in #120). Caddy LAN-HTTPS edge stays deferred —
+both production boxes are remote-mode (Pangolin provides end-to-end TLS) and the
+edge would entangle the pre-stack bootstrap flow where the dashboard must run
+without containers. Revisit if LAN-only deployments become a real user base.
+Post-review closures (v2026.07.20, #126–#132): Telegram-only channels (WhatsApp
+deleted, fork retired — resolves Phase 4's "verify-or-delete WhatsApp fallback"),
+reboot-required health check, OpenClaw 2026.7.1-2, gunicorn 26 / gevent 26.5 /
+redis-py 8 (the held bumps, WS E2E'd), Nextcloud 33. Remaining Phase 4: G7
+URL-rewrite helper; "move NC data to another drive" flow. Phase 0 debt: misc
+secrets → Vaultwarden.
 **Date:** 2026-07-15
 **Scope:** Holistic review of the product — reliability, security, engineering foundation,
 missing features — with a phased, minimalist plan. Findings verified against the working
