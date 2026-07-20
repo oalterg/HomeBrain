@@ -2044,7 +2044,20 @@ def do_manager_update():
 
     data = request.json
     channel = data.get("channel", "stable")
-    target_ref = data.get("target_ref", "main")
+    target_ref = data.get("target_ref", "")
+    if not target_ref and channel == "stable":
+        # A bare {"channel":"stable"} means "latest release". Resolve the tag
+        # here — defaulting to "main" hands the downgrade guard a tag→branch
+        # comparison it rightly refuses (the dashboard UI always passes the
+        # tag from check_update; only direct API calls hit this).
+        try:
+            resp = requests.get(f"{REPO_API_URL}/releases/latest", timeout=10)
+            target_ref = resp.json().get("tag_name", "") if resp.status_code == 200 else ""
+        except requests.RequestException:
+            target_ref = ""
+        if not target_ref:
+            return jsonify({"error": "Could not resolve the latest release; pass target_ref explicitly."}), 502
+    target_ref = target_ref or "main"
 
     # Ensure update script is executable
     if not os.path.exists(SCRIPT_UPDATE):
