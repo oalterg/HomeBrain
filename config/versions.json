@@ -7,7 +7,7 @@
     "git_ref": "v1.8.4"
   },
   "openclaw": {
-    "version": "2026.6.8"
+    "version": "2026.7.1-2"
   },
   "vaultwarden": {
     "tag": "1.36.0"
