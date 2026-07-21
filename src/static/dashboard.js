@@ -1725,7 +1725,7 @@ async function loadDrives() {
             <div class="drive-row">
               <div class="row-main">
                 <strong>${escapeHtml(d.path)}</strong>
-                <span class="row-meta">${escapeHtml(d.size)} · ${escapeHtml(d.model)}</span>
+                <span class="row-meta">${[d.size, d.model].map(v => (v || '').trim()).filter(Boolean).map(escapeHtml).join(' · ')}</span>
               </div>
               ${d.is_backup
                 ? '<span class="status-badge status-running">Backup drive</span>'
