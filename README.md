@@ -9,8 +9,13 @@ HomeBrain provisions a complete self-hosted stack on a single machine: **Nextclo
 One command installs it. A browser wizard configures it. You own the whole thing.
 
 <p align="center">
-  <img src="res/screenshot.png" alt="HomeBrain Dashboard" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="res/screenshot-dark.png">
+    <img src="res/screenshot.png" alt="The HomeBrain dashboard, showing service status, the local AI stack, vault state, and system resources" width="860">
+  </picture>
 </p>
+
+<p align="center"><sub>The dashboard ships in light and dark. It loads nothing from the internet — no CDN, no fonts, no analytics — so it renders identically on a box with the WAN unplugged.</sub></p>
 
 ---
 
