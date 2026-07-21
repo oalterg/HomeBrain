@@ -242,6 +242,75 @@ update_env_var() {
     fi
 }
 
+# Read a single value out of .env. Deliberately takes the LAST match: the
+# .env.template ships empty placeholders (HOMEBRAIN_SELF_NONCE=, etc.) that the
+# dashboard later appends real values for, so a naive first-match grep returns
+# the empty one. Surrounding quotes (update_env_var writes them) are stripped.
+env_value() {
+    local key="$1" v
+    [[ -f "$ENV_FILE" ]] || return 0
+    v="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | tail -n1)"
+    v="${v#*=}"
+    v="${v%\"}"; v="${v#\"}"
+    v="${v%\'}"; v="${v#\'}"
+    printf '%s' "$v"
+}
+
+# --- Self-MCP bearer token -------------------------------------------------
+# The homebrain-self MCP server authenticates to the dashboard with a bearer
+# token derived from the master password:
+#
+#     token = HMAC-SHA256(key=HOMEBRAIN_SELF_NONCE, msg=MASTER_PASSWORD)
+#
+# The dashboard recomputes it from .env on every request (src/integrations.py:
+# _self_token) while the MCP server reads a cached copy from
+# ~/.openclaw/homebrain.token. Any path that changes MASTER_PASSWORD or
+# HOMEBRAIN_SELF_NONCE must refresh that file or every homebrain-self__* tool
+# call starts 401ing — silently, because nothing else reads it.
+
+# Pure derivation, kept separate so the unit test can pin it against the
+# Python implementation without touching the filesystem.
+derive_self_token() {
+    local nonce="$1" password="$2"
+    [[ -n "$nonce" && -n "$password" ]] || return 1
+    printf '%s' "$password" \
+        | openssl dgst -sha256 -hmac "$nonce" -r 2>/dev/null \
+        | cut -d' ' -f1
+}
+
+# Re-derive ~/.openclaw/homebrain.token in place. Optional $1 overrides the
+# password to derive from — the rotation script needs this because it calls us
+# with the NEW password, which .env may not carry yet. Best-effort by design:
+# a box with no OpenClaw has no self-MCP, and a failure here must never strand
+# a rotation or a restore.
+refresh_self_token() {
+    local new_pass="${1:-}"
+    local tok_dir="${HOMEBRAIN_HOME}/.openclaw"
+    local tok_file="${SELF_TOKEN_FILE:-${tok_dir}/homebrain.token}"
+    [[ -d "$tok_dir" ]] || return 0   # no OpenClaw on this box — nothing to do
+
+    local mp nonce tok
+    mp="${new_pass:-$(env_value MASTER_PASSWORD)}"
+    nonce="$(env_value HOMEBRAIN_SELF_NONCE)"
+    if [[ -z "$mp" || -z "$nonce" ]]; then
+        log_warn "Self-MCP token not re-derived: MASTER_PASSWORD or HOMEBRAIN_SELF_NONCE missing."
+        return 1
+    fi
+    if ! tok="$(derive_self_token "$nonce" "$mp")" || [[ -z "$tok" ]]; then
+        log_warn "Self-MCP token derivation failed (openssl missing?) — agent self-tools may 401."
+        return 1
+    fi
+
+    # Subshell so the restrictive umask cannot leak into the caller's shell.
+    if ! ( umask 077; printf '%s\n' "$tok" > "$tok_file" ); then
+        log_warn "Could not write ${tok_file} — agent self-tools may 401."
+        return 1
+    fi
+    chmod 600 "$tok_file" 2>/dev/null || true
+    chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$tok_file" 2>/dev/null || true
+    log_info "Self-MCP bearer token re-derived."
+}
+
 # --- Docker Helpers ---
 # Helper to get all active compose files
 get_compose_args() {
