@@ -15,11 +15,13 @@ from healthcheck import (  # noqa: E402
     backup_log_outcome,
     check_offsite,
     check_reboot,
+    check_update,
     compose_message,
     decide_notification,
     disk_level,
     expected_backup_interval,
     parse_env,
+    release_key,
 )
 
 NOW = 1_800_000_000
@@ -188,3 +190,99 @@ def test_compose_message():
     assert "dashboard" in msg
     rec = compose_message([], [{"level": "ok", "summary": "Backups are up to date"}])
     assert rec.startswith("✅ Resolved: Backups are up to date")
+
+
+# --- update check ----------------------------------------------------------
+
+def _stable(tmpdir, ref):
+    """Point healthcheck at a version.json pinned to `ref` on stable."""
+    path = os.path.join(tmpdir, "version.json")
+    with open(path, "w") as f:
+        json.dump({"channel": "stable", "ref": ref}, f)
+    healthcheck.VERSION_FILE = path
+
+
+def test_release_key_orders_date_and_semver_tags():
+    assert release_key("v2026.07.21") == (2026, 7, 21)
+    assert release_key("v1.1.0") == (1, 1, 0)
+    assert release_key("v0.1") == (0, 1)
+    assert release_key("v0.1") < release_key("v1.0.0") < release_key("v2026.06.12")
+    assert release_key("v2026.07.19") < release_key("v2026.07.21")
+    # unorderable input must be reported as such, not guessed at
+    assert release_key("main") is None
+    assert release_key("") is None
+    assert release_key(None) is None
+
+
+def test_update_available_only_when_release_is_newer(tmp_path):
+    _stable(str(tmp_path), "v2026.07.19")
+    state = {"update": {"ts": NOW, "latest": "v2026.07.21",
+                        "installed": "v2026.07.19"}}
+    out = check_update(state, NOW)
+    assert out["level"] == "info"
+    assert "v2026.07.21" in out["summary"]
+
+
+def test_older_release_is_not_an_update(tmp_path):
+    """The bug: a cached tag older than what's installed read as `!=` and so
+    advertised a downgrade the update script would refuse."""
+    _stable(str(tmp_path), "v2026.07.21")
+    state = {"update": {"ts": NOW, "latest": "v2026.07.19",
+                        "installed": "v2026.07.21"}}
+    out = check_update(state, NOW)
+    assert out["level"] == "ok"
+    assert out["summary"] == "HomeBrain is up to date"
+
+
+def test_same_release_is_up_to_date(tmp_path):
+    _stable(str(tmp_path), "v2026.07.21")
+    state = {"update": {"ts": NOW, "latest": "v2026.07.21",
+                        "installed": "v2026.07.21"}}
+    assert check_update(state, NOW)["level"] == "ok"
+
+
+def test_cache_is_invalidated_when_installed_version_changes(tmp_path, monkeypatch):
+    """A cached `latest` is only valid for the ref it was compared against;
+    after an update the probe must run again rather than reuse it."""
+    _stable(str(tmp_path), "v2026.07.21")
+    state = {"update": {"ts": NOW, "latest": "v2026.07.19",
+                        "installed": "v2026.07.19"}}   # cached pre-update
+
+    calls = []
+
+    class _Resp:
+        def read(self):
+            return b'{"tag_name": "v2026.07.21"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(req.full_url)
+        return _Resp()
+
+    # Patch only the transport — json.load is shared with the version.json
+    # read at the top of check_update, so stubbing it would break that too.
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen", fake_urlopen)
+
+    out = check_update(state, NOW)
+    assert calls, "stale cache should have forced a fresh probe"
+    assert out["level"] == "ok"
+    assert state["update"]["installed"] == "v2026.07.21"
+
+
+def test_unorderable_tag_stays_quiet(tmp_path):
+    """Never nag toward a tag we cannot order against the installed one."""
+    _stable(str(tmp_path), "v2026.07.21")
+    state = {"update": {"ts": NOW, "latest": "nightly",
+                        "installed": "v2026.07.21"}}
+    assert check_update(state, NOW)["level"] == "ok"
+
+
+def test_beta_channel_is_skipped(tmp_path):
+    path = os.path.join(str(tmp_path), "version.json")
+    with open(path, "w") as f:
+        json.dump({"channel": "beta", "ref": "main"}, f)
+    healthcheck.VERSION_FILE = path
+    assert check_update({}, NOW) is None
