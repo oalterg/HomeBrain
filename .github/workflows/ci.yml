@@ -37,6 +37,8 @@ jobs:
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
         run: bash scripts/tests/test_update_guard.sh
+      - name: self-MCP token derivation
+        run: bash scripts/tests/test_self_token.sh
 
   compose:
     runs-on: ubuntu-latest

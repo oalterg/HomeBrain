@@ -220,6 +220,11 @@ if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
         chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
     done
     log_info "Integration credentials restored."
+    # homebrain.token above came from the SOURCE box, where it was derived from
+    # that box's MASTER_PASSWORD. This box keeps its own master password (only
+    # the nonce is portable, see the instance-secret merge earlier), so the
+    # restored copy is wrong on any cross-box restore. Re-derive it locally.
+    refresh_self_token
 fi
 
 # Per-integration audit logs (best-effort; the live log path is owned by

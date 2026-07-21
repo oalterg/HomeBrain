@@ -158,4 +158,10 @@ if [[ "${HAS_GPU:-false}" == "true" ]] && [[ -f "$CFG" ]] && command -v jq >/dev
     fi
 fi
 
+# --- 7. Re-derive the self-MCP bearer token (BEST-EFFORT) ------------------
+# Derived from MASTER_PASSWORD, so it goes stale the moment step 4 lands. The
+# dashboard only rewrites it on a Connections "Apply", so without this the
+# agent's homebrain-self__* tools 401 until someone happens to click that.
+refresh_self_token "$NEW_PASS"
+
 log_info "=== Master password rotation complete ==="

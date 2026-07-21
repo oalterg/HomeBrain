@@ -1480,9 +1480,30 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     threading.Thread(target=_startup_wire_if_needed, daemon=True).start()
 
 
+def _startup_sync_self_token() -> None:
+    """Repair a stale ~/.openclaw/homebrain.token on boot.
+
+    That file caches HMAC(nonce, MASTER_PASSWORD); the dashboard recomputes the
+    same value on every request. Anything that rotates the master password
+    without rewriting the file — or a restore that drops in another box's copy
+    — leaves the agent 401ing on every homebrain-self__* call. The wiring check
+    below cannot see this, because a stale token is still a wired token, so
+    compare the value itself. Only ever repairs a file that already exists;
+    creating it is reconcile_all_mcp()'s job."""
+    try:
+        if not os.path.exists(SELF_TOKEN_FILE):
+            return
+        if _self_token() and _read_secret(SELF_TOKEN_FILE) != _self_token():
+            _ensure_self_token()
+            logging.info("startup self-heal: refreshed stale self-MCP token")
+    except Exception as e:
+        logging.warning("self-MCP token sync failed: %s", e)
+
+
 def _startup_wire_if_needed() -> None:
     if not _has_openclaw():
         return
+    _startup_sync_self_token()
     try:
         if _self_token() and _wired_in_openclaw(MCP_NAMES["self"]):
             return
