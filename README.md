@@ -83,20 +83,24 @@ sudo /opt/homebrain/scripts/provision.sh
 sudo reboot
 ```
 
-After the reboot, open `http://<server-ip>` and the wizard walks you through deployment mode, passwords, and model selection.
+`provision.sh` prints a **factory password** at the end of its run. Record it — it is not recoverable, and it is what gets you into the setup wizard.
 
-To skip the wizard, pass everything to `provision.sh`:
+After the reboot, open `http://<server-ip>`, log in with that password, and choose local network or a Pangolin tunnel. The box deploys itself and hands you a generated master password and recovery phrase, shown once.
+
+Provisioning always finishes in the browser. Passing tunnel credentials up front doesn't skip the wizard — it arrives pre-filled and pre-set to remote access:
 
 ```bash
-# Remote access via a Pangolin tunnel
 sudo /opt/homebrain/scripts/provision.sh \
-  "<NEWT_ID>" "<NEWT_SECRET>" "<TUNNEL_DOMAIN>" "<PANGOLIN_ENDPOINT>" "<PASSWORD>"
+  --newt-id "<ID>" --newt-secret "<SECRET>" --domain "<TUNNEL_DOMAIN>" \
+  --endpoint "<PANGOLIN_ENDPOINT>" --factory-pass "<PASSWORD>"
 
-# Local network only
-sudo /opt/homebrain/scripts/provision.sh "<PASSWORD>"
+# force local-network mode
+sudo /opt/homebrain/scripts/provision.sh --local --factory-pass "<PASSWORD>"
 ```
 
-Omit the password and one is generated for you.
+`--factory-pass` sets the wizard's login password instead of generating one. The master password — for the dashboard, Nextcloud and Home Assistant — is always generated during deployment and never passed in.
+
+AI model selection lives in the dashboard under **Settings → Personal AI Assistant**, once the box is up.
 
 ---
 
