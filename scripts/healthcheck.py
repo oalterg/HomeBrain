@@ -313,6 +313,16 @@ def check_containers():
     return {"id": "containers", "level": "ok", "summary": "Containers healthy"}
 
 
+def release_key(tag):
+    """Sortable key for a release tag (v2026.07.21, v1.1.0, v0.1).
+
+    Returns None for anything that isn't a dotted numeric tag, which the
+    caller treats as "cannot order" rather than "differs".
+    """
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", (tag or "").strip())
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+
 def check_update(state, now):
     """Once a day, on the stable channel only: is a newer release out?
     info-level — surfaces in the banner and one push per new version."""
@@ -323,8 +333,14 @@ def check_update(state, now):
         return None
     if version.get("channel") != "stable":
         return None
+    installed = version.get("ref", "")
+
+    # The cached tag is only meaningful for the version it was compared
+    # against. Without this an update installed since the last probe leaves a
+    # day-old `latest` in place that can predate what is now on disk.
     upd = state.setdefault("update", {})
-    if now - upd.get("ts", 0) < UPDATE_CHECK_SECS and upd.get("latest"):
+    fresh = now - upd.get("ts", 0) < UPDATE_CHECK_SECS
+    if fresh and upd.get("latest") and upd.get("installed") == installed:
         latest = upd["latest"]
     else:
         try:
@@ -332,10 +348,17 @@ def check_update(state, now):
                                          headers={"User-Agent": "homebrain-health"})
             with urllib.request.urlopen(req, timeout=6) as resp:
                 latest = json.load(resp).get("tag_name", "")
-            upd["ts"], upd["latest"] = now, latest
+            upd["ts"], upd["latest"], upd["installed"] = now, latest, installed
         except Exception:
             return None
-    if latest and latest != version.get("ref"):
+
+    # Order the tags rather than comparing them for inequality: a plain !=
+    # reports *any* difference as an available update, including a release
+    # older than the one installed. Updates are one-way (see the downgrade
+    # guard in common.sh), so nagging the user toward an older tag sends them
+    # at something update.sh will refuse. Unorderable tags stay quiet.
+    cur, new = release_key(installed), release_key(latest)
+    if cur and new and new > cur:
         return {"id": "update", "level": "info",
                 "summary": f"Update {latest} is available — install it from the dashboard"}
     return {"id": "update", "level": "ok", "summary": "HomeBrain is up to date"}
