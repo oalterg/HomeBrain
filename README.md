@@ -9,13 +9,10 @@ HomeBrain provisions a complete self-hosted stack on a single machine: Nextcloud
 One command installs it. A browser wizard configures it. You own the whole thing.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="res/screenshot-dark.png">
-    <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, and system resources" width="860">
-  </picture>
+  <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, and system resources" width="860">
 </p>
 
-<p align="center"><sub>Solarized Light, and a dark theme. The dashboard loads nothing from the internet — no CDN, no web fonts, no analytics — so it renders identically on a box with the WAN unplugged.</sub></p>
+<p align="center"><sub>Solarized Light, with a dark theme a click away. The dashboard loads nothing from the internet — no CDN, no web fonts, no analytics — so it renders identically on a box with the WAN unplugged.</sub></p>
 
 ---
 
@@ -31,10 +28,7 @@ One command installs it. A browser wizard configures it. You own the whole thing
 Each integration is one row: connect it, test it, revoke it. The agent talks to every service over MCP.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="res/agent-dark.png">
-    <img src="res/agent.png" alt="Agent integrations: Home Assistant, Nextcloud, Vault and Email, each with a connection state and per-account rows" width="860">
-  </picture>
+  <img src="res/agent.png" alt="Agent integrations: Home Assistant, Nextcloud, Vault and Email, each with a connection state and per-account rows" width="860">
 </p>
 
 ---
