@@ -328,12 +328,28 @@ app.config.update(
     SESSION_REFRESH_EACH_REQUEST=True
 )
 
+def _asset_version():
+    """Cache-buster for /static. Newest mtime under static/, so an update
+    that ships new CSS/JS invalidates the browser cache on restart."""
+    try:
+        static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+        return str(int(max(
+            os.path.getmtime(os.path.join(static_dir, f))
+            for f in os.listdir(static_dir)
+        )))
+    except Exception:
+        return "0"
+
+ASSET_VERSION = _asset_version()
+
 @app.context_processor
 def inject_platform():
     arch = platform.machine()
     if arch == "aarch64":
-        return {"platform": {"product_name": "HomeCloud", "product_suffix": "Cloud"}}
-    return {"platform": {"product_name": "HomeBrain", "product_suffix": "Brain"}}
+        product = {"product_name": "HomeCloud", "product_suffix": "Cloud"}
+    else:
+        product = {"product_name": "HomeBrain", "product_suffix": "Brain"}
+    return {"platform": product, "asset_v": ASSET_VERSION}
 
 def get_factory_password():
     """Reads the factory password securely from config."""

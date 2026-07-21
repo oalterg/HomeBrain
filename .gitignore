@@ -30,3 +30,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Claude Code local state
+.claude/

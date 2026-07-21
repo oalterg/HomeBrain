@@ -4,124 +4,99 @@
 
 No subscriptions. No cloud accounts. No data leaves your network.
 
-HomeBrain provisions a complete self-hosted stack on a single machine: **Nextcloud** for files, calendars, and contacts, **Home Assistant** for smart-home automation, **Vaultwarden** for passwords, and — on GPU-equipped hardware — **OpenClaw**, a personal AI agent on Telegram, powered by local llama.cpp inference. The agent has MCP integrations into every service in the stack: it reads your calendar, controls your lights, fetches your files, and drafts emails — all on-device, all private.
+HomeBrain provisions a complete self-hosted stack on a single machine: Nextcloud for files and calendars, Home Assistant for the smart home, Vaultwarden for passwords, and — on GPU hardware — OpenClaw, a personal AI agent running on local llama.cpp inference.
 
 One command installs it. A browser wizard configures it. You own the whole thing.
 
 <p align="center">
-  <img src="res/screenshot.png" alt="HomeBrain Dashboard" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="res/screenshot-dark.png">
+    <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, and system resources" width="860">
+  </picture>
 </p>
 
----
-
-## Why HomeBrain
-
-- **Truly private** — files, passwords, conversations, and home automation all run on hardware you control. Zero telemetry, zero cloud dependency.
-- **An AI agent, not just a chatbot** — OpenClaw is a personal agent on Telegram, backed by a local LLM (Qwen 3.6 35B MoE). It doesn't just answer questions — it acts: reading your calendar, toggling your lights, pulling files from Nextcloud, looking up passwords, sending emails. Every token stays on your hardware.
-- **Your messenger becomes the interface** — the agent doubles as a de facto tunnel into your home stack. Ask it for a file and it sends it. Ask it to turn off the lights and it does. No VPN, no port forwarding, no app to install — just message it. For most day-to-day use, the Pangolin tunnel is optional.
-- **One-command setup** — bootstrap, configure through a browser wizard, reboot. That's it.
-- **Encrypted remote access** — for full web UI access to Nextcloud, Home Assistant, and Vault from outside your network, Pangolin tunnels everything end-to-end through your own infrastructure. No static IP, no middleman.
-- **Full backup & restore** — scheduled snapshots with configurable retention, covering Nextcloud files, Home Assistant config, Vault, and AI agent memory. Restore from the dashboard in one click. External drive detection built in.
+<p align="center"><sub>Solarized Light, and a dark theme. The dashboard loads nothing from the internet — no CDN, no web fonts, no analytics — so it renders identically on a box with the WAN unplugged.</sub></p>
 
 ---
 
-## What's Inside
+## Why
 
-| Service | What it does |
-|---------|-------------|
-| **Nextcloud** | File sync, CalDAV, CardDAV — your personal cloud |
-| **Home Assistant** | Smart-home control and automation |
-| **Vaultwarden** | Bitwarden-compatible password manager |
-| **OpenClaw** | Personal AI agent on Telegram with MCP access to every service above |
-| **llama-server** | Local LLM inference on Vulkan (no ROCm required) |
-| **Whisper** | Speech-to-text for voice messages |
-| **Pangolin** | Self-hosted encrypted tunnel for remote access |
+- **Truly private** — files, passwords, conversations, and automations run on hardware you control. Zero telemetry.
+- **An agent, not a chatbot** — it acts: reads your calendar, toggles lights, pulls files, drafts email. Every token stays on your GPU.
+- **Your messenger is the interface** — ask Telegram for a file and it arrives. No VPN, no port forwarding, no app to install. For day-to-day use the tunnel is optional.
+- **Backup that restores** — scheduled snapshots with retention, off-site mirroring, one-click restore from the dashboard.
 
----
+## The agent's reach
 
-## Editions
+Each integration is one row: connect it, test it, revoke it. The agent talks to every service over MCP.
 
-The same codebase, two runtime profiles — detected automatically:
-
-| | **HomeBrain** | **HomeCloud** |
-|---|---|---|
-| Target | x86_64 + AMD GPU | Architecture-agnostic (ARM or x86_64) |
-| AI stack | Full (LLM + whisper + OpenClaw) | — |
-| Cloud + smart home | Nextcloud · Home Assistant · Vault | Nextcloud · Home Assistant · Vault |
-| Tunnel | Optional — agent on messenger covers most remote use | Optional |
-
-If there's a GPU, you get a personal AI agent. If there isn't, you still get a powerful private cloud and smart-home hub.
-
----
-
-## Reference Hardware
-
-**HomeBrain** — our daily-driver build:
-
-| Component | Spec |
-|-----------|------|
-| CPU | AMD Ryzen 5 / Intel i5 or better |
-| RAM | 32 GB |
-| Storage | 512 GB NVMe |
-| GPU | AMD Radeon RX 9060 XT (16 GB VRAM) |
-| OS | Ubuntu 24.04 LTS |
-
-Inference runs on Vulkan via Mesa RADV — no ROCm install required. ~29 tok/s generation, ~750 tok/s prompt processing at 131K context. See [BENCHMARKS.md](docs/BENCHMARKS.md).
-
-**HomeCloud** — architecture-agnostic; runs on ARM or x86_64. Reference build: Raspberry Pi 5 (8 GB) with an SSD, running Raspberry Pi OS (Trixie, 64-bit).
-
----
-
-## Quick Start
-
-```bash
-# 1. Bootstrap (Ubuntu 24.04+ / RPi OS 64-bit)
-curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | sudo bash
-
-# 2. Provision the device
-sudo /opt/homebrain/scripts/provision.sh
-
-# 3. Reboot
-sudo reboot
-
-# 4. Open the setup wizard in your browser to finish guided setup
-#    http://<server-ip>
-```
-
-After the reboot, the browser wizard walks you through deployment mode (LAN or tunnel), passwords, and model selection. For headless installs, `provision.sh` accepts everything as arguments — see [Installation docs](#headless-provisioning) below.
-
-### Headless Provisioning
-
-**Remote access** (Pangolin tunnel):
-```bash
-sudo /opt/homebrain/scripts/provision.sh \
-  "<NEWT_ID>" "<NEWT_SECRET>" "<TUNNEL_DOMAIN>" "<PANGOLIN_ENDPOINT>" "<PASSWORD>"
-```
-
-**Local network only:**
-```bash
-sudo /opt/homebrain/scripts/provision.sh "<PASSWORD>"
-```
-
-Omit the password to have one generated automatically.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="res/agent-dark.png">
+    <img src="res/agent.png" alt="Agent integrations: Home Assistant, Nextcloud, Vault and Email, each with a connection state and per-account rows" width="860">
+  </picture>
+</p>
 
 ---
 
 ## Architecture
 
 ```
-HomeBrain
-├── Nextcloud          Docker         Files, calendars, contacts
-├── Home Assistant     Docker         Smart-home automation
-├── Vaultwarden        Docker         Password manager
-├── MariaDB            Docker         Nextcloud + Vault database
-├── Pangolin Newt      Docker         Encrypted tunnel (optional)
-├── llama-server       systemd        Local LLM inference (GPU only)
-├── whisper-server     systemd        Speech-to-text (GPU only)
-└── OpenClaw           systemd        AI agent · Telegram (GPU only)
+Nextcloud          Docker     Files, calendars, contacts
+Home Assistant     Docker     Smart-home automation
+Vaultwarden        Docker     Password manager (Bitwarden-compatible)
+MariaDB            Docker     Nextcloud + Vault database
+Pangolin Newt      Docker     Encrypted tunnel            optional
+llama-server       systemd    Local LLM inference         GPU only
+whisper-server     systemd    Speech-to-text              GPU only
+OpenClaw           systemd    AI agent on Telegram        GPU only
 ```
 
-Updates are pinned in [`config/versions.json`](config/versions.json) and applied from the dashboard with a single click.
+Dependency versions are pinned in [`config/versions.json`](config/versions.json) and updated from the dashboard in one click.
+
+**Two profiles, detected automatically.** With an AMD GPU you get **HomeBrain** — the full stack including the AI agent. Without one you get **HomeCloud** — the same private cloud and smart-home hub, no AI, and it runs on ARM or x86_64 alike.
+
+---
+
+## Hardware
+
+| | Reference build |
+|---|---|
+| CPU | AMD Ryzen 5 / Intel i5 or better |
+| RAM | 32 GB |
+| Storage | 512 GB NVMe |
+| GPU | AMD Radeon RX 9060 XT (16 GB VRAM) |
+| OS | Ubuntu 24.04 LTS |
+
+Inference runs on Vulkan via Mesa RADV — no ROCm install required. ~29 tok/s generation, ~750 tok/s prompt processing at 131K context; see [BENCHMARKS.md](docs/BENCHMARKS.md).
+
+HomeCloud is architecture-agnostic. Reference build: Raspberry Pi 5 (8 GB) with an SSD on Raspberry Pi OS Trixie, 64-bit.
+
+---
+
+## Install
+
+```bash
+# Ubuntu 24.04+ / Raspberry Pi OS 64-bit
+curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | sudo bash
+sudo /opt/homebrain/scripts/provision.sh
+sudo reboot
+```
+
+After the reboot, open `http://<server-ip>` and the wizard walks you through deployment mode, passwords, and model selection.
+
+To skip the wizard, pass everything to `provision.sh`:
+
+```bash
+# Remote access via a Pangolin tunnel
+sudo /opt/homebrain/scripts/provision.sh \
+  "<NEWT_ID>" "<NEWT_SECRET>" "<TUNNEL_DOMAIN>" "<PANGOLIN_ENDPOINT>" "<PASSWORD>"
+
+# Local network only
+sudo /opt/homebrain/scripts/provision.sh "<PASSWORD>"
+```
+
+Omit the password and one is generated for you.
 
 ---
 
@@ -133,8 +108,6 @@ Updates are pinned in [`config/versions.json`](config/versions.json) and applied
 | [ROADMAP.md](docs/ROADMAP.md) | Shipped features and what's next |
 | [TESTING.md](docs/TESTING.md) | E2E verification checklist |
 | [AGENTS.md](AGENTS.md) | Contributor conventions for AI-assisted development |
-
----
 
 ## License
 
