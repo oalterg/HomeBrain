@@ -762,6 +762,29 @@ configure_nextcloud_redis() {
     log_info "Redis configuration applied successfully."
 }
 
+# --- Backup storage ---------------------------------------------------------
+# Make $BACKUP_MOUNTDIR usable, honouring the no-drive mode.
+#
+# BACKUP_INTERNAL=true means BACKUP_MOUNTDIR is a path on the root disk (the
+# archives are the staging set for the off-site mirror, which is the actual
+# protection there), so "not a mountpoint" is the normal state. Otherwise the
+# mount check is mandatory: a USB drive that fell off must never silently
+# degrade into filling the root disk.
+#
+# backup.sh and restore.sh both need this and used to carry separate copies.
+# They drifted — restore.sh never learned about BACKUP_INTERNAL (added in
+# #123), so no-drive boxes could back up and could never restore. One
+# definition, two callers.
+ensure_backup_dir() {
+    if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
+        mkdir -p "$BACKUP_MOUNTDIR" \
+            || die "Cannot create backup directory $BACKUP_MOUNTDIR."
+    elif ! mountpoint -q "$BACKUP_MOUNTDIR"; then
+        log_info "Attempting to mount $BACKUP_MOUNTDIR..."
+        mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
+    fi
+}
+
 # --- Off-site backup copy ---------------------------------------------------
 # One rclone remote named "offsite", defined entirely by the OFFSITE_* vars
 # from .env — no rclone.conf to manage. Credentials travel via rclone's

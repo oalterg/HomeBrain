@@ -15,13 +15,17 @@ BACKUP_FILE="${1:-}"
 ARG_FLAG="${2:-}"
 
 # --- Prerequisites ---
-if ! mountpoint -q "$BACKUP_MOUNTDIR"; then
-    mount "$BACKUP_MOUNTDIR" || die "Backup drive not mounted."
-fi
+# Shared with backup.sh so the two can't drift again: no-drive boxes
+# (BACKUP_INTERNAL=true) have no mountpoint to check. See common.sh.
+ensure_backup_dir
 
 if [[ -z "$BACKUP_FILE" ]]; then
     # Auto-select latest (plain or encrypted)
-    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 \( -name '*backup*.tar.gz' -o -name '*backup*.tar.gz.gpg' \) -print0 | xargs -0 ls -t | head -n1)"
+    # -r matters: without it, xargs still runs `ls -t` once on empty input,
+    # which lists the CWD and hands back an unrelated filename as the archive
+    # to restore. The -f test below catches a directory, but a regular file in
+    # the CWD would sail straight through into the restore.
+    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 \( -name '*backup*.tar.gz' -o -name '*backup*.tar.gz.gpg' \) -print0 | xargs -0 -r ls -t | head -n1)"
 fi
 
 if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
