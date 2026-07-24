@@ -262,6 +262,35 @@ notification through the notifier that already exists.
 
 ## Phase 5 — data recovery integrity and the agent trust boundary
 
+**Status: implemented and verified on .58 (2026-07-24), branch
+`feat/phase5-recovery-integrity`.** Three parts of the plan below did not
+survive contact with the hardware and shipped differently:
+
+- **5b** planned `rclone --backup-dir` and moving the emergency prune after
+  verification. rclone refuses a `--backup-dir` that overlaps the destination,
+  and the prune cannot move after the write because the space is needed *to*
+  write. Shipped `rclone copy` plus age-based remote retention
+  (`OFFSITE_KEEP_DAYS`), and a `prunable_archives` helper that excludes the
+  newest archive by construction. Simpler and strictly safer than the plan.
+- **5e** was planned on a wrong premise — mine. `approvals.exec` is not a
+  permission gate; it is approval-prompt *forwarding*, and its `mode` enum is
+  `session|targets|both`, so `"always"` was never valid and `enabled: false`
+  would not have granted unattended execution. The real policy is
+  `tools.exec`, shipped as `{"mode": "full"}`. The first attempt combined
+  `mode` with `security`/`ask` and `openclaw config validate` rejected it —
+  that config would have stopped the gateway loading on deploy.
+- **5f** could not take a digest from a running bridge: berlin *is* .58 and has
+  no Proton account, so the profile never starts, and miami is not
+  SSH-reachable. Pinned to `3.19.0-1`, which shares a digest with `:latest` and
+  has not moved since 2025-04-02.
+
+Also corrected: a path deny-list *is* expressible (`tools.deny`, tool names not
+paths), contrary to the Round 2 note — but it remains the wrong instrument,
+because a root-equivalent agent can sudo around it.
+
+Still open from this phase: bare-metal off-site recovery onto new hardware
+(needs wizard UI), and everything under "Also noted, not scheduled".
+
 Scope: Round 2 findings 1–4, 5, and 6. Ordered so that each step lands on a tree where
 the previous one has already removed a way to lose data. 3 before 4 is the one hard
 dependency — there is no point building a restore path from a mirror that deletes
