@@ -1982,7 +1982,11 @@ async function loadBackups() {
             backupIndex[b.name] = b;
             const opt = document.createElement('option');
             opt.value = b.name;
-            opt.innerText = `${b.encrypted ? '🔒 ' : ''}${b.name} (${b.type}, ${b.size})`;
+            // Archives made before the last master-password change need that
+            // old password — say so in the list rather than letting the user
+            // discover it at the passphrase prompt.
+            const stale = b.needs_old_passphrase ? ' — needs previous password' : '';
+            opt.innerText = `${b.encrypted ? '🔒 ' : ''}${b.name} (${b.type}, ${b.size})${stale}`;
             sel.appendChild(opt);
         });
     } catch (e) { /* silent */ }
@@ -2001,11 +2005,15 @@ async function confirmRestore() {
     const payload = { filename: file };
     if (backupIndex[file] && backupIndex[file].encrypted) {
         // Normally decrypts with the current master password. A passphrase is
-        // only needed when the archive predates a password change.
+        // only needed when the archive predates a password change — and we
+        // know which archives those are, so don't make the user guess.
+        const stale = backupIndex[file].needs_old_passphrase;
         const pw = await hbPrompt({
             title: 'Archive passphrase',
-            body: 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.',
-            label: 'Passphrase (optional)',
+            body: stale
+                ? 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.'
+                : 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.',
+            label: stale ? 'Previous master password' : 'Passphrase (optional)',
             type: 'password',
             confirm: 'Restore',
             allowEmpty: true,

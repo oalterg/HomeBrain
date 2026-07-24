@@ -1604,10 +1604,26 @@ def trigger_backup():
     return jsonify({"status": "started"})
 
 
+def backup_epoch():
+    """Epoch of the last master-password rotation, or 0.
+
+    Archives are encrypted with the master password as it was at backup time,
+    so anything older than this needs the PREVIOUS password. Written by
+    rotate_master_password.sh — which is also the recovery-phrase path, where
+    the user by definition no longer has that password.
+    """
+    try:
+        with open("/var/lib/homebrain/backup_epoch.json") as f:
+            return float(json.load(f).get("ts", 0))
+    except Exception:
+        return 0
+
+
 @app.route("/api/backups/list")
 def list_backups():
     backups = []
     storage = backup_storage_dir()
+    epoch = backup_epoch()
     if os.path.exists(storage):
         for f in os.listdir(storage):
             if f.endswith(".tar.gz") or f.endswith(".tar.gz.gpg"):
@@ -1621,9 +1637,15 @@ def list_backups():
                         btype = "System snapshot"
                     else:
                         btype = "Full System"
+                    encrypted = f.endswith(".gpg")
                     backups.append({"name": f, "size": f"{size:.2f} MB",
                                     "type": btype,
-                                    "encrypted": f.endswith(".gpg")})
+                                    "encrypted": encrypted,
+                                    # Only meaningful for encrypted archives:
+                                    # a plaintext one opens regardless.
+                                    "needs_old_passphrase": bool(
+                                        encrypted and epoch
+                                        and os.path.getmtime(path) < epoch)})
                 except:
                     pass
     backups.sort(key=lambda x: x["name"], reverse=True)
@@ -3928,6 +3950,7 @@ def custom_401(e):
       <div id="recovery-view" class="hidden">
         <h1>Recover Access</h1>
         <p class="hint">Enter your recovery phrase and choose a new master password. This resets access to the Dashboard, Nextcloud and Home Assistant — it cannot decrypt individual vault items.</p>
+        <p class="hint"><strong>About your existing backups:</strong> they are sealed with the master password that was in use when each one was made, so they will still need that old password to restore. A fresh backup is taken automatically under your new password as soon as the reset finishes.</p>
         <form id="rf" autocomplete="off">
           <label class="field-label" for="rec-phrase">Recovery phrase</label>
           <textarea id="rec-phrase" name="phrase" placeholder="six words separated by spaces" required autocomplete="off" spellcheck="false"></textarea>
