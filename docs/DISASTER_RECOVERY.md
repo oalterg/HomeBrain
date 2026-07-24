@@ -93,6 +93,22 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
 ---
 
+## Check that your files are actually off-site
+
+An off-site copy that only holds *system snapshots* will restore your settings,
+your Home Assistant config and your vault — but not your Nextcloud files. On the
+Backup page, the ☁️ entries are what you would be restoring from. If every one
+of them says "System snapshot" and none says "Full System", your files are not
+protected against losing the box.
+
+The usual cause was a too-old rclone: versions before 1.64 cannot split a large
+upload into chunks, so a multi-gigabyte archive is sent as a single request and
+the receiving server rejects it with *413 Request Entity Too Large*, while the
+small system snapshots go through fine. HomeBrain now installs a current rclone
+when you enable the off-site copy. If your remote is missing full archives from
+before that fix, run a backup once to seed one — allow plenty of time, since a
+full archive can take many hours to upload.
+
 ## Known limitation
 
 Steps 1–3 have to happen before you can restore, so recovery onto new hardware

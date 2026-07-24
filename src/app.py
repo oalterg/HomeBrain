@@ -1527,12 +1527,19 @@ def backup_offsite():
         update_env_var("OFFSITE_PASS", password)
     update_env_var("OFFSITE_PATH", path)
 
-    if enabled and not shutil.which("rclone"):
+    if enabled:
+        # Not apt: Ubuntu ships rclone 1.60 (2022), which cannot chunk uploads
+        # to Nextcloud and so fails every multi-GB archive with a 413 from the
+        # receiving Apache — leaving an off-site copy that holds the small
+        # system snapshots and none of the user's files. ensure_rclone installs
+        # a pinned current build only when the present one is too old.
         try:
-            subprocess.run(
-                ["apt-get", "install", "-y", "rclone"],
-                check=True, capture_output=True, text=True, timeout=300,
+            r = subprocess.run(
+                ["bash", SCRIPT_UTILITIES, "ensure_rclone"],
+                capture_output=True, text=True, timeout=300,
             )
+            if r.returncode != 0 and not shutil.which("rclone"):
+                return jsonify({"error": "Could not install rclone"}), 500
         except Exception:
             return jsonify({"error": "Could not install rclone"}), 500
     return jsonify({"status": "success"})

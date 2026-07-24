@@ -2269,6 +2269,10 @@ case "${1:-}" in
         load_env
         offsite_list
         ;;
+    ensure_rclone)
+        ensure_rclone "$(jq -r '.rclone.version // empty' \
+            "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
+        ;;
     replica_enable)
         replica_target_enable
         ;;

@@ -923,6 +923,63 @@ offsite_sync() {
         || log_warn "Off-site retention pass failed (copies are safe; remote may grow)."
 }
 
+# Install a chunk-capable rclone, replacing the distro package if needed.
+#
+# Ubuntu ships rclone 1.60.1 (2022), which has no Nextcloud chunked-upload
+# support: it PUTs an archive as one request, and the receiving Nextcloud's
+# Apache rejects anything past its body limit with "413 Request Entity Too
+# Large". Small system snapshots (~68 MB) squeak through, multi-GB full
+# archives never do — so the off-site copy silently ends up holding everything
+# EXCEPT the user's files, which is the one thing it exists to hold.
+# Nextcloud chunking landed in rclone 1.64.
+#
+# Installs to /usr/local/bin, which precedes /usr/bin in PATH, so the distro
+# package can stay where it is.
+RCLONE_MIN_MAJOR=1
+RCLONE_MIN_MINOR=64
+ensure_rclone() {
+    local want_ver="${1:-}"
+    if command -v rclone >/dev/null 2>&1; then
+        local cur major minor
+        cur=$(rclone version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        major="${cur%%.*}"; minor="${cur##*.}"
+        if [[ -n "$cur" ]] && { [[ "$major" -gt "$RCLONE_MIN_MAJOR" ]] || \
+            { [[ "$major" -eq "$RCLONE_MIN_MAJOR" ]] && [[ "$minor" -ge "$RCLONE_MIN_MINOR" ]]; }; }; then
+            return 0
+        fi
+        log_warn "rclone ${cur:-unknown} cannot chunk uploads to Nextcloud (needs >= ${RCLONE_MIN_MAJOR}.${RCLONE_MIN_MINOR}); installing a current build."
+    fi
+
+    local arch url tmp
+    case "$(uname -m)" in
+        x86_64)  arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *) log_warn "No rclone build for $(uname -m)."; return 1 ;;
+    esac
+    if [[ -n "$want_ver" ]]; then
+        url="https://downloads.rclone.org/v${want_ver}/rclone-v${want_ver}-linux-${arch}.zip"
+    else
+        url="https://downloads.rclone.org/rclone-current-linux-${arch}.zip"
+    fi
+
+    tmp=$(mktemp -d) || return 1
+    if ! curl -fsSL --retry 3 -o "$tmp/rclone.zip" "$url"; then
+        rm -rf "$tmp"; log_warn "Could not download rclone from $url"; return 1
+    fi
+    if ! unzip -q -o "$tmp/rclone.zip" -d "$tmp"; then
+        rm -rf "$tmp"; log_warn "Could not unpack the rclone download."; return 1
+    fi
+    local bin
+    bin=$(find "$tmp" -type f -name rclone | head -1)
+    if [[ -z "$bin" ]]; then
+        rm -rf "$tmp"; log_warn "No rclone binary in the download."; return 1
+    fi
+    install -m 0755 -o root -g root "$bin" /usr/local/bin/rclone
+    rm -rf "$tmp"
+    hash -r 2>/dev/null || true
+    log_info "Installed rclone $(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}') to /usr/local/bin."
+}
+
 # HomeBrain archives on the remote, as rclone lsjson (Name/Size/ModTime).
 # The dashboard renders this alongside the local list so the off-site copy is
 # visible — and therefore restorable — without a shell.
