@@ -300,6 +300,14 @@ fi
 systemctl enable --now homebrain-health.timer 2>/dev/null || true
 # Same for the off-site resume timer on boxes provisioned before it existed.
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
+# Passwordless sudo for the agent. Only ensure_homebrain_user installs this,
+# and update.sh never calls it — it runs `docker compose up` directly rather
+# than deploy.sh. Without this an updated box gets the openclaw side of the
+# change (tools.exec=full, applied by refresh_openclaw above, so the agent
+# stops asking for approval) while sudo still demands a password — every
+# privileged command the agent tries then fails. Half-applied is worse than
+# either end state. Idempotent; validates with visudo before installing.
+ensure_homebrain_sudo || log_warn "Could not configure passwordless sudo for ${HOMEBRAIN_USER}."
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
 
