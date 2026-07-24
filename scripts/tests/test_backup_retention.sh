@@ -164,6 +164,59 @@ else
     bad "unrelated remote file untouched by retention (deleted it)"
 fi
 
+echo "== the off-site copy can be listed and fetched back =="
+# The gap this closes: rclone pushed and nothing pulled, so the one scenario
+# off-site backups exist for (local drive dead) needed a shell.
+listing="$(offsite_list 2>/dev/null)"
+if echo "$listing" | grep -q 'homebrain_backup_2026-07-02.tar.gz.gpg'; then
+    ok "offsite_list reports a remote archive"
+else
+    bad "offsite_list reports a remote archive (got: ${listing:0:120})"
+fi
+if echo "$listing" | grep -q 'not-ours.txt'; then
+    bad "offsite_list excludes foreign files (it listed one)"
+else
+    ok "offsite_list excludes foreign files"
+fi
+
+# Local drive dead: wipe local, fetch one named archive back, compare content.
+rm -f "$TMP"/local/*.tar.gz.gpg
+if offsite_fetch "homebrain_backup_2026-07-02.tar.gz.gpg" "$TMP/local" >/dev/null 2>&1; then
+    ok "offsite_fetch succeeds"
+else
+    bad "offsite_fetch succeeds (returned non-zero)"
+fi
+if [ "$(cat "$TMP/local/homebrain_backup_2026-07-02.tar.gz.gpg" 2>/dev/null)" = "payload-2026-07-02" ]; then
+    ok "fetched archive is byte-identical to what was backed up"
+else
+    bad "fetched archive is byte-identical to what was backed up"
+fi
+# Exactly one archive, not the whole remote.
+fetched=$(find "$TMP/local" -name '*.tar.gz.gpg' | wc -l | tr -d ' ')
+if [ "$fetched" = "1" ]; then
+    ok "fetch pulls only the named archive"
+else
+    bad "fetch pulls only the named archive (got $fetched)"
+fi
+
+if [ "$(offsite_size 'homebrain_backup_2026-07-02.tar.gz.gpg' 2>/dev/null)" = "19" ]; then
+    ok "offsite_size reports the remote byte count"
+else
+    bad "offsite_size reports the remote byte count (got '$(offsite_size 'homebrain_backup_2026-07-02.tar.gz.gpg' 2>/dev/null)', expected 19)"
+fi
+
+echo "== restore.sh accepts --from-offsite in any argument order =="
+if grep -q -- '--from-offsite' "$SCRIPT_DIR/../restore.sh"; then
+    ok "restore.sh handles --from-offsite"
+else
+    bad "restore.sh handles --from-offsite (flag not found)"
+fi
+if grep -q 'ARG_FLAG' "$SCRIPT_DIR/../restore.sh"; then
+    bad "restore.sh still matches --no-prompt positionally as \$2"
+else
+    ok "restore.sh parses flags positionally-independently"
+fi
+
 echo "== offsite_sync no longer uses a deletion-mirroring sync =="
 if grep -qE '^\s*rclone sync ' "$COMMON"; then
     bad "common.sh has an rclone sync again"

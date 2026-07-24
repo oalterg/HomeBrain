@@ -15,7 +15,7 @@ import tempfile
 import platform
 import requests
 import fcntl
-from datetime import timedelta
+from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort, stream_with_context
 import migration
 import integrations
@@ -1652,6 +1652,63 @@ def list_backups():
     return jsonify(backups)
 
 
+@app.route("/api/backups/offsite/list")
+@limiter.limit("10 per minute")
+def list_offsite_backups():
+    """Archives sitting on the off-site remote.
+
+    Without this the off-site copy is write-only from the dashboard's point of
+    view: rclone pushed, nothing listed it, and the one scenario it exists for
+    (local drive dead) needed a shell to recover from.
+    """
+    env = get_env_config()
+    if env.get("OFFSITE_ENABLED", "false") != "true":
+        return jsonify([])
+    try:
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "offsite_list"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "The off-site remote did not respond."}), 504
+    if result.returncode != 0:
+        return jsonify({"error": "Could not list the off-site remote."}), 502
+
+    epoch = backup_epoch()
+    out = []
+    try:
+        for entry in json.loads(result.stdout or "[]"):
+            name = entry.get("Name", "")
+            if not name.endswith((".tar.gz", ".tar.gz.gpg")):
+                continue
+            size = entry.get("Size", 0) / (1024 * 1024)
+            if "data_only" in name:
+                btype = "Data Only"
+            elif "_system_" in name:
+                btype = "System snapshot"
+            else:
+                btype = "Full System"
+            encrypted = name.endswith(".gpg")
+            # ModTime is RFC3339; compare against the rotation epoch the same
+            # way the local list does.
+            stale = False
+            if encrypted and epoch:
+                try:
+                    mod = datetime.fromisoformat(
+                        entry.get("ModTime", "").replace("Z", "+00:00"))
+                    stale = mod.timestamp() < epoch
+                except Exception:
+                    stale = False
+            out.append({"name": name, "size": f"{size:.2f} MB", "type": btype,
+                        "encrypted": encrypted, "needs_old_passphrase": stale,
+                        "remote": True})
+    except Exception as e:
+        logging.warning(f"Could not parse off-site listing: {e}")
+        return jsonify({"error": "Could not read the off-site listing."}), 502
+    out.sort(key=lambda x: x["name"], reverse=True)
+    return jsonify(out)
+
+
 @app.route("/api/restore", methods=["POST"])
 @limiter.limit("3 per minute")
 def trigger_restore():
@@ -1662,7 +1719,18 @@ def trigger_restore():
     if not filename or "/" in filename:
         return jsonify({"error": "Invalid filename"}), 400
 
-    full_path = os.path.join(backup_storage_dir(), filename)
+    source = (request.json.get("source") or "local").lower()
+    if source not in ("local", "offsite"):
+        return jsonify({"error": "Invalid source"}), 400
+
+    # For an off-site restore restore.sh fetches the archive itself and then
+    # runs the ordinary path, so the only difference here is what we hand it.
+    if source == "offsite":
+        target = filename
+        offsite_flag = " --from-offsite"
+    else:
+        target = os.path.join(backup_storage_dir(), filename)
+        offsite_flag = ""
 
     # Optional passphrase for encrypted archives made under a DIFFERENT master
     # password (pre-rotation or from another box). Passed via a root-only temp
@@ -1679,8 +1747,8 @@ def trigger_restore():
 
     # restore.sh handles auto-detection of content (HA vs NC vs DB)
     # Quote full path
-    cmd = f"{pass_env}bash {SCRIPT_RESTORE} {shlex.quote(full_path)} --no-prompt >> {LOG_FILES['restore']} 2>&1"
-    task_name = "System Restore"
+    cmd = f"{pass_env}bash {SCRIPT_RESTORE} {shlex.quote(target)} --no-prompt{offsite_flag} >> {LOG_FILES['restore']} 2>&1"
+    task_name = "Off-site Restore" if source == "offsite" else "System Restore"
 
     threading.Thread(
         target=run_background_task, args=(task_name, cmd, "restore")

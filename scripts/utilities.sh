@@ -2248,6 +2248,11 @@ case "${1:-}" in
     offsite_test)
         offsite_test
         ;;
+    offsite_list)
+        # Raw rclone lsjson on stdout for the dashboard's remote backup list.
+        load_env
+        offsite_list
+        ;;
     replica_enable)
         replica_target_enable
         ;;

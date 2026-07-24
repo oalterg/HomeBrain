@@ -877,3 +877,38 @@ offsite_sync() {
         --include '/nextcloud_backup*.tar.gz*' 2>/dev/null \
         || log_warn "Off-site retention pass failed (copies are safe; remote may grow)."
 }
+
+# HomeBrain archives on the remote, as rclone lsjson (Name/Size/ModTime).
+# The dashboard renders this alongside the local list so the off-site copy is
+# visible — and therefore restorable — without a shell.
+offsite_list() {
+    command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    offsite_env || return 1
+    rclone lsjson "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+        --files-only --max-depth 1 \
+        --include '/homebrain_backup*.tar.gz*' \
+        --include '/nextcloud_backup*.tar.gz*'
+}
+
+# Pull exactly one archive down into $2. $1 is a bare filename, never a path:
+# the include pattern is anchored so a crafted value cannot widen this into
+# "fetch the entire remote", and the caller (restore.sh) basenames it first.
+offsite_fetch() {
+    local name="$1" dest="$2"
+    command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    offsite_env || return 1
+    rclone copy "offsite:${OFFSITE_PATH:-homebrain-backups}" "$dest" \
+        --max-depth 1 --include "/${name}"
+}
+
+# Size in bytes of one remote archive, or empty if it isn't there. Used to
+# refuse a fetch that would not fit — filling the root disk of a box the owner
+# cannot SSH into is exactly the failure this phase exists to prevent.
+offsite_size() {
+    local name="$1"
+    command -v rclone >/dev/null || return 1
+    offsite_env || return 1
+    rclone size "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+        --max-depth 1 --include "/${name}" --json 2>/dev/null \
+        | jq -r 'select(.count > 0) | .bytes' 2>/dev/null
+}
