@@ -1975,14 +1975,35 @@ async function loadBackups() {
     try {
         const res = await fetch('/api/backups/list', { credentials: 'include' });
         const list = await res.json();
+
+        // Archives that exist only off-site — the drive-is-dead case. Fetched
+        // separately because the remote can be slow or down, and that must not
+        // stop the local list from rendering.
+        let remote = [];
+        try {
+            const rres = await fetch('/api/backups/offsite/list', { credentials: 'include' });
+            if (rres.ok) {
+                const rlist = await rres.json();
+                if (Array.isArray(rlist)) {
+                    const localNames = new Set(list.map(b => b.name));
+                    remote = rlist.filter(b => !localNames.has(b.name));
+                }
+            }
+        } catch (e) { /* off-site listing is best-effort */ }
+
         const sel = document.getElementById('backup-list');
         sel.innerHTML = '';
         backupIndex = {};
-        list.forEach(b => {
+        list.concat(remote).forEach(b => {
             backupIndex[b.name] = b;
             const opt = document.createElement('option');
             opt.value = b.name;
-            opt.innerText = `${b.encrypted ? '🔒 ' : ''}${b.name} (${b.type}, ${b.size})`;
+            // Archives made before the last master-password change need that
+            // old password — say so in the list rather than letting the user
+            // discover it at the passphrase prompt.
+            const stale = b.needs_old_passphrase ? ' — needs previous password' : '';
+            const where = b.remote ? '☁️ ' : '';
+            opt.innerText = `${where}${b.encrypted ? '🔒 ' : ''}${b.name} (${b.type}, ${b.size})${stale}`;
             sel.appendChild(opt);
         });
     } catch (e) { /* silent */ }
@@ -1991,21 +2012,29 @@ async function loadBackups() {
 async function confirmRestore() {
     const file = document.getElementById('backup-list').value;
     if (!file) return;
+    const isRemote = !!(backupIndex[file] && backupIndex[file].remote);
     if (!await hbConfirm({
         title: 'Restore this snapshot?',
         body: `All current data is wiped and replaced with ${file}.`,
-        detail: 'This cannot be undone.',
+        detail: isRemote
+            ? 'This archive lives only on your off-site remote. It is downloaded first, which can take a long time on a slow connection. This cannot be undone.'
+            : 'This cannot be undone.',
         confirm: 'Restore', danger: true, requireText: 'RESTORE',
     })) return;
 
     const payload = { filename: file };
+    if (isRemote) payload.source = 'offsite';
     if (backupIndex[file] && backupIndex[file].encrypted) {
         // Normally decrypts with the current master password. A passphrase is
-        // only needed when the archive predates a password change.
+        // only needed when the archive predates a password change — and we
+        // know which archives those are, so don't make the user guess.
+        const stale = backupIndex[file].needs_old_passphrase;
         const pw = await hbPrompt({
             title: 'Archive passphrase',
-            body: 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.',
-            label: 'Passphrase (optional)',
+            body: stale
+                ? 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.'
+                : 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.',
+            label: stale ? 'Previous master password' : 'Passphrase (optional)',
             type: 'password',
             confirm: 'Restore',
             allowEmpty: true,

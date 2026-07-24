@@ -84,18 +84,8 @@ esac
 # --- Main Logic ---
 log_info "=== Starting Backup [Strategy: $STRATEGY]: $(date) ==="
 
-# 1. Mount Check
-# BACKUP_INTERNAL=true (with BACKUP_MOUNTDIR pointing at a root-disk path)
-# is the no-drive mode: archives live on the internal disk purely as the
-# staging set for the off-site mirror — the mirror is the actual protection.
-# The mount check stays mandatory otherwise, so a fallen-off USB drive can
-# never silently fill the root disk.
-if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
-    mkdir -p "$BACKUP_MOUNTDIR"
-elif ! mountpoint -q "$BACKUP_MOUNTDIR"; then
-    log_info "Attempting to mount $BACKUP_MOUNTDIR..."
-    mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
-fi
+# 1. Mount Check (shared with restore.sh — see common.sh:ensure_backup_dir)
+ensure_backup_dir
 
 # Ensure backup dir is writable
 if [ ! -w "$BACKUP_MOUNTDIR" ]; then
@@ -136,13 +126,16 @@ log_info "[INFO] Estimated uncompressed: $((ESTIMATED_UNCOMPRESSED_KB / 1024)) M
 while [ "$AVAILABLE_KB" -lt "$ESTIMATED_PEAK_KB" ]; do
     log_warn "Insufficient space (Avail: $((AVAILABLE_KB/1024)) MB, Need: $((ESTIMATED_PEAK_KB/1024)) MB). searching for old backups to purge..."
     
-    # Find oldest backup, sort by timestamp asc (oldest on top)
-    OLDEST_BACKUP=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) -printf "%T@ %p\n" | sort -n | head -n1 | awk '{print $2}')
-    
-    if [[ -z "$OLDEST_BACKUP" ]]; then
-        die "CRITICAL: No old backups remain to delete, and space is still insufficient. Aborting."
+    # Candidates exclude the newest archive by construction — see
+    # common.sh:prunable_archives. Empty means we may not free any more space.
+    mapfile -t PRUNABLE < <(prunable_archives "$BACKUP_MOUNTDIR")
+
+    if [[ "${#PRUNABLE[@]}" -eq 0 ]]; then
+        die "CRITICAL: Space is insufficient and only one backup remains. Refusing to delete the last known-good archive — free space on $BACKUP_MOUNTDIR or fit a larger drive."
     fi
-    
+
+    OLDEST_BACKUP="${PRUNABLE[0]}"
+
     log_info "Emergency Prune: Deleting $OLDEST_BACKUP to free space."
     rm -f "$OLDEST_BACKUP"
     sync # Ensure free space is updated in kernel
@@ -475,17 +468,13 @@ log_info "=== Backup Complete: $ARCHIVE_PATH ==="
 # script runs — update.sh's pre-update snapshot would otherwise block the
 # whole update behind a multi-hour WAN mirror. The scheduled backup mirrors.
 if [[ "${OFFSITE_ENABLED:-false}" == "true" && "$SKIP_OFFSITE" != "true" ]]; then
-    OFFSITE_STATE="/var/lib/homebrain/offsite.json"
-    mkdir -p /var/lib/homebrain
-    log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
-    if offsite_sync; then
-        printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE}.tmp" \
-            && mv "${OFFSITE_STATE}.tmp" "$OFFSITE_STATE"
-        log_info "Off-site mirror complete."
-    else
-        printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE}.tmp" \
-            && mv "${OFFSITE_STATE}.tmp" "$OFFSITE_STATE"
-        log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."
-    fi
+    # Release the BACKUP lock before uploading. The local backup is finished;
+    # everything below is a WAN transfer that can run for tens of hours on a
+    # home uplink with multi-GB archives. Holding the backup lock for that long
+    # blocks the next scheduled backup and makes update.sh's pre-update
+    # snapshot fail — which is why --skip-offsite had to exist at all.
+    # offsite_mirror takes its own lock, so two mirrors still cannot overlap.
+    flock -u 200 2>/dev/null || true
+    offsite_mirror || true
 fi
 # Lock file removed by trap

@@ -147,6 +147,48 @@ ensure_homebrain_user() {
             usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
         fi
     done
+    ensure_homebrain_sudo
+}
+
+# Passwordless sudo for the homebrain user.
+#
+# This looks like a widening and is not one. homebrain is in the `docker` group
+# (above), and any docker group member can `docker run -v /:/host` — root, by a
+# longer route. The account had a locked password and no sudoers rule, so the
+# agent that HomeBrain's "you never need a shell" promise depends on could not
+# run a privileged command at all, while still being one container away from
+# root. That gap bought no safety and pushed the agent toward the escape hatch.
+#
+# Make it explicit instead. The real boundary is the Telegram allowFrom pairing
+# and the loopback-bound gateway — see the trust-boundary note in AGENTS.md.
+ensure_homebrain_sudo() {
+    local dest="/etc/sudoers.d/homebrain"
+    local tmp
+    tmp="$(mktemp)" || return 0
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${HOMEBRAIN_USER}" > "$tmp"
+    # Never install an unvalidated sudoers fragment: a malformed file in
+    # /etc/sudoers.d can lock every user out of sudo on the whole box.
+    if visudo -c -f "$tmp" >/dev/null 2>&1; then
+        install -m 0440 -o root -g root "$tmp" "$dest"
+        log_info "Passwordless sudo enabled for ${HOMEBRAIN_USER}."
+    else
+        log_warn "Generated sudoers fragment failed validation — not installed."
+    fi
+    rm -f "$tmp"
+}
+
+# .env holds MASTER_PASSWORD, every service credential, the vault admin token
+# and the off-site password. It must be root-only.
+#
+# On .58 it was found homebrain:homebrain 0600 — owned by the very account the
+# agent runs as, so reading the master password needed nothing more than `cat`.
+# No code path in the tree explains that, so assert the state rather than hunt
+# the cause. This does not contain a root-equivalent agent; it restores the
+# intended asymmetry and still stops a container escape landing as www-data.
+harden_env_file() {
+    [[ -f "$ENV_FILE" ]] || return 0
+    chown root:root "$ENV_FILE" 2>/dev/null || true
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
 # --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
@@ -240,6 +282,9 @@ update_env_var() {
         log_warn ".env file not found, creating new one."
         echo "${key}='${value}'" > "$ENV_FILE"
     fi
+    # Every bash write path funnels through here, and the shell ones create the
+    # file under the default umask (0644). Re-assert after each write.
+    harden_env_file
 }
 
 # Read a single value out of .env. Deliberately takes the LAST match: the
@@ -762,6 +807,45 @@ configure_nextcloud_redis() {
     log_info "Redis configuration applied successfully."
 }
 
+# --- Backup storage ---------------------------------------------------------
+# Make $BACKUP_MOUNTDIR usable, honouring the no-drive mode.
+#
+# BACKUP_INTERNAL=true means BACKUP_MOUNTDIR is a path on the root disk (the
+# archives are the staging set for the off-site mirror, which is the actual
+# protection there), so "not a mountpoint" is the normal state. Otherwise the
+# mount check is mandatory: a USB drive that fell off must never silently
+# degrade into filling the root disk.
+#
+# backup.sh and restore.sh both need this and used to carry separate copies.
+# They drifted — restore.sh never learned about BACKUP_INTERNAL (added in
+# #123), so no-drive boxes could back up and could never restore. One
+# definition, two callers.
+# Archives in $1 that the emergency prune may delete, oldest first.
+#
+# Deliberately excludes the newest archive, always. The prune runs *before*
+# this backup exists, and this backup can still fail — a bad dump, or a failed
+# verify, which deletes the new archive. Freeing space by deleting the only
+# known-good copy leaves the user with less protection than they started with,
+# so the last one is never a candidate. Empty output means "nothing may be
+# pruned", which the caller must treat as a hard stop, not as "nothing found".
+prunable_archives() {
+    local dir="$1"
+    find "$dir" -maxdepth 1 -type f \
+        \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) \
+        -printf "%T@ %p\n" 2>/dev/null \
+        | sort -n | awk '{print $2}' | sed '$d'
+}
+
+ensure_backup_dir() {
+    if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
+        mkdir -p "$BACKUP_MOUNTDIR" \
+            || die "Cannot create backup directory $BACKUP_MOUNTDIR."
+    elif ! mountpoint -q "$BACKUP_MOUNTDIR"; then
+        log_info "Attempting to mount $BACKUP_MOUNTDIR..."
+        mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
+    fi
+}
+
 # --- Off-site backup copy ---------------------------------------------------
 # One rclone remote named "offsite", defined entirely by the OFFSITE_* vars
 # from .env — no rclone.conf to manage. Credentials travel via rclone's
@@ -810,12 +894,170 @@ offsite_env() {
 # what to keep, so a plain filtered sync gives remote retention for free.
 offsite_sync() {
     command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    # At point of use, because that is the only place that reaches every box.
+    # app.py calls ensure_rclone when off-site settings are SAVED, which a box
+    # that already had off-site configured never does again — so the boxes most
+    # in need of the chunking fix would be exactly the ones that never got it,
+    # and their mirrors would go on failing with 413 forever. No-ops in
+    # milliseconds once rclone is current.
+    ensure_rclone "$(jq -r '.rclone.version // empty' \
+        "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")" || true
     offsite_env || return 1
+    local remote="offsite:${OFFSITE_PATH:-homebrain-backups}"
+
+    # copy, NOT sync. sync mirrors deletions, so anything that removes a local
+    # archive — a failed drive, ransomware, the emergency prune in backup.sh —
+    # erased the off-site copy on the very next run. That is how a backup stops
+    # being a backup: the one event the off-site copy exists for was also the
+    # event that destroyed it. copy only ever adds.
+    #
     # Leading / anchors the patterns to the drive's top level and --max-depth
     # stops recursion — same scope as local retention's `find -maxdepth 1`.
     # Without both, archives inside subdirectories would get mirrored too.
-    rclone sync "$BACKUP_MOUNTDIR" "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+    rclone copy "$BACKUP_MOUNTDIR" "$remote" \
         --max-depth 1 \
         --include '/homebrain_backup*.tar.gz*' \
+        --include '/nextcloud_backup*.tar.gz*' || return 1
+
+    # Bound the remote on its own schedule instead of tracking local state, so
+    # a local deletion can never propagate. Archives are encrypted at rest, so
+    # a longer window costs only space. Same include patterns: never touch
+    # anything on the remote that HomeBrain did not put there.
+    rclone delete "$remote" \
+        --min-age "${OFFSITE_KEEP_DAYS:-90}d" \
+        --max-depth 1 \
+        --include '/homebrain_backup*.tar.gz*' \
+        --include '/nextcloud_backup*.tar.gz*' 2>/dev/null \
+        || log_warn "Off-site retention pass failed (copies are safe; remote may grow)."
+}
+
+# Install a chunk-capable rclone, replacing the distro package if needed.
+#
+# Ubuntu ships rclone 1.60.1 (2022), which has no Nextcloud chunked-upload
+# support: it PUTs an archive as one request, and the receiving Nextcloud's
+# Apache rejects anything past its body limit with "413 Request Entity Too
+# Large". Small system snapshots (~68 MB) squeak through, multi-GB full
+# archives never do — so the off-site copy silently ends up holding everything
+# EXCEPT the user's files, which is the one thing it exists to hold.
+# Nextcloud chunking landed in rclone 1.64.
+#
+# Installs to /usr/local/bin, which precedes /usr/bin in PATH, so the distro
+# package can stay where it is.
+RCLONE_MIN_MAJOR=1
+RCLONE_MIN_MINOR=64
+ensure_rclone() {
+    local want_ver="${1:-}"
+    if command -v rclone >/dev/null 2>&1; then
+        local cur major minor
+        cur=$(rclone version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+        major="${cur%%.*}"; minor="${cur##*.}"
+        if [[ -n "$cur" ]] && { [[ "$major" -gt "$RCLONE_MIN_MAJOR" ]] || \
+            { [[ "$major" -eq "$RCLONE_MIN_MAJOR" ]] && [[ "$minor" -ge "$RCLONE_MIN_MINOR" ]]; }; }; then
+            return 0
+        fi
+        log_warn "rclone ${cur:-unknown} cannot chunk uploads to Nextcloud (needs >= ${RCLONE_MIN_MAJOR}.${RCLONE_MIN_MINOR}); installing a current build."
+    fi
+
+    # Installing needs root. Bail before spending a download we cannot use —
+    # this also keeps the function inert for unprivileged callers and tests.
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        log_warn "rclone needs updating but this is not running as root — skipping."
+        return 1
+    fi
+
+    local arch url tmp
+    case "$(uname -m)" in
+        x86_64)  arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *) log_warn "No rclone build for $(uname -m)."; return 1 ;;
+    esac
+    if [[ -n "$want_ver" ]]; then
+        url="https://downloads.rclone.org/v${want_ver}/rclone-v${want_ver}-linux-${arch}.zip"
+    else
+        url="https://downloads.rclone.org/rclone-current-linux-${arch}.zip"
+    fi
+
+    tmp=$(mktemp -d) || return 1
+    if ! curl -fsSL --retry 3 -o "$tmp/rclone.zip" "$url"; then
+        rm -rf "$tmp"; log_warn "Could not download rclone from $url"; return 1
+    fi
+    if ! unzip -q -o "$tmp/rclone.zip" -d "$tmp"; then
+        rm -rf "$tmp"; log_warn "Could not unpack the rclone download."; return 1
+    fi
+    local bin
+    bin=$(find "$tmp" -type f -name rclone | head -1)
+    if [[ -z "$bin" ]]; then
+        rm -rf "$tmp"; log_warn "No rclone binary in the download."; return 1
+    fi
+    install -m 0755 -o root -g root "$bin" /usr/local/bin/rclone
+    rm -rf "$tmp"
+    hash -r 2>/dev/null || true
+    log_info "Installed rclone $(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}') to /usr/local/bin."
+}
+
+OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"
+OFFSITE_LOCK_FILE="/var/run/homebrain-offsite.lock"
+
+# Run the mirror under the off-site lock and record the outcome.
+#
+# Shared by backup.sh (right after a backup) and homebrain-offsite.timer (on
+# boot and hourly). Both need identical locking and identical state-writing —
+# the health check reads that state file, so two copies of this logic would
+# eventually disagree about whether the off-site copy is healthy.
+#
+# Returns non-zero only when a mirror ran and failed; a skip because another
+# mirror holds the lock is success.
+offsite_mirror() {
+    mkdir -p /var/lib/homebrain
+    exec 201>"$OFFSITE_LOCK_FILE"
+    if ! flock -n 201; then
+        log_info "An off-site mirror is already running — leaving it to finish."
+        return 0
+    fi
+    log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
+    if offsite_sync; then
+        printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
+            && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+        log_info "Off-site mirror complete."
+        return 0
+    fi
+    printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
+        && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+    log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."
+    return 1
+}
+
+# HomeBrain archives on the remote, as rclone lsjson (Name/Size/ModTime).
+# The dashboard renders this alongside the local list so the off-site copy is
+# visible — and therefore restorable — without a shell.
+offsite_list() {
+    command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    offsite_env || return 1
+    rclone lsjson "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+        --files-only --max-depth 1 \
+        --include '/homebrain_backup*.tar.gz*' \
         --include '/nextcloud_backup*.tar.gz*'
+}
+
+# Pull exactly one archive down into $2. $1 is a bare filename, never a path:
+# the include pattern is anchored so a crafted value cannot widen this into
+# "fetch the entire remote", and the caller (restore.sh) basenames it first.
+offsite_fetch() {
+    local name="$1" dest="$2"
+    command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    offsite_env || return 1
+    rclone copy "offsite:${OFFSITE_PATH:-homebrain-backups}" "$dest" \
+        --max-depth 1 --include "/${name}"
+}
+
+# Size in bytes of one remote archive, or empty if it isn't there. Used to
+# refuse a fetch that would not fit — filling the root disk of a box the owner
+# cannot SSH into is exactly the failure this phase exists to prevent.
+offsite_size() {
+    local name="$1"
+    command -v rclone >/dev/null || return 1
+    offsite_env || return 1
+    rclone size "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+        --max-depth 1 --include "/${name}" --json 2>/dev/null \
+        | jq -r 'select(.count > 0) | .bytes' 2>/dev/null
 }

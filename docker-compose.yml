@@ -159,7 +159,10 @@ services:
     # and SMTP on :12025 on localhost; the email MCP server connects there.
     profiles:
       - proton-bridge
-    image: shenxn/protonmail-bridge:latest
+    # Pinned like every other image in this stack. This one handles mail
+    # credentials and was the only :latest left, so an upstream push could
+    # swap it under a running box on the next pull.
+    image: shenxn/protonmail-bridge:${PROTON_BRIDGE_TAG:-3.19.0-1}
     restart: unless-stopped
     ports:
       - "127.0.0.1:12143:143"

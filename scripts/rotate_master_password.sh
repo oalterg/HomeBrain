@@ -120,6 +120,20 @@ update_env_var "MASTER_PASSWORD" "$NEW_PASS"
 update_env_var "MANAGER_PASSWORD" "$NEW_PASS"
 log_info "MASTER_PASSWORD / MANAGER_PASSWORD updated."
 
+# Backups are encrypted with the master password AS IT WAS AT BACKUP TIME
+# (backup.sh: gpg stores the s2k salt per archive), so every existing archive
+# now needs the OLD password. That is survivable for a deliberate change — the
+# user still knows it — but this script is also the recovery-phrase path, whose
+# entire premise is that they have forgotten it. Record when the boundary moved
+# so the dashboard can mark which archives predate it, instead of leaving the
+# user to guess in a passphrase prompt.
+mkdir -p /var/lib/homebrain
+EPOCH_FILE="/var/lib/homebrain/backup_epoch.json"
+printf '{"ts": %d, "rotated_at": "%s"}\n' \
+    "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${EPOCH_FILE}.tmp" \
+    && mv "${EPOCH_FILE}.tmp" "$EPOCH_FILE"
+log_info "Backup epoch recorded — archives older than now need the previous password."
+
 # --- 5. Re-derive Vault admin token (BEST-EFFORT) --------------------------
 # ADMIN_TOKEN is an env var the vaultwarden container reads at start, so a
 # running container must be recreated to pick up the new .env value.
@@ -163,5 +177,21 @@ fi
 # dashboard only rewrites it on a Connections "Apply", so without this the
 # agent's homebrain-self__* tools 401 until someone happens to click that.
 refresh_self_token "$NEW_PASS"
+
+# --- 8. Fresh backup under the NEW password ---------------------------------
+# Without this the box can sit indefinitely with zero archives the user can
+# actually open: every existing one is sealed with the old password, and after
+# a recovery-phrase reset that password is gone for good. Detached with its own
+# session and fds so the rotation task returns immediately — a full backup can
+# run for hours, and the caller (the dashboard's background task) waits on the
+# pipe. backup.sh writes its own log and takes the backup lock, so a collision
+# with a scheduled run is handled there.
+if [[ -x "$SCRIPT_DIR/backup.sh" ]] || [[ -f "$SCRIPT_DIR/backup.sh" ]]; then
+    log_info "Starting a full backup under the new password (detached)."
+    nohup setsid bash "$SCRIPT_DIR/backup.sh" --strategy full >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+else
+    log_warn "backup.sh not found — take a backup manually; existing archives need the OLD password."
+fi
 
 log_info "=== Master password rotation complete ==="

@@ -1,0 +1,15 @@
+[Unit]
+Description=Resume an interrupted HomeBrain off-site copy
+
+[Timer]
+# After boot: pick up a mirror that a restart cut short.
+OnBootSec=10min
+# Then hourly, so an interruption costs an hour rather than waiting for the
+# next scheduled backup — which on a weekly schedule could be six days away.
+# Each firing is a no-op when the remote is already current, and the off-site
+# lock means a firing during a long upload does nothing.
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

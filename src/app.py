@@ -15,7 +15,7 @@ import tempfile
 import platform
 import requests
 import fcntl
-from datetime import timedelta
+from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort, stream_with_context
 import migration
 import integrations
@@ -218,6 +218,27 @@ log_file = LOG_FILES["manager"]
 
 # --- Security: Factory Auth ---
 SECRET_KEY_FILE = f"{INSTALL_DIR}/.secret_key"
+
+
+def harden_env_file():
+    """Assert .env is root-only at every manager start.
+
+    It holds MASTER_PASSWORD, every service credential, the vault admin token
+    and the off-site password. On .58 it was found owned by `homebrain` — the
+    account the AI agent runs as — so reading the master password took nothing
+    more than `cat`. No code path in the tree explains that, so assert the end
+    state rather than hunt the cause. Mirrors common.sh:harden_env_file for the
+    bash side.
+    """
+    try:
+        if os.path.exists(ENV_FILE):
+            os.chown(ENV_FILE, 0, 0)
+            os.chmod(ENV_FILE, 0o600)
+    except Exception as e:
+        logging.warning(f"Could not harden {ENV_FILE}: {e}")
+
+
+harden_env_file()
 
 def load_persistent_secret_key():
     """Ensures sessions remain valid across service restarts."""
@@ -1506,12 +1527,19 @@ def backup_offsite():
         update_env_var("OFFSITE_PASS", password)
     update_env_var("OFFSITE_PATH", path)
 
-    if enabled and not shutil.which("rclone"):
+    if enabled:
+        # Not apt: Ubuntu ships rclone 1.60 (2022), which cannot chunk uploads
+        # to Nextcloud and so fails every multi-GB archive with a 413 from the
+        # receiving Apache — leaving an off-site copy that holds the small
+        # system snapshots and none of the user's files. ensure_rclone installs
+        # a pinned current build only when the present one is too old.
         try:
-            subprocess.run(
-                ["apt-get", "install", "-y", "rclone"],
-                check=True, capture_output=True, text=True, timeout=300,
+            r = subprocess.run(
+                ["bash", SCRIPT_UTILITIES, "ensure_rclone"],
+                capture_output=True, text=True, timeout=300,
             )
+            if r.returncode != 0 and not shutil.which("rclone"):
+                return jsonify({"error": "Could not install rclone"}), 500
         except Exception:
             return jsonify({"error": "Could not install rclone"}), 500
     return jsonify({"status": "success"})
@@ -1604,10 +1632,26 @@ def trigger_backup():
     return jsonify({"status": "started"})
 
 
+def backup_epoch():
+    """Epoch of the last master-password rotation, or 0.
+
+    Archives are encrypted with the master password as it was at backup time,
+    so anything older than this needs the PREVIOUS password. Written by
+    rotate_master_password.sh — which is also the recovery-phrase path, where
+    the user by definition no longer has that password.
+    """
+    try:
+        with open("/var/lib/homebrain/backup_epoch.json") as f:
+            return float(json.load(f).get("ts", 0))
+    except Exception:
+        return 0
+
+
 @app.route("/api/backups/list")
 def list_backups():
     backups = []
     storage = backup_storage_dir()
+    epoch = backup_epoch()
     if os.path.exists(storage):
         for f in os.listdir(storage):
             if f.endswith(".tar.gz") or f.endswith(".tar.gz.gpg"):
@@ -1621,13 +1665,76 @@ def list_backups():
                         btype = "System snapshot"
                     else:
                         btype = "Full System"
+                    encrypted = f.endswith(".gpg")
                     backups.append({"name": f, "size": f"{size:.2f} MB",
                                     "type": btype,
-                                    "encrypted": f.endswith(".gpg")})
+                                    "encrypted": encrypted,
+                                    # Only meaningful for encrypted archives:
+                                    # a plaintext one opens regardless.
+                                    "needs_old_passphrase": bool(
+                                        encrypted and epoch
+                                        and os.path.getmtime(path) < epoch)})
                 except:
                     pass
     backups.sort(key=lambda x: x["name"], reverse=True)
     return jsonify(backups)
+
+
+@app.route("/api/backups/offsite/list")
+@limiter.limit("10 per minute")
+def list_offsite_backups():
+    """Archives sitting on the off-site remote.
+
+    Without this the off-site copy is write-only from the dashboard's point of
+    view: rclone pushed, nothing listed it, and the one scenario it exists for
+    (local drive dead) needed a shell to recover from.
+    """
+    env = get_env_config()
+    if env.get("OFFSITE_ENABLED", "false") != "true":
+        return jsonify([])
+    try:
+        result = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "offsite_list"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "The off-site remote did not respond."}), 504
+    if result.returncode != 0:
+        return jsonify({"error": "Could not list the off-site remote."}), 502
+
+    epoch = backup_epoch()
+    out = []
+    try:
+        for entry in json.loads(result.stdout or "[]"):
+            name = entry.get("Name", "")
+            if not name.endswith((".tar.gz", ".tar.gz.gpg")):
+                continue
+            size = entry.get("Size", 0) / (1024 * 1024)
+            if "data_only" in name:
+                btype = "Data Only"
+            elif "_system_" in name:
+                btype = "System snapshot"
+            else:
+                btype = "Full System"
+            encrypted = name.endswith(".gpg")
+            # ModTime is RFC3339; compare against the rotation epoch the same
+            # way the local list does.
+            stale = False
+            if encrypted and epoch:
+                try:
+                    mod = datetime.fromisoformat(
+                        entry.get("ModTime", "").replace("Z", "+00:00"))
+                    stale = mod.timestamp() < epoch
+                except Exception:
+                    stale = False
+            out.append({"name": name, "size": f"{size:.2f} MB", "type": btype,
+                        "encrypted": encrypted, "needs_old_passphrase": stale,
+                        "remote": True})
+    except Exception as e:
+        logging.warning(f"Could not parse off-site listing: {e}")
+        return jsonify({"error": "Could not read the off-site listing."}), 502
+    out.sort(key=lambda x: x["name"], reverse=True)
+    return jsonify(out)
 
 
 @app.route("/api/restore", methods=["POST"])
@@ -1640,7 +1747,18 @@ def trigger_restore():
     if not filename or "/" in filename:
         return jsonify({"error": "Invalid filename"}), 400
 
-    full_path = os.path.join(backup_storage_dir(), filename)
+    source = (request.json.get("source") or "local").lower()
+    if source not in ("local", "offsite"):
+        return jsonify({"error": "Invalid source"}), 400
+
+    # For an off-site restore restore.sh fetches the archive itself and then
+    # runs the ordinary path, so the only difference here is what we hand it.
+    if source == "offsite":
+        target = filename
+        offsite_flag = " --from-offsite"
+    else:
+        target = os.path.join(backup_storage_dir(), filename)
+        offsite_flag = ""
 
     # Optional passphrase for encrypted archives made under a DIFFERENT master
     # password (pre-rotation or from another box). Passed via a root-only temp
@@ -1657,8 +1775,8 @@ def trigger_restore():
 
     # restore.sh handles auto-detection of content (HA vs NC vs DB)
     # Quote full path
-    cmd = f"{pass_env}bash {SCRIPT_RESTORE} {shlex.quote(full_path)} --no-prompt >> {LOG_FILES['restore']} 2>&1"
-    task_name = "System Restore"
+    cmd = f"{pass_env}bash {SCRIPT_RESTORE} {shlex.quote(target)} --no-prompt{offsite_flag} >> {LOG_FILES['restore']} 2>&1"
+    task_name = "Off-site Restore" if source == "offsite" else "System Restore"
 
     threading.Thread(
         target=run_background_task, args=(task_name, cmd, "restore")
@@ -3928,6 +4046,7 @@ def custom_401(e):
       <div id="recovery-view" class="hidden">
         <h1>Recover Access</h1>
         <p class="hint">Enter your recovery phrase and choose a new master password. This resets access to the Dashboard, Nextcloud and Home Assistant — it cannot decrypt individual vault items.</p>
+        <p class="hint"><strong>About your existing backups:</strong> they are sealed with the master password that was in use when each one was made, so they will still need that old password to restore. A fresh backup is taken automatically under your new password as soon as the reset finishes.</p>
         <form id="rf" autocomplete="off">
           <label class="field-label" for="rec-phrase">Recovery phrase</label>
           <textarea id="rec-phrase" name="phrase" placeholder="six words separated by spaces" required autocomplete="off" spellcheck="false"></textarea>

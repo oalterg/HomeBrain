@@ -103,6 +103,7 @@ AI model selection lives in the dashboard under **Settings → Personal AI Assis
 | Doc | What's in it |
 |-----|-------------|
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Inference throughput, quantization comparisons, tuning notes |
+| [DISASTER_RECOVERY.md](docs/DISASTER_RECOVERY.md) | Getting your data back onto new hardware after the box is gone |
 | [ROADMAP.md](docs/ROADMAP.md) | Shipped features and what's next |
 | [TESTING.md](docs/TESTING.md) | E2E verification checklist |
 | [AGENTS.md](AGENTS.md) | Contributor conventions for AI-assisted development |

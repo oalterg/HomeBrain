@@ -1467,8 +1467,24 @@ patch_openclaw_config() {
         # strictly validates the mcp section and rejects unknown keys
         # (`mcp: Invalid input`), which blocks the gateway from loading. The
         # top-level .approvals.* below is the native, schema-valid config.
-        .approvals.exec.enabled = true |
-        .approvals.exec.mode = "session" |
+        #
+        # tools.exec is the actual execution policy — NOT .approvals, which
+        # only routes approval prompts. HomeBrain promises the owner never
+        # needs a shell, so the agent must be able to run privileged commands
+        # unattended; "full" is the schema’s "trusted local operation" setting.
+        # A deliberate widening, but not a new capability: homebrain is in the
+        # docker group, which is already root-equivalent. See the trust-boundary
+        # note in AGENTS.md.
+        #
+        # Assign the whole object: .mode is a normalized selector that the
+        # validator REFUSES to see combined with .security/.ask ("cannot be
+        # combined"), and a stale granular key left behind by an older config
+        # would fail validation and stop the gateway loading.
+        .tools.exec = {"mode": "full"} |
+        # .approvals.* only controls where approval PROMPTS get delivered. With
+        # ask=off nothing ever prompts, so forwarding has nothing to forward.
+        .approvals.exec.enabled = false |
+        del(.approvals.exec.mode) |
         .approvals.plugin.enabled = true |
         .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |
@@ -2247,6 +2263,26 @@ case "${1:-}" in
         ;;
     offsite_test)
         offsite_test
+        ;;
+    offsite_list)
+        # Raw rclone lsjson on stdout for the dashboard's remote backup list.
+        load_env
+        offsite_list
+        ;;
+    ensure_rclone)
+        ensure_rclone "$(jq -r '.rclone.version // empty' \
+            "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
+        ;;
+    offsite_resume)
+        # Driven by homebrain-offsite.timer (on boot, then hourly). A reboot
+        # part-way through a multi-hour upload used to mean the archive was not
+        # retried until the NEXT scheduled backup — up to a week away on a
+        # weekly schedule, with the off-site copy silently stale in between.
+        # rclone copy is idempotent: when everything is already at the remote
+        # this is a listing and nothing more.
+        load_env
+        [[ "${OFFSITE_ENABLED:-false}" == "true" ]] || exit 0
+        offsite_mirror
         ;;
     replica_enable)
         replica_target_enable

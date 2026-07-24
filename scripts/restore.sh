@@ -11,17 +11,68 @@ if [ -t 1 ]; then :; else exec >> "$RESTORE_LOG_FILE" 2>&1; fi
 load_env
 
 # --- Input Parsing ---
-BACKUP_FILE="${1:-}"
-ARG_FLAG="${2:-}"
+# Positional archive plus flags, in any order. --no-prompt used to be matched
+# positionally as $2; keeping it a flag means --from-offsite can be added
+# without callers caring about argument order.
+BACKUP_FILE=""
+NO_PROMPT=false
+FROM_OFFSITE=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --no-prompt)    NO_PROMPT=true ;;
+        --from-offsite) FROM_OFFSITE=true ;;
+        *)              [[ -z "$BACKUP_FILE" ]] && BACKUP_FILE="$1" ;;
+    esac
+    shift
+done
 
 # --- Prerequisites ---
-if ! mountpoint -q "$BACKUP_MOUNTDIR"; then
-    mount "$BACKUP_MOUNTDIR" || die "Backup drive not mounted."
+# Shared with backup.sh so the two can't drift again: no-drive boxes
+# (BACKUP_INTERNAL=true) have no mountpoint to check. See common.sh.
+ensure_backup_dir
+
+# --- Off-site fetch ---------------------------------------------------------
+# The off-site copy existed but could only be written, never read: rclone
+# pushed, nothing pulled, and restore.sh only ever looked at BACKUP_MOUNTDIR.
+# The scenario off-site backups exist for — drive dead — required a shell.
+# Pull the named archive down, then fall through to the normal path so there
+# is exactly one restore implementation.
+if [[ "$FROM_OFFSITE" == "true" ]]; then
+    [[ -n "$BACKUP_FILE" ]] || die "--from-offsite requires an archive name."
+    # Bare filename only: the caller may be passing something user-supplied.
+    OFFSITE_NAME="$(basename "$BACKUP_FILE")"
+
+    # Refuse a fetch that cannot fit. In internal-storage mode the target IS
+    # the root disk, and an appliance whose root filesystem is full is an
+    # appliance its owner cannot recover without a keyboard.
+    NEED_KB=""
+    REMOTE_BYTES="$(offsite_size "$OFFSITE_NAME" 2>/dev/null || true)"
+    if [[ "$REMOTE_BYTES" =~ ^[0-9]+$ ]] && [[ "$REMOTE_BYTES" -gt 0 ]]; then
+        NEED_KB=$(( REMOTE_BYTES / 1024 ))
+        AVAIL_KB=$(df --output=avail "$BACKUP_MOUNTDIR" | tail -n1)
+        if [[ "$AVAIL_KB" -lt "$NEED_KB" ]]; then
+            die "Not enough space to fetch $OFFSITE_NAME: needs $((NEED_KB / 1024)) MB, $((AVAIL_KB / 1024)) MB free on $BACKUP_MOUNTDIR."
+        fi
+    else
+        log_warn "Could not determine the remote size of $OFFSITE_NAME — fetching without a space check."
+    fi
+
+    log_info "Fetching $OFFSITE_NAME from the off-site remote..."
+    offsite_fetch "$OFFSITE_NAME" "$BACKUP_MOUNTDIR" \
+        || die "Could not fetch $OFFSITE_NAME from the off-site remote."
+    BACKUP_FILE="$BACKUP_MOUNTDIR/$OFFSITE_NAME"
+    [[ -f "$BACKUP_FILE" ]] \
+        || die "Off-site fetch reported success but $OFFSITE_NAME is not present locally."
+    log_info "Fetched $OFFSITE_NAME ($(du -h "$BACKUP_FILE" | cut -f1))."
 fi
 
 if [[ -z "$BACKUP_FILE" ]]; then
     # Auto-select latest (plain or encrypted)
-    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 \( -name '*backup*.tar.gz' -o -name '*backup*.tar.gz.gpg' \) -print0 | xargs -0 ls -t | head -n1)"
+    # -r matters: without it, xargs still runs `ls -t` once on empty input,
+    # which lists the CWD and hands back an unrelated filename as the archive
+    # to restore. The -f test below catches a directory, but a regular file in
+    # the CWD would sail straight through into the restore.
+    BACKUP_FILE="$(find "$BACKUP_MOUNTDIR" -maxdepth 1 \( -name '*backup*.tar.gz' -o -name '*backup*.tar.gz.gpg' \) -print0 | xargs -0 -r ls -t | head -n1)"
 fi
 
 if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
@@ -29,7 +80,7 @@ if [[ -z "$BACKUP_FILE" || ! -f "$BACKUP_FILE" ]]; then
 fi
 
 # Interactive confirmation
-if [[ "$ARG_FLAG" != "--no-prompt" ]]; then
+if [[ "$NO_PROMPT" != "true" ]]; then
     echo "⚠️ WARNING: RESTORE PROCESS INITIATED ⚠️"
     echo "Restoring: $BACKUP_FILE"
     echo "This will WIPE ALL DATA in: ${NEXTCLOUD_DATA_DIR:-${HOMEBRAIN_HOME}/nextcloud-data}"
