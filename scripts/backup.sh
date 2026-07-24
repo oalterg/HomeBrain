@@ -470,6 +470,22 @@ log_info "=== Backup Complete: $ARCHIVE_PATH ==="
 if [[ "${OFFSITE_ENABLED:-false}" == "true" && "$SKIP_OFFSITE" != "true" ]]; then
     OFFSITE_STATE="/var/lib/homebrain/offsite.json"
     mkdir -p /var/lib/homebrain
+
+    # Release the BACKUP lock before uploading. The local backup is finished;
+    # everything below is a WAN transfer that can run for tens of hours on a
+    # home uplink with multi-GB archives. Holding the backup lock for that long
+    # blocks the next scheduled backup and makes update.sh's pre-update
+    # snapshot fail — which is why --skip-offsite had to exist at all.
+    #
+    # A second lock keeps two mirrors from overlapping, since backups can now
+    # start while one is still uploading.
+    flock -u 200 2>/dev/null || true
+    exec 201>"/var/run/homebrain-offsite.lock"
+    if ! flock -n 201; then
+        log_warn "An off-site mirror is already running — skipping this one."
+        exit 0
+    fi
+
     log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
     if offsite_sync; then
         printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE}.tmp" \

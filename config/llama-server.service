@@ -2,7 +2,12 @@
 Description=llama.cpp inference server
 After=network.target multi-user.target
 Wants=multi-user.target
+# Both keys belong in [Unit]; systemd ignores them under [Service] and warns
+# on every daemon-reload. Burst was previously only in [Service], so the
+# intended 5 was silently supplied by systemd's default of the same value —
+# right behaviour, unreadable config. State it explicitly.
 StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -37,8 +42,6 @@ ExecStart=__LLAMA_BIN__ \
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
-StartLimitIntervalSec=600
-StartLimitBurst=5
 TimeoutStartSec=600
 OOMScoreAdjust=-500
 StandardOutput=journal

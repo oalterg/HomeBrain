@@ -894,6 +894,14 @@ offsite_env() {
 # what to keep, so a plain filtered sync gives remote retention for free.
 offsite_sync() {
     command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
+    # At point of use, because that is the only place that reaches every box.
+    # app.py calls ensure_rclone when off-site settings are SAVED, which a box
+    # that already had off-site configured never does again — so the boxes most
+    # in need of the chunking fix would be exactly the ones that never got it,
+    # and their mirrors would go on failing with 413 forever. No-ops in
+    # milliseconds once rclone is current.
+    ensure_rclone "$(jq -r '.rclone.version // empty' \
+        "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")" || true
     offsite_env || return 1
     local remote="offsite:${OFFSITE_PATH:-homebrain-backups}"
 
