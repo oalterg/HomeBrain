@@ -147,6 +147,48 @@ ensure_homebrain_user() {
             usermod -aG "$grp" "${HOMEBRAIN_USER}" 2>/dev/null || true
         fi
     done
+    ensure_homebrain_sudo
+}
+
+# Passwordless sudo for the homebrain user.
+#
+# This looks like a widening and is not one. homebrain is in the `docker` group
+# (above), and any docker group member can `docker run -v /:/host` — root, by a
+# longer route. The account had a locked password and no sudoers rule, so the
+# agent that HomeBrain's "you never need a shell" promise depends on could not
+# run a privileged command at all, while still being one container away from
+# root. That gap bought no safety and pushed the agent toward the escape hatch.
+#
+# Make it explicit instead. The real boundary is the Telegram allowFrom pairing
+# and the loopback-bound gateway — see the trust-boundary note in AGENTS.md.
+ensure_homebrain_sudo() {
+    local dest="/etc/sudoers.d/homebrain"
+    local tmp
+    tmp="$(mktemp)" || return 0
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${HOMEBRAIN_USER}" > "$tmp"
+    # Never install an unvalidated sudoers fragment: a malformed file in
+    # /etc/sudoers.d can lock every user out of sudo on the whole box.
+    if visudo -c -f "$tmp" >/dev/null 2>&1; then
+        install -m 0440 -o root -g root "$tmp" "$dest"
+        log_info "Passwordless sudo enabled for ${HOMEBRAIN_USER}."
+    else
+        log_warn "Generated sudoers fragment failed validation — not installed."
+    fi
+    rm -f "$tmp"
+}
+
+# .env holds MASTER_PASSWORD, every service credential, the vault admin token
+# and the off-site password. It must be root-only.
+#
+# On .58 it was found homebrain:homebrain 0600 — owned by the very account the
+# agent runs as, so reading the master password needed nothing more than `cat`.
+# No code path in the tree explains that, so assert the state rather than hunt
+# the cause. This does not contain a root-equivalent agent; it restores the
+# intended asymmetry and still stops a container escape landing as www-data.
+harden_env_file() {
+    [[ -f "$ENV_FILE" ]] || return 0
+    chown root:root "$ENV_FILE" 2>/dev/null || true
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
 # --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
@@ -240,6 +282,9 @@ update_env_var() {
         log_warn ".env file not found, creating new one."
         echo "${key}='${value}'" > "$ENV_FILE"
     fi
+    # Every bash write path funnels through here, and the shell ones create the
+    # file under the default umask (0644). Re-assert after each write.
+    harden_env_file
 }
 
 # Read a single value out of .env. Deliberately takes the LAST match: the

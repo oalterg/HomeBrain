@@ -1467,8 +1467,24 @@ patch_openclaw_config() {
         # strictly validates the mcp section and rejects unknown keys
         # (`mcp: Invalid input`), which blocks the gateway from loading. The
         # top-level .approvals.* below is the native, schema-valid config.
-        .approvals.exec.enabled = true |
-        .approvals.exec.mode = "session" |
+        #
+        # tools.exec is the actual execution policy — NOT .approvals, which
+        # only routes approval prompts. HomeBrain promises the owner never
+        # needs a shell, so the agent must be able to run privileged commands
+        # unattended; "full" is the schema’s "trusted local operation" setting.
+        # A deliberate widening, but not a new capability: homebrain is in the
+        # docker group, which is already root-equivalent. See the trust-boundary
+        # note in AGENTS.md.
+        #
+        # Assign the whole object: .mode is a normalized selector that the
+        # validator REFUSES to see combined with .security/.ask ("cannot be
+        # combined"), and a stale granular key left behind by an older config
+        # would fail validation and stop the gateway loading.
+        .tools.exec = {"mode": "full"} |
+        # .approvals.* only controls where approval PROMPTS get delivered. With
+        # ask=off nothing ever prompts, so forwarding has nothing to forward.
+        .approvals.exec.enabled = false |
+        del(.approvals.exec.mode) |
         .approvals.plugin.enabled = true |
         .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |

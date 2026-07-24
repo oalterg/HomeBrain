@@ -219,6 +219,27 @@ log_file = LOG_FILES["manager"]
 # --- Security: Factory Auth ---
 SECRET_KEY_FILE = f"{INSTALL_DIR}/.secret_key"
 
+
+def harden_env_file():
+    """Assert .env is root-only at every manager start.
+
+    It holds MASTER_PASSWORD, every service credential, the vault admin token
+    and the off-site password. On .58 it was found owned by `homebrain` — the
+    account the AI agent runs as — so reading the master password took nothing
+    more than `cat`. No code path in the tree explains that, so assert the end
+    state rather than hunt the cause. Mirrors common.sh:harden_env_file for the
+    bash side.
+    """
+    try:
+        if os.path.exists(ENV_FILE):
+            os.chown(ENV_FILE, 0, 0)
+            os.chmod(ENV_FILE, 0o600)
+    except Exception as e:
+        logging.warning(f"Could not harden {ENV_FILE}: {e}")
+
+
+harden_env_file()
+
 def load_persistent_secret_key():
     """Ensures sessions remain valid across service restarts."""
     try:

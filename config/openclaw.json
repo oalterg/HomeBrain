@@ -64,6 +64,9 @@
     ]
   },
   "tools": {
+    "exec": {
+      "mode": "full"
+    },
     "media": {
       "audio": {
         "enabled": true,
@@ -84,8 +87,7 @@
   },
   "approvals": {
     "exec": {
-      "enabled": true,
-      "mode": "session"
+      "enabled": false
     },
     "plugin": {
       "enabled": true,

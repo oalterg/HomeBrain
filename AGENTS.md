@@ -52,6 +52,31 @@ Transform tasks into verifiable goals:
 ## Project
 HomeBrain is a self-hosted home automation system targeting x86_64 Ubuntu servers with AMD GPUs. It combines an OpenClaw AI assistant (backed by llama.cpp/llama-server), Nextcloud, Home Assistant, and optional Pangolin tunnel for remote access. All services run in Docker; the user interacts exclusively through a Flask dashboard — no SSH required.
 
+## Security invariant: the AI agent is root
+
+The OpenClaw agent runs as the `homebrain` OS user, which is in the `docker`
+group. Any member of that group can `docker run -v /:/host` and read or write
+anything on the box, so **the agent is root-equivalent and always has been.**
+As of Phase 5 that is explicit rather than accidental: `tools.exec` is set to
+`mode: full` / `ask: off` and `homebrain` has a passwordless sudoers rule,
+because "the owner never needs a shell" requires an agent that can actually
+run privileged commands.
+
+What this means when reasoning about agent risk:
+
+- **The security boundary is the Telegram `allowFrom` pairing and the
+  loopback-bound gateway**, not the tool policy. Anything that lets an
+  untrusted party put text in front of the agent is a privilege escalation.
+- The agent ingests email and browses the web. Both are prompt-injection
+  surfaces that reach a root shell. Treat any change that widens what the
+  agent will read as a security change.
+- Do not add a filesystem deny-list and call it containment — the agent can
+  sudo around it. `tools.deny` (tool names, not paths) is schema-valid and is
+  the right tool for disabling a *capability*, not for protecting a *file*.
+- `.env` is still asserted `root:root 0600` on every write and at manager
+  start. That does not stop the agent; it stops a container escape landing as
+  `www-data`.
+
 ## Repo Layout
 
 ```
