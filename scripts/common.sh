@@ -775,6 +775,22 @@ configure_nextcloud_redis() {
 # They drifted — restore.sh never learned about BACKUP_INTERNAL (added in
 # #123), so no-drive boxes could back up and could never restore. One
 # definition, two callers.
+# Archives in $1 that the emergency prune may delete, oldest first.
+#
+# Deliberately excludes the newest archive, always. The prune runs *before*
+# this backup exists, and this backup can still fail — a bad dump, or a failed
+# verify, which deletes the new archive. Freeing space by deleting the only
+# known-good copy leaves the user with less protection than they started with,
+# so the last one is never a candidate. Empty output means "nothing may be
+# pruned", which the caller must treat as a hard stop, not as "nothing found".
+prunable_archives() {
+    local dir="$1"
+    find "$dir" -maxdepth 1 -type f \
+        \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) \
+        -printf "%T@ %p\n" 2>/dev/null \
+        | sort -n | awk '{print $2}' | sed '$d'
+}
+
 ensure_backup_dir() {
     if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
         mkdir -p "$BACKUP_MOUNTDIR" \
@@ -834,11 +850,30 @@ offsite_env() {
 offsite_sync() {
     command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
     offsite_env || return 1
+    local remote="offsite:${OFFSITE_PATH:-homebrain-backups}"
+
+    # copy, NOT sync. sync mirrors deletions, so anything that removes a local
+    # archive — a failed drive, ransomware, the emergency prune in backup.sh —
+    # erased the off-site copy on the very next run. That is how a backup stops
+    # being a backup: the one event the off-site copy exists for was also the
+    # event that destroyed it. copy only ever adds.
+    #
     # Leading / anchors the patterns to the drive's top level and --max-depth
     # stops recursion — same scope as local retention's `find -maxdepth 1`.
     # Without both, archives inside subdirectories would get mirrored too.
-    rclone sync "$BACKUP_MOUNTDIR" "offsite:${OFFSITE_PATH:-homebrain-backups}" \
+    rclone copy "$BACKUP_MOUNTDIR" "$remote" \
         --max-depth 1 \
         --include '/homebrain_backup*.tar.gz*' \
-        --include '/nextcloud_backup*.tar.gz*'
+        --include '/nextcloud_backup*.tar.gz*' || return 1
+
+    # Bound the remote on its own schedule instead of tracking local state, so
+    # a local deletion can never propagate. Archives are encrypted at rest, so
+    # a longer window costs only space. Same include patterns: never touch
+    # anything on the remote that HomeBrain did not put there.
+    rclone delete "$remote" \
+        --min-age "${OFFSITE_KEEP_DAYS:-90}d" \
+        --max-depth 1 \
+        --include '/homebrain_backup*.tar.gz*' \
+        --include '/nextcloud_backup*.tar.gz*' 2>/dev/null \
+        || log_warn "Off-site retention pass failed (copies are safe; remote may grow)."
 }

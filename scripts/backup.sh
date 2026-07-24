@@ -126,13 +126,16 @@ log_info "[INFO] Estimated uncompressed: $((ESTIMATED_UNCOMPRESSED_KB / 1024)) M
 while [ "$AVAILABLE_KB" -lt "$ESTIMATED_PEAK_KB" ]; do
     log_warn "Insufficient space (Avail: $((AVAILABLE_KB/1024)) MB, Need: $((ESTIMATED_PEAK_KB/1024)) MB). searching for old backups to purge..."
     
-    # Find oldest backup, sort by timestamp asc (oldest on top)
-    OLDEST_BACKUP=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \( -name "homebrain_backup*.tar.gz*" -o -name "nextcloud_backup*.tar.gz*" \) -printf "%T@ %p\n" | sort -n | head -n1 | awk '{print $2}')
-    
-    if [[ -z "$OLDEST_BACKUP" ]]; then
-        die "CRITICAL: No old backups remain to delete, and space is still insufficient. Aborting."
+    # Candidates exclude the newest archive by construction — see
+    # common.sh:prunable_archives. Empty means we may not free any more space.
+    mapfile -t PRUNABLE < <(prunable_archives "$BACKUP_MOUNTDIR")
+
+    if [[ "${#PRUNABLE[@]}" -eq 0 ]]; then
+        die "CRITICAL: Space is insufficient and only one backup remains. Refusing to delete the last known-good archive — free space on $BACKUP_MOUNTDIR or fit a larger drive."
     fi
-    
+
+    OLDEST_BACKUP="${PRUNABLE[0]}"
+
     log_info "Emergency Prune: Deleting $OLDEST_BACKUP to free space."
     rm -f "$OLDEST_BACKUP"
     sync # Ensure free space is updated in kernel
