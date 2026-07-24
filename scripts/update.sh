@@ -270,7 +270,8 @@ install_python_venv_deps
 # This generalized block handles ALL service file updates (Gunicorn, Venv, or future changes).
 # It ensures the active systemd units match the repository versions exactly.
 UNITS_CHANGED=false
-for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer; do
+for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer \
+            homebrain-offsite.service homebrain-offsite.timer; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
 
@@ -297,6 +298,8 @@ fi
 # enable it (idempotent). smartmontools is a provision-time dep; install it
 # here once so pre-existing boxes get SMART monitoring too (best-effort).
 systemctl enable --now homebrain-health.timer 2>/dev/null || true
+# Same for the off-site resume timer on boxes provisioned before it existed.
+systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
 

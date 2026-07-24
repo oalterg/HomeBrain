@@ -289,6 +289,15 @@ systemctl enable --now homebrain-health.timer 2>/dev/null \
     && log_info "Health check timer enabled." \
     || log_warn "Failed to enable health check timer."
 
+# Resume timer for interrupted off-site copies. Harmless when off-site is not
+# configured — offsite_resume exits immediately on OFFSITE_ENABLED=false.
+cp "${SCRIPT_DIR}/../config/homebrain-offsite.service" /etc/systemd/system/
+cp "${SCRIPT_DIR}/../config/homebrain-offsite.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-offsite.timer 2>/dev/null \
+    && log_info "Off-site resume timer enabled." \
+    || log_warn "Failed to enable off-site resume timer."
+
 # --- 6. OpenClaw integration scaffold ---
 # Make sure /home/homebrain/.openclaw/ exists with the right ownership before
 # the dashboard starts wiring MCP servers into it. Idempotent.

@@ -105,9 +105,13 @@ The usual cause was a too-old rclone: versions before 1.64 cannot split a large
 upload into chunks, so a multi-gigabyte archive is sent as a single request and
 the receiving server rejects it with *413 Request Entity Too Large*, while the
 small system snapshots go through fine. HomeBrain now installs a current rclone
-when you enable the off-site copy. If your remote is missing full archives from
-before that fix, run a backup once to seed one — allow plenty of time, since a
-full archive can take many hours to upload.
+before every off-site copy. If your remote is missing full archives from before
+that fix, they upload on the next copy — allow plenty of time, since a full
+archive can take many hours.
+
+An upload interrupted by a restart is picked up again within the hour, and
+after a reboot, by the off-site resume timer. Archives already at the remote are
+skipped, so only the one that was in flight repeats.
 
 ## Known limitation
 

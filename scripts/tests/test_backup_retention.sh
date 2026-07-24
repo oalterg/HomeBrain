@@ -217,6 +217,32 @@ else
     ok "restore.sh parses flags positionally-independently"
 fi
 
+echo "== offsite_mirror serialises, so a resume can't race a running mirror =="
+# homebrain-offsite.timer fires hourly and on boot. Without the lock, a firing
+# during a multi-hour upload would start a second concurrent mirror.
+export OFFSITE_LOCK_FILE="$TMP/offsite.lock"
+export OFFSITE_STATE_FILE="$TMP/offsite.json"
+if ( offsite_mirror ) >/dev/null 2>&1; then
+    ok "offsite_mirror succeeds when the lock is free"
+else
+    bad "offsite_mirror succeeds when the lock is free"
+fi
+if grep -q '"ok": true' "$OFFSITE_STATE_FILE" 2>/dev/null; then
+    ok "records success in the state file the health check reads"
+else
+    bad "records success in the state file the health check reads"
+fi
+# Hold the lock the way a long upload does, then fire again.
+( exec 202>"$OFFSITE_LOCK_FILE"; flock -n 202 || exit 1; sleep 4 ) &
+HOLDER=$!
+sleep 1
+if ( offsite_mirror ) 2>&1 | grep -q "already running"; then
+    ok "a second mirror stands down while one holds the lock"
+else
+    bad "a second mirror stands down while one holds the lock"
+fi
+wait "$HOLDER" 2>/dev/null
+
 echo "== offsite_sync no longer uses a deletion-mirroring sync =="
 if grep -qE '^\s*rclone sync ' "$COMMON"; then
     bad "common.sh has an rclone sync again"

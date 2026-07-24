@@ -958,6 +958,13 @@ ensure_rclone() {
         log_warn "rclone ${cur:-unknown} cannot chunk uploads to Nextcloud (needs >= ${RCLONE_MIN_MAJOR}.${RCLONE_MIN_MINOR}); installing a current build."
     fi
 
+    # Installing needs root. Bail before spending a download we cannot use —
+    # this also keeps the function inert for unprivileged callers and tests.
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        log_warn "rclone needs updating but this is not running as root — skipping."
+        return 1
+    fi
+
     local arch url tmp
     case "$(uname -m)" in
         x86_64)  arch=amd64 ;;
@@ -986,6 +993,38 @@ ensure_rclone() {
     rm -rf "$tmp"
     hash -r 2>/dev/null || true
     log_info "Installed rclone $(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}') to /usr/local/bin."
+}
+
+OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"
+OFFSITE_LOCK_FILE="/var/run/homebrain-offsite.lock"
+
+# Run the mirror under the off-site lock and record the outcome.
+#
+# Shared by backup.sh (right after a backup) and homebrain-offsite.timer (on
+# boot and hourly). Both need identical locking and identical state-writing —
+# the health check reads that state file, so two copies of this logic would
+# eventually disagree about whether the off-site copy is healthy.
+#
+# Returns non-zero only when a mirror ran and failed; a skip because another
+# mirror holds the lock is success.
+offsite_mirror() {
+    mkdir -p /var/lib/homebrain
+    exec 201>"$OFFSITE_LOCK_FILE"
+    if ! flock -n 201; then
+        log_info "An off-site mirror is already running — leaving it to finish."
+        return 0
+    fi
+    log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
+    if offsite_sync; then
+        printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
+            && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+        log_info "Off-site mirror complete."
+        return 0
+    fi
+    printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
+        && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+    log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."
+    return 1
 }
 
 # HomeBrain archives on the remote, as rclone lsjson (Name/Size/ModTime).

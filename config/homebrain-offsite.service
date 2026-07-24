@@ -1,0 +1,14 @@
+[Unit]
+Description=HomeBrain off-site copy (resume interrupted mirrors)
+# rclone needs the uplink up, or the first run after boot burns its retry
+# budget on DNS failures.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/homebrain/scripts/utilities.sh offsite_resume
+# A full archive can upload for tens of hours; a start timeout must not kill it.
+TimeoutStartSec=0
+StandardOutput=append:/var/log/homebrain/backup.log
+StandardError=append:/var/log/homebrain/backup.log

@@ -2273,6 +2273,17 @@ case "${1:-}" in
         ensure_rclone "$(jq -r '.rclone.version // empty' \
             "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
         ;;
+    offsite_resume)
+        # Driven by homebrain-offsite.timer (on boot, then hourly). A reboot
+        # part-way through a multi-hour upload used to mean the archive was not
+        # retried until the NEXT scheduled backup — up to a week away on a
+        # weekly schedule, with the off-site copy silently stale in between.
+        # rclone copy is idempotent: when everything is already at the remote
+        # this is a listing and nothing more.
+        load_env
+        [[ "${OFFSITE_ENABLED:-false}" == "true" ]] || exit 0
+        offsite_mirror
+        ;;
     replica_enable)
         replica_target_enable
         ;;

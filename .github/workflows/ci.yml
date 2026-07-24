@@ -39,7 +39,7 @@ jobs:
         run: bash scripts/tests/test_update_guard.sh
       - name: backup dir guard (internal-storage restore)
         run: bash scripts/tests/test_restore_internal.sh
-      - name: backup retention (local prune + off-site copy semantics)
+      - name: backup retention, off-site copy + resume semantics
         run: |
           # rclone drives the off-site half against a temp-dir alias remote.
           # Without it that half skips and the deletion-mirroring regression
