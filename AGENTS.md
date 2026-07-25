@@ -73,6 +73,21 @@ What this means when reasoning about agent risk:
 - Do not add a filesystem deny-list and call it containment — the agent can
   sudo around it. `tools.deny` (tool names, not paths) is schema-valid and is
   the right tool for disabling a *capability*, not for protecting a *file*.
+- **Do not configure `tools.elevated`.** OpenClaw has its own privileged-tool
+  surface gated by `tools.elevated.enabled` + `allowFrom`, and when the agent
+  tries it the refusal reads like a missing setting ("requires
+  `tools.elevated.allowFrom` for the telegram channel"). It is a red herring
+  here. HomeBrain's privilege model is *ordinary exec + the host sudoers rule*:
+  with `tools.exec.mode=full` and `/etc/sudoers.d/homebrain`, the agent simply
+  runs `sudo …` through the normal exec path and is root. Verified on .58
+  (2026-07-25): the same command failed with the elevated flag set and
+  succeeded without it, reading `/etc/shadow`. Configuring `tools.elevated`
+  would add a second, parallel privilege path with its own sender allowlist to
+  maintain and get wrong, buying nothing.
+- **The two halves must ship together.** `tools.exec.mode=full` (agent stops
+  asking for approval) and `ensure_homebrain_sudo` (sudo actually works) are one
+  change. A box with only the first has an agent that confidently runs
+  privileged commands that all fail; `update.sh` applies both for that reason.
 - `.env` is still asserted `root:root 0600` on every write and at manager
   start. That does not stop the agent; it stops a container escape landing as
   `www-data`.
