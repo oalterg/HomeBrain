@@ -368,6 +368,14 @@ def _spec_vault() -> dict | None:
             "VAULT_URL": public_url,
             "VAULT_SESSION_FILE": session_file,
             "VAULT_AUDIT_LOG": os.path.join(LOG_DIR, "mcp-vault-audit.log"),
+            # Was the one spec that omitted this. mcp_common defaults
+            # HOMEBRAIN_MCP_CONSENT to "true" when unset, so vault.reveal
+            # returned a requires_confirmation envelope and there is no way to
+            # redeem it — the dashboard-confirm path for critical actions is
+            # still unbuilt (INTEGRATIONS_PLAN P6), so the user was handed a
+            # token they could not approve from Telegram. Every other server
+            # got the flag and auto-confirmed.
+            **_mcp_consent_env(),
         },
     }
 
