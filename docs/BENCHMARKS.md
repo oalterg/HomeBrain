@@ -578,3 +578,43 @@ The base-default config shows the textbook eviction signature on b9990 (VRAM *dr
 - **UD-Q8_K_XL rejected** (−20% TG, headroom as low as 151 MiB); **ub4096 rejected** (VRAM cost, no dense-model PP gain); **n=3 rejected** (acceptance).
 - 131072 ctx is stress-clean on b9990 (hr 3541) but only headroom-marginal on b9381 (hr 811, unstressed) — revisit if/when the build moves.
 - **Upstream (b9990) verdict: compute flat, allocator very different** — lighter for dense/ub2048 regimes, evicting for the offloaded ub4096 default. No blind bumps; any move must re-stress every shipped config.
+
+---
+
+## 2026-07-25 — b10107 upgrade probe (latest release) + platform-record E2E
+
+Ran during the hardware-agnosticism E2E on `.58`. Question: has the b9990/b10032 eviction of the
+shipped 35B base default been fixed upstream? **It has not.** b10107 is 75 builds past b10032 and
+reproduces the signature exactly.
+
+### b10107 vs b9381 — same session, same 51,824-token prompt, shipped default config
+
+Config: `Qwen3.6-35B-A3B-UD-Q5_K_XL` @80K, q8 KV, `-ot blk.20-39`, **`-ub 4096`** — i.e. the
+default as shipped, unmodified.
+
+| | b9381 (pinned) | b10107 (latest) |
+|---|---:|---:|
+| VRAM through the fill | 15406 → **15934** (rises, stable) | 15980 → **14423** (collapses) |
+| Sustained TG at depth | **25.60** | 20.80 (−19%) |
+| Deep-fill PP | **564.6** | 361.5 (−36%) |
+| Verdict | ✅ PASS | ❌ **EVICTS** |
+
+Same textbook signature as b9990/b10032: the compute buffer migrates to GTT partway through the
+fill and VRAM *drops* ~1.5 GB instead of growing. **The pin stays at b9381.** Three consecutive
+probes (b9990, b10032, b10107) now say the same thing — this is not a transient upstream bug, it is
+a durable consequence of the allocator rewrite meeting our `-ot` + `ub4096` regime. Any future bump
+has to be paired with re-tuning the 35B default off `ub4096` (MTP-as-default is the standing
+candidate), and every shipped config re-stressed. Not a free bump.
+
+### Incidental find: the box was already serving degraded
+
+The pre-test baseline read **24 t/s at idle-VRAM 15330 MiB**, not the documented ~29. The running
+llama-server process (up 1h20m) had logged
+`Vulkan_Host compute buffer size of 606.7344 MiB, does not match expectation of 1344.4258 MiB` —
+a starved compute buffer from an earlier start. A clean restart fixed it (15934 MiB, PP 565).
+
+Worth noting because **`verify_llama_allocation` did not catch this**: its watermark compares
+*total VRAM used* (15330) against `min_healthy_vram_mb` (15000) and passed, while the actual
+starvation was in the compute buffer, which that number does not see. The real signal is the
+journal line above. A watermark on total VRAM is a proxy, and this is the case where the proxy
+fails — see the follow-up note in `docs/plans/HARDWARE_AGNOSTIC.md` §8.

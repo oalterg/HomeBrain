@@ -40,18 +40,31 @@ fixture() {
     echo "$root"
 }
 
-# stub_path <arch> [lspci-output] -> echoes a PATH prefix dir with fake uname/lspci.
-# An empty lspci-output means "lspci is not installed", which is its own case.
+# stub_path <arch> [lspci-output] -> echoes a self-contained PATH dir.
+#
+# This dir becomes the *entire* PATH, so it has to carry every external
+# detect_platform needs. That is the point: omitting the lspci-output argument
+# has to mean lspci is genuinely unreachable. An earlier version left /usr/bin
+# on the PATH and the real lspci leaked in — which passed on a macOS dev box
+# (no lspci exists there) and failed on the Linux target with a GPU in it.
 stub_path() {
     local arch="$1" lspci_out="${2-__ABSENT__}"
     local dir="$TMP/bin-$arch-${RANDOM}"
     mkdir -p "$dir"
+
+    # Everything sourcing common.sh and running detect_platform shells out to.
+    local tool src
+    for tool in basename readlink mkdir cat id dirname grep sed tr; do
+        src="$(command -v "$tool" 2>/dev/null)" && ln -sf "$src" "$dir/$tool"
+    done
+
     cat > "$dir/uname" <<EOF
 #!/bin/sh
 [ "\$1" = "-m" ] && echo "$arch" && exit 0
-exec /usr/bin/uname "\$@"
+exec $(command -v uname) "\$@"
 EOF
     chmod +x "$dir/uname"
+
     if [[ "$lspci_out" != "__ABSENT__" ]]; then
         printf '#!/bin/sh\ncat <<"XEOF"\n%s\nXEOF\n' "$lspci_out" > "$dir/lspci"
         chmod +x "$dir/lspci"
@@ -60,14 +73,14 @@ EOF
 }
 
 # probe <sysfs-root> <stub-bin-dir> -> echoes "arch driver backend memory tag has_gpu"
-# Runs in a subshell so each case starts from a clean environment. PATH is
-# replaced (not prepended) when a stub dir is given so a real lspci on the test
-# machine can never leak into a case that is asserting its absence.
+# Runs in a subshell so each case starts from a clean environment. PATH becomes
+# *only* the stub dir, so a case asserting "no lspci" really has none — see the
+# note in stub_path about why a prefix is not enough.
 probe() {
     local root="$1" bindir="$2"
     (
         export HB_SYSFS_ROOT="$root"
-        export PATH="$bindir:/usr/bin:/bin"
+        export PATH="$bindir"
         # shellcheck source=../common.sh disable=SC1091
         source "$COMMON" >/dev/null 2>&1
         echo "$HB_ARCH $HB_GPU_DRIVER $HB_GPU_BACKEND $HB_GPU_MEMORY $HB_PLATFORM_TAG $HAS_GPU"
@@ -159,7 +172,7 @@ emit_root="$(fixture emit amdgpu)"
 emit_bin="$(stub_path x86_64)"
 out="$(
     export HB_SYSFS_ROOT="$emit_root"
-    export PATH="${emit_bin}:/usr/bin:/bin"
+    export PATH="${emit_bin}"
     # shellcheck source=../common.sh disable=SC1091
     source "$COMMON" >/dev/null 2>&1
     emit_platform_json -

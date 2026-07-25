@@ -269,22 +269,46 @@ engineering one.
 
 ---
 
-## 8. Not yet verified on hardware
+## 8. Hardware verification — `.58`, 2026-07-25 ✅
 
-Everything above passes CI (shellcheck `-S error`, ruff `E9,F`, compileall, 17/17 platform cases)
-and every claim of "unchanged on the production box" is asserted against the committed config
-rather than observed on the box. Still outstanding, in order:
+Verified on the production AMD box (Ubuntu 25.10, RX 9060 XT, stable `v2026.07.21`).
 
-1. **Re-provision / update the AMD box** and confirm the record reads
-   `x86_64-vulkan / amdgpu / discrete / has_gpu=true`, the dashboard GPU card is unchanged, and
-   `/etc/default/grub`, `99-amdgpu-runpm.rules` and `homebrain-amdgpu.conf` are all untouched.
-2. **Expect one llama.cpp reinstall.** A box whose binary was installed by the old
-   `install_llama_prebuilt` never had its tag recorded in `.installed_versions.json`, so the
-   unified installer will re-fetch at `b9381` once and then short-circuit forever after. That is
-   the provision/update split converging, not a regression.
-3. **Confirm the browser path** still resolves to `/usr/bin/google-chrome-stable` in the patched
-   `openclaw.json` — the seed no longer hardcodes it.
-4. The **RPi5 HomeCloud boxes** are the regression risk worth checking second: `detect_platform`
-   must report `none` there. The v3d fixture case covers the logic, but the lspci fallback is new
-   behaviour on a box that previously short-circuited on `uname -m` alone.
+| Check | Result |
+|---|---|
+| Platform record on real hardware | `x86_64-vulkan / amdgpu / discrete / has_gpu=true` — matches the old `HAS_GPU` exactly |
+| Fixture suite on a box **with** a GPU | 17/17 (see below — this caught a test bug) |
+| `harden_gpu` on the amdgpu arm | grub, udev rule, modprobe conf all md5-identical afterwards |
+| llama-server restarts caused | **0** (`NRestarts=0`, unchanged `ActiveEnterTimestamp`) |
+| Dashboard GPU card | `available:true, memory_label:"VRAM"`, temp/util/VRAM all populated |
+| Branding | `HomeBrain` (keyed off `has_gpu()`, not arch) |
+| `healthcheck.py` off the record | GPU-gated checks ran; `services` + `openclaw` both OK |
+| Unified installer | resolved `x86_64-vulkan`, installed, recorded the tag, short-circuited on re-run |
+| Browser path | resolves to `/usr/bin/google-chrome-stable`, no longer hardcoded in the seed |
+
+**The `.installed_versions.json` prediction was right** — the file did not exist on `.58`, so the
+box's binary had indeed been installed by the old `install_llama_prebuilt`, which never recorded a
+tag. The unified installer did exactly one install and has short-circuited since.
+
+**A test bug the hardware caught.** `probe()` claimed to shadow the machine's real `lspci`, but the
+replacement `PATH` still contained `/usr/bin` — which is where `lspci` lives. Two cases asserting
+"no compute GPU present" passed on a macOS dev box (no `lspci` exists there) and failed on the
+Linux target, where the fallback correctly found the real Radeon. The fixture PATH is now fully
+self-contained: it symlinks in only the tools `detect_platform` shells out to, so "no lspci" means
+no lspci. This is the argument for running the fixture suite on the target, not just in CI.
+
+### Follow-up worth doing (found during verification, not fixed here)
+
+`verify_llama_allocation`'s watermark is a proxy that can miss the thing it exists to catch. `.58`
+was found serving **degraded** — 24 t/s against a starved compute buffer (`606 MiB, does not match
+expectation of 1344 MiB`) — and the check passed anyway, because total VRAM used (15330) cleared
+`min_healthy_vram_mb` (15000). The compute buffer is not visible in that number. The reliable
+signal is the journal line; grepping the unit's log after start would catch what the watermark
+cannot. See `docs/BENCHMARKS.md` (2026-07-25).
+
+### Still outstanding
+
+- The **RPi HomeCloud boxes**: `detect_platform` must report `none`. Fixture-covered, but the
+  lspci fallback is new behaviour on a board that previously short-circuited on `uname -m`. An
+  RPi4 is being connected for this.
+- The **`aarch64-cuda` source-build path** remains unexecuted — no hardware.
 
