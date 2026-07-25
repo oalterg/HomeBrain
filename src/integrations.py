@@ -367,7 +367,22 @@ def _spec_vault() -> dict | None:
         "env": {
             "VAULT_URL": public_url,
             "VAULT_SESSION_FILE": session_file,
-            "VAULT_AUDIT_LOG": os.path.join(LOG_DIR, "mcp-vault-audit.log"),
+            # audit() in mcp_common reads HOMEBRAIN_AUDIT_DIR; VAULT_AUDIT_LOG
+            # was read by nothing (grep mcp-vault.py: 0 hits) and every other
+            # spec already passes the dir form.
+            "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            # The loopback Caddy presents an IP-SAN cert that Node's hostname
+            # check rejects, so every `bw` call that reaches the server fails
+            # TLS without this. Safe because the destination is 127.0.0.1 —
+            # a MITM there already implies code execution as root. Same
+            # reasoning as _vault_bw_argv() in app.py, which sets it for the
+            # dashboard's own bw calls; this spec is the other writer of the
+            # vault MCP env and had drifted from it.
+            #
+            # Its absence was masked on reads: _sync() is best-effort, so a
+            # failed sync silently fell through to the stale local cache and
+            # only writes (bw edit/create) surfaced the error.
+            "NODE_TLS_REJECT_UNAUTHORIZED": "0",
             # Was the one spec that omitted this. mcp_common defaults
             # HOMEBRAIN_MCP_CONSENT to "true" when unset, so vault.reveal
             # returned a requires_confirmation envelope and there is no way to

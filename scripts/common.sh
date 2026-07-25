@@ -356,6 +356,7 @@ ensure_homebrain_user() {
         fi
     done
     ensure_homebrain_sudo
+    ensure_mcp_audit_logs
 }
 
 # Passwordless sudo for the homebrain user.
@@ -397,6 +398,28 @@ harden_env_file() {
     [[ -f "$ENV_FILE" ]] || return 0
     chown root:root "$ENV_FILE" 2>/dev/null || true
     chmod 600 "$ENV_FILE" 2>/dev/null || true
+}
+
+# The MCP servers run as the agent user and append their audit trail here.
+# /var/log/homebrain is root:root 0755, so without this every audit write fails
+# — silently, because mcp_common.audit() swallows the error after also writing
+# to stderr. The effect was that `vault.reveal`, the most sensitive call in the
+# system and one INTEGRATIONS_PLAN describes as "every call audited", left
+# nothing on disk.
+#
+# Pre-create the files owned by the agent rather than opening up the directory:
+# appending needs write on the *file*, while unlinking or replacing it needs
+# write on the *directory*. Keeping the directory root-owned means the agent can
+# add to its own audit trail but cannot remove it.
+ensure_mcp_audit_logs() {
+    local server f
+    mkdir -p "$LOG_DIR" 2>/dev/null || return 0
+    for server in vault nextcloud homeassistant homebrain email; do
+        f="${LOG_DIR}/mcp-${server}-audit.log"
+        [[ -e "$f" ]] || : > "$f" 2>/dev/null || continue
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$f" 2>/dev/null || true
+        chmod 640 "$f" 2>/dev/null || true
+    done
 }
 
 # --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
