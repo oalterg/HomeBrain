@@ -269,17 +269,17 @@
                     <button type="submit" class="btn-primary mt">Save and test connection</button>
                     <p id="os-status" class="small" style="margin-top:10px;"></p>
                 </form>
-                <p class="hint">Another HomeBrain can be the target — enable “Receive backups” on that box and
+                <p class="hint">Another {{ platform.product_name }} can be the target — enable “Receive backups” on that box and
                     enter the WebDAV details it shows here.</p>
             </section>
 
             <section class="section">
                 <h3>Receive Backups</h3>
-                <p class="lede">Creates a dedicated <code>replica</code> account another HomeBrain can use as its
+                <p class="lede">Creates a dedicated <code>replica</code> account another {{ platform.product_name }} can use as its
                     off-site target. Received archives stay out of your files and out of this box's own backups.</p>
                 <div id="replica-status"><span class="skeleton sk-wide"></span></div>
                 <div id="replica-creds" class="notice notice-warning mt" style="display:none;">
-                    <strong>Copy these into the other HomeBrain now — the password is shown only once.</strong>
+                    <strong>Copy these into the other {{ platform.product_name }} now — the password is shown only once.</strong>
                     <div class="mono small" style="margin-top:8px; overflow-wrap:anywhere;">
                         <div>WebDAV URL: <span id="replica-url"></span></div>
                         <div>Username: replica</div>
