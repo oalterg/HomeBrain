@@ -1,7 +1,10 @@
 #!/bin/bash
 
 # --- Global Configuration ---
-export INSTALL_DIR="/opt/homebrain"
+# Overridable so a probe can source this file without pointing at the live tree
+# (emit_platform_json writes under INSTALL_DIR). Everything else keeps the
+# hardcoded default it always had.
+export INSTALL_DIR="${INSTALL_DIR:-/opt/homebrain}"
 export LOG_DIR="/var/log/homebrain"
 export ENV_FILE="$INSTALL_DIR/.env"
 export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"

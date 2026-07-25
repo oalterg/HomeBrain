@@ -305,10 +305,39 @@ expectation of 1344 MiB`) — and the check passed anyway, because total VRAM us
 signal is the journal line; grepping the unit's log after start would catch what the watermark
 cannot. See `docs/BENCHMARKS.md` (2026-07-25).
 
+## 9. aarch64 verification — RPi4, 2026-07-25 ✅
+
+Raspberry Pi 4 Model B, aarch64, Debian 13 (trixie), kernel 6.12.47. This board is the risk case,
+not a proxy for it: it **does** expose `/sys/class/drm/renderD128` bound to `v3d`, and `lspci`
+**is** installed. Both rejection layers had to work for the answer to be right.
+
+```
+saw node: /sys/class/drm/renderD128/device/driver -> driver=v3d
+  -> rejected (not in the amdgpu|nvidia|i915|xe compute allow-list)
+lspci fallback: only a PCIe bridge and a USB controller, no VGA/3D/Display line -> no match
+```
+```
+{"arch":"aarch64","gpu_driver":"none","gpu_backend":"none","gpu_memory":"none",
+ "platform_tag":"aarch64-none","has_gpu":false}
+```
+
+Fixture suite: **17/17 on real aarch64**, no arch-specific failures — including
+`aarch64 + v3d (RPi VideoCore) -> none` passing on an actual VideoCore.
+
+**Bug found and fixed during this run.** `common.sh` opened with an unconditional
+`export INSTALL_DIR="/opt/homebrain"`, so the documented probe-in-isolation recipe
+(`export INSTALL_DIR=/tmp/... ; source common.sh`) silently did not isolate — the variable was
+overwritten at source time, and safety came only from `emit_platform_json -` printing to stdout.
+Calling `emit_platform_json` without the `-` would have written the live record on a box being
+probed. Now `${INSTALL_DIR:-/opt/homebrain}`.
+
+Caveat: that Pi runs an Apr-26 `openclaw-integration` checkout with no `version.json`, so this
+verified the probe **against** aarch64 hardware, not the end-to-end consequence of `has_gpu=false`
+flowing through `provision.sh` / `app.py` there. Provisioning it is a separate exercise.
+
 ### Still outstanding
 
-- The **RPi HomeCloud boxes**: `detect_platform` must report `none`. Fixture-covered, but the
-  lspci fallback is new behaviour on a board that previously short-circuited on `uname -m`. An
-  RPi4 is being connected for this.
+- **RPi4 end-to-end**: provision the board and confirm the no-GPU path (HomeCloud branding, AI
+  units never installed, healthcheck skipping GPU checks) actually follows from the record.
 - The **`aarch64-cuda` source-build path** remains unexecuted — no hardware.
 
