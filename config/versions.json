@@ -1,7 +1,15 @@
 {
   "llama_cpp": {
     "tag": "b9381",
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9381/llama-b9381-bin-ubuntu-vulkan-x64.tar.gz"
+    "assets": {
+      "x86_64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b9381/llama-b9381-bin-ubuntu-vulkan-x64.tar.gz",
+      "aarch64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b9381/llama-b9381-bin-ubuntu-vulkan-arm64.tar.gz"
+    },
+    "source_build": {
+      "aarch64-cuda": {
+        "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
+      }
+    }
   },
   "whisper_cpp": {
     "git_ref": "v1.8.4"

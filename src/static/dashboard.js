@@ -425,6 +425,7 @@ async function fetchStatus() {
         if (data.gpu && data.gpu.available) {
             fillText('gpu-util', data.gpu.util_percent + '%');
             if (data.gpu.temp_c !== undefined) fillText('gpu-temp', data.gpu.temp_c + '°C');
+            if (data.gpu.memory_label) fillText('gpu-mem-label', data.gpu.memory_label);
             setMeter('gpu-vram-bar', 'gpu-vram-text', data.gpu.vram_percent,
                 `${data.gpu.vram_used_gb} / ${data.gpu.vram_total_gb} GB`);
         }

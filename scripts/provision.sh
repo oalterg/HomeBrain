@@ -86,65 +86,25 @@ ensure_admin_user
 # --- 1bb. Ensure homebrain user is in docker/render/video groups ---
 ensure_homebrain_user
 
-# --- 1c. GPU-gated hardening (Vulkan drivers, firewall, grub tweaks) ---
-# Detect GPU before proceeding
-detect_gpu
+# --- 1c. Host prep + driver-specific GPU hardening ---
+detect_platform
+log_info "Platform: ${HB_PLATFORM_TAG} (driver=${HB_GPU_DRIVER}, memory=${HB_GPU_MEMORY}, has_gpu=${HAS_GPU})"
+emit_platform_json
 
-if [[ "$HAS_GPU" == "true" ]]; then
-    # Disable conflicting web servers if present
-    systemctl disable --now apache2 2>/dev/null || true
+# Neither of these is GPU-related. They sat behind the HAS_GPU gate, which left
+# a no-GPU HomeCloud box with its firewall closed and a stray apache2 holding :80.
+systemctl disable --now apache2 2>/dev/null || true
 
-    # Open firewall ports if ufw is active
-    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
-        log_info "Opening firewall ports for HomeBrain services..."
-        ufw allow 80/tcp    # Dashboard
-        ufw allow 8080/tcp  # Nextcloud
-        ufw allow 8123/tcp  # Home Assistant
-        # No 18789 rule: the OpenClaw gateway binds loopback only and is
-        # reached through the manager's authenticated proxy.
-    fi
-
-    # Vulkan drivers for AMD GPU (RADV via Mesa, ships in Ubuntu archive)
-    log_info "Installing Vulkan drivers for AMD GPU..."
-    apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
-        || log_warn "Vulkan driver install failed. GPU inference may not work."
-
-    # Prevent AMD GPU runtime power management (keeps model in VRAM while idle)
-    # Add amdgpu.runpm=0 and amdgpu.pg_mask=0 to GRUB if not already present
-    if ! grep -q "amdgpu.runpm=0" /etc/default/grub 2>/dev/null; then
-        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0 amdgpu.pg_mask=0"/' /etc/default/grub
-        update-grub 2>/dev/null || true
-        log_info "Disabled AMD GPU runtime PM via kernel params (requires reboot to take effect)."
-    elif ! grep -q "amdgpu.pg_mask=0" /etc/default/grub 2>/dev/null; then
-        sed -i 's/amdgpu.runpm=0/amdgpu.runpm=0 amdgpu.pg_mask=0/' /etc/default/grub
-        update-grub 2>/dev/null || true
-        log_info "Added amdgpu.pg_mask=0 to kernel params."
-    fi
-
-    # Disable GPU runtime PM immediately via sysfs (takes effect now, no reboot needed)
-    GPU_PM_APPLIED=false
-    for ctrl in /sys/class/drm/card*/device/power/control; do
-        if [[ -f "$ctrl" ]]; then
-            echo "on" > "$ctrl" 2>/dev/null && GPU_PM_APPLIED=true
-        fi
-    done
-    if [[ "$GPU_PM_APPLIED" == "true" ]]; then
-        log_info "Disabled AMD GPU runtime power management (VRAM will stay loaded)."
-    fi
-
-    # Deploy udev rule for AMD GPU runtime PM (survives hotplug/driver reload)
-    cp "${SCRIPT_DIR}/../config/99-amdgpu-runpm.rules" /etc/udev/rules.d/
-    udevadm control --reload-rules 2>/dev/null || true
-    log_info "Deployed AMD GPU udev rule to /etc/udev/rules.d/"
-
-    # Deploy modprobe config to mask VCN/JPEG IP blocks (Navi 44 init bug — see config file).
-    # The driver was probing fine until linux-firmware 20250901 / kernel 6.17 exposed a
-    # VCN ring-test timeout that takes the whole probe down. We don't need video decode,
-    # so masking those blocks gets gfx + compute back online for llama.cpp.
-    cp "${SCRIPT_DIR}/../config/homebrain-amdgpu.conf" /etc/modprobe.d/
-    update-initramfs -u 2>/dev/null || true
-    log_info "Deployed amdgpu modprobe config (VCN/JPEG masked) to /etc/modprobe.d/"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
+    log_info "Opening firewall ports for HomeBrain services..."
+    ufw allow 80/tcp    # Dashboard
+    ufw allow 8080/tcp  # Nextcloud
+    ufw allow 8123/tcp  # Home Assistant
+    # No 18789 rule: the OpenClaw gateway binds loopback only and is
+    # reached through the manager's authenticated proxy.
 fi
+
+harden_gpu
 
 # --- 2. Write Factory Config ---
 # Preserve any pre-existing values from a properly-imaged device. CLI args

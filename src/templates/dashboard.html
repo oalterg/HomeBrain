@@ -140,7 +140,7 @@
                     </div>
                     {% if has_gpu %}
                     <div class="meter">
-                        <div class="meter-head"><span>VRAM</span><span class="meter-value" id="gpu-vram-text">—</span></div>
+                        <div class="meter-head"><span id="gpu-mem-label">VRAM</span><span class="meter-value" id="gpu-vram-text">—</span></div>
                         <div class="progress-bg"><div class="progress-fill" id="gpu-vram-bar"></div></div>
                     </div>
                     {% endif %}
@@ -638,8 +638,9 @@
                             Allow the agent to send mail directly (off = drafts only)
                         </label>
                     </div>
-                    <small class="hint">For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
-                        127.0.0.1:12025 SMTP. For Gmail, iCloud or Fastmail use an app-specific password.</small>
+                    <small class="hint">{% if platform.proton_bridge %}For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
+                        127.0.0.1:12025 SMTP. {% else %}Protonmail is not available on this machine — Proton Bridge ships
+                        for x86_64 only. {% endif %}For Gmail, iCloud or Fastmail use an app-specific password.</small>
                 </div>
 
                 <div hidden id="vault-mcp" class="conn-form">

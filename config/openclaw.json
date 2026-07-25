@@ -2,8 +2,7 @@
   "browser": {
     "enabled": true,
     "headless": true,
-    "noSandbox": true,
-    "executablePath": "/usr/bin/google-chrome-stable"
+    "noSandbox": true
   },
   "models": {
     "mode": "merge",

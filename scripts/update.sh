@@ -170,7 +170,13 @@ rsync -a --delete \
 --exclude='.git' \
 --exclude='version.json' \
 --exclude='venv' \
+--exclude='.platform.json' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
+
+# Refresh the hardware record against the freshly-synced common.sh. Excluded
+# from the rsync above (it is generated state, not shipped code) so a failure
+# here leaves the previous record in place rather than no record at all.
+emit_platform_json || log_warn "Could not refresh the platform record."
 
 # 4b. Pre-update snapshot — DB dumps + configs + vault + OpenClaw (everything
 # except the Nextcloud data tree, which updates don't touch), so "restore a
