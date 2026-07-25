@@ -751,6 +751,12 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
+    # Refresh the package lists BEFORE installing. A factory image that has sat
+    # on a shelf carries apt lists old enough that Debian/Ubuntu have pruned the
+    # exact .deb versions they name, and the install then dies on 404s — fatal
+    # under `set -euo pipefail`, so provisioning never gets past this line.
+    # Observed on the RPi4 test box (lists from March, glib2.0 404s, rc=100).
+    apt-get update -qq
     local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades"
     apt-get install -y -qq $common_pkgs
 
@@ -758,7 +764,6 @@ install_deps_enable_docker() {
     if [[ "$HAS_GPU" == "true" ]]; then
         install_headless_browser
     fi
-    apt-get update -qq
 
     # Docker setup
     if ! [ -f /etc/apt/keyrings/docker.gpg ]; then

@@ -3975,7 +3975,7 @@ def custom_401(e):
     # mode so the page reads consistently with the rest of the dashboard.
     resp = Response(render_template_string("""
     <!DOCTYPE html>
-    <html lang="en" data-theme="light"><head><title>HomeBrain Access</title>
+    <html lang="en" data-theme="light"><head><title>{{ product }} Access</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
@@ -4200,6 +4200,11 @@ def custom_401(e):
     {% endif %}
     </body></html>
     """, title=title, hint=hint,
+         # This handler is deliberately self-contained and so bypasses the
+         # inject_platform context processor — which means the product name has
+         # to be passed in, or the login gate (the first page an owner ever
+         # sees) hardcodes "HomeBrain" on a no-GPU box. Found on the RPi4.
+         product=("HomeBrain" if has_gpu() else "HomeCloud"),
          show_recovery=(is_setup_complete() and _recovery_configured()),
          password_rule=recovery.NEW_PASSWORD_RULE), 401)
     

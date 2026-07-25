@@ -335,9 +335,36 @@ Caveat: that Pi runs an Apr-26 `openclaw-integration` checkout with no `version.
 verified the probe **against** aarch64 hardware, not the end-to-end consequence of `has_gpu=false`
 flowing through `provision.sh` / `app.py` there. Provisioning it is a separate exercise.
 
+### RPi4 wipe + clean local-mode provision — 6/6 PASS
+
+`nuclear_reset.sh` → `provision.sh` (no tunnel args) on the branch. All six no-GPU behaviours verified:
+
+| # | Check | Evidence |
+|---|---|---|
+| 1 | **Firewall de-gating** | ufw isn't installed on that board, so the guard skipped — proven instead by a labelled follow-up: ufw installed with only 22/5353, re-provisioned, and 80/8080/8123 appeared. Log order is the proof: `has_gpu=false` → `Opening firewall ports` → 6× `Rule added` → `No compute GPU detected`. Under the old code every one of those lines was unreachable. |
+| 2 | `harden_gpu` → `none` branch | 0 vulkan packages installed across an 11,248-line log; `/etc/udev/rules.d` and `/etc/modprobe.d` byte-identical. Meaningful because the amdgpu rule + conf **are** present in `/opt/homebrain/config` — it had the sources and didn't copy them. |
+| 3 | No Chrome attempted | 0 matches for `chrome\|chromium\|dl.google.com` in the whole log |
+| 4 | `.platform.json` | exact expected record; regenerated identically after reboot by the manager `ExecStartPre` |
+| 5 | Branding | `HomeCloud` ×1, `HomeBrain` ×0 |
+| 6 | healthcheck skips GPU | ids = backup/disk_root/smart/services/containers/reboot. **Sharpest result**: this board has `/dev/dri/renderD128`, so the old `glob("/dev/dri/renderD*")` would have returned True and added llama-server + whisper to `check_services`. |
+
+**Two bugs found and fixed:**
+
+- **`provision.sh` could not complete on any aged image.** `install_deps_enable_docker` ran
+  `apt-get install` *before* `apt-get update`; the Pi's March lists named glib2.0 versions Debian
+  had since pruned, so the install 404'd and `set -euo pipefail` killed provisioning at rc=100,
+  6 seconds in. Pre-existing, unrelated to this branch, and fatal for every factory image that sat
+  on a shelf. The update now runs first.
+- **The 401 login gate hardcoded "HomeBrain Access"** (`app.py`), so the *first page an owner of a
+  no-GPU box ever sees* had the wrong product name — the handler is deliberately self-contained and
+  therefore bypasses `inject_platform`. Product name is now passed in.
+
 ### Still outstanding
 
-- **RPi4 end-to-end**: provision the board and confirm the no-GPU path (HomeCloud branding, AI
-  units never installed, healthcheck skipping GPU checks) actually follows from the record.
+- The RPi4 run was **provision-only** — the setup wizard and `deploy.sh` never ran, so no containers
+  came up and the GPU-gated `setup_whisper_server` / `setup_openclaw` paths went unexercised.
+- `systemctl disable --now apache2` de-gating is unobservable there (apache2 not installed), and the
+  GRUB-untouched proof is weak because Raspberry Pi has no GRUB at all. An x86 no-GPU box would
+  close both.
 - The **`aarch64-cuda` source-build path** remains unexecuted — no hardware.
 
