@@ -212,6 +212,19 @@ auto_setup_ai() {
         || log_warn "AI stack auto-setup failed (non-fatal). Install manually from the dashboard."
 }
 
-if [[ "$HAS_GPU" == "true" && "${HB_AI_DEFAULT:-}" == "opt-out" ]]; then
+# Say what was decided. auto_setup_ai carries its own "no GPU, skipped" message,
+# but it lives inside the function — which this condition may never call, so the
+# log could not distinguish "correctly skipped" from "never reached". A no-GPU
+# deploy now states the outcome.
+#
+# HB_AI_DEFAULT is set nowhere in the tree, so the second clause has been
+# unsatisfiable since PR #2 and the AI stack has never auto-installed. Left that
+# way deliberately: enabling it would start a ~26 GB model download on every GPU
+# deploy, which is a product decision rather than a cleanup.
+if [[ "$HAS_GPU" != "true" ]]; then
+    log_info "No compute GPU (${HB_PLATFORM_TAG:-unknown}) — AI stack not installed."
+elif [[ "${HB_AI_DEFAULT:-}" == "opt-out" ]]; then
     auto_setup_ai &
+else
+    log_info "GPU present (${HB_PLATFORM_TAG:-unknown}) but AI auto-setup is off — install it from the dashboard."
 fi

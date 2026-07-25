@@ -1,7 +1,10 @@
 #!/bin/bash
 
 # --- Global Configuration ---
-export INSTALL_DIR="/opt/homebrain"
+# Overridable so a probe can source this file without pointing at the live tree
+# (emit_platform_json writes under INSTALL_DIR). Everything else keeps the
+# hardcoded default it always had.
+export INSTALL_DIR="${INSTALL_DIR:-/opt/homebrain}"
 export LOG_DIR="/var/log/homebrain"
 export ENV_FILE="$INSTALL_DIR/.env"
 export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
@@ -96,27 +99,232 @@ detect_downgrade() {
     return 1
 }
 
-# --- GPU Detection ---
-# HomeBrain's AI stack (llama-server) targets x86_64 with AMD/Nvidia/Intel GPU.
-# aarch64 targets (HomeCloud/RPi) are always treated as no-GPU — their on-die
-# video engines (e.g. RPi VideoCore) expose DRM render nodes but cannot run
-# llama-server inference.
-detect_gpu() {
-  if [[ "$(uname -m)" != "x86_64" ]]; then
-    HAS_GPU=false; export HAS_GPU; return 0
+# --- Platform Detection ---
+# One probe, one record. Everything that varies by hardware keys off this: which
+# llama.cpp binary we install, the flag profile we run it with, how we read GPU
+# telemetry, and which host hardening we apply. Previously each of those made its
+# own guess from `uname -m`, and bash and app.py disagreed about what a GPU is.
+#
+#   HB_ARCH         x86_64 | aarch64 | ...
+#   HB_GPU_DRIVER   amdgpu | nvidia | i915 | xe | none
+#   HB_GPU_BACKEND  vulkan | cuda | none
+#   HB_GPU_MEMORY   discrete | unified | none   (only affects how memory is reported)
+#   HB_PLATFORM_TAG "${HB_ARCH}-${HB_GPU_BACKEND}", the key used in config files
+#   HAS_GPU         derived: driver != none. Unchanged meaning, unchanged callers.
+#
+# HB_SYSFS_ROOT prefixes every sysfs read so the fixture tests can point this at
+# a fake tree — the only way any of this is verifiable without owning the hardware.
+detect_platform() {
+  local sysfs="${HB_SYSFS_ROOT:-}"
+  HB_ARCH="$(uname -m)"
+  HB_GPU_DRIVER="none"
+
+  # Driver identity comes from the render node's bound driver, not from the
+  # architecture. Display-only engines (RPi VideoCore vc4/v3d) expose a render
+  # node too, so only compute-capable drivers count.
+  local link drv found=""
+  for link in "${sysfs}"/sys/class/drm/renderD*/device/driver; do
+    [[ -L "$link" ]] || continue
+    # sysfs always makes this a symlink into .../bus/pci/drivers/<name>; plain
+    # readlink (no -f) keeps the fixture tests portable to a macOS dev box.
+    drv="$(basename "$(readlink "$link")")"
+    case "$drv" in
+      amdgpu|nvidia|i915|xe) found+=" ${drv} " ;;
+    esac
+  done
+
+  # Prefer a discrete card over an integrated one. On a hybrid box the iGPU
+  # usually takes renderD128 and would win a first-match scan, but it is not the
+  # card we want to size the model for or install a backend against.
+  for drv in nvidia amdgpu xe i915; do
+    if [[ "$found" == *" ${drv} "* ]]; then HB_GPU_DRIVER="$drv"; break; fi
+  done
+
+  # Fallback: a GPU that is present on the bus but whose driver failed to probe
+  # has no render node. This is not hypothetical — the Navi 44 VCN ring-test bug
+  # takes amdgpu down exactly that way, and the modprobe workaround that fixes it
+  # is applied under HAS_GPU. Matching on vendor keeps that recovery path alive.
+  # Deliberately narrower than a bare VGA-class match: a display chip from any
+  # other vendor must not flip an RPi-class board into the AI stack.
+  if [[ "$HB_GPU_DRIVER" == "none" ]] && command -v lspci &>/dev/null; then
+    local pci
+    pci="$(lspci 2>/dev/null | grep -iE "VGA|3D controller|Display controller" || true)"
+    case "$pci" in
+      *NVIDIA*)           HB_GPU_DRIVER="nvidia" ;;
+      *AMD*|*ATI*|*Radeon*) HB_GPU_DRIVER="amdgpu" ;;
+      *Intel*)            HB_GPU_DRIVER="i915" ;;
+    esac
   fi
-  if ls /dev/dri/renderD* &>/dev/null 2>&1; then
-    HAS_GPU=true; export HAS_GPU; return 0
-  fi
-  if ls /sys/class/drm/render* &>/dev/null 2>&1; then
-    HAS_GPU=true; export HAS_GPU; return 0
-  fi
-  if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qiE "VGA|3D|Display"; then
-    HAS_GPU=true; export HAS_GPU; return 0
-  fi
-  HAS_GPU=false; export HAS_GPU
+
+  case "$HB_GPU_DRIVER" in
+    amdgpu)   HB_GPU_BACKEND="vulkan"; HB_GPU_MEMORY="discrete" ;;
+    # Grace-class parts (DGX Spark, Jetson) share one LPDDR pool with the CPU;
+    # aarch64 is the practical proxy for that. x86 NVIDIA is discrete VRAM.
+    # This only decides how memory is *labelled* — nothing else depends on it.
+    nvidia)   HB_GPU_BACKEND="cuda"
+              if [[ "$HB_ARCH" == "aarch64" ]]; then
+                  HB_GPU_MEMORY="unified"
+              else
+                  HB_GPU_MEMORY="discrete"
+              fi ;;
+    i915|xe)  HB_GPU_BACKEND="vulkan"; HB_GPU_MEMORY="unified" ;;
+    *)        HB_GPU_BACKEND="none";   HB_GPU_MEMORY="none" ;;
+  esac
+
+  HB_PLATFORM_TAG="${HB_ARCH}-${HB_GPU_BACKEND}"
+  if [[ "$HB_GPU_DRIVER" == "none" ]]; then HAS_GPU=false; else HAS_GPU=true; fi
+  export HB_ARCH HB_GPU_DRIVER HB_GPU_BACKEND HB_GPU_MEMORY HB_PLATFORM_TAG HAS_GPU
 }
-detect_gpu
+detect_platform
+
+# Back-compat alias. Callers that only want the boolean keep working.
+detect_gpu() { detect_platform; }
+
+# Write the record where app.py can read it without re-implementing the probe.
+# Called from provision.sh and on manager start; regenerating at boot is enough,
+# since the only thing that changes this is a driver that stopped loading.
+emit_platform_json() {
+    detect_platform
+    local dest="${1:-${INSTALL_DIR}/.platform.json}"
+    local json
+    printf -v json '{"arch":"%s","gpu_driver":"%s","gpu_backend":"%s","gpu_memory":"%s","platform_tag":"%s","has_gpu":%s}\n' \
+        "$HB_ARCH" "$HB_GPU_DRIVER" "$HB_GPU_BACKEND" "$HB_GPU_MEMORY" "$HB_PLATFORM_TAG" "$HAS_GPU"
+    if [[ "$dest" == "-" ]]; then
+        printf '%s' "$json"
+        return 0
+    fi
+    printf '%s' "$json" > "$dest" 2>/dev/null || { log_warn "Could not write platform record to $dest"; return 1; }
+    chmod 644 "$dest" 2>/dev/null || true
+}
+
+# --- GPU host hardening ---
+# Dispatches on the detected driver. Everything in the amdgpu arm below used to
+# run on any box that had a GPU at all, so an NVIDIA target would have had
+# amdgpu kernel params written into its GRUB config and its initramfs rebuilt.
+# The Vulkan runtime is a property of the backend, the power-management tweaks
+# are a property of the driver; they are separated here for that reason.
+harden_gpu() {
+    # Resolve config/ relative to this file, not to the caller's SCRIPT_DIR —
+    # provision.sh re-execs itself and SCRIPT_DIR has bitten us there before.
+    local config_dir
+    config_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" 2>/dev/null && pwd)" \
+        || config_dir="${INSTALL_DIR}/config"
+
+    if [[ "$HB_GPU_BACKEND" == "vulkan" ]]; then
+        log_info "Installing Vulkan runtime (backend: vulkan, driver: ${HB_GPU_DRIVER})..."
+        apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
+            || log_warn "Vulkan driver install failed. GPU inference may not work."
+    fi
+
+    case "$HB_GPU_DRIVER" in
+        amdgpu) _harden_gpu_amdgpu "$config_dir" ;;
+        nvidia) _harden_gpu_nvidia ;;
+        none)   log_info "No compute GPU detected — skipping GPU hardening." ;;
+        *)      log_info "GPU driver '${HB_GPU_DRIVER}' needs no host hardening." ;;
+    esac
+}
+
+_harden_gpu_amdgpu() {
+    local config_dir="$1"
+
+    # Prevent AMD GPU runtime power management (keeps model in VRAM while idle)
+    # Add amdgpu.runpm=0 and amdgpu.pg_mask=0 to GRUB if not already present
+    if ! grep -q "amdgpu.runpm=0" /etc/default/grub 2>/dev/null; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 amdgpu.runpm=0 amdgpu.pg_mask=0"/' /etc/default/grub
+        update-grub 2>/dev/null || true
+        log_info "Disabled AMD GPU runtime PM via kernel params (requires reboot to take effect)."
+    elif ! grep -q "amdgpu.pg_mask=0" /etc/default/grub 2>/dev/null; then
+        sed -i 's/amdgpu.runpm=0/amdgpu.runpm=0 amdgpu.pg_mask=0/' /etc/default/grub
+        update-grub 2>/dev/null || true
+        log_info "Added amdgpu.pg_mask=0 to kernel params."
+    fi
+
+    # Disable GPU runtime PM immediately via sysfs (takes effect now, no reboot needed)
+    local ctrl gpu_pm_applied=false
+    for ctrl in /sys/class/drm/card*/device/power/control; do
+        if [[ -f "$ctrl" ]]; then
+            echo "on" > "$ctrl" 2>/dev/null && gpu_pm_applied=true
+        fi
+    done
+    if [[ "$gpu_pm_applied" == "true" ]]; then
+        log_info "Disabled AMD GPU runtime power management (VRAM will stay loaded)."
+    fi
+
+    # Deploy udev rule for AMD GPU runtime PM (survives hotplug/driver reload)
+    cp "${config_dir}/99-amdgpu-runpm.rules" /etc/udev/rules.d/
+    udevadm control --reload-rules 2>/dev/null || true
+    log_info "Deployed AMD GPU udev rule to /etc/udev/rules.d/"
+
+    # Deploy modprobe config to mask VCN/JPEG IP blocks (Navi 44 init bug — see config file).
+    # The driver was probing fine until linux-firmware 20250901 / kernel 6.17 exposed a
+    # VCN ring-test timeout that takes the whole probe down. We don't need video decode,
+    # so masking those blocks gets gfx + compute back online for llama.cpp.
+    cp "${config_dir}/homebrain-amdgpu.conf" /etc/modprobe.d/
+    update-initramfs -u 2>/dev/null || true
+    log_info "Deployed amdgpu modprobe config (VCN/JPEG masked) to /etc/modprobe.d/"
+}
+
+# --- Headless browser ---
+# Path to the Chromium-family binary OpenClaw should drive, or empty when none
+# is installed. Both the installer and the openclaw.json patcher resolve through
+# here so the config can never point at a binary this box does not have.
+resolve_browser_path() {
+    local candidate
+    for candidate in google-chrome-stable chromium chromium-browser; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Google publishes no arm64 Linux build of Chrome at all, so on anything that is
+# not amd64 we install the distro's chromium instead. Non-fatal either way: the
+# browse tool degrades, the rest of the agent is unaffected.
+install_headless_browser() {
+    local browser
+    browser=$(resolve_browser_path || true)
+    if [[ -n "$browser" ]]; then
+        log_info "Headless browser already present: ${browser}"
+        return 0
+    fi
+
+    local deb_arch
+    deb_arch=$(dpkg --print-architecture 2>/dev/null || echo "unknown")
+    if [[ "$deb_arch" == "amd64" ]]; then
+        # deb rather than snap: snap confinement breaks on headless servers.
+        log_info "Installing Google Chrome for headless browsing..."
+        wget -q -O /tmp/google-chrome.deb \
+            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
+            && apt-get install -y -qq /tmp/google-chrome.deb \
+            && rm -f /tmp/google-chrome.deb \
+            || log_warn "Chrome install failed."
+    else
+        log_info "Installing Chromium for headless browsing (Google ships no Chrome build for ${deb_arch})..."
+        apt-get install -y -qq chromium 2>/dev/null \
+            || apt-get install -y -qq chromium-browser 2>/dev/null \
+            || log_warn "Chromium install failed."
+    fi
+
+    browser=$(resolve_browser_path || true)
+    if [[ -n "$browser" ]]; then
+        log_info "Headless browser available: ${browser}"
+    else
+        log_warn "No headless browser available. The OpenClaw browser tool will not work."
+    fi
+}
+
+_harden_gpu_nvidia() {
+    # Nothing invasive: the proprietary driver owns power management, and CUDA
+    # needs no equivalent of the runpm/VCN workarounds. Verify and report only.
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        log_info "NVIDIA GPU: $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)"
+    else
+        log_warn "nvidia-smi not found. Install the NVIDIA driver stack — inference and GPU telemetry both need it."
+    fi
+    log_info "No host hardening applied for NVIDIA (driver stack owns power management)."
+}
 
 # --- User Management ---
 # Ensure the homebrain system user exists and is in the required groups.
@@ -148,6 +356,7 @@ ensure_homebrain_user() {
         fi
     done
     ensure_homebrain_sudo
+    ensure_mcp_audit_logs
 }
 
 # Passwordless sudo for the homebrain user.
@@ -189,6 +398,28 @@ harden_env_file() {
     [[ -f "$ENV_FILE" ]] || return 0
     chown root:root "$ENV_FILE" 2>/dev/null || true
     chmod 600 "$ENV_FILE" 2>/dev/null || true
+}
+
+# The MCP servers run as the agent user and append their audit trail here.
+# /var/log/homebrain is root:root 0755, so without this every audit write fails
+# — silently, because mcp_common.audit() swallows the error after also writing
+# to stderr. The effect was that `vault.reveal`, the most sensitive call in the
+# system and one INTEGRATIONS_PLAN describes as "every call audited", left
+# nothing on disk.
+#
+# Pre-create the files owned by the agent rather than opening up the directory:
+# appending needs write on the *file*, while unlinking or replacing it needs
+# write on the *directory*. Keeping the directory root-owned means the agent can
+# add to its own audit trail but cannot remove it.
+ensure_mcp_audit_logs() {
+    local server f
+    mkdir -p "$LOG_DIR" 2>/dev/null || return 0
+    for server in vault nextcloud homeassistant homebrain email; do
+        f="${LOG_DIR}/mcp-${server}-audit.log"
+        [[ -e "$f" ]] || : > "$f" 2>/dev/null || continue
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$f" 2>/dev/null || true
+        chmod 640 "$f" 2>/dev/null || true
+    done
 }
 
 # --- Admin user creation (Ubuntu x86 doesn't ship with a default user) ---
@@ -543,27 +774,19 @@ install_deps_enable_docker() {
     # --- 0. Install Dependencies ---
     log_info "Installing dependencies"
     wait_for_apt_lock
+    # Refresh the package lists BEFORE installing. A factory image that has sat
+    # on a shelf carries apt lists old enough that Debian/Ubuntu have pruned the
+    # exact .deb versions they name, and the install then dies on 404s — fatal
+    # under `set -euo pipefail`, so provisioning never gets past this line.
+    # Observed on the RPi4 test box (lists from March, glib2.0 404s, rc=100).
+    apt-get update -qq
     local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades"
     apt-get install -y -qq $common_pkgs
 
-    # Install Google Chrome for OpenClaw browser tool (x86 only, non-fatal)
-    # Uses deb package instead of snap to avoid confinement issues on headless servers
+    # Headless browser for the OpenClaw browser tool (non-fatal)
     if [[ "$HAS_GPU" == "true" ]]; then
-        if ! command -v google-chrome-stable >/dev/null 2>&1; then
-            log_info "Installing Google Chrome for headless browsing..."
-            wget -q -O /tmp/google-chrome.deb \
-                "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
-                && apt-get install -y -qq /tmp/google-chrome.deb \
-                && rm -f /tmp/google-chrome.deb \
-                || log_warn "Chrome install failed. OpenClaw browser tool may not work."
-        fi
-        if command -v google-chrome-stable >/dev/null 2>&1; then
-            log_info "Chrome available for headless browsing."
-        else
-            log_warn "Chrome not available. OpenClaw browser tool will not work."
-        fi
+        install_headless_browser
     fi
-    apt-get update -qq
 
     # Docker setup
     if ! [ -f /etc/apt/keyrings/docker.gpg ]; then

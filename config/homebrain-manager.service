@@ -12,6 +12,11 @@ WorkingDirectory=/opt/homebrain/src
 # Debian/Ubuntu root historically gets this PATH; systemd starts services
 # with a stripped one unless we set it explicitly.
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/sbin:/usr/bin:/bin"
+# Refresh the platform record at boot. app.py reads it instead of re-probing the
+# hardware itself, and boot is the only moment it can change (a driver that
+# stopped loading after a kernel update). Non-fatal: app.py falls back to asking
+# common.sh directly if the file is missing.
+ExecStartPre=-/bin/bash -c 'source /opt/homebrain/scripts/common.sh >/dev/null 2>&1 && emit_platform_json'
 # gevent worker class is required for the /openclaw WebSocket reverse-proxy
 # (flask-sock + simple-websocket). gunicorn auto-applies gevent monkey-patch
 # at startup so existing subprocess/threading code keeps working — long

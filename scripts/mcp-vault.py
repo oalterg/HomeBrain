@@ -287,6 +287,91 @@ def t_create_login(args: dict) -> dict:
     return ok(id=created.get("id"), name=created.get("name"))
 
 
+def t_update_login(args: dict) -> dict:
+    """Edit an existing login in place.
+
+    Partial by design: only the fields actually supplied are changed and the
+    rest of the item is preserved. The alternative — make the caller send a
+    whole item — would force the agent to `vault.reveal` the existing password
+    just to correct a username, putting a secret into the model's context for
+    no reason.
+    """
+    session, ebody = _session_or_unavail()
+    if ebody is not None:
+        return ebody
+    item_id = (args.get("item_id") or "").strip()
+    if not item_id:
+        return err("item_id is required")
+
+    editable = ("name", "username", "password", "uri", "folder_id")
+    fields = {k: args[k] for k in editable if args.get(k) is not None}
+    if not fields:
+        return err(f"supply at least one of: {', '.join(editable)}")
+
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    # Name the fields, never the values — this summary is shown to the user and
+    # may be echoed into a chat transcript.
+    summary = (f"Vault: update {', '.join(sorted(fields))} "
+               f"on item {item_id}")
+    payload = {"item_id": item_id, "fields": fields}
+
+    if not confirm:
+        action_id = Consent.issue("vault", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+
+    redeemed = Consent.verify(confirm, "vault", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+
+    # Read-modify-write against a stale cache would silently revert whatever
+    # changed server-side since the last sync, so this one is mandatory rather
+    # than best-effort (see the note on _sync).
+    _sync(session)
+    rc, out, bw_err = _bw("get", "item", redeemed["item_id"], session=session)
+    if rc != 0:
+        return err(bw_err.strip() or "item not found")
+    try:
+        item = json.loads(out)
+    except json.JSONDecodeError:
+        return err("could not parse item")
+    if item.get("type") != 1:
+        return err("not a login item")
+
+    f = redeemed["fields"]
+    if "name" in f:
+        item["name"] = f["name"]
+    if "folder_id" in f:
+        item["folderId"] = f["folder_id"] or None
+    login = item.get("login") or {}
+    if "username" in f:
+        login["username"] = f["username"]
+    if "password" in f:
+        login["password"] = f["password"]
+    if "uri" in f:
+        login["uris"] = ([{"uri": f["uri"], "match": None}]
+                         if f["uri"] else [])
+    item["login"] = login
+
+    encoded = subprocess.run(
+        [VAULT_BW_BIN, "encode"],
+        input=json.dumps(item), capture_output=True, text=True, timeout=10,
+    )
+    if encoded.returncode != 0:
+        return err("bw encode failed")
+    rc, out, bw_err = _bw("edit", "item", redeemed["item_id"],
+                          encoded.stdout.strip(), session=session)
+    if rc != 0:
+        return err(bw_err.strip() or "edit failed")
+
+    # Field names only. An audit line that carried the new password would put
+    # the secret in a plaintext log, which is the thing the vault exists to avoid.
+    audit("vault", "update_login", item_id=redeemed["item_id"],
+          item_name=item.get("name"), fields=sorted(f))
+    return ok(id=redeemed["item_id"], name=item.get("name"),
+              updated=sorted(f))
+
+
 TOOLS = [
     {"name": "vault.status",
      "description": "Check whether the vault is currently unlocked.",
@@ -341,6 +426,27 @@ TOOLS = [
          },
          "required": ["name", "username", "password"],
      }},
+    {"name": "vault.update_login",
+     "description": (
+         "Edit an existing login entry. Supply item_id plus only the fields to "
+         "change — omitted fields keep their current values, so changing a "
+         "username does not require revealing the password. Use this instead "
+         "of vault.create_login when the entry already exists. Consent-gated."
+     ),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "item_id": {"type": "string",
+                         "description": "id from vault.search"},
+             "name": {"type": "string"},
+             "username": {"type": "string"},
+             "password": {"type": "string"},
+             "uri": {"type": "string"},
+             "folder_id": {"type": "string"},
+             "confirmation_token": {"type": "string"},
+         },
+         "required": ["item_id"],
+     }},
 ]
 
 
@@ -350,6 +456,7 @@ DISPATCH = {
     "vault.reveal": t_reveal,
     "vault.list_folders": t_list_folders,
     "vault.create_login": t_create_login,
+    "vault.update_login": t_update_login,
 }
 
 
@@ -361,4 +468,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-vault", "0.3.0", TOOLS, dispatch)
+    serve("homebrain-vault", "0.4.0", TOOLS, dispatch)

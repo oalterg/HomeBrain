@@ -16,10 +16,38 @@ load_versions() {
     fi
     [[ -f "$versions_file" ]] || die "versions.json not found at $versions_file"
     LLAMA_TAG=$(jq -r '.llama_cpp.tag' "$versions_file")
-    LLAMA_URL=$(jq -r '.llama_cpp.url' "$versions_file")
     WHISPER_GIT_REF=$(jq -r '.whisper_cpp.git_ref // "master"' "$versions_file")
     OPENCLAW_VERSION=$(jq -r '.openclaw.version' "$versions_file")
-    export LLAMA_TAG LLAMA_URL WHISPER_GIT_REF OPENCLAW_VERSION
+    export LLAMA_TAG WHISPER_GIT_REF OPENCLAW_VERSION
+}
+
+# How llama.cpp is obtained on this platform. Echoes "prebuilt<TAB><url>" or
+# "source<TAB><cmake_flags>"; returns 1 when the platform is unsupported.
+#
+# Order: the exact platform tag's prebuilt asset, then its source recipe, then
+# the Vulkan build for this architecture as a universal fallback — NVIDIA ships
+# a Vulkan ICD too, so a CUDA box with no recipe still gets a working binary
+# rather than a failed provision.
+_resolve_llama_source() {
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    local url flags
+    url=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.assets[$t] // empty' "$versions_file" 2>/dev/null)
+    if [[ -n "$url" ]]; then
+        printf 'prebuilt\t%s\n' "$url"
+        return 0
+    fi
+    flags=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.source_build[$t].cmake_flags // empty' "$versions_file" 2>/dev/null)
+    if [[ -n "$flags" ]]; then
+        printf 'source\t%s\n' "$flags"
+        return 0
+    fi
+    url=$(jq -r --arg t "${HB_ARCH}-vulkan" '.llama_cpp.assets[$t] // empty' "$versions_file" 2>/dev/null)
+    if [[ -n "$url" ]]; then
+        log_warn "No llama.cpp build pinned for '${HB_PLATFORM_TAG}'; using the ${HB_ARCH}-vulkan build instead. Inference will work but will not use the ${HB_GPU_BACKEND} backend."
+        printf 'prebuilt\t%s\n' "$url"
+        return 0
+    fi
+    return 1
 }
 
 get_installed_versions_file() {
@@ -714,8 +742,16 @@ get_llama_bin_path() {
     echo "${HOMEBRAIN_HOME}/ai-runtime/llama-server/llama-server"
 }
 
-# Install pinned llama.cpp release (called by update-deps.sh on version bump)
+# Install the pinned llama.cpp release for this platform.
+#
+# This used to be two functions: install_llamacpp honoured the pin but always
+# downloaded the x86_64 asset, while install_llama_prebuilt mapped the
+# architecture but fetched whatever release was `latest`. A fresh provision and
+# an update therefore installed different builds. One function now honours both.
+#
+#   install_llamacpp [force]   force=true reinstalls even when already at the pin
 install_llamacpp() {
+    local force="${1:-false}"
     load_versions
     local bin_path
     bin_path=$(get_llama_bin_path)
@@ -734,28 +770,86 @@ install_llamacpp() {
     # already current and the install short-circuits below.
     _install_llama_radv_dropin
 
-    if [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
+    if [[ "$force" != "true" ]] && [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
         log_info "llama.cpp already at ${LLAMA_TAG}, skipping."
         return 0
     fi
 
-    log_info "Installing llama.cpp ${LLAMA_TAG}..."
+    local resolved kind payload
+    resolved=$(_resolve_llama_source) \
+        || die "No llama.cpp build available for platform '${HB_PLATFORM_TAG}'. Add an entry under llama_cpp.assets or llama_cpp.source_build in config/versions.json."
+    kind="${resolved%%$'\t'*}"
+    payload="${resolved#*$'\t'}"
 
-    local tmp_archive
-    tmp_archive=$(mktemp /tmp/llama-XXXXXX.tar.gz)
-    curl -fsSL --retry 3 -o "$tmp_archive" "$LLAMA_URL" \
-        || die "Failed to download llama.cpp ${LLAMA_TAG}"
-
-    # Extract all files flat into install_dir so binary and .so backends are co-located
+    log_info "Installing llama.cpp ${LLAMA_TAG} for ${HB_PLATFORM_TAG} (${kind})..."
     mkdir -p "$install_dir"
-    tar -xzf "$tmp_archive" --strip-components=1 -C "$install_dir"
-    rm -f "$tmp_archive"
 
+    if [[ "$kind" == "source" ]]; then
+        _build_llamacpp_from_source "$LLAMA_TAG" "$payload" "$install_dir"
+    else
+        local tmp_archive
+        tmp_archive=$(mktemp /tmp/llama-XXXXXX.tar.gz)
+        curl -fsSL --retry 3 -o "$tmp_archive" "$payload" \
+            || die "Failed to download llama.cpp ${LLAMA_TAG} from ${payload}"
+        # Extract all files flat into install_dir so binary and .so backends are co-located
+        tar -xzf "$tmp_archive" --strip-components=1 -C "$install_dir"
+        rm -f "$tmp_archive"
+    fi
+
+    [[ -f "$bin_path" ]] || die "llama-server binary not found after install at $bin_path"
     [[ -x "$bin_path" ]] || chmod +x "$bin_path"
-    [[ -f "$bin_path" ]] || die "llama-server binary not found after extraction at $bin_path"
 
     update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
     log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"
+}
+
+# Build llama-server from source at a pinned tag. Needed where upstream ships no
+# Linux binary for the backend we want — which is every CUDA target: the release
+# page has Windows CUDA zips only. Same shape as install_whisper_server.
+_build_llamacpp_from_source() {
+    local tag="$1" cmake_flags="$2" install_dir="$3"
+    local src_dir="/tmp/llama.cpp-src"
+
+    if [[ "$HB_GPU_BACKEND" == "cuda" ]] && ! command -v nvcc >/dev/null 2>&1; then
+        die "A CUDA build was requested but nvcc is not on PATH. Install the CUDA toolkit (13.x or newer for Blackwell/sm_121) and re-run."
+    fi
+
+    log_info "Installing build dependencies for llama.cpp..."
+    wait_for_apt_lock
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq build-essential cmake git libcurl4-openssl-dev \
+        || log_warn "Build dependency install returned non-zero; the build may fail."
+
+    if [[ -d "$src_dir/.git" ]]; then
+        log_info "Updating existing llama.cpp source to ${tag}..."
+        git -C "$src_dir" fetch --depth 1 origin "$tag" 2>/dev/null || true
+        git -C "$src_dir" checkout -q "$tag" 2>/dev/null || true
+    else
+        rm -rf "$src_dir"
+        log_info "Cloning llama.cpp at ${tag}..."
+        git clone --depth 1 --branch "$tag" \
+            https://github.com/ggml-org/llama.cpp.git "$src_dir" \
+            || die "Failed to clone llama.cpp at ${tag}"
+    fi
+
+    # Subshell so the build never leaks its working directory back to the
+    # caller. `die` inside one would only exit the subshell, so every step
+    # signals with `exit` and the single die is out here where it can stop us.
+    log_info "Building llama-server (${cmake_flags})..."
+    (
+        cd "$src_dir" || exit 1
+        rm -rf build
+        # shellcheck disable=SC2086  # cmake_flags is a deliberate flag list from versions.json
+        cmake -B build $cmake_flags || exit 1
+        cmake --build build --target llama-server -j"$(nproc)" || exit 1
+    ) || die "llama-server build failed at ${tag}; see the cmake output above."
+
+    # Co-locate the binary with its ggml backend .so files, matching the layout
+    # the prebuilt tarballs produce (the unit sets LD_LIBRARY_PATH to this dir).
+    cp -a "$src_dir/build/bin/." "$install_dir/" \
+        || die "Could not install build output to $install_dir"
+    log_info "Built llama-server from source at ${tag}."
 }
 
 # Apply RADV_PERFTEST=rm_kq=1 via systemd drop-in. b8996+ on RADV/GFX1200
@@ -763,6 +857,9 @@ install_llamacpp() {
 # Idempotent: overwrite each upgrade; daemon-reload picks up changes for
 # the next restart performed by the caller (update.sh).
 _install_llama_radv_dropin() {
+    # RADV is Mesa's AMD Vulkan driver. On anything else this is a dead env var,
+    # and writing it would just be one more AMD assumption left lying around.
+    [[ "${HB_GPU_DRIVER:-none}" == "amdgpu" ]] || return 0
     local dropin_dir="/etc/systemd/system/llama-server.service.d"
     local dropin_file="${dropin_dir}/10-radv-perftest.conf"
     mkdir -p "$dropin_dir"
@@ -795,64 +892,6 @@ generate_llama_service() {
         -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
         "$template" > "$service_dest"
     chmod 644 "$service_dest"
-}
-
-# Install prebuilt llama-server with Vulkan GPU support (both platforms)
-install_llama_prebuilt() {
-    local force="${1:-false}"
-    local LLAMA_INSTALL_DIR="${HOMEBRAIN_HOME}/ai-runtime/llama-server"
-    local LLAMA_BIN="${LLAMA_INSTALL_DIR}/llama-server"
-
-    # Fast-path: binary already present (skip unless force update)
-    if [[ "$force" != "true" ]] && [[ -x "$LLAMA_BIN" ]]; then
-        log_info "llama-server binary already present at $LLAMA_BIN."
-        return 0
-    fi
-
-    # Install Vulkan runtime (RADV for AMD, same packages for both archs)
-    log_info "Installing Vulkan runtime..."
-    wait_for_apt_lock
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq mesa-vulkan-drivers libvulkan1 vulkan-tools 2>/dev/null \
-        || log_warn "Vulkan driver install returned non-zero. GPU offload may not work."
-
-    # Map architecture to release asset suffix
-    local arch_suffix
-    local machine_arch
-    machine_arch=$(uname -m)
-    if [[ "$machine_arch" == "x86_64" ]]; then
-        arch_suffix="x64"
-    else
-        arch_suffix="arm64"
-    fi
-
-    log_info "Fetching latest llama.cpp release..."
-    local latest_tag
-    latest_tag=$(curl -sLf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
-        | jq -r '.tag_name') || die "Failed to query llama.cpp releases."
-
-    local asset_url
-    asset_url=$(curl -sLf "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/${latest_tag}" \
-        | jq -r --arg suffix "$arch_suffix" \
-          '.assets[] | select(.name | test("ubuntu.*vulkan.*" + $suffix)) | .browser_download_url' \
-        | head -1)
-
-    if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
-        die "No prebuilt Vulkan binary found for ${latest_tag} (${arch_suffix}). Check https://github.com/ggml-org/llama.cpp/releases"
-    fi
-
-    log_info "Downloading prebuilt llama-server ${latest_tag} (Vulkan ${arch_suffix})..."
-    mkdir -p "$LLAMA_INSTALL_DIR"
-    local tmp_archive="/tmp/llama-release.tar.gz"
-    wget -O "$tmp_archive" "$asset_url" \
-        || die "Failed to download llama-server release."
-    tar -xzf "$tmp_archive" -C "$LLAMA_INSTALL_DIR" --strip-components=1
-    rm -f "$tmp_archive"
-
-    [[ -x "$LLAMA_BIN" ]] || chmod +x "$LLAMA_BIN"
-    [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found after extraction at $LLAMA_BIN"
-    log_info "Installed prebuilt llama-server: $LLAMA_BIN"
 }
 
 # Download model file with resume support
@@ -946,6 +985,13 @@ setup_llama_server() {
     local MODEL_PATH="${HOMEBRAIN_HOME}/models/${MODEL_NAME}"
     # Parse ctx_size and extra_flags from platform_models.json for the selected model
     # (they were baked in by generate_llama_service, no need to keep in .env)
+    #
+    # Every field resolves as profiles[<platform tag>].<field> first, then the
+    # model's top-level value. The committed flags encode a specific machine —
+    # `-ot ...exps=CPU` offloads half the experts because 16 GB of VRAM cannot
+    # hold them, `--threads 6` is a 6-core part — so they are a property of the
+    # model *and* the hardware, not of the model alone. Models with no `profiles`
+    # key resolve exactly as they did before profiles existed.
     local CTX_SIZE="8192"
     local EXTRA_FLAGS=""
     local MIN_HEALTHY_VRAM=""
@@ -953,17 +999,19 @@ setup_llama_server() {
         # Derive model id from filename (strip extension)
         local model_id
         model_id=$(echo "$MODEL_NAME" | sed 's/\.gguf$//')
-        CTX_SIZE=$(jq -r --arg id "$model_id" \
-            '(.models[] | select(.id == $id) | .context_window) // .llama_server.ctx_size // 8192' \
+        local _sel='.models[] | select(.id == $id)'
+        local _prof='(.profiles[$tag] // {})'
+        CTX_SIZE=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+            "($_sel | ${_prof}.context_window // .context_window) // .llama_server.ctx_size // 8192" \
             "$MODELS_FILE" 2>/dev/null || echo "8192")
-        EXTRA_FLAGS=$(jq -r --arg id "$model_id" \
-            '(.models[] | select(.id == $id) | .extra_flags) // .llama_server.extra_flags // ""' \
+        EXTRA_FLAGS=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+            "($_sel | ${_prof}.extra_flags // .extra_flags) // .llama_server.extra_flags // \"\"" \
             "$MODELS_FILE" 2>/dev/null || echo "")
-        # Optional: healthy-allocation VRAM watermark. When set, a successful
-        # start that comes up well below this value means the Vulkan compute
-        # buffer was starved by VRAM pressure (see verify_llama_allocation).
-        MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" \
-            '(.models[] | select(.id == $id) | .min_healthy_vram_mb) // empty' \
+        # Optional: healthy-allocation memory watermark. When set, a successful
+        # start that comes up well below this value means the compute buffer was
+        # starved by memory pressure (see verify_llama_allocation).
+        MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+            "($_sel | ${_prof}.min_healthy_vram_mb // .min_healthy_vram_mb) // empty" \
             "$MODELS_FILE" 2>/dev/null || echo "")
     fi
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
@@ -994,8 +1042,8 @@ setup_llama_server() {
         die "No internet connection. Cannot install llama-server."
     fi
 
-    log_info "[2/5] Installing prebuilt llama-server (Vulkan)..."
-    install_llama_prebuilt
+    log_info "[2/5] Installing llama-server for ${HB_PLATFORM_TAG}..."
+    install_llamacpp
 
     LLAMA_BIN=$(get_llama_bin_path)
     [[ -x "$LLAMA_BIN" ]] || die "llama-server binary not found at $LLAMA_BIN"
@@ -1040,18 +1088,30 @@ wait_for_llama_health() {
     return 1
 }
 
-# Helper: VRAM currently used on the discrete GPU, in MiB (echoes 0 if unreadable).
-# Picks the first DRM card whose total VRAM exceeds 4 GiB so an integrated GPU
-# (small carve-out) is never mistaken for the inference card.
-_gpu_vram_used_mb() {
-    local d
-    for d in /sys/class/drm/card*/device; do
-        [[ -r "$d/mem_info_vram_used" ]] || continue
-        [[ "$(cat "$d/mem_info_vram_total" 2>/dev/null || echo 0)" -gt 4294967296 ]] || continue
-        echo $(( $(cat "$d/mem_info_vram_used") / 1048576 ))
-        return 0
-    done
-    echo 0
+# Helper: GPU memory currently in use, in MiB.
+# Echoes nothing when the platform has no usable reading — callers must treat
+# empty as "unknown", never as zero. `mem_info_vram_*` is an amdgpu-only sysfs
+# interface, so on any other driver the old version of this returned 0 and every
+# comparison against it silently meant "starved".
+_gpu_mem_used_mb() {
+    case "${HB_GPU_DRIVER:-none}" in
+        amdgpu)
+            # First DRM card with more than 4 GiB total, so an integrated GPU
+            # (small carve-out) is never mistaken for the inference card.
+            local d
+            for d in /sys/class/drm/card*/device; do
+                [[ -r "$d/mem_info_vram_used" ]] || continue
+                [[ "$(cat "$d/mem_info_vram_total" 2>/dev/null || echo 0)" -gt 4294967296 ]] || continue
+                echo $(( $(cat "$d/mem_info_vram_used") / 1048576 ))
+                return 0
+            done
+            ;;
+        nvidia)
+            command -v nvidia-smi >/dev/null 2>&1 || return 0
+            nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null \
+                | head -1 | tr -dc '0-9'
+            ;;
+    esac
 }
 
 # Helper: guard against silent compute-buffer starvation.
@@ -1068,15 +1128,30 @@ _gpu_vram_used_mb() {
 verify_llama_allocation() {
     local health_url="$1" min_vram="$2"
     [[ -n "$min_vram" && "$min_vram" != "null" && "$min_vram" -gt 0 ]] 2>/dev/null || return 0
+
+    # A watermark you cannot measure is not a watermark. Unified-memory parts
+    # have no discrete VRAM figure at all, and a driver with no reader would
+    # compare against nothing and "fail" forever — restarting a perfectly
+    # healthy server twice on every single start.
+    if [[ "${HB_GPU_MEMORY:-none}" == "unified" ]]; then
+        log_info "Skipping the GPU memory watermark check: ${HB_GPU_DRIVER} memory is unified with system RAM."
+        return 0
+    fi
+    if [[ -z "$(_gpu_mem_used_mb)" ]]; then
+        log_info "Skipping the GPU memory watermark check: no reading available for driver '${HB_GPU_DRIVER:-none}'."
+        return 0
+    fi
+
     local attempt used
     for attempt in 1 2 3; do
         sleep 5  # let the allocation settle after the health endpoint comes up
-        used=$(_gpu_vram_used_mb)
+        used=$(_gpu_mem_used_mb)
+        [[ -n "$used" ]] || { log_info "GPU memory reading disappeared mid-check; treating allocation as OK."; return 0; }
         if [[ "$used" -ge "$min_vram" ]]; then
             log_info "llama-server allocation OK (${used} MiB ≥ ${min_vram} MiB healthy watermark)."
             return 0
         fi
-        log_warn "llama-server came up degraded: ${used} MiB < ${min_vram} MiB healthy watermark — Vulkan compute buffer likely starved by VRAM pressure."
+        log_warn "llama-server came up degraded: ${used} MiB < ${min_vram} MiB healthy watermark — compute buffer likely starved by GPU memory pressure."
         if [[ "$attempt" -lt 3 ]]; then
             log_warn "Restarting llama-server (retry ${attempt}/2); ExecStartPre will wait for VRAM to drain first..."
             systemctl restart llama-server
@@ -1372,6 +1447,18 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
+    # Resolve the browser rather than hardcoding Chrome's path: on architectures
+    # Google does not build Chrome for, this is chromium. Empty means no browser
+    # is installed, in which case the key is left alone rather than pointed at a
+    # binary that is not there.
+    local browser_path
+    browser_path=$(resolve_browser_path || true)
+    local jq_browser_patch=""
+    if [[ -n "$browser_path" ]]; then
+        jq_extra_args+=(--arg browser_path "$browser_path")
+        jq_browser_patch='| .browser.executablePath = $browser_path'
+    fi
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
@@ -1415,7 +1502,6 @@ patch_openclaw_config() {
         del(.models.providers.llamacpp.timeoutSeconds) |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
-        .browser.executablePath = "/usr/bin/google-chrome-stable" |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
@@ -1492,7 +1578,7 @@ patch_openclaw_config() {
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
         .tools.media.audio.models[0].timeoutSeconds = 30 |
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
-        '"$jq_token_patch"'
+        '"$jq_token_patch$jq_browser_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
@@ -2378,10 +2464,10 @@ case "${1:-}" in
         log_info "Model switch complete."
         ;;
     update_llama)
-        log_info "=== Updating llama-server to latest release ==="
+        log_info "=== Reinstalling llama-server at the pinned release ==="
         load_env
         systemctl stop llama-server 2>/dev/null || true
-        install_llama_prebuilt "true"
+        install_llamacpp "true"
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
         ;;

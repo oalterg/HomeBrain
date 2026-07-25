@@ -162,6 +162,10 @@ services:
     # Pinned like every other image in this stack. This one handles mail
     # credentials and was the only :latest left, so an upstream push could
     # swap it under a running box on the next pull.
+    #
+    # ARCH: amd64 only — the sole single-arch image in this file. On an arm64
+    # box the profile simply never activates and the dashboard's Email form
+    # says so (see inject_platform in app.py); everything else still runs.
     image: shenxn/protonmail-bridge:${PROTON_BRIDGE_TAG:-3.19.0-1}
     restart: unless-stopped
     ports:

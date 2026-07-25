@@ -458,7 +458,14 @@ def atomic_write_json(path, data, mode=0o644):
 def has_gpu(env):
     if env.get("HAS_GPU", "").lower() == "true":
         return True
-    return bool(glob.glob("/dev/dri/renderD*"))
+    # The platform record written by detect_platform() in common.sh. Globbing
+    # /dev/dri/renderD* used to stand in for this, but a render node is not a
+    # compute GPU — an RPi's VideoCore has one.
+    try:
+        with open(f"{INSTALL_DIR}/.platform.json") as f:
+            return bool(json.load(f).get("has_gpu"))
+    except (OSError, ValueError):
+        return False
 
 
 def main():

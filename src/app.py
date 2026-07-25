@@ -26,31 +26,60 @@ from flask_sock import Sock
 
 app = Flask(__name__)
 
-# --- GPU Detection ---
-def has_gpu() -> bool:
-    """Check if an AI-capable compute GPU is available.
+# --- Platform Record ---
+# Which hardware this is gets decided in exactly one place: detect_platform() in
+# common.sh, which writes /opt/homebrain/.platform.json (refreshed at boot by the
+# manager unit). Reading it here rather than re-probing is what keeps bash and
+# Python from disagreeing about what counts as a GPU — they used to, and bash
+# was the one that was wrong on anything that was not x86_64 + AMD.
+_PLATFORM_RECORD: dict | None = None
 
-    Reads HAS_GPU from env when set explicitly. Otherwise probes
-    /sys/class/drm/renderD*/device/driver and only accepts compute-capable
-    drivers (amdgpu / nvidia / i915 / xe). Display-only GPUs like the
-    Raspberry Pi VideoCore (v3d/vc4) are rejected — they expose a render
-    node but cannot run llama.cpp inference, and treating them as a GPU
-    leaves the dashboard's AI cards stuck in skeleton state.
+def get_platform() -> dict:
+    """The platform record: arch, gpu_driver, gpu_backend, gpu_memory, has_gpu.
+
+    Falls back to asking common.sh directly if the file has not been written yet
+    (fresh checkout, manager started before the first provision), then to a
+    no-GPU record. Cached for the process lifetime — hardware does not change
+    under a running manager.
+    """
+    global _PLATFORM_RECORD
+    if _PLATFORM_RECORD is not None:
+        return _PLATFORM_RECORD
+
+    record = None
+    try:
+        with open(f"{HOMEBRAIN_ROOT}/.platform.json") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        try:
+            out = subprocess.run(
+                ["/bin/bash", "-c",
+                 f"source {HOMEBRAIN_ROOT}/scripts/common.sh >/dev/null 2>&1 && emit_platform_json -"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+            record = json.loads(out)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            record = None
+
+    if not isinstance(record, dict) or "has_gpu" not in record:
+        record = {"arch": platform.machine(), "gpu_driver": "none",
+                  "gpu_backend": "none", "gpu_memory": "none",
+                  "platform_tag": f"{platform.machine()}-none", "has_gpu": False}
+    _PLATFORM_RECORD = record
+    return record
+
+def has_gpu() -> bool:
+    """Whether an AI-capable compute GPU is available.
+
+    An explicit HAS_GPU in the environment still wins, so an operator can force
+    the answer; otherwise it comes from the platform record.
     """
     val = os.environ.get("HAS_GPU", "").lower()
     if val in ("true", "1", "yes"):
         return True
     if val in ("false", "0", "no"):
         return False
-    import glob
-    ai_drivers = {"amdgpu", "nvidia", "i915", "xe"}
-    for path in glob.glob("/sys/class/drm/renderD*/device/driver"):
-        try:
-            if os.path.basename(os.readlink(path)) in ai_drivers:
-                return True
-        except OSError:
-            continue
-    return False
+    return bool(get_platform().get("has_gpu"))
 
 # Cache for delta-based GPU compute utilisation (avoids relying on gpu_busy_percent,
 # which reports spurious 92-100 % on GFX12/RDNA4/Navi44 hardware regardless of load).
@@ -102,6 +131,20 @@ def _amdgpu_compute_util() -> int:
     return _gpu_fdinfo_cache["util_pct"]
 
 def get_gpu_stats() -> dict:
+    """GPU utilisation, memory and temperature, read the way this driver exposes them.
+
+    The JSON keys are shared across drivers so the dashboard needs no per-driver
+    branch; `memory_label` carries the wording, because on a unified-memory part
+    "VRAM" is a category error — the GPU is using a slice of system RAM.
+    """
+    driver = get_platform().get("gpu_driver", "none")
+    if driver == "amdgpu":
+        return _gpu_stats_amdgpu()
+    if driver == "nvidia":
+        return _gpu_stats_nvidia()
+    return {"available": False}
+
+def _gpu_stats_amdgpu() -> dict:
     """Read GPU stats from sysfs — AMD amdgpu driver (no rocm-smi dependency)."""
     import glob as _glob
     import re as _re
@@ -122,11 +165,44 @@ def get_gpu_stats() -> dict:
         result["vram_used_gb"] = round(vram_used / (1024**3), 1)
         result["vram_total_gb"] = round(vram_total / (1024**3), 1)
         result["vram_percent"] = round(vram_used / vram_total * 100) if vram_total else 0
+        result["memory_label"] = "VRAM"
         temp_paths = _glob.glob(f"{base}/hwmon/hwmon*/temp1_input")
         if temp_paths:
             result["temp_c"] = round(int(open(temp_paths[0]).read().strip()) / 1000, 1)
         result["available"] = True
     except Exception:
+        pass
+    return result
+
+def _gpu_stats_nvidia() -> dict:
+    """Read GPU stats from nvidia-smi — one call, no NVML binding to install."""
+    result = {"available": False}
+    try:
+        out = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return result
+        util, used_mib, total_mib, temp = (
+            f.strip() for f in out.stdout.strip().splitlines()[0].split(",")
+        )
+        used_gb, total_gb = int(used_mib) / 1024, int(total_mib) / 1024
+        result["util_percent"] = int(util)
+        result["vram_used_gb"] = round(used_gb, 1)
+        result["vram_total_gb"] = round(total_gb, 1)
+        result["vram_percent"] = round(used_gb / total_gb * 100) if total_gb else 0
+        # On Grace-class parts this pool is shared with the CPU, so calling it
+        # VRAM would misrepresent both what it is and what is competing for it.
+        result["memory_label"] = (
+            "GPU memory" if get_platform().get("gpu_memory") == "unified" else "VRAM"
+        )
+        if temp.isdigit():
+            result["temp_c"] = float(temp)
+        result["available"] = True
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return result
 
@@ -365,11 +441,18 @@ ASSET_VERSION = _asset_version()
 
 @app.context_processor
 def inject_platform():
-    arch = platform.machine()
-    if arch == "aarch64":
-        product = {"product_name": "HomeCloud", "product_suffix": "Cloud"}
-    else:
+    # The two product names have always meant "with the AI stack" and "without
+    # it". Architecture was only ever a proxy for that, and a wrong one as soon
+    # as an aarch64 box has a compute GPU.
+    if has_gpu():
         product = {"product_name": "HomeBrain", "product_suffix": "Brain"}
+    else:
+        product = {"product_name": "HomeCloud", "product_suffix": "Cloud"}
+    # shenxn/protonmail-bridge publishes amd64 only — every other image in the
+    # compose file is multi-arch. The service is profile-gated so an arm64 box
+    # still comes up healthy; the Email form just must not tell the user to go
+    # and use a bridge that cannot start here.
+    product["proton_bridge"] = get_platform().get("arch") == "x86_64"
     return {"platform": product, "asset_v": ASSET_VERSION}
 
 def get_factory_password():
@@ -3892,7 +3975,7 @@ def custom_401(e):
     # mode so the page reads consistently with the rest of the dashboard.
     resp = Response(render_template_string("""
     <!DOCTYPE html>
-    <html lang="en" data-theme="light"><head><title>HomeBrain Access</title>
+    <html lang="en" data-theme="light"><head><title>{{ product }} Access</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>
@@ -4117,6 +4200,11 @@ def custom_401(e):
     {% endif %}
     </body></html>
     """, title=title, hint=hint,
+         # This handler is deliberately self-contained and so bypasses the
+         # inject_platform context processor — which means the product name has
+         # to be passed in, or the login gate (the first page an owner ever
+         # sees) hardcodes "HomeBrain" on a no-GPU box. Found on the RPi4.
+         product=("HomeBrain" if has_gpu() else "HomeCloud"),
          show_recovery=(is_setup_complete() and _recovery_configured()),
          password_rule=recovery.NEW_PASSWORD_RULE), 401)
     

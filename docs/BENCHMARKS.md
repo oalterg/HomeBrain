@@ -578,3 +578,93 @@ The base-default config shows the textbook eviction signature on b9990 (VRAM *dr
 - **UD-Q8_K_XL rejected** (−20% TG, headroom as low as 151 MiB); **ub4096 rejected** (VRAM cost, no dense-model PP gain); **n=3 rejected** (acceptance).
 - 131072 ctx is stress-clean on b9990 (hr 3541) but only headroom-marginal on b9381 (hr 811, unstressed) — revisit if/when the build moves.
 - **Upstream (b9990) verdict: compute flat, allocator very different** — lighter for dense/ub2048 regimes, evicting for the offloaded ub4096 default. No blind bumps; any move must re-stress every shipped config.
+
+---
+
+## 2026-07-25 — b10107 upgrade probe (latest release) + platform-record E2E
+
+Ran during the hardware-agnosticism E2E on `.58`. Started as "has upstream fixed the b9990/b10032
+eviction?" and ended somewhere more useful. **Superseded conclusion below — read to the end before
+acting on the first table.** b10107 does reproduce the eviction at `-ub 4096`; what the guarded
+re-run then showed is that **the pinned b9381 evicts too, 1-in-2**, and that `-ub 2048` fixes both.
+
+### b10107 vs b9381 — same session, same 51,824-token prompt, shipped default config
+
+Config: `Qwen3.6-35B-A3B-UD-Q5_K_XL` @80K, q8 KV, `-ot blk.20-39`, **`-ub 4096`** — i.e. the
+default as shipped, unmodified.
+
+| | b9381 (pinned) | b10107 (latest) |
+|---|---:|---:|
+| VRAM through the fill | 15406 → **15934** (rises, stable) | 15980 → **14423** (collapses) |
+| Sustained TG at depth | **25.60** | 20.80 (−19%) |
+| Deep-fill PP | **564.6** | 361.5 (−36%) |
+| Verdict | ✅ PASS | ❌ **EVICTS** |
+
+Same textbook signature as b9990/b10032: the compute buffer migrates to GTT partway through the
+fill and VRAM *drops* ~1.5 GB instead of growing. **The pin stays at b9381.** Three consecutive
+probes (b9990, b10032, b10107) now say the same thing — this is not a transient upstream bug, it is
+a durable consequence of the allocator rewrite meeting our `-ot` + `ub4096` regime. Any future bump
+has to be paired with re-tuning the 35B default off `ub4096` (MTP-as-default is the standing
+candidate), and every shipped config re-stressed. Not a free bump.
+
+### Incidental find: the box was already serving degraded
+
+The pre-test baseline read **24 t/s at idle-VRAM 15330 MiB**, not the documented ~29. The running
+llama-server process (up 1h20m) had logged
+`Vulkan_Host compute buffer size of 606.7344 MiB, does not match expectation of 1344.4258 MiB` —
+a starved compute buffer from an earlier start. A clean restart fixed it (15934 MiB, PP 565).
+
+Worth noting because **`verify_llama_allocation` did not catch this**: its watermark compares
+*total VRAM used* (15330) against `min_healthy_vram_mb` (15000) and passed, while the actual
+starvation was in the compute buffer, which that number does not see. The real signal is the
+journal line above. A watermark on total VRAM is a proxy, and this is the case where the proxy
+fails — see the follow-up note in `docs/plans/HARDWARE_AGNOSTIC.md` §8.
+
+### Guarded re-run — the first table was contaminated, and the conclusion changes
+
+The A/B above ran via the systemd unit, but the follow-up hardening sweep did not, and **two
+orphaned `llama-server` processes were competing for VRAM** through part of it (a backgrounded ssh
+was SIGHUP'd and left children behind). Every result from that sweep was discarded. The harness now
+enforces two guards, both of which the production unit already had and the harness did not:
+
+1. drain VRAM below 300 MiB before each start (mirrors the unit's `ExecStartPre` VRAM-settle gate);
+2. abort unless **exactly one** `llama-server` is running.
+
+Re-measured under those guards — same 51,824-token fill, same flags otherwise, ctx 81920, q8 KV:
+
+| build | `-ot` | `-ub` | idle | headroom | TG fresh → post-fill | fill PP | PP@2k | verdict |
+|---|---:|---:|---:|---:|---|---:|---:|---|
+| b9381 | 20 | 4096 | 15406 | 898 | 28.78 → 28.66 | 564.6 | 758.3 | PASS |
+| b9381 | 20 | 4096 | 15406 | 898 | 28.64 → **22.21** | 498.7 | — | ❌ **EVICTS** |
+| b9381 | 20 | 2048 | 15635 | 669 | 28.68 → 28.52 | 619.1 | 496.5 | PASS (3/3) |
+| b9381 | 19 | 4096 | 16121 | 183 | 27.93 → 27.91 | 624.4 | — | PASS |
+| b9381 | 18 | 4096 | 15559 | 745 | 27.32 → 27.39 | 619.7 | — | PASS |
+| b10107 | 20 | 4096 | 15948 | 356 | 29.00 → **22.47** | 365.2 | 781.5 | ❌ EVICTS |
+| **b10107** | **20** | **2048** | **15197** | **1107** | **29.12 → 28.97** | **625.0** | **617.7** | ✅ **PASS (2/2)** |
+| b10107 | 18 | 2048 | 14073 | **2231** | 28.07 → 27.84 | 607.5 | — | ✅ PASS |
+
+**The shipped default was never stable.** `b9381 + ot20 + ub4096` evicts on ~half of starts *on the
+pinned build*, from a byte-identical starting allocation (idle 15406 both times) — the divergence
+happens during the fill, when the compute buffer either stays put (VRAM → 15935) or relocates to
+GTT (VRAM → 14929). Three earlier probes read this as "newer builds broke our config"; it is more
+accurately "our config was a coin flip, and newer allocators lose the flip more often."
+
+`-ub 2048` is deterministic where `ub4096` is not: identical idle *and* identical post-fill VRAM
+across repeats, on both builds. The micro-batch sizes the compute buffer, and that buffer's
+relocation was the entire failure mode — so this is the lever that matches the mechanism, which is
+why extra `-ot` offload only helps sideways (it does stabilise `ub4096`, at 2–4% TG, by shrinking
+what has to fit around the buffer rather than shrinking the buffer).
+
+### Shipped (2026-07-25): pin → b10107, default → `-ub 2048`
+
+Versus the old default's **good** runs: sustained TG 28.66 → 28.97, headroom 898 → 1107 MiB,
+deep-fill PP 565 → 625 — and the 50% eviction risk removed. Versus its *expected* value (half its
+runs at 22.2 t/s) the gain is far larger. The single cost is shallow-prompt **PP@2k 758 → 618
+(−19%)**; b10107 recovers most of what `ub2048` gives up there (496 on b9381 → 618 on b10107),
+which is why the build bump and the micro-batch change ship together rather than separately.
+
+Conservative alternative if KV growth is the worry: `-ot blk.18-39` with `-ub 2048` on b10107 —
+**2231 MiB headroom** at ~−4% TG.
+
+Unmeasured / caveats: n=2–3 per cell, single session, one prompt shape. The eviction is stochastic,
+so "PASS 2/2" bounds the failure rate loosely, not tightly. Whisper was on CPU throughout.

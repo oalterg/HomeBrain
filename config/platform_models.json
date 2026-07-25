@@ -14,7 +14,7 @@
         "tg_ts_prose": 28.5,
         "pp_ts": 568,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q4 KV, -ub 2048, -ot blk.18-39, ctx 81920, whisper on CPU",
-        "notes": "Fast alternative (+32% over base) at the >=80K context the OpenClaw harness requires. MTP speculative decoding (b9381). Sustained 38.3 t/s, eviction-proof: verified across a 61K-token deep-prompt stress with VRAM flat at ~15038/16304 MiB (headroom ~1266 MiB). REQUIRES q4 KV at 80K — q8 KV is too tight (hr <=103 MiB, evicts) and -ub 4096 + MTP OOMs. Win/neutral by workload (big on structured/code/tool, ~neutral on prose 28.5). Trade vs the base default: q4 KV (lower attention precision than q8) for the speed. Needs whisper off the GPU (--no-gpu). Switch in via /api/ai/model/switch. See docs/BENCHMARKS.md (2026-06-17)."
+        "notes": "Fast alternative (+32% over base) at the >=80K context the OpenClaw harness requires. MTP speculative decoding (b9381). Sustained 38.3 t/s, eviction-proof: verified across a 61K-token deep-prompt stress with VRAM flat at ~15038/16304 MiB (headroom ~1266 MiB). REQUIRES q4 KV at 80K \u2014 q8 KV is too tight (hr <=103 MiB, evicts) and -ub 4096 + MTP OOMs. Win/neutral by workload (big on structured/code/tool, ~neutral on prose 28.5). Trade vs the base default: q4 KV (lower attention precision than q8) for the speed. Needs whisper off the GPU (--no-gpu). Switch in via /api/ai/model/switch. See docs/BENCHMARKS.md (2026-06-17)."
       },
       "default": false
     },
@@ -53,12 +53,19 @@
       "min_size_bytes": 26000000000,
       "context_window": 81920,
       "min_healthy_vram_mb": 15000,
-      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 4096 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "profiles": {
+        "aarch64-cuda": {
+          "context_window": 131072,
+          "extra_flags": "--parallel 1 --jinja -ngl 999 -fa on --no-mmap --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 2048 -ub 2048 --threads 10 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+          "notes": "UNMEASURED \u2014 derived from upstream guidance, not benchmarked. No HomeBrain box with this platform tag exists yet; treat every number here as a starting point, not a result. Rationale for each departure from the x86_64-vulkan flags: no -ot (128 GB unified holds the whole model, so nothing goes to CPU \u2014 the offload regex exists only because 16 GB cannot), -ngl 999 (same reason), full 131072 context (the 81920 cap is a VRAM-eviction ceiling that does not apply), --no-mmap (effectively mandatory on unified memory), -ub 2048 (upstream DGX Spark tuning), --threads 10 (the 10 Cortex-X925 performance cores, not all 20). min_healthy_vram_mb is deliberately not restated and so inherits 15000 from the model, which is inert here \u2014 verify_llama_allocation skips the watermark entirely on unified memory, which is the single place that guard belongs. Benchmark before trusting."
+        }
+      },
       "benchmark": {
-        "tg_ts": 29.1,
-        "pp_ts": 696,
-        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, q8 KV, -ub 4096, -ot blk.20-39, ctx 81920, whisper on CPU",
-        "notes": "DEFAULT (2026-06-17). Base Q5_K_XL at the >=80K context the OpenClaw harness requires, best KV numerics (q8). Sustained 29.1 t/s, eviction-proof: verified across a 61K-token deep-prompt stress with VRAM stable at ~16257/16304 MiB (idle headroom ~900 MiB). Needs whisper off the GPU (--no-gpu) for the headroom — 96K+ evicts, 80K is the safe ceiling. For +32% at the same context (q4 KV trade) switch to Qwen3.6-35B-A3B-MTP-UD-Q5_K_XL. See docs/BENCHMARKS.md (2026-06-17)."
+        "tg_ts": 28.97,
+        "pp_ts": 617.7,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b10107, q8 KV, -ub 2048, -ot blk.20-39, ctx 81920, whisper on CPU",
+        "notes": "DEFAULT (2026-07-25). Moved from -ub 4096/b9381 to -ub 2048/b10107 after the shipped ub4096 config was measured EVICTING 1-in-2 on the pinned build itself (guarded, single-server, drained: 28.7 t/s sustained on a good run vs 22.2 t/s and VRAM -477 MiB on a bad one, from a byte-identical starting allocation). -ub 2048 is deterministic instead: two runs produced identical idle (15197) and identical post-fill (15230) VRAM, 2/2 PASS on b10107, 3/3 on b9381. Net vs the old default's GOOD runs: sustained TG 28.7 -> 29.0, headroom 898 -> 1107 MiB, deep-fill PP 565 -> 625, and the 50%% eviction risk removed. The one cost is shallow-prompt PP@2k 758 -> 618 (-19%%); the micro-batch is what sizes the compute buffer, and that buffer relocating to GTT mid-fill was the whole failure. For maximum margin (headroom 2231) use -ot blk.18-39 with -ub 2048 at ~-4%% TG. See docs/BENCHMARKS.md (2026-07-25)."
       },
       "default": true
     },
@@ -116,7 +123,7 @@
         "tg128_ts": 30.0,
         "pp512_ts": 430,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, DDR4, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9186/b9381, ngl=99, MTP n_max=2, ctx 32768",
-        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local — nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. MTP CLIFF: the draft-mtp speculative path accelerates ONLY at ctx <= ~34816 (cliff between 34816 and 36864); above it TG snaps back to the ~17.5 baseline. ctx was 49152 (over the cliff, MTP gave ~+2%); lowered to 32768 to capture the full MTP gain: ~17.1 -> ~30 t/s (+75%) with n_max=2, q4_0 KV. Crossing any of {ctx>~35K, n_max>=3, q8 KV} silently disables speculation. NOT fixed by b9381 (DeltaNet-specific; the MoE 35B cliff WAS fixed by b9381). See docs/BENCHMARKS.md '27B cliff localization'."
+        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local \u2014 nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. MTP CLIFF: the draft-mtp speculative path accelerates ONLY at ctx <= ~34816 (cliff between 34816 and 36864); above it TG snaps back to the ~17.5 baseline. ctx was 49152 (over the cliff, MTP gave ~+2%); lowered to 32768 to capture the full MTP gain: ~17.1 -> ~30 t/s (+75%) with n_max=2, q4_0 KV. Crossing any of {ctx>~35K, n_max>=3, q8 KV} silently disables speculation. NOT fixed by b9381 (DeltaNet-specific; the MoE 35B cliff WAS fixed by b9381). See docs/BENCHMARKS.md '27B cliff localization'."
       },
       "default": false
     },
@@ -133,7 +140,7 @@
         "tg_ts_real": 47.1,
         "pp_ts": 1199,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9381, MTP n_max=2, q8_0 KV, -ub 2048, ctx 81920, whisper on CPU",
-        "notes": "Small/fast option: Qwen3.5-9B (NOT Qwen3.6 — no 9B exists in that generation). Hybrid arch like the 27B: 24 linear-attention + 8 full-attention layers, so the KV cache is tiny and -ngl 99 is MANDATORY (partial offload breaks the fused linear-attention kernel). No MTP context cliff on this model (unlike the 27B): speculation works at 80K+ with q8 KV, greedy acceptance ~86%. Sustained 58.8 t/s greedy / ~47-51 t/s production samplers (2x the 35B default, ~1.55x the 35B MTP), PP ~1200. Eviction-proof: 61K-token deep-prompt stress with VRAM flat at 14551/16304 MiB (headroom ~1750). ub4096 and UD-Q8_K_XL both rejected (VRAM cost / -20% TG). Meets the >=80K OpenClaw harness requirement. See docs/BENCHMARKS.md (2026-07-15)."
+        "notes": "Small/fast option: Qwen3.5-9B (NOT Qwen3.6 \u2014 no 9B exists in that generation). Hybrid arch like the 27B: 24 linear-attention + 8 full-attention layers, so the KV cache is tiny and -ngl 99 is MANDATORY (partial offload breaks the fused linear-attention kernel). No MTP context cliff on this model (unlike the 27B): speculation works at 80K+ with q8 KV, greedy acceptance ~86%. Sustained 58.8 t/s greedy / ~47-51 t/s production samplers (2x the 35B default, ~1.55x the 35B MTP), PP ~1200. Eviction-proof: 61K-token deep-prompt stress with VRAM flat at 14551/16304 MiB (headroom ~1750). ub4096 and UD-Q8_K_XL both rejected (VRAM cost / -20% TG). Meets the >=80K OpenClaw harness requirement. See docs/BENCHMARKS.md (2026-07-15)."
       },
       "default": false
     }

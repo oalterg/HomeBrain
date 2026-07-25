@@ -37,6 +37,8 @@ jobs:
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
         run: bash scripts/tests/test_update_guard.sh
+      - name: platform detection (fixture sysfs trees)
+        run: bash scripts/tests/test_platform_detect.sh
       - name: backup dir guard (internal-storage restore)
         run: bash scripts/tests/test_restore_internal.sh
       - name: backup retention, off-site copy + resume semantics
