@@ -1646,21 +1646,25 @@ def backup_offsite_test():
 
 
 def offsite_is_syncing():
-    """True if a mirror (scheduled, resumed, or just-triggered) currently
-    holds the off-site lock. Same lock file and non-blocking-flock semantics
-    as common.sh:offsite_mirror, so this can never disagree with what
-    actually has the remote busy.
+    """True if a mirror (scheduled, resumed, or just-triggered) is running.
+
+    Reads the PID file common.sh:offsite_mirror publishes. Deliberately does
+    NOT probe the mirror's lock file: testing that with a real flock means
+    briefly holding it, and a mirror starting inside that window would find it
+    taken, log "already running" and return success — the act of displaying
+    status would silently skip an off-site copy. Read-only here, so a status
+    poll can never influence a backup.
+
+    The PID is checked for liveness because a killed mirror cannot clean up
+    after itself. Its /var/run home is tmpfs, so a reboot mid-mirror clears
+    the file rather than leaving a permanent phantom "syncing".
     """
     try:
-        with open("/var/run/homebrain-offsite.lock", "a") as f:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(f, fcntl.LOCK_UN)
-                return False
-            except OSError:
-                return True
-    except OSError:
+        with open("/var/run/homebrain-offsite.running") as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
         return False
+    return os.path.isdir(f"/proc/{pid}")
 
 
 @app.route("/api/backup/offsite/status")
