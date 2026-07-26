@@ -302,6 +302,7 @@ const POLLERS = [
     [connRefresh, 15000],
     [channelRefresh, 15000],
     [pollLogsIfVisible, 3000],
+    [pollOffsiteStatusIfVisible, 15000],
 ];
 let pollTimers = [];
 
@@ -339,6 +340,7 @@ function openTab(id) {
         loadBackups();
         loadBackupConfig();
         loadOffsiteConfig();
+        loadOffsiteStatus();
         loadReplicaStatus();
         loadDiskStats();
         loadOpenClawBackupStatus();
@@ -1855,6 +1857,36 @@ async function loadOffsiteConfig() {
     } catch (e) { /* silent */ }
 }
 
+async function loadOffsiteStatus() {
+    const el = document.getElementById('os-sync-status');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/backup/offsite/status', { credentials: 'include' });
+        const d = await res.json();
+        if (!d.configured) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        el.style.color = '';
+        if (d.syncing) {
+            el.innerText = '🔄 Off-site sync in progress…';
+        } else if (d.last_sync_ts) {
+            const when = new Date(d.last_sync_ts * 1000).toLocaleString();
+            if (d.last_sync_ok) {
+                el.innerText = `✅ Last synced ${when}`;
+            } else {
+                el.style.color = 'var(--danger)';
+                el.innerText = `⚠️ Last sync failed (${when}) — check the backup log`;
+            }
+        } else {
+            el.innerText = 'Not yet synced.';
+        }
+    } catch (e) { el.style.display = 'none'; }
+}
+
+function pollOffsiteStatusIfVisible() {
+    const backupTab = document.getElementById('backup');
+    if (backupTab && backupTab.classList.contains('active')) loadOffsiteStatus();
+}
+
 function updateOffsiteUI() {
     const labels = {
         sftp:   ['Host (host or host:port)', 'backup.example.com', 'Username', 'Password'],
@@ -1976,18 +2008,25 @@ async function loadBackups() {
     try {
         const res = await fetch('/api/backups/list', { credentials: 'include' });
         const list = await res.json();
+        const localNames = new Set(list.map(b => b.name));
 
-        // Archives that exist only off-site — the drive-is-dead case. Fetched
-        // separately because the remote can be slow or down, and that must not
-        // stop the local list from rendering.
-        let remote = [];
+        // Archives on the off-site remote. Fetched separately because the
+        // remote can be slow or down, and that must not stop the local list
+        // from rendering. An archive already present locally is annotated
+        // with offsite:true rather than skipped — the ☁️ marker below means
+        // "this is off-site protected", not just "not on this drive". The
+        // `remote` flag keeps its narrower original meaning (no local copy,
+        // so restoring it means a download first) for confirmRestore below.
+        let offsiteOnly = [];
         try {
             const rres = await fetch('/api/backups/offsite/list', { credentials: 'include' });
             if (rres.ok) {
                 const rlist = await rres.json();
                 if (Array.isArray(rlist)) {
-                    const localNames = new Set(list.map(b => b.name));
-                    remote = rlist.filter(b => !localNames.has(b.name));
+                    const offsiteNames = new Set(rlist.map(b => b.name));
+                    list.forEach(b => { b.offsite = offsiteNames.has(b.name); });
+                    offsiteOnly = rlist.filter(b => !localNames.has(b.name))
+                        .map(b => ({ ...b, remote: true, offsite: true }));
                 }
             }
         } catch (e) { /* off-site listing is best-effort */ }
@@ -1995,7 +2034,7 @@ async function loadBackups() {
         const sel = document.getElementById('backup-list');
         sel.innerHTML = '';
         backupIndex = {};
-        list.concat(remote).forEach(b => {
+        list.concat(offsiteOnly).forEach(b => {
             backupIndex[b.name] = b;
             const opt = document.createElement('option');
             opt.value = b.name;
@@ -2003,7 +2042,7 @@ async function loadBackups() {
             // old password — say so in the list rather than letting the user
             // discover it at the passphrase prompt.
             const stale = b.needs_old_passphrase ? ' — needs previous password' : '';
-            const where = b.remote ? '☁️ ' : '';
+            const where = b.offsite ? '☁️ ' : '';
             opt.innerText = `${where}${b.encrypted ? '🔒 ' : ''}${b.name} (${b.type}, ${b.size})${stale}`;
             sel.appendChild(opt);
         });

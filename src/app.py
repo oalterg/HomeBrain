@@ -1645,6 +1645,53 @@ def backup_offsite_test():
     return jsonify({"status": "success"})
 
 
+def offsite_is_syncing():
+    """True if a mirror (scheduled, resumed, or just-triggered) is running.
+
+    Reads the PID file common.sh:offsite_mirror publishes. Deliberately does
+    NOT probe the mirror's lock file: testing that with a real flock means
+    briefly holding it, and a mirror starting inside that window would find it
+    taken, log "already running" and return success — the act of displaying
+    status would silently skip an off-site copy. Read-only here, so a status
+    poll can never influence a backup.
+
+    The PID is checked for liveness because a killed mirror cannot clean up
+    after itself. Its /var/run home is tmpfs, so a reboot mid-mirror clears
+    the file rather than leaving a permanent phantom "syncing".
+    """
+    try:
+        with open("/var/run/homebrain-offsite.running") as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    return os.path.isdir(f"/proc/{pid}")
+
+
+@app.route("/api/backup/offsite/status")
+@limiter.limit("30 per minute")
+def backup_offsite_status():
+    """Last-mirror outcome + whether one is running right now, for the
+    dashboard's Off-site Copy status line. Cheap: a lock probe and a read of
+    the small state file offsite_mirror already writes on every run — no
+    rclone invocation, so this is safe to poll.
+    """
+    env = get_env_config()
+    if env.get("OFFSITE_ENABLED", "false") != "true":
+        return jsonify({"configured": False})
+    state = {}
+    try:
+        with open("/var/lib/homebrain/offsite.json") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return jsonify({
+        "configured": True,
+        "syncing": offsite_is_syncing(),
+        "last_sync_ts": state.get("ts"),
+        "last_sync_ok": state.get("ok"),
+    })
+
+
 @app.route("/api/backup/replica", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def backup_replica():

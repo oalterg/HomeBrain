@@ -1144,9 +1144,15 @@ offsite_sync() {
     # Leading / anchors the patterns to the drive's top level and --max-depth
     # stops recursion — same scope as local retention's `find -maxdepth 1`.
     # Without both, archives inside subdirectories would get mirrored too.
+    # nextcloud_backup* is the legacy full-archive name, and backup.sh's local
+    # retention counts it in the same keep-N pool as homebrain_backup* — so it
+    # is a full backup here too. Leaving it out of this selection (and out of
+    # the prune below, as an earlier revision did) copies legacy archives
+    # off-site and then never prunes them: the remote grows without bound.
     local newest_full
     newest_full=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \
-        -name 'homebrain_backup*.tar.gz*' ! -name 'homebrain_backup_system_*' \
+        \( -name 'homebrain_backup*.tar.gz*' -o -name 'nextcloud_backup*.tar.gz*' \) \
+        ! -name 'homebrain_backup_system_*' \
         -printf '%T@ %f\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
     # --no-update-modtime: without it, a file that is still sitting locally
     # gets its remote ModTime silently bumped to "now" on every sync even
@@ -1160,14 +1166,22 @@ offsite_sync() {
     fi
     rclone copy "$BACKUP_MOUNTDIR" "$remote" --no-update-modtime \
         --max-depth 1 \
-        --include '/homebrain_backup_system_*.tar.gz*' \
-        --include '/nextcloud_backup*.tar.gz*' || return 1
+        --include '/homebrain_backup_system_*.tar.gz*' || return 1
 
     # Off-site only ever needs the latest full archive — restore.sh always
     # offers the newest available — so this prunes down to one instead of
     # tracking an age window (a superseded archive could otherwise sit
     # off-site, having cost upload bandwidth, until OFFSITE_KEEP_DAYS passed).
-    offsite_prune_full "$remote"
+    #
+    # Gated on there BEING a local full archive. With none, the copy above was
+    # a no-op and the newest remote archive is the only copy of the user's data
+    # left anywhere — pruning then would delete good older archives at exactly
+    # the moment the local drive is gone, i.e. a local failure propagating into
+    # a remote deletion. That is the class of bug the copy-not-sync rule above
+    # exists to prevent, and it must not sneak back in through retention.
+    if [[ -n "$newest_full" ]]; then
+        offsite_prune_full "$remote"
+    fi
 
     # Bound system snapshots on their own schedule instead of tracking local
     # state, so a local deletion can never propagate. Never touch anything on
@@ -1193,6 +1207,7 @@ offsite_prune_full() {
     listing=$(rclone lsjson "$remote" --files-only --max-depth 1 \
         --filter '- /homebrain_backup_system_*.tar.gz*' \
         --filter '+ /homebrain_backup*.tar.gz*' \
+        --filter '+ /nextcloud_backup*.tar.gz*' \
         --filter '- *' 2>/dev/null) || return 0
     jq -r 'sort_by(.ModTime) | reverse | .[1:][].Path' <<<"$listing" 2>/dev/null \
         | while IFS= read -r old; do
@@ -1268,6 +1283,16 @@ ensure_rclone() {
 
 OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"
 OFFSITE_LOCK_FILE="/var/run/homebrain-offsite.lock"
+# Holds the PID of the running mirror, for readers that want to report "a
+# mirror is in progress" (the dashboard's Off-site status line).
+#
+# Deliberately NOT the lock file: probing that with a real flock means briefly
+# holding it, and a mirror starting in that window sees it taken, logs "already
+# running" and returns success — a silently skipped off-site copy caused by
+# looking at it. This file is only ever written by the mirror and read by
+# everyone else. Lives in /var/run (tmpfs), so a reboot mid-mirror clears it
+# instead of leaving a permanent phantom "syncing".
+OFFSITE_RUN_FILE="/var/run/homebrain-offsite.running"
 
 # Run the mirror under the off-site lock and record the outcome.
 #
@@ -1286,12 +1311,15 @@ offsite_mirror() {
         return 0
     fi
     log_info "Mirroring backups off-site (${OFFSITE_TYPE:-unset})..."
+    printf '%d\n' "$$" > "$OFFSITE_RUN_FILE" 2>/dev/null || true
     if offsite_sync; then
+        rm -f "$OFFSITE_RUN_FILE" 2>/dev/null || true
         printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
             && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
         log_info "Off-site mirror complete."
         return 0
     fi
+    rm -f "$OFFSITE_RUN_FILE" 2>/dev/null || true
     printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
         && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
     log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."

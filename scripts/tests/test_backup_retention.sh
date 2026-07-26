@@ -290,6 +290,70 @@ else
     ok "common.sh uses copy, not sync"
 fi
 
+# ── Retention edge cases (these reshape the remote, so they run last) ───────
+
+echo "== legacy nextcloud_backup* archives are pruned like full backups =="
+# backup.sh's local retention counts nextcloud_backup* in the same keep-N pool
+# as homebrain_backup*, so off-site must treat it as a full backup too. An
+# earlier revision copied it off-site but excluded it from every prune path,
+# which grew the remote without bound.
+rm -f "$TMP"/local/*.tar.gz.gpg "$REMOTE"/*.tar.gz.gpg
+echo "payload-legacy" > "$TMP/local/nextcloud_backup_2026-06-01.tar.gz.gpg"
+offsite_sync >/dev/null 2>&1
+if [ -f "$REMOTE/nextcloud_backup_2026-06-01.tar.gz.gpg" ]; then
+    ok "legacy archive copied off-site"
+else
+    bad "legacy archive copied off-site (missing on remote)"
+fi
+sleep 1; echo "payload-2026-07-10" > "$TMP/local/homebrain_backup_2026-07-10.tar.gz.gpg"
+offsite_sync >/dev/null 2>&1
+if [ ! -f "$REMOTE/nextcloud_backup_2026-06-01.tar.gz.gpg" ]; then
+    ok "superseded legacy archive pruned (not left to grow forever)"
+else
+    bad "superseded legacy archive pruned (still on the remote)"
+fi
+
+echo "== a dead local drive never triggers a remote prune =="
+# The copy-not-sync rule exists so a local failure cannot propagate into a
+# remote deletion. Retention must not sneak that back in: with no local full
+# archive the newest remote one is the only copy of the user's data left, and
+# the older ones beside it are the only redundancy.
+cp "$TMP/local/homebrain_backup_2026-07-10.tar.gz.gpg" \
+   "$REMOTE/homebrain_backup_2026-07-09.tar.gz.gpg"
+before=$(find "$REMOTE" -name 'homebrain_backup_*.tar.gz.gpg' | wc -l | tr -d ' ')
+rm -f "$TMP"/local/*.tar.gz.gpg          # the drive dies
+offsite_sync >/dev/null 2>&1
+after=$(find "$REMOTE" -name 'homebrain_backup_*.tar.gz.gpg' | wc -l | tr -d ' ')
+if [ "$before" = "$after" ] && [ "$after" -gt 1 ]; then
+    ok "no local full archive means no remote prune (kept $after)"
+else
+    bad "no local full archive means no remote prune (went $before -> $after)"
+fi
+
+echo "== the mirror publishes a run-file readers can poll without interfering =="
+# The dashboard's status line must never probe the mirror's LOCK: taking it,
+# even briefly, makes a mirror starting in that window see it held, log
+# "already running" and return success — displaying status would silently skip
+# an off-site copy. The mirror publishes its PID instead; readers only read.
+export OFFSITE_RUN_FILE="$TMP/offsite.running"
+rm -f "$OFFSITE_LOCK_FILE"
+if grep -q 'OFFSITE_RUN_FILE' "$COMMON"; then
+    ok "common.sh publishes a run-file"
+else
+    bad "common.sh publishes a run-file"
+fi
+( offsite_mirror ) >/dev/null 2>&1
+if [ ! -f "$OFFSITE_RUN_FILE" ]; then
+    ok "run-file cleared once the mirror finishes"
+else
+    bad "run-file cleared once the mirror finishes (left behind -> phantom 'syncing')"
+fi
+if grep -q 'homebrain-offsite.lock' "$SCRIPT_DIR/../../src/app.py" 2>/dev/null; then
+    bad "app.py still probes the mirror's lock file (can cancel a mirror)"
+else
+    ok "app.py does not touch the mirror's lock file"
+fi
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]
