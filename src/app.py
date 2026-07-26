@@ -1645,6 +1645,49 @@ def backup_offsite_test():
     return jsonify({"status": "success"})
 
 
+def offsite_is_syncing():
+    """True if a mirror (scheduled, resumed, or just-triggered) currently
+    holds the off-site lock. Same lock file and non-blocking-flock semantics
+    as common.sh:offsite_mirror, so this can never disagree with what
+    actually has the remote busy.
+    """
+    try:
+        with open("/var/run/homebrain-offsite.lock", "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return False
+            except OSError:
+                return True
+    except OSError:
+        return False
+
+
+@app.route("/api/backup/offsite/status")
+@limiter.limit("30 per minute")
+def backup_offsite_status():
+    """Last-mirror outcome + whether one is running right now, for the
+    dashboard's Off-site Copy status line. Cheap: a lock probe and a read of
+    the small state file offsite_mirror already writes on every run — no
+    rclone invocation, so this is safe to poll.
+    """
+    env = get_env_config()
+    if env.get("OFFSITE_ENABLED", "false") != "true":
+        return jsonify({"configured": False})
+    state = {}
+    try:
+        with open("/var/lib/homebrain/offsite.json") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return jsonify({
+        "configured": True,
+        "syncing": offsite_is_syncing(),
+        "last_sync_ts": state.get("ts"),
+        "last_sync_ok": state.get("ok"),
+    })
+
+
 @app.route("/api/backup/replica", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def backup_replica():
