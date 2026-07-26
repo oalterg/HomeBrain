@@ -1113,8 +1113,15 @@ offsite_env() {
     esac
 }
 
-# Mirror the local archive set to the remote. Local retention already decides
-# what to keep, so a plain filtered sync gives remote retention for free.
+# Mirror the local archive set to the remote.
+#
+# Full/data-only archives (multi-GB) are scoped to the single newest one
+# before every copy. Local retention keeps the last 2 around for its own
+# reasons (backup.sh: "Keep: 2") — without this scoping, the second-newest
+# would get re-uploaded and immediately pruned again on every hourly resume
+# tick for as long as it sits on the drive, burning a home uplink on a
+# transfer that is deleted the moment it lands. System snapshots (~70MB) are
+# cheap, so they keep the simpler blanket copy + age-based window.
 offsite_sync() {
     command -v rclone >/dev/null || { log_warn "rclone is not installed."; return 1; }
     # At point of use, because that is the only place that reaches every box.
@@ -1137,21 +1144,62 @@ offsite_sync() {
     # Leading / anchors the patterns to the drive's top level and --max-depth
     # stops recursion — same scope as local retention's `find -maxdepth 1`.
     # Without both, archives inside subdirectories would get mirrored too.
-    rclone copy "$BACKUP_MOUNTDIR" "$remote" \
+    local newest_full
+    newest_full=$(find "$BACKUP_MOUNTDIR" -maxdepth 1 -type f \
+        -name 'homebrain_backup*.tar.gz*' ! -name 'homebrain_backup_system_*' \
+        -printf '%T@ %f\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    # --no-update-modtime: without it, a file that is still sitting locally
+    # gets its remote ModTime silently bumped to "now" on every sync even
+    # though nothing was transferred (rclone's own behavior — tested live,
+    # logged as "Updated modification time in destination"). Both retention
+    # passes below key off ModTime, so that refresh would permanently reset
+    # the age clock for as long as local retention keeps the file around.
+    if [[ -n "$newest_full" ]]; then
+        rclone copy "$BACKUP_MOUNTDIR" "$remote" --no-update-modtime \
+            --max-depth 1 --include "/${newest_full}" || return 1
+    fi
+    rclone copy "$BACKUP_MOUNTDIR" "$remote" --no-update-modtime \
         --max-depth 1 \
-        --include '/homebrain_backup*.tar.gz*' \
+        --include '/homebrain_backup_system_*.tar.gz*' \
         --include '/nextcloud_backup*.tar.gz*' || return 1
 
-    # Bound the remote on its own schedule instead of tracking local state, so
-    # a local deletion can never propagate. Archives are encrypted at rest, so
-    # a longer window costs only space. Same include patterns: never touch
-    # anything on the remote that HomeBrain did not put there.
+    # Off-site only ever needs the latest full archive — restore.sh always
+    # offers the newest available — so this prunes down to one instead of
+    # tracking an age window (a superseded archive could otherwise sit
+    # off-site, having cost upload bandwidth, until OFFSITE_KEEP_DAYS passed).
+    offsite_prune_full "$remote"
+
+    # Bound system snapshots on their own schedule instead of tracking local
+    # state, so a local deletion can never propagate. Never touch anything on
+    # the remote that HomeBrain did not put there.
     rclone delete "$remote" \
         --min-age "${OFFSITE_KEEP_DAYS:-90}d" \
         --max-depth 1 \
-        --include '/homebrain_backup*.tar.gz*' \
-        --include '/nextcloud_backup*.tar.gz*' 2>/dev/null \
+        --include '/homebrain_backup_system_*.tar.gz*' 2>/dev/null \
         || log_warn "Off-site retention pass failed (copies are safe; remote may grow)."
+}
+
+# Delete every off-site full/data-only archive except the newest (by remote
+# ModTime). rclone has no "keep newest N" primitive, so this lists, sorts, and
+# removes the rest one file at a time. System snapshots are excluded — they
+# keep the age-based window in offsite_sync above.
+offsite_prune_full() {
+    local remote="$1" listing
+    # --filter, not --include/--exclude together: rclone's own warning calls
+    # that combination "indeterminate" order, and it is not kidding — tested
+    # live, it let a system snapshot's ModTime win the "newest" comparison
+    # below and get the newest FULL archive deleted as superseded. --filter
+    # rules apply in the given order with a first-match-wins.
+    listing=$(rclone lsjson "$remote" --files-only --max-depth 1 \
+        --filter '- /homebrain_backup_system_*.tar.gz*' \
+        --filter '+ /homebrain_backup*.tar.gz*' \
+        --filter '- *' 2>/dev/null) || return 0
+    jq -r 'sort_by(.ModTime) | reverse | .[1:][].Path' <<<"$listing" 2>/dev/null \
+        | while IFS= read -r old; do
+            [[ -n "$old" ]] || continue
+            rclone deletefile "${remote}/${old}" \
+                || log_warn "Could not prune superseded off-site archive: $old"
+        done
 }
 
 # Install a chunk-capable rclone, replacing the distro package if needed.

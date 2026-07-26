@@ -48,6 +48,7 @@ export OFFSITE_PATH="backups"
 REMOTE="$TMP/remote/backups"
 
 archive() { echo "payload-$1" > "$TMP/local/homebrain_backup_$1.tar.gz.gpg"; }
+archive_system() { echo "sys-$1" > "$TMP/local/homebrain_backup_system_$1.tar.gz.gpg"; }
 
 # ── Local prune guard (no rclone needed) ────────────────────────────────────
 
@@ -108,17 +109,15 @@ fi
 
 echo "== the copy reaches the remote =="
 archive 2026-07-01
-archive 2026-07-02
 if offsite_sync >/dev/null 2>&1; then
     ok "offsite_sync succeeds"
 else
     bad "offsite_sync succeeds (returned non-zero)"
 fi
-if [ -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ] &&
-   [ -f "$REMOTE/homebrain_backup_2026-07-02.tar.gz.gpg" ]; then
-    ok "both archives copied"
+if [ -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ]; then
+    ok "archive copied"
 else
-    bad "both archives copied (missing on remote)"
+    bad "archive copied (missing on remote)"
 fi
 
 echo "== a local wipe does NOT delete the remote copy =="
@@ -129,28 +128,69 @@ if offsite_sync >/dev/null 2>&1; then
 else
     bad "offsite_sync succeeds after local wipe (returned non-zero)"
 fi
-remaining=$(find "$REMOTE" -name '*.tar.gz.gpg' 2>/dev/null | wc -l | tr -d ' ')
-if [ "$remaining" = "2" ]; then
-    ok "remote still holds both archives after the local drive emptied"
+if [ -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ]; then
+    ok "remote still holds the archive after the local drive emptied"
 else
-    bad "remote still holds both archives (found $remaining, expected 2)"
+    bad "remote still holds the archive after the local drive emptied"
 fi
 
-echo "== age-based retention prunes the remote =="
-# Backdate one remote archive past the window; it should go, the other stay.
-touch -d '200 days ago' "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" 2>/dev/null \
-    || touch -A -2000000 "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" 2>/dev/null
-archive 2026-07-03
-OFFSITE_KEEP_DAYS=90 offsite_sync >/dev/null 2>&1
-if [ ! -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ]; then
-    ok "archive older than OFFSITE_KEEP_DAYS pruned"
+echo "== off-site keeps only the newest full backup =="
+# Local retention keeps the last 2 full archives around (backup.sh: Keep: 2).
+# Off-site only ever wants the latest: disaster recovery restores the newest
+# anyway, and a superseded multi-GB archive should not keep costing upload
+# bandwidth on a home uplink until an age window happens to catch up with it.
+sleep 1; archive 2026-07-02
+sleep 1; archive 2026-07-03
+offsite_sync >/dev/null 2>&1
+if [ -f "$REMOTE/homebrain_backup_2026-07-03.tar.gz.gpg" ]; then
+    ok "newest full archive kept"
 else
-    bad "archive older than OFFSITE_KEEP_DAYS pruned (still present)"
+    bad "newest full archive kept (missing)"
 fi
-if [ -f "$REMOTE/homebrain_backup_2026-07-02.tar.gz.gpg" ]; then
-    ok "archive inside the window kept"
+if [ ! -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ] && [ ! -f "$REMOTE/homebrain_backup_2026-07-02.tar.gz.gpg" ]; then
+    ok "superseded full archives pruned"
 else
-    bad "archive inside the window kept (was deleted)"
+    bad "superseded full archives pruned (an older one is still on the remote)"
+fi
+
+echo "== a superseded archive still sitting locally is never re-uploaded =="
+# The bug this guards: with local retention keeping 2 and off-site keeping 1,
+# a naive blanket copy would re-upload the second-newest every hourly resume
+# tick (dest missing it, source still has it) only to prune it straight back
+# out — paying upload cost for a file that is deleted the instant it lands.
+rm -f "$REMOTE"/homebrain_backup_2026-07-0[12].tar.gz.gpg 2>/dev/null
+: > "$TMP/copy-log"
+rclone_orig=$(command -v rclone)
+rclone() { echo "$*" >> "$TMP/copy-log"; command "$rclone_orig" "$@"; }
+offsite_sync >/dev/null 2>&1
+unset -f rclone
+if grep -q 'homebrain_backup_2026-07-02.tar.gz.gpg' "$TMP/copy-log"; then
+    bad "superseded archive left on the local drive is not re-uploaded (it was)"
+else
+    ok "superseded archive left on the local drive is not re-uploaded"
+fi
+
+echo "== system snapshots keep their own age-based window =="
+archive_system 2026-07-01
+offsite_sync >/dev/null 2>&1
+touch -d '200 days ago' "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" 2>/dev/null \
+    || touch -A -2000000 "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" 2>/dev/null
+sleep 1; archive_system 2026-07-02
+OFFSITE_KEEP_DAYS=90 offsite_sync >/dev/null 2>&1
+if [ ! -f "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" ]; then
+    ok "system snapshot older than OFFSITE_KEEP_DAYS pruned"
+else
+    bad "system snapshot older than OFFSITE_KEEP_DAYS pruned (still present)"
+fi
+if [ -f "$REMOTE/homebrain_backup_system_2026-07-02.tar.gz.gpg" ]; then
+    ok "system snapshot inside the window kept"
+else
+    bad "system snapshot inside the window kept (was deleted)"
+fi
+if [ -f "$REMOTE/homebrain_backup_2026-07-03.tar.gz.gpg" ]; then
+    ok "full-backup retention unaffected by the system snapshot pass"
+else
+    bad "full-backup retention unaffected by the system snapshot pass (newest full archive disappeared)"
 fi
 
 echo "== retention ignores files HomeBrain did not put there =="
@@ -168,7 +208,7 @@ echo "== the off-site copy can be listed and fetched back =="
 # The gap this closes: rclone pushed and nothing pulled, so the one scenario
 # off-site backups exist for (local drive dead) needed a shell.
 listing="$(offsite_list 2>/dev/null)"
-if echo "$listing" | grep -q 'homebrain_backup_2026-07-02.tar.gz.gpg'; then
+if echo "$listing" | grep -q 'homebrain_backup_2026-07-03.tar.gz.gpg'; then
     ok "offsite_list reports a remote archive"
 else
     bad "offsite_list reports a remote archive (got: ${listing:0:120})"
@@ -181,12 +221,12 @@ fi
 
 # Local drive dead: wipe local, fetch one named archive back, compare content.
 rm -f "$TMP"/local/*.tar.gz.gpg
-if offsite_fetch "homebrain_backup_2026-07-02.tar.gz.gpg" "$TMP/local" >/dev/null 2>&1; then
+if offsite_fetch "homebrain_backup_2026-07-03.tar.gz.gpg" "$TMP/local" >/dev/null 2>&1; then
     ok "offsite_fetch succeeds"
 else
     bad "offsite_fetch succeeds (returned non-zero)"
 fi
-if [ "$(cat "$TMP/local/homebrain_backup_2026-07-02.tar.gz.gpg" 2>/dev/null)" = "payload-2026-07-02" ]; then
+if [ "$(cat "$TMP/local/homebrain_backup_2026-07-03.tar.gz.gpg" 2>/dev/null)" = "payload-2026-07-03" ]; then
     ok "fetched archive is byte-identical to what was backed up"
 else
     bad "fetched archive is byte-identical to what was backed up"
@@ -199,10 +239,10 @@ else
     bad "fetch pulls only the named archive (got $fetched)"
 fi
 
-if [ "$(offsite_size 'homebrain_backup_2026-07-02.tar.gz.gpg' 2>/dev/null)" = "19" ]; then
+if [ "$(offsite_size 'homebrain_backup_2026-07-03.tar.gz.gpg' 2>/dev/null)" = "19" ]; then
     ok "offsite_size reports the remote byte count"
 else
-    bad "offsite_size reports the remote byte count (got '$(offsite_size 'homebrain_backup_2026-07-02.tar.gz.gpg' 2>/dev/null)', expected 19)"
+    bad "offsite_size reports the remote byte count (got '$(offsite_size 'homebrain_backup_2026-07-03.tar.gz.gpg' 2>/dev/null)', expected 19)"
 fi
 
 echo "== restore.sh accepts --from-offsite in any argument order =="
