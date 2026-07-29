@@ -322,9 +322,19 @@ Settings "Recovery Phrase" card. A Flask test-client integration run (13 checks)
 covers verify/reset/regenerate, the LAN-origin 403, immediate `MANAGER_PASSWORD`
 restore, session-clear-on-reset, and the gated 401 UI.
 
-**P3 (full-stack rotation)** is written but, per AGENTS.md, is **unverified** until
-it runs on real x86 + RPi hardware (no DB/NC/HA containers in the dev sandbox).
-It is the merge gate.
+**P3 (full-stack rotation)** was verified live on x86 (`.58`, 2026-06-15): every
+step logged green, HA and vaultwarden came back healthy, and the old password was
+rejected by both the dashboard and Nextcloud afterwards. RPi verification is
+still outstanding.
+
+**Follow-up (2026-07-29):** the rotation engine gained a second entry point —
+`POST /api/system/master-password`, a deliberate change by a logged-in user
+(Settings → Master Password). It shares `_launch_master_rotation()` with
+`/api/recovery/reset` but deliberately does *not* pre-write `MANAGER_PASSWORD`
+and does *not* clear the session; see that route's docstring for why. The same
+change added a client-side `.txt` download of the shown secrets on the setup
+handover page and the Settings phrase reveal — client-side because only the
+scrypt hash is ever stored, so no server endpoint can serve the plaintext.
 
 Deviations from the design above, with rationale:
 

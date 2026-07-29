@@ -2334,6 +2334,114 @@ async function regenerateRecovery() {
     }
 }
 
+// Saves the phrase that is on screen right now. Deliberately client-side: the
+// device stores only a one-way hash of the phrase, so there is nothing for a
+// server endpoint to serve — and echoing the plaintext back through an HTTP
+// round trip just to download it would put it in another request body.
+// The twin of this function lives in installing.html, which has its own inline
+// script and never loads this file.
+function downloadCredsSheet({ password, phrase }) {
+    const lines = [
+        'HomeBrain — recovery sheet',
+        `Generated: ${new Date().toLocaleString()}`,
+        `Device:    ${location.hostname}`,
+        '',
+    ];
+    if (password) lines.push(`Master password:  ${password}`);
+    if (phrase) lines.push(`Recovery phrase:  ${phrase}`);
+    lines.push(
+        '',
+        'Keep this offline — print it, or put it on a USB stick. Anyone holding',
+        'these words can reset administrative access to this device.',
+        '',
+        'To use the recovery phrase: open the Dashboard, click "Forgot your',
+        'password?", enter the phrase and choose a new master password.',
+        '',
+        'This resets admin access to the Dashboard, Nextcloud and Home Assistant.',
+        'It does NOT unlock individual Vault items — those are encrypted with each',
+        "user's own password and cannot be recovered from here.",
+        '',
+    );
+    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
+    const a = Object.assign(document.createElement('a'), {
+        href: url,
+        download: `homebrain-recovery-${new Date().toISOString().slice(0, 10)}.txt`,
+    });
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function downloadRevealedPhrase() {
+    const phrase = document.getElementById('recovery-phrase-box').textContent.trim();
+    if (phrase) downloadCredsSheet({ phrase });
+}
+
+/* =====================================================================
+   Master password
+   ===================================================================== */
+
+async function suggestMasterPassword() {
+    const msg = document.getElementById('mp-msg');
+    try {
+        const r = await fetch('/api/system/suggest-password', { credentials: 'include' });
+        const d = await r.json();
+        if (!d.password) { msg.textContent = d.error || 'Could not suggest a password'; return; }
+        // Show it in the clear — it is useless to the user hidden behind dots,
+        // and they have to copy it somewhere before submitting.
+        for (const id of ['mp-new', 'mp-confirm']) {
+            const el = document.getElementById(id);
+            el.value = d.password;
+            el.type = 'text';
+        }
+        msg.textContent = 'Suggested — save it somewhere before you submit.';
+    } catch (e) {
+        msg.textContent = 'Network error — try again';
+    }
+}
+
+async function changeMasterPassword() {
+    const btn = document.getElementById('mp-submit');
+    const msg = document.getElementById('mp-msg');
+    const current = document.getElementById('mp-current').value;
+    const next = document.getElementById('mp-new').value;
+    const confirm = document.getElementById('mp-confirm').value;
+
+    if (!current || !next) { msg.textContent = 'Fill in your current and new password.'; return; }
+    if (next !== confirm) { msg.textContent = 'The two new passwords do not match.'; return; }
+    if (!await hbConfirm({
+        title: 'Change the master password?',
+        body: 'Every service on the device is re-credentialed. Existing encrypted backups will still '
+            + 'need the old password, so keep it until the new backup finishes.',
+        confirm: 'Change it',
+    })) return;
+
+    btn.disabled = true;
+    msg.textContent = 'Rotating…';
+    try {
+        const r = await fetch('/api/system/master-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ current_password: current, new_password: next }),
+        });
+        const d = await r.json();
+        if (d.status === 'started') {
+            msg.textContent = d.message;
+            for (const id of ['mp-current', 'mp-new', 'mp-confirm']) {
+                const el = document.getElementById(id);
+                el.value = '';
+                el.type = 'password';
+            }
+        } else {
+            msg.textContent = d.error || 'Could not change the password';
+        }
+    } catch (e) {
+        msg.textContent = 'Network error — try again';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 /* =====================================================================
    Factory reset
    ===================================================================== */

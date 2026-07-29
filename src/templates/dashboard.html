@@ -865,6 +865,27 @@
             </section>
             {% endif %}
 
+            <section class="section" id="master-password-card">
+                <h3>Master Password</h3>
+                <p class="lede">One password for the Dashboard, Nextcloud and Home Assistant. Changing it
+                    re-credentials every service on the device, so it takes a minute or two.</p>
+                <label for="mp-current">Current password</label>
+                <input type="password" id="mp-current" autocomplete="current-password">
+                <label for="mp-new">New password</label>
+                <div class="inline-row">
+                    <input type="password" id="mp-new" class="grow" autocomplete="new-password">
+                    <button type="button" onclick="suggestMasterPassword()">Suggest</button>
+                </div>
+                <label for="mp-confirm">Confirm new password</label>
+                <input type="password" id="mp-confirm" autocomplete="new-password">
+                <p class="hint">{{ password_rule }}</p>
+                <p class="small muted">Your existing encrypted backups stay sealed with the <strong>old</strong>
+                    password — keep it until the fresh backup that starts automatically has finished. This
+                    session stays signed in; your next sign-in uses the new password.</p>
+                <button id="mp-submit" onclick="changeMasterPassword()">Change master password</button>
+                <p id="mp-msg" class="hint" style="min-height:1em;"></p>
+            </section>
+
             <section class="section" id="recovery-card">
                 <h3>Recovery Phrase</h3>
                 <p class="lede">A short sequence of words that resets your master password if you forget it — your
@@ -876,6 +897,7 @@
                 <div id="recovery-reveal" class="mt" style="display:none;">
                     <label>Your recovery phrase — write it down now</label>
                     <div id="recovery-phrase-box" class="creds-secret"></div>
+                    <button type="button" onclick="downloadRevealedPhrase()">Download as .txt</button>
                     <p class="hint">This phrase is not shown again. Store it somewhere safe and offline — the device
                         label is a good place.</p>
                 </div>

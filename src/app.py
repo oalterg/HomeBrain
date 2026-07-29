@@ -1139,7 +1139,8 @@ def index():
         },
         cloud_enabled=cloud_enabled,
         cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"},
-        has_gpu=has_gpu()
+        has_gpu=has_gpu(),
+        password_rule=recovery.NEW_PASSWORD_RULE,
     )
 
 
@@ -3665,6 +3666,117 @@ def nuclear_reset():
     })
 
 
+# --- Master password rotation ---
+# One engine, two entry points: the authenticated change-password route below
+# and the recovery-phrase reset further down. Both hand the new password to
+# rotate_master_password.sh, which re-credentials every live service that
+# derives from the master password.
+
+def _launch_master_rotation(new_password):
+    """Run rotate_master_password.sh as a tracked background task.
+
+    The password crosses the process boundary in a 0600 temp file whose path is
+    argv $1 — never on the command line or in the environment, so it cannot
+    leak through `ps` or journald. The script shreds the file on exit.
+    """
+    fd, secrets_path = tempfile.mkstemp(prefix="hb_rotate_", suffix=".tmp")
+    try:
+        os.write(fd, new_password.encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(secrets_path, 0o600)
+
+    subprocess.run(["chmod", "+x", SCRIPT_ROTATE], check=False)
+    cmd = (
+        f"bash {shlex.quote(SCRIPT_ROTATE)} {shlex.quote(secrets_path)} "
+        f">> {shlex.quote(LOG_FILES['setup'])} 2>&1"
+    )
+    threading.Thread(
+        target=run_background_task,
+        args=("Master Password Rotation", cmd, "setup")
+    ).start()
+
+
+@app.route("/api/system/master-password", methods=["POST"])
+# Same bucket as /login: this is a current-password check by someone who
+# already holds the session, so the tight recovery bucket would only punish
+# typos. Repeat *successful* rotations are bounded by the task-running 409
+# below, not by the limiter.
+@limiter.limit("5 per minute")
+def change_master_password():
+    """Deliberate master-password change by a logged-in user who knows the
+    current one. Session-gated by security_middleware — deliberately NOT in its
+    whitelist; the break-glass path for a *forgotten* password is
+    /api/recovery/reset.
+
+    Unlike that path this does NOT pre-write MANAGER_PASSWORD and does NOT
+    clear the session:
+
+    * No pre-write — the caller still knows the old password, so there is no
+      lockout to pre-empt. Leaving MANAGER_PASSWORD to the script's own step
+      preserves its guarantee that a MariaDB failure aborts *before* any .env
+      write, leaving the box exactly as it was.
+    * No session clear — the script rewrites MANAGER_PASSWORD partway through,
+      so for a few seconds neither password would work; logging the user out
+      into that window strands them. There is one session and it belongs to the
+      person doing the change.
+    """
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "Another task is already running"}), 409
+
+    data = request.get_json(silent=True) or {}
+    current_pw = data.get("current_password", "")
+    new_password = data.get("new_password", "")
+
+    # Compare as bytes like the login handler does — compare_digest raises
+    # TypeError on a non-ASCII str, which a typo in the form could otherwise
+    # turn into a 500.
+    expected_pw = get_env_config().get("MANAGER_PASSWORD", "")
+    if not current_pw or not expected_pw or not hmac.compare_digest(
+            current_pw.encode(), expected_pw.encode()):
+        time.sleep(2)  # match the login-handler timing penalty
+        return jsonify({"error": "Invalid current password"}), 401
+
+    if not recovery.is_valid_new_password(new_password):
+        return jsonify({"error": f"Invalid new password. {recovery.NEW_PASSWORD_RULE}"}), 400
+
+    # A no-op rotation would still restart containers and kick off a full
+    # backup, so refuse it rather than doing all that work for nothing.
+    if hmac.compare_digest(new_password.encode(), current_pw.encode()):
+        return jsonify({"error": "That is already your current password."}), 400
+
+    _launch_master_rotation(new_password)
+
+    logging.warning("SECURITY: master password changed by an authenticated user from %s",
+                    request.remote_addr)
+
+    return jsonify({
+        "status": "started",
+        "message": ("Rotation started. Watch the status banner — until it finishes, "
+                    "your old password is still the live one.")
+    })
+
+
+@app.route("/api/system/suggest-password", methods=["GET"])
+@limiter.limit("30 per hour")
+def suggest_master_password():
+    """A memorable candidate password (B1 word passphrase). Generated ones
+    always satisfy NEW_PASSWORD_RE, which hand-typed ones often do not.
+
+    Deliberately not under /api/recovery/* — that prefix is the break-glass
+    family with its own pre-auth whitelist and LAN-origin rule; this is an
+    ordinary session-gated helper."""
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    try:
+        return jsonify({"password": recovery.generate_password()})
+    except recovery.RecoveryError as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # --- Routes: Recovery Phrase ---
 # Break-glass recovery for a forgotten master password. See
 # docs/plans/RECOVERY_PHRASE.md. The verify/reset pair is reachable pre-auth
@@ -3746,25 +3858,8 @@ def recovery_reset():
     update_env_var("MANAGER_PASSWORD", new_password)
     session.clear()
 
-    # 2. Hand the new password to the rotation script via a 0600 temp file
-    #    (never argv/env), and run it as a tracked background task. The script
-    #    shreds the file on exit.
-    fd, secrets_path = tempfile.mkstemp(prefix="hb_rotate_", suffix=".tmp")
-    try:
-        os.write(fd, new_password.encode("utf-8"))
-    finally:
-        os.close(fd)
-    os.chmod(secrets_path, 0o600)
-
-    subprocess.run(["chmod", "+x", SCRIPT_ROTATE], check=False)
-    cmd = (
-        f"bash {shlex.quote(SCRIPT_ROTATE)} {shlex.quote(secrets_path)} "
-        f">> {shlex.quote(LOG_FILES['setup'])} 2>&1"
-    )
-    threading.Thread(
-        target=run_background_task,
-        args=("Master Password Rotation", cmd, "setup")
-    ).start()
+    # 2. Rotate the rest of the stack in the background.
+    _launch_master_rotation(new_password)
 
     # Out-of-band security event: the root credential was reset via recovery.
     logging.warning("SECURITY: master password reset via recovery phrase from %s",

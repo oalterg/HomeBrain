@@ -64,6 +64,7 @@
         }
 
         function showSuccess(data) {
+            handoverCreds = { password: data.password, phrase: data.recovery_phrase };
             const page = document.getElementById('install-page');
             page.innerHTML = `
                 <div class="brand">Home<span>${BRAND_SUFFIX}</span></div>
@@ -89,6 +90,8 @@
                             if you forget the master password, and they are shown only once. They reset
                             administrative access; they do not unlock individual vault items.</p>
                     </div>` : ''}
+
+                    <button type="button" onclick="downloadCredsSheet()">Download as .txt</button>
 
                     <p class="small muted">This password grants full administrative access to your Dashboard,
                         Nextcloud, and Home Assistant.</p>
@@ -162,6 +165,45 @@
                     document.getElementById('cloud-email').disabled = false;
                     btn.textContent = 'Send invite';
                 });
+        }
+
+        // Saves what is on screen right now. Client-side by necessity: these
+        // secrets exist only in this response — the device keeps a one-way hash
+        // of the phrase and deletes install_creds.json on handover, so there is
+        // nothing for a server endpoint to serve. Twin of downloadCredsSheet()
+        // in static/dashboard.js; this page has no access to that file.
+        let handoverCreds = null;
+
+        function downloadCredsSheet() {
+            if (!handoverCreds) return;
+            const lines = [
+                'HomeBrain — recovery sheet',
+                `Generated: ${new Date().toLocaleString()}`,
+                `Device:    ${location.hostname}`,
+                '',
+                `Master password:  ${handoverCreds.password}`,
+            ];
+            if (handoverCreds.phrase) lines.push(`Recovery phrase:  ${handoverCreds.phrase}`);
+            lines.push(
+                '',
+                'Keep this offline — print it, or put it on a USB stick. Anyone holding',
+                'these words can reset administrative access to this device.',
+                '',
+                'To use the recovery phrase: open the Dashboard, click "Forgot your',
+                'password?", enter the phrase and choose a new master password.',
+                '',
+                'This resets admin access to the Dashboard, Nextcloud and Home Assistant.',
+                'It does NOT unlock individual Vault items — those are encrypted with each',
+                "user's own password and cannot be recovered from here.",
+                '',
+            );
+            const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
+            const a = Object.assign(document.createElement('a'), {
+                href: url,
+                download: `homebrain-recovery-${new Date().toISOString().slice(0, 10)}.txt`,
+            });
+            a.click();
+            URL.revokeObjectURL(url);
         }
 
         function toggleLoginBtn() {
