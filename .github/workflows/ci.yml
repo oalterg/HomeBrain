@@ -31,8 +31,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: pytest
         run: |
-          pip install -q pytest cryptography
-          python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py -q
+          # test_master_password.py drives the Flask app through its test client,
+          # so it needs the app's web deps. redis is required even though the
+          # limiter falls back to memory — limits raises at Limiter() without it.
+          pip install -q pytest cryptography Flask flask-limiter flask-sock redis requests
+          python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py \
+                            scripts/tests/test_master_password.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
