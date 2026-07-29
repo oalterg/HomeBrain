@@ -256,7 +256,8 @@ Design: [`plans/RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md). The recovery cor
 is unit-tested with no Docker/network/root required:
 
 ```bash
-python3 scripts/tests/test_recovery.py    # must end with "9/9 passed"
+python3 scripts/tests/test_recovery.py         # must end with "9/9 passed"
+python3 scripts/tests/test_master_password.py  # must end with "9/9 passed" (needs Flask)
 ```
 
 On real hardware:
@@ -297,6 +298,43 @@ On real hardware:
 - [ ] **Abort safety:** kill `rotate_master_password.sh` after the MariaDB step
       but before completion → the box stays loginable; re-running recovery is
       idempotent and completes.
+
+---
+
+## Master password: deliberate change + credential download
+
+Same rotation engine as P3 above, entered by a logged-in user who still knows
+their password. Run on real hardware (it re-credentials live services).
+
+**Change the password (Settings → Master Password)**
+- [ ] Wrong current password → "Invalid current password" after a ~2s delay, and
+      `/var/log/homebrain/main_setup.log` shows **no** rotation starting.
+- [ ] New password containing a space or quote → rejected with the charset rule.
+- [ ] Re-using the current password → "That is already your current password."
+- [ ] **Suggest** fills both fields with a readable word passphrase that submits
+      without a validation error.
+- [ ] A valid change returns "Rotation started"; the global status banner shows
+      **Master Password Rotation**, then the log ends with
+      "Master password rotation complete".
+- [ ] The session stays signed in throughout (no bounce to the login gate).
+      Sign out afterwards → the **new** password works, the old one does not.
+- [ ] Nextcloud, Home Assistant, MariaDB root, Vault admin SSO and (GPU) the
+      OpenClaw gateway all accept/derive the new password — same checks as P3.
+- [ ] Backups → archives written **before** the change are flagged as needing the
+      old passphrase, and the automatic post-rotation full backup appears
+      unflagged once it finishes.
+- [ ] **Abort safety:** stop the DB container, then attempt a change → it fails
+      before any `.env` write and the **old** password still works everywhere.
+- [ ] Start a change while another task is running → 409, nothing launched.
+
+**Credential download (.txt)**
+- [ ] Fresh provision → the setup success page's **Download as .txt** saves a
+      sheet containing the master password *and* the recovery phrase, with the
+      "does NOT unlock individual Vault items" note.
+- [ ] Settings → Recovery Phrase → Regenerate → **Download as .txt** saves a
+      sheet with the phrase only (no master password).
+- [ ] Filename is `homebrain-recovery-<YYYY-MM-DD>.txt`; the download works on
+      the LAN over the self-signed HTTPS origin.
 
 ---
 
