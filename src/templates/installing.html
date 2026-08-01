@@ -181,18 +181,26 @@
                 `Generated: ${new Date().toLocaleString()}`,
                 `Device:    ${location.hostname}`,
                 '',
-                `Master password:  ${handoverCreds.password}`,
             ];
+            if (handoverCreds.password) lines.push(`Master password:  ${handoverCreds.password}`);
             if (handoverCreds.phrase) lines.push(`Recovery phrase:  ${handoverCreds.phrase}`);
             lines.push(
                 '',
                 'Keep this offline — print it, or put it on a USB stick. Anyone holding',
-                'these words can reset administrative access to this device.',
+                'it can reset administrative access to this device.',
                 '',
+            );
+            // Only promise the recovery flow when a phrase is actually on the
+            // sheet: setup falls back to a password-only handover when the
+            // wordlist is unavailable, and telling that user to "enter the
+            // phrase" sends them looking for something they were never given.
+            if (handoverCreds.phrase) lines.push(
                 'To use the recovery phrase: open the Dashboard, click "Forgot your',
                 'password?", enter the phrase and choose a new master password.',
                 '',
-                'This resets admin access to the Dashboard, Nextcloud and Home Assistant.',
+            );
+            lines.push(
+                'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
                 'It does NOT unlock individual Vault items — those are encrypted with each',
                 "user's own password and cannot be recovered from here.",
                 '',

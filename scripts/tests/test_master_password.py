@@ -25,6 +25,7 @@ import recovery             # noqa: E402
 CURRENT_PW = "napped-plausible-sizzling-breeching-onyx"
 NEW_PW = "quartz-lantern-mellow-drifting-cobalt-tundra"
 PHRASE = "flatbed juggling payee equal tinsel humid"
+FACTORY_PW = "device-label-42"
 
 
 class Harness:
@@ -188,6 +189,63 @@ def test_suggest_password_is_policy_valid_and_gated():
         pw = r.get_json()["password"]
         assert recovery.is_valid_new_password(pw), pw
     finally:
+        h.close()
+
+
+class _StateOverride:
+    """Pin is_setup_complete / is_handover_pending / get_factory_password.
+
+    login() resolves these as module globals at call time, so swapping them is
+    enough to place the box in any point of its lifecycle without touching the
+    filesystem markers they normally read.
+    """
+
+    def __init__(self, setup_complete, handover_pending):
+        self._saved = (hb.is_setup_complete, hb.is_handover_pending,
+                       hb.get_factory_password)
+        hb.is_setup_complete = lambda: setup_complete
+        hb.is_handover_pending = lambda: handover_pending
+        hb.get_factory_password = lambda: FACTORY_PW
+
+    def restore(self):
+        (hb.is_setup_complete, hb.is_handover_pending,
+         hb.get_factory_password) = self._saved
+
+
+def _login(harness, password):
+    with harness.client.session_transaction() as sess:
+        sess.clear()
+    return harness.client.post("/login", data={"password": password})
+
+
+def test_login_accepts_either_password_while_handover_is_pending():
+    """Setup marks itself complete before the owner has read anything. Until
+    they claim the credentials, the device-label password must still work — a
+    session lost mid-install would otherwise lock them out of the only page
+    that shows the master password and the recovery phrase."""
+    h = Harness()
+    state = _StateOverride(setup_complete=True, handover_pending=True)
+    try:
+        assert _login(h, FACTORY_PW).status_code == 200, "factory password refused"
+        assert h.authenticated()
+        assert _login(h, CURRENT_PW).status_code == 200, "master password refused"
+        assert h.authenticated()
+    finally:
+        state.restore()
+        h.close()
+
+
+def test_login_rejects_the_factory_password_once_credentials_are_claimed():
+    """The window closes on claim: from then on only the master password."""
+    h = Harness()
+    state = _StateOverride(setup_complete=True, handover_pending=False)
+    try:
+        assert _login(h, FACTORY_PW).status_code == 401, "factory password still worked"
+        assert not h.authenticated()
+        assert _login(h, CURRENT_PW).status_code == 200
+        assert h.authenticated()
+    finally:
+        state.restore()
         h.close()
 
 

@@ -13,9 +13,8 @@ set -euo pipefail
 #   - Wipes all user data (Nextcloud, HA, Vault, OpenClaw workspace, tokens, etc.)
 #   - Optionally wipes AI models (default) and/or AI runtime binaries
 #   - Deletes .env, .secret_key, and all setup markers
-#   - Generates a brand new master password (via /dev/urandom)
-#   - Writes fresh install_creds.json for the standard handover flow
-#   - Reboots the device
+#   - Reboots the device back into the first-boot setup wizard, which mints the
+#     new master password and recovery phrase (see app.py:start_setup)
 #
 # What it NEVER touches:
 #   - /mnt/backup and its fstab entry
@@ -96,22 +95,34 @@ log "Stopping llama-server and whisper-server..."
 systemctl stop llama-server whisper-server whisper-proxy 2>/dev/null || true
 systemctl disable llama-server whisper-server whisper-proxy 2>/dev/null || true
 
-log "Stopping Docker stack..."
-if [[ -f "$ENV_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down --remove-orphans 2>/dev/null || true
-else
-    docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
-fi
-
-# --- 2. Destroy Docker named volumes -----------------------------------
+# --- 2. Tear the whole project down, volumes and all -------------------
 
 write_status "running" "Nuclear reset in progress — destroying volumes..."
 
-log "Removing all Docker named volumes..."
-if [[ -f "$ENV_FILE" ]]; then
-    docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v --remove-orphans 2>/dev/null || true
-else
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+# Profile-gated services (newt, cloudflared, proton-bridge) are invisible to a
+# plain `down`: Compose only acts on profiles that are currently active. A wipe
+# that leaves newt running keeps the device published to its tunnel after the
+# admin password and all data are gone — precisely the exposure deploy.sh
+# refuses to create on a fresh install. So ask Compose for every profile it
+# knows about and take the entire project down in one pass.
+compose_args=(-f "$COMPOSE_FILE")
+[[ -f "$ENV_FILE" ]] && compose_args+=(--env-file "$ENV_FILE")
+while read -r profile; do
+    [[ -n "$profile" ]] && compose_args+=(--profile "$profile")
+done < <(docker compose -f "$COMPOSE_FILE" config --profiles 2>/dev/null || true)
+
+log "Stopping Docker stack (all profiles) and destroying volumes..."
+docker compose "${compose_args[@]}" down -v --remove-orphans 2>/dev/null || true
+
+# A container whose service was renamed or dropped from the compose file is not
+# reachable through `down` at any profile setting. This project's service list
+# has churned across releases, so sweep anything still carrying the project
+# label — a factory wipe has to mean nothing survives.
+project="${COMPOSE_PROJECT_NAME:-$(basename "$(dirname "$COMPOSE_FILE")")}"
+leftover=$(docker ps -aq --filter "label=com.docker.compose.project=${project}" 2>/dev/null || true)
+if [[ -n "$leftover" ]]; then
+    log "Removing $(echo "$leftover" | wc -l) leftover container(s) from project '${project}'..."
+    echo "$leftover" | xargs docker rm -f 2>/dev/null || true
 fi
 
 # --- 3. Wipe host user data (the nuclear part) -------------------------
@@ -158,38 +169,21 @@ rm -f "$INSTALL_DIR/docker-compose.override.yml" 2>/dev/null || true
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true
 
-# --- 5. Generate brand new master password & handover credentials ------
-
-write_status "running" "Nuclear reset in progress — generating new credentials..."
-
-log "Generating new master password..."
-NEW_PASS=$(head -c 100 /dev/urandom | LC_ALL=C tr -dc 'a-zA-Z0-9') || true
-NEW_PASS="${NEW_PASS:0:16}"
-
-if [[ ${#NEW_PASS} -lt 16 ]]; then
-    die "Failed to generate secure password from /dev/urandom"
-fi
-
-log "Writing fresh install_creds.json for new setup flow..."
-
-CREDS_TMP=$(mktemp)
-cat > "$CREDS_TMP" <<EOF
-{
-  "username": "admin",
-  "password": "$NEW_PASS",
-  "domain": null,
-  "generated_at": $(date +%s)
-}
-EOF
-
-chmod 600 "$CREDS_TMP"
-chown root:root "$CREDS_TMP"
-
-mv "$CREDS_TMP" "$INSTALL_DIR/install_creds.json"
-
-log "New master password generated and staged for handover."
-
-# --- 6. Final cleanup & reboot -----------------------------------------
+# --- 5. Final cleanup & reboot -----------------------------------------
+#
+# Deliberately no credentials are minted here. This script used to generate a
+# password and write install_creds.json "for the standard handover flow", but
+# nothing downstream ever consumed it: .env is deleted just above, so that
+# password was applied to no service, and no recovery phrase existed alongside
+# it. index() shows the handover page whenever install_creds.json is present,
+# so the operator was handed a master password that unlocked nothing and — once
+# the .txt download shipped — could save it to disk as a recovery sheet. Worse,
+# cleanup_credentials() refuses to clear that page until cloud registration
+# completes, wedging a freshly wiped box on a screen full of fiction.
+#
+# The setup wizard is the single place that mints a master password and its
+# recovery phrase (app.py:start_setup) and applies them to every service. With
+# .env and .setup_complete gone, the reboot below lands on exactly that wizard.
 
 write_status "success" "Nuclear reset complete. Rebooting now..."
 
