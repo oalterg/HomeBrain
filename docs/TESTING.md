@@ -286,8 +286,12 @@ On real hardware:
 - [ ] After a recovery reset, check `/var/log/homebrain/setup.log` for
       "Master password rotation complete".
 - [ ] **Nextcloud** admin login works with the new password.
-- [ ] **Home Assistant** admin login works (or, if the HA auth CLI step warned,
-      HA still logs in with the old password and can be changed via HA → Profile).
+- [ ] **Home Assistant** admin login works with the new password, and the log
+      says "rotated **and verified**". The rotation confirms by logging in to HA
+      before writing `HA_ADMIN_PASSWORD`, so a warning there means `.env` kept
+      the OLD password and HA still accepts it — the two never disagree.
+      (`hass --script auth` exits 0 even when it changes nothing, so the exit
+      status alone proves nothing.)
 - [ ] **MariaDB** root authenticates with the new password
       (`docker exec -e MYSQL_PWD=<new> <db> mariadb -u root -e 'SELECT 1'`).
 - [ ] **Vault** admin-panel SSO button works (token re-derived); **OpenClaw**
@@ -320,12 +324,26 @@ their password. Run on real hardware (it re-credentials live services).
       Sign out afterwards → the **new** password works, the old one does not.
 - [ ] Nextcloud, Home Assistant, MariaDB root, Vault admin SSO and (GPU) the
       OpenClaw gateway all accept/derive the new password — same checks as P3.
+- [ ] `grep HA_ADMIN_PASSWORD /opt/homebrain/.env` matches the password Home
+      Assistant actually accepts. Regression guard: the change is only recorded
+      after a real HA login succeeds, so `.env` can never advertise a password
+      HA never took.
 - [ ] Backups → archives written **before** the change are flagged as needing the
       old passphrase, and the automatic post-rotation full backup appears
       unflagged once it finishes.
 - [ ] **Abort safety:** stop the DB container, then attempt a change → it fails
       before any `.env` write and the **old** password still works everywhere.
 - [ ] Start a change while another task is running → 409, nothing launched.
+
+**Handover window (fresh provision)**
+- [ ] Between "Deployment Complete" and clicking *I have saved my password*, the
+      login gate accepts **either** the factory password from the device label
+      **or** the freshly generated master password. Setup marks itself complete
+      before the owner has read anything, so a session lost in that window (tab
+      closed, install started on a phone and finished on a laptop) must not lock
+      them out of the only page that ever shows the recovery phrase.
+- [ ] After the credentials are claimed, the factory password stops working and
+      only the master password opens the box.
 
 **Credential download (.txt)**
 - [ ] Fresh provision → the setup success page's **Download as .txt** saves a
@@ -355,7 +373,14 @@ their password. Run on real hardware (it re-credentials live services).
 - [ ] Successful trigger using **default options** (AI models wiped, runtime kept)
 - [ ] After reboot:
   - Only the factory password (device label) allows login
-  - The standard "new credentials" handover screen appears with a **brand new** master password
+  - The **setup wizard** ("Initialize system") appears — *not* a handover
+    screen. A reset mints no credentials of its own; the wizard generates the
+    master password and its recovery phrase together, exactly as on first boot.
+  - `/opt/homebrain/install_creds.json` does **not** exist
+  - `docker ps -a` is **empty**. Profile-gated containers (`newt`,
+    `cloudflared`, `proton-bridge`) must be gone too — a plain `compose down`
+    ignores inactive profiles, and a surviving `newt` keeps publishing the
+    wiped, password-less box to its tunnel
   - No old Nextcloud files, no old HA config, empty Vault, no `.openclaw` workspace remain
   - AI models directory is gone (on GPU devices)
   - External backup drive is still mounted and previous archives are readable

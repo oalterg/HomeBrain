@@ -50,6 +50,10 @@ jobs:
           # rclone drives the off-site half against a temp-dir alias remote.
           # Without it that half skips and the deletion-mirroring regression
           # goes unguarded.
+          # `update` first: the runner image ships a pinned apt index that goes
+          # stale against the mirror, and the install then 404s on a version
+          # that has already been superseded.
+          sudo apt-get update -qq
           sudo apt-get install -y -qq rclone
           bash scripts/tests/test_backup_retention.sh
       - name: self-MCP token derivation

@@ -593,16 +593,29 @@ def security_middleware():
 @limiter.limit("5 per minute") 
 def login():
     password = request.form.get('password')
-    # Determine which password to enforce based on state
+    # Determine which password(s) to enforce based on state
     if is_setup_complete():
         # Post-Setup: Secure Generated Master Password
         env = get_env_config()
-        target_pass = env.get('MANAGER_PASSWORD')
+        candidates = [env.get('MANAGER_PASSWORD')]
+        # Setup writes .setup_complete before the owner has ever seen the
+        # generated password — claiming install_creds.json is what proves they
+        # have. In that window keep honouring the factory password from the
+        # device label: otherwise a session lost mid-install (closed browser,
+        # started on a phone and finished on a laptop) locks the owner out of
+        # the one page that would have shown them their master password AND
+        # their recovery phrase, leaving a factory reset as the only way back.
+        # The window closes the moment they claim the credentials, and the box
+        # does not publish its tunnels until then (deploy.sh), so the exposure
+        # stays LAN-local and strictly shorter than pre-setup.
+        if is_handover_pending():
+            candidates.append(get_factory_password())
     else:
         # Pre-Setup: Factory Sticker Password
-        target_pass = get_factory_password()
+        candidates = [get_factory_password()]
 
-    if target_pass and hmac.compare_digest((password or "").encode(), target_pass.encode()):
+    supplied = (password or "").encode()
+    if any(c and hmac.compare_digest(supplied, c.encode()) for c in candidates):
         session['authenticated'] = True
         session.permanent = True  # Keep session active across browser restarts
         return jsonify({"status": "success", "redirect": "/"})
@@ -784,6 +797,16 @@ def update_env_var(key, value):
 
 def is_setup_complete():
     return os.path.exists(f"{INSTALL_DIR}/.setup_complete")
+
+
+def is_handover_pending():
+    """True while the generated credentials are still waiting to be claimed.
+
+    Deploy marks setup complete before the owner has read anything; the
+    presence of install_creds.json is the only evidence that the master
+    password and recovery phrase have not yet been handed over.
+    """
+    return os.path.exists(INSTALL_CREDS_PATH)
 
 
 def is_setup_started():
@@ -4109,8 +4132,18 @@ from flask import render_template_string
 @app.errorhandler(401)
 def custom_401(e):
     # Dynamic Title based on state
-    title = "Master Access" if is_setup_complete() else "Factory Access"
-    hint = "Enter your Master Admin Password." if is_setup_complete() else "Enter the Factory Password found on your device label."
+    # During handover both passwords open the box (see login()), so say so —
+    # the owner reaching this page after losing their session has only ever
+    # been shown the one on the device label.
+    if is_setup_complete() and is_handover_pending():
+        title = "Master Access"
+        hint = "Enter your Master Admin Password, or the Factory Password from your device label."
+    elif is_setup_complete():
+        title = "Master Access"
+        hint = "Enter your Master Admin Password."
+    else:
+        title = "Factory Access"
+        hint = "Enter the Factory Password found on your device label."
 
     # Self-contained on purpose — this 401 surface must work even if every
     # template file is broken. Tokens hand-picked to match _theme.html light
