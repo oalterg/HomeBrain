@@ -40,6 +40,8 @@ STATE_DIR = "/var/lib/homebrain"
 HEALTH_FILE = f"{STATE_DIR}/health.json"
 STATE_FILE = f"{STATE_DIR}/health_state.json"
 BACKUP_DIR = "/mnt/backup"
+# Where the files live unless the owner moved them to a drive of their own.
+NC_DATA_DEFAULT = "/home/homebrain/nextcloud-data"
 BACKUP_LOG = "/var/log/homebrain/backup.log"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
 OFFSITE_STATE = f"{STATE_DIR}/offsite.json"
@@ -149,6 +151,22 @@ def check_disk(path, label, check_id):
     percent = round(used / total * 100)
     return {"id": check_id, "level": disk_level(percent),
             "summary": f"{label} is {percent}% full"}
+
+
+def check_files_drive(env):
+    """The files drive, when there is one, is either mounted or the box is
+    down. Nextcloud refuses to start without the .ncdata marker its data
+    directory carries, so an absent drive is a hard stop — and until this
+    check existed it was a silent one: every container reports "running",
+    the container health check has not failed yet, and nothing on the
+    dashboard says the drive is gone."""
+    path = env.get("NEXTCLOUD_DATA_DIR", "")
+    if not path or path == NC_DATA_DEFAULT:
+        return None          # files are on the internal disk; nothing to lose
+    if os.path.ismount(path):
+        return check_disk(path, "Files drive", "disk_files")
+    return {"id": "disk_files", "level": "crit",
+            "summary": f"Files drive not connected ({path}) — Nextcloud cannot start"}
 
 
 def check_backup(env, now):
@@ -527,6 +545,7 @@ def main():
         check_offsite(env, now),
         check_disk("/", "System disk", "disk_root"),
         check_disk(BACKUP_DIR, "Backup drive", "disk_backup") if os.path.ismount(BACKUP_DIR) else None,
+        check_files_drive(env),
         check_smart(),
         check_services(gpu),
         check_containers(),

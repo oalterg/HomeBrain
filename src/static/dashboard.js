@@ -1895,6 +1895,14 @@ async function loadNcStorage() {
     try {
         const res = await fetch('/api/nextcloud/storage', { credentials: 'include' });
         const d = await res.json();
+        if (d.missing) {
+            el.innerHTML = `<strong>Your files drive is not connected.</strong> Nextcloud cannot start `
+                + `without it and will not write a second copy to the internal disk. Reconnect `
+                + `${escapeHtml(d.path)} and it comes back on its own.`;
+            el.className = 'small notice notice-warning mt';
+            return;
+        }
+        el.className = 'small faint mt';
         const where = d.external ? 'a dedicated drive' : 'the internal disk';
         el.textContent = d.total_gb === undefined
             ? `Your files live on ${where}: ${d.path}`
