@@ -1154,6 +1154,15 @@ offsite_sync() {
         \( -name 'homebrain_backup*.tar.gz*' -o -name 'nextcloud_backup*.tar.gz*' \) \
         ! -name 'homebrain_backup_system_*' \
         -printf '%T@ %f\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    # Progress, because this is the longest-running operation the box performs:
+    # an 80 GiB archive over a home uplink runs for hours. rclone's default
+    # stats are logged at INFO and its default log level is NOTICE, so without
+    # these three flags the whole upload writes nothing between "Mirroring
+    # backups off-site..." and "Off-site mirror complete" — leaving no way to
+    # tell a slow transfer from a wedged one, or to see WHICH archive is
+    # moving, without inspecting rclone's argv on the live box.
+    local -a progress=(--stats 10m --stats-one-line --stats-log-level NOTICE)
+
     # --no-update-modtime: without it, a file that is still sitting locally
     # gets its remote ModTime silently bumped to "now" on every sync even
     # though nothing was transferred (rclone's own behavior — tested live,
@@ -1162,9 +1171,11 @@ offsite_sync() {
     # the age clock for as long as local retention keeps the file around.
     if [[ -n "$newest_full" ]]; then
         rclone copy "$BACKUP_MOUNTDIR" "$remote" --no-update-modtime \
+            "${progress[@]}" \
             --max-depth 1 --include "/${newest_full}" || return 1
     fi
     rclone copy "$BACKUP_MOUNTDIR" "$remote" --no-update-modtime \
+        "${progress[@]}" \
         --max-depth 1 \
         --include '/homebrain_backup_system_*.tar.gz*' || return 1
 

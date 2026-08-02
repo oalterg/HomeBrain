@@ -262,6 +262,12 @@ echo "== offsite_mirror serialises, so a resume can't race a running mirror =="
 # during a multi-hour upload would start a second concurrent mirror.
 export OFFSITE_LOCK_FILE="$TMP/offsite.lock"
 export OFFSITE_STATE_FILE="$TMP/offsite.json"
+# Redirected HERE, before the first offsite_mirror call, not further down where
+# it is needed: offsite_mirror writes this path and rm -f's it on the way out,
+# so without the override a test run on a live box deletes the run-file of a
+# mirror that is genuinely in flight — the dashboard then shows "not syncing"
+# and the health check warns, both about a mirror that is running fine.
+export OFFSITE_RUN_FILE="$TMP/offsite.running"
 if ( offsite_mirror ) >/dev/null 2>&1; then
     ok "offsite_mirror succeeds when the lock is free"
 else
@@ -352,6 +358,30 @@ if grep -q 'homebrain-offsite.lock' "$SCRIPT_DIR/../../src/app.py" 2>/dev/null; 
     bad "app.py still probes the mirror's lock file (can cancel a mirror)"
 else
     ok "app.py does not touch the mirror's lock file"
+fi
+
+echo "== a long upload reports progress instead of going silent for hours =="
+# rclone logs transfer stats at INFO while its own default log level is
+# NOTICE, so a plain `rclone copy` of an 80 GiB archive prints nothing at all
+# between "Mirroring backups off-site..." and "Off-site mirror complete" —
+# hours in which a slow link and a wedged one look identical, and nothing says
+# WHICH archive is moving. Both copies must carry the flags, not just the
+# full-archive one: a stalled system-snapshot pass is exactly as invisible.
+rm -f "$TMP"/local/*.tar.gz.gpg "$REMOTE"/*.tar.gz.gpg
+echo "payload-progress" > "$TMP/local/homebrain_backup_2026-07-20.tar.gz.gpg"
+archive_system 2026-07-20
+: > "$TMP/copy-log"
+rclone_orig=$(command -v rclone)
+rclone() { echo "$*" >> "$TMP/copy-log"; command "$rclone_orig" "$@"; }
+offsite_sync >/dev/null 2>&1
+unset -f rclone
+copies=$(grep -c '^copy ' "$TMP/copy-log" || true)
+staty=$(grep '^copy ' "$TMP/copy-log" \
+    | grep -c -- '--stats 10m --stats-one-line --stats-log-level NOTICE' || true)
+if [ "${copies:-0}" -ge 2 ] && [ "${copies:-0}" = "${staty:-0}" ]; then
+    ok "every rclone copy asks for periodic progress ($staty/$copies)"
+else
+    bad "every rclone copy asks for periodic progress (only ${staty:-0} of ${copies:-0} carry --stats)"
 fi
 
 echo

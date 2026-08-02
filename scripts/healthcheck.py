@@ -43,6 +43,12 @@ BACKUP_DIR = "/mnt/backup"
 BACKUP_LOG = "/var/log/homebrain/backup.log"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
 OFFSITE_STATE = f"{STATE_DIR}/offsite.json"
+# PID of a mirror that is running right now, published by
+# common.sh:offsite_mirror. Deliberately NOT the mirror's lock file: probing
+# that with a real flock means briefly holding it, and a mirror starting in
+# that window would find it taken, log "already running" and return success —
+# so running a health check would silently skip an off-site copy.
+OFFSITE_RUN_FILE = "/var/run/homebrain-offsite.running"
 REBOOT_REQUIRED_FILE = "/var/run/reboot-required"
 HOMEBRAIN_HOME = "/home/homebrain"
 OPENCLAW_DIR = f"{HOMEBRAIN_HOME}/.openclaw"
@@ -194,21 +200,51 @@ def check_backup(env, now):
     return {"id": "backup", "level": "ok", "summary": "Backups are up to date"}
 
 
+def offsite_is_syncing():
+    """True if a mirror is running right now.
+
+    Same predicate as app.py:offsite_is_syncing() — a read of the PID file,
+    never a probe of the lock (see OFFSITE_RUN_FILE)."""
+    try:
+        with open(OFFSITE_RUN_FILE) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    return os.path.isdir(f"/proc/{pid}")
+
+
 def check_offsite(env, now):
-    """Warn-only: the local backup is the data protection; off-site is a copy."""
+    """Warn-only: the local backup is the data protection; off-site is a copy.
+
+    A mirror that is *currently running* outranks whatever the state file says,
+    because that file describes the previous run. Without this, the hours-long
+    upload of a multi-GB archive reports "the last off-site copy failed" for
+    its entire duration — the check would be warning about the very thing it
+    is watching succeed, and a warning that is wrong on a schedule is how real
+    ones get ignored."""
     if env.get("OFFSITE_ENABLED", "false").lower() != "true":
         return None
+    syncing = offsite_is_syncing()
     try:
         with open(OFFSITE_STATE) as f:
             st = json.load(f)
     except Exception:
+        if syncing:
+            return {"id": "offsite", "level": "ok",
+                    "summary": "First off-site copy is in progress"}
         return {"id": "offsite", "level": "warn",
                 "summary": "Off-site copy is enabled but has not run yet"}
     if not st.get("ok"):
+        if syncing:
+            return {"id": "offsite", "level": "ok",
+                    "summary": "Off-site copy in progress (retrying after a failure)"}
         return {"id": "offsite", "level": "warn",
                 "summary": "The last off-site copy failed — local backups are unaffected"}
     age = now - st.get("ts", 0)
     if age > expected_backup_interval(env) + DAY:
+        if syncing:
+            return {"id": "offsite", "level": "ok",
+                    "summary": "Off-site copy in progress (catching up)"}
         days = int(age // DAY)
         return {"id": "offsite", "level": "warn",
                 "summary": f"No off-site copy for {days} days"}
