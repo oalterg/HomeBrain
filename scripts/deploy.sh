@@ -13,7 +13,12 @@ SETUP_LOG_FILE="$LOG_DIR/main_setup.log"
 # run's marker, so the wizard jumped straight to the credentials screen for an
 # install that had not happened yet. It also broke log polling during the #145
 # hardware E2E for the same reason.
-if [[ -f "$SETUP_LOG_FILE" ]]; then
+# -s, not -f: the manager rolls this file itself before spawning us, and the
+# `>> main_setup.log` in that command re-creates it empty before this line
+# runs. Rolling an empty file would overwrite the predecessor we just kept,
+# throwing away the previous install's log — the one thing anyone debugging a
+# failed install actually wants.
+if [[ -s "$SETUP_LOG_FILE" ]]; then
     mv -f "$SETUP_LOG_FILE" "${SETUP_LOG_FILE}.1" 2>/dev/null || true
 fi
 
