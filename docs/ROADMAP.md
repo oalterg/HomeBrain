@@ -26,19 +26,27 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ---
 
+### Since v2026.06.12
+
+- ✅ **HomeBrain Vault** *(v2026.06.12)* — Self-hosted Vaultwarden password manager: Bitwarden-compatible clients, MariaDB-backed, dashboard-managed bootstrap, Pangolin-tunnelled, backup-integrated. Document attachments via Vaultwarden + Nextcloud encrypted folder. See [`VAULT_PLAN.md`](plans/VAULT_PLAN.md).
+- ✅ **OpenClaw integrations** *(v2026.06.12)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), chat-native consent loop. All five servers verified live 2026-05-05. See [`INTEGRATIONS_PLAN.md`](plans/INTEGRATIONS_PLAN.md).
+- ✅ **Master-password recovery phrase** *(v2026.06.12; x86 E2E 2026-06-15, RPi E2E 2026-08-01)* — A memorable word passphrase as the generated master password (B1), plus an independent word-based recovery code (B2) that resets the master password across the whole stack if it's forgotten. Stored only as a scrypt hash; shown once. LAN-only by default. Settings → **Master Password** drives the same rotation deliberately, and both secret reveals offer a `.txt` download. See [`RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md).
+- ✅ **Off-site backup** *(v2026.07.24 → v2026.07.28)* — rclone mirror to sftp/webdav/s3, age-based retention, restore straight from the off-site copy.
+- ✅ **Hardware agnosticism** *(v2026.07.25)* — One platform record (`detect_platform` in `common.sh`) replaces the `uname -m` guesswork that four separate decisions each made for themselves: llama.cpp binary selection, model flag profiles, GPU telemetry, and host hardening. Fixes an NVIDIA double-restart bug and the provision-installs-`latest` / update-installs-the-pin split along the way. See [`HARDWARE_AGNOSTIC.md`](plans/HARDWARE_AGNOSTIC.md).
+
+---
+
 ## Planned
 
-### Near-term
+- **ARGB AI feedback Lighting** — CPU fan ARGB control on GPU/AI activity.
 
-- **ARGB AI feedback Lighting** CPU fan ARGB control on GPU/AI activity
-- **Master-password recovery phrase** *(shipped; x86 E2E verified 2026-06-15, RPi E2E outstanding)* — A memorable word passphrase as the generated master password (B1), plus an independent word-based recovery code (B2) that resets the master password across the whole stack if it's forgotten. Stored only as a scrypt hash; shown once. LAN-only by default. Settings → **Master Password** drives the same rotation deliberately, and both secret reveals offer a `.txt` download. See [`RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md).
-- **HomeBrain Vault** *(in progress, `vault-integration` branch)* — Self-hosted Vaultwarden password manager: Bitwarden-compatible clients, MariaDB-backed, dashboard-managed bootstrap, Pangolin-tunnelled, backup-integrated. Document attachments via Vaultwarden + (P5) Nextcloud encrypted folder.
+The next two tiers of work are planned in detail:
 
-- **Hardware agnosticism** *(implemented, `feat/hardware-agnostic` branch — pending hardware verification)* — One platform record (`detect_platform` in `common.sh`) replaces the `uname -m` guesswork that four separate decisions each made for themselves: llama.cpp binary selection, model flag profiles, GPU telemetry, and host hardening. Fixes an NVIDIA double-restart bug and the provision-installs-`latest` / update-installs-the-pin split along the way. See [`HARDWARE_AGNOSTIC.md`](plans/HARDWARE_AGNOSTIC.md).
-
-### Medium-term
-
-- **OpenClaw integrations** *(in progress, `vault-integration` branch)* — Unified MCP-based access to Home Assistant, Nextcloud, Vault, and Email for the OpenClaw agent. Single Connections page in the dashboard, capability-tiered tools (Read/Act/Reveal), chat-native consent loop. See [`INTEGRATIONS_PLAN.md`](INTEGRATIONS_PLAN.md).
+- [`TIER1_PROVE_IT.md`](plans/TIER1_PROVE_IT.md) — make the box prove the claims it makes, and
+  fail loudly when it cannot. Bare-metal restore in the wizard, a system self-test, email as a
+  second notification channel, a dead-man's switch.
+- [`TIER2_AND_PHASE0.md`](plans/TIER2_AND_PHASE0.md) — limits real deployments have already hit.
+  Moving Nextcloud data to a second drive, phone photo backup as a first-class feature.
 
 ---
 

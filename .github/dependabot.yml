@@ -1,0 +1,40 @@
+# Version bumps here are PROPOSALS TO TEST ON HARDWARE, never auto-merges.
+#
+# Updates are one-way on this product: a downgrade breaks Nextcloud and the
+# manager, and update.sh has a guard that refuses one. Once a bump ships to a
+# box the only way out is forward. Treat every PR below as the start of a
+# hardware E2E, not as a routine dependency refresh.
+#
+# Grouped and monthly on purpose. Ungrouped weekly PRs are how a repo learns to
+# rubber-stamp them.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Base images only. The service tags in docker-compose.yml are pinned
+  # deliberately and bumped as a stack — see the release notes for
+  # v2026.07.20, where an OpenClaw minor cost four follow-up PRs.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(docker)"

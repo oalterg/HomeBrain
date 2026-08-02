@@ -5,6 +5,18 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 SETUP_LOG_FILE="$LOG_DIR/main_setup.log"
 
+# Start every deploy with a fresh log, keeping exactly one predecessor.
+#
+# Not just hygiene: the setup wizard streams this file and decides it is
+# finished the moment the text contains "Deployment Complete - Ready for
+# Handover". Appending across runs meant a re-provision showed the PREVIOUS
+# run's marker, so the wizard jumped straight to the credentials screen for an
+# install that had not happened yet. It also broke log polling during the #145
+# hardware E2E for the same reason.
+if [[ -f "$SETUP_LOG_FILE" ]]; then
+    mv -f "$SETUP_LOG_FILE" "${SETUP_LOG_FILE}.1" 2>/dev/null || true
+fi
+
 if [ -t 1 ]; then :; else exec >> "$SETUP_LOG_FILE" 2>&1; fi
 
 log_info "=== Starting Deployment: $(date) ==="

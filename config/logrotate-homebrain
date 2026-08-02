@@ -1,0 +1,20 @@
+# /var/log/homebrain grows forever without this: backup.log and restore.log
+# append on every run, and each MCP server keeps its own audit log.
+#
+# copytruncate, not create: the MCP servers open their audit log once and never
+# reopen it, so a renamed file would leave them writing into an unlinked inode
+# and the rotated copy would stop growing where the process still thinks it is.
+#
+# su root homebrain: the directory is root:homebrain with the setgid bit, and
+# the audit logs are owned by homebrain (0640). logrotate refuses to act on a
+# group-writable directory unless it is told whose identity to assume.
+/var/log/homebrain/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root homebrain
+}
