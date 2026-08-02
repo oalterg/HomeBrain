@@ -211,9 +211,11 @@
             <section class="section">
                 <h3>Storage</h3>
                 <p class="lede">Backups are written to an external USB drive, or to the internal disk if you pair
-                    it with an off-site copy.</p>
+                    it with an off-site copy. A second drive can hold your files themselves — photos and video
+                    fill an internal disk faster than anything else.</p>
 
                 <div id="drive-list"><span class="skeleton sk-block"></span></div>
+                <p id="nc-storage" class="small faint mt"></p>
                 <div class="inline-row mt">
                     <button onclick="loadDrives()">Scan for drives</button>
                 </div>
@@ -928,6 +930,7 @@
                         <option value="setup">Setup</option>
                         <option value="backup">Backup</option>
                         <option value="restore">Restore</option>
+                        <option value="storage">Storage (moving files)</option>
                         <option value="update">Manager update</option>
                     </optgroup>
                     <optgroup label="Service containers">

@@ -343,6 +343,7 @@ function openTab(id) {
         loadOffsiteStatus();
         loadReplicaStatus();
         loadDiskStats();
+        loadNcStorage();
         loadOpenClawBackupStatus();
     }
     if (id === 'logs') pollLogs();
@@ -1732,9 +1733,12 @@ async function loadDrives() {
               </div>
               ${d.is_backup
                 ? '<span class="status-badge status-running">Backup drive</span>'
+                : d.is_nextcloud_data
+                ? '<span class="status-badge status-running">Files drive</span>'
                 : `<div class="row-actions">
                      <button class="btn-warning" onclick="mountDrive('${d.path}')">Mount</button>
                      <button class="btn-danger" onclick="formatDrive('${d.path}')">Format</button>
+                     <button class="btn-danger" onclick="moveNcData('${d.path}')">Store files here</button>
                    </div>`}
             </div>`).join('');
     } catch (e) { el.innerHTML = '<p class="faint small">Error loading drives.</p>'; }
@@ -1759,6 +1763,34 @@ async function formatDrive(path) {
     })) return;
     await triggerAction('/api/drives/format', 'Format Drive', { path });
     setTimeout(loadDrives, 5000);   // refresh to show the new partition
+}
+
+async function moveNcData(path) {
+    if (!await hbConfirm({
+        title: 'Store your files on this drive?',
+        body: `Everything on ${path} will be erased, then your Nextcloud files are copied onto it `
+            + 'and the old copy is deleted once the new one is verified. A large library can take '
+            + 'hours; Nextcloud goes offline only for the last, short pass. Leave the drive connected.',
+        confirm: 'Move files', danger: true, requireText: 'MOVE',
+    })) return;
+    await triggerAction('/api/drives/nextcloud-data', 'Move Nextcloud Data', { path });
+    currentLogSource = 'storage';
+    const sel = document.getElementById('log-selector');
+    if (sel) sel.value = 'storage';
+    openTab('logs');
+}
+
+async function loadNcStorage() {
+    const el = document.getElementById('nc-storage');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/nextcloud/storage', { credentials: 'include' });
+        const d = await res.json();
+        const where = d.external ? 'a dedicated drive' : 'the internal disk';
+        el.textContent = d.total_gb === undefined
+            ? `Your files live on ${where}: ${d.path}`
+            : `Your files live on ${where}: ${d.path} — ${d.used_gb} of ${d.total_gb} GB used`;
+    } catch (e) { el.textContent = ''; }
 }
 
 async function loadDiskStats() {

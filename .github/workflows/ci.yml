@@ -49,6 +49,10 @@ jobs:
         run: bash scripts/tests/test_restore_internal.sh
       - name: portable instance-secret merge (base64 padding)
         run: bash scripts/tests/test_instance_secrets.sh
+      - name: Nextcloud data move — pre-flight guards
+        # Root for losetup/mount: the guards read real block-device geometry,
+        # and the step they gate is `wipefs -a` on whatever it was handed.
+        run: sudo bash scripts/tests/test_move_nc_data.sh
       - name: fresh-install wipe (volumes + bind mounts together)
         run: bash scripts/tests/test_fresh_install_wipe.sh
       - name: backup retention, off-site copy + resume semantics
