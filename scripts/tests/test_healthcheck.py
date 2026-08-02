@@ -114,20 +114,44 @@ def test_info_level_alerts_once_then_weekly():
     assert decide_notification({"level": "info", "last_notified": NOW}, "ok", NOW) is None
 
 
-def _offsite(env, state=None, now=NOW):
-    """Run check_offsite against a temp state file (or a missing one)."""
-    orig = healthcheck.OFFSITE_STATE
-    try:
-        if state is None:
-            healthcheck.OFFSITE_STATE = "/nonexistent/offsite.json"
-            return check_offsite(env, now)
-        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
-            json.dump(state, f)
-            f.flush()
-            healthcheck.OFFSITE_STATE = f.name
-            return check_offsite(env, now)
-    finally:
-        healthcheck.OFFSITE_STATE = orig
+def _offsite(env, state=None, now=NOW, syncing=False):
+    """Run check_offsite against a temp state file (or a missing one).
+
+    `syncing=True` writes a run-file naming a live PID — this test process —
+    which is exactly what common.sh:offsite_mirror publishes for the duration
+    of a mirror.
+    """
+    orig_state = healthcheck.OFFSITE_STATE
+    orig_run = healthcheck.OFFSITE_RUN_FILE
+    with tempfile.TemporaryDirectory() as d:
+        run_path = os.path.join(d, "offsite.running")
+        if syncing:
+            with open(run_path, "w") as f:
+                f.write(f"{os.getpid()}\n")
+        healthcheck.OFFSITE_RUN_FILE = run_path
+        try:
+            if state is None:
+                healthcheck.OFFSITE_STATE = "/nonexistent/offsite.json"
+                return check_offsite(env, now)
+            with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+                json.dump(state, f)
+                f.flush()
+                healthcheck.OFFSITE_STATE = f.name
+                return check_offsite(env, now)
+        finally:
+            healthcheck.OFFSITE_STATE = orig_state
+            healthcheck.OFFSITE_RUN_FILE = orig_run
+
+
+def _run_file(contents):
+    """Point OFFSITE_RUN_FILE at a file holding `contents`."""
+    orig = healthcheck.OFFSITE_RUN_FILE
+    d = tempfile.TemporaryDirectory()
+    path = os.path.join(d.name, "offsite.running")
+    with open(path, "w") as f:
+        f.write(contents)
+    healthcheck.OFFSITE_RUN_FILE = path
+    return orig, d
 
 
 def test_offsite_disabled_is_silent():
@@ -157,6 +181,76 @@ def test_offsite_stale_and_fresh():
     weekly = _offsite({"OFFSITE_ENABLED": "true", "BACKUP_DAY_WEEK": "0"},
                       {"ts": NOW - 6 * DAY, "ok": True})
     assert weekly["level"] == "ok"
+
+
+def test_offsite_in_progress_outranks_a_previous_failure():
+    """A running mirror is the truth; the state file describes the LAST run.
+
+    Without this the hours-long upload of a multi-GB archive reports "the last
+    off-site copy failed" for its whole duration.
+    """
+    env = {"OFFSITE_ENABLED": "true"}
+    assert _offsite(env, {"ts": NOW, "ok": False})["level"] == "warn"
+    running = _offsite(env, {"ts": NOW, "ok": False}, syncing=True)
+    assert running["level"] == "ok" and "in progress" in running["summary"]
+
+
+def test_offsite_in_progress_outranks_staleness():
+    env = {"OFFSITE_ENABLED": "true"}
+    assert _offsite(env, {"ts": NOW - 3 * DAY, "ok": True})["level"] == "warn"
+    running = _offsite(env, {"ts": NOW - 3 * DAY, "ok": True}, syncing=True)
+    assert running["level"] == "ok" and "in progress" in running["summary"]
+
+
+def test_offsite_first_ever_copy_in_progress_is_not_a_warning():
+    """No state file yet, because the first mirror has not finished one."""
+    running = _offsite({"OFFSITE_ENABLED": "true"}, syncing=True)
+    assert running["level"] == "ok" and "First off-site copy" in running["summary"]
+
+
+def test_offsite_still_silent_when_disabled_even_while_syncing():
+    """OFFSITE_ENABLED=false outranks everything — the backfill era ran mirrors
+    with the flag still off, and health must stay quiet about them."""
+    assert _offsite({"OFFSITE_ENABLED": "false"}, syncing=True) is None
+
+
+def test_offsite_is_syncing_reads_a_live_pid():
+    orig, d = _run_file(f"{os.getpid()}\n")
+    try:
+        assert healthcheck.offsite_is_syncing() is True
+    finally:
+        healthcheck.OFFSITE_RUN_FILE = orig
+        d.cleanup()
+
+
+def test_offsite_run_file_with_a_dead_pid_is_not_syncing():
+    """A run-file outliving its mirror must not mask a real failure. /var/run
+    is tmpfs so a reboot clears it, but a SIGKILL leaves it behind. 4194305 is
+    one above Linux's PID_MAX_LIMIT, so it can never name a live process."""
+    orig, d = _run_file("4194305\n")
+    try:
+        assert healthcheck.offsite_is_syncing() is False
+    finally:
+        healthcheck.OFFSITE_RUN_FILE = orig
+        d.cleanup()
+
+
+def test_offsite_garbage_run_file_is_not_syncing():
+    orig, d = _run_file("not-a-pid\n")
+    try:
+        assert healthcheck.offsite_is_syncing() is False
+    finally:
+        healthcheck.OFFSITE_RUN_FILE = orig
+        d.cleanup()
+
+
+def test_offsite_missing_run_file_is_not_syncing():
+    orig = healthcheck.OFFSITE_RUN_FILE
+    try:
+        healthcheck.OFFSITE_RUN_FILE = "/nonexistent/offsite.running"
+        assert healthcheck.offsite_is_syncing() is False
+    finally:
+        healthcheck.OFFSITE_RUN_FILE = orig
 
 
 def test_reboot_not_pending_is_ok():
