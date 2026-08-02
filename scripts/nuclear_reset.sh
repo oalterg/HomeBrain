@@ -130,7 +130,19 @@ fi
 write_status "running" "Nuclear reset in progress — wiping user data..."
 
 log "Wiping Nextcloud data..."
-rm -rf -- "${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}" 2>/dev/null || true
+NC_DATA="${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}"
+rm -rf -- "$NC_DATA" 2>/dev/null || true
+
+# A files drive is not preserved the way the backup drive is: its contents were
+# just destroyed, so keeping the mount keeps nothing. Leaving the fstab entry
+# behind gives a "factory" box a drive mounted at a path the fresh .env does
+# not reference — an orphan the owner has no way to interpret. Unmount it and
+# forget it; Storage will offer the bare drive again.
+if mountpoint -q "$NC_DATA"; then
+    log "Releasing files drive at $NC_DATA"
+    umount "$NC_DATA" 2>/dev/null || umount -l "$NC_DATA" 2>/dev/null || true
+    sed -i "\|[[:space:]]${NC_DATA}[[:space:]]|d" /etc/fstab
+fi
 
 log "Wiping Vault data..."
 rm -rf -- "${VAULT_DATA_DIR:-/home/homebrain/vault-data}" 2>/dev/null || true
@@ -184,6 +196,20 @@ rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true
 # The setup wizard is the single place that mints a master password and its
 # recovery phrase (app.py:start_setup) and applies them to every service. With
 # .env and .setup_complete gone, the reboot below lands on exactly that wizard.
+
+# Every archive on this box was encrypted with the master password that was in
+# use when it was made, and the wizard is about to mint a brand-new one. That
+# is the same boundary rotate_master_password.sh records, and for the same
+# reason: without it the dashboard lists pre-reset archives as though the
+# current password opens them, and the owner discovers otherwise in a
+# passphrase prompt with nothing to type. The archives themselves are kept —
+# restoring one is the whole point of surviving a reset.
+mkdir -p /var/lib/homebrain
+EPOCH_FILE="/var/lib/homebrain/backup_epoch.json"
+printf '{"ts": %d, "rotated_at": "%s"}\n' \
+    "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${EPOCH_FILE}.tmp" \
+    && mv "${EPOCH_FILE}.tmp" "$EPOCH_FILE"
+log "Backup epoch recorded — existing archives need the pre-reset password."
 
 write_status "success" "Nuclear reset complete. Rebooting now..."
 
