@@ -963,8 +963,30 @@ def start_setup():
 
     # 4. Assign master password to all services
     for key in ["MASTER_PASSWORD", "MANAGER_PASSWORD", "NEXTCLOUD_ADMIN_PASSWORD",
-                "MYSQL_ROOT_PASSWORD", "MYSQL_PASSWORD", "HA_ADMIN_PASSWORD"]:
+                "MYSQL_ROOT_PASSWORD", "HA_ADMIN_PASSWORD"]:
         update_env_var(key, master_pass)
+
+    # MYSQL_PASSWORD is deliberately NOT the master password. It is the
+    # internal Nextcloud<->MariaDB credential, and rotate_master_password.sh
+    # cannot rotate it: occ needs DB access to rewrite its own stored copy, so
+    # changing it there deadlocks (see that script's header). Seeding it from
+    # the master password therefore pins the box's FIRST master password into
+    # .env in plaintext for the life of the machine — no rotation clears it,
+    # not even the recovery-phrase reset whose whole premise is that the old
+    # password is compromised. An owner who rotates after a leak reasonably
+    # believes the old value is inert; it would still be a live credential.
+    #
+    # The user never types this one, so memorability buys nothing — a random
+    # token is strictly better, and being unrelated to the master password is
+    # the entire point. token_hex keeps it alphanumeric, which stays safe
+    # through .env quoting, compose interpolation, MariaDB, and config.php.
+    #
+    # Only when empty: re-running setup on a box whose DB volume already
+    # exists must not invent a password that nextcloud_user does not have, or
+    # Nextcloud can no longer reach its own database. The template ships it
+    # empty, so a genuinely fresh box always gets a generated one.
+    if not env_config.get("MYSQL_PASSWORD"):
+        update_env_var("MYSQL_PASSWORD", secrets.token_hex(16))
 
     # 5. Trigger deploy
     cmd = f"bash {SCRIPT_DEPLOY} >> {LOG_FILES['setup']} 2>&1"
