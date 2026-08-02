@@ -261,6 +261,7 @@ SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_tunnels.sh"
 SCRIPT_UTILITIES = f"{INSTALL_DIR}/scripts/utilities.sh"
 SCRIPT_NUCLEAR   = f"{INSTALL_DIR}/scripts/nuclear_reset.sh"
 SCRIPT_ROTATE    = f"{INSTALL_DIR}/scripts/rotate_master_password.sh"
+SCRIPT_MOVE_NC_DATA = f"{INSTALL_DIR}/scripts/move_nc_data.sh"
 INSTALL_CREDS_PATH = f"{INSTALL_DIR}/install_creds.json"
 STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
@@ -273,6 +274,7 @@ LOG_FILES = {
     "update": f"{LOG_DIR}/manager_update.log",
     "manager": f"{LOG_DIR}/manager.log",
     "nuclear": f"{LOG_DIR}/nuclear_reset.log",
+    "storage": f"{LOG_DIR}/storage.log",
 }
 
 
@@ -1418,17 +1420,23 @@ def list_drives():
         ).decode()
         data = json.loads(output)
 
-        # Check explicit mount point for backup
-        backup_mount_source = ""
-        try:
-            # Returns e.g. /dev/sda1
-            backup_mount_source = (
-                subprocess.check_output(["findmnt", "-n", "-o", "SOURCE", BACKUP_DIR])
-                .decode()
-                .strip()
-            )
-        except Exception:
-            pass  # not mounted
+        # Check explicit mount points for backup and for the Nextcloud data
+        # drive, so neither is offered up for reformatting.
+        def mount_source(path):
+            try:
+                # Returns e.g. /dev/sda1
+                return (
+                    subprocess.check_output(["findmnt", "-n", "-o", "SOURCE", path])
+                    .decode()
+                    .strip()
+                )
+            except Exception:
+                return ""  # not mounted
+
+        backup_mount_source = mount_source(BACKUP_DIR)
+        nc_data_source = mount_source(
+            get_env_config().get("NEXTCLOUD_DATA_DIR") or "/home/homebrain/nextcloud-data"
+        )
 
         system_mounts = {'/', '/boot', '/boot/efi', '/opt/homebrain'}
 
@@ -1478,6 +1486,9 @@ def list_drives():
                     "size": dev["size"],
                     "model": dev.get("model", "Unknown"),
                     "is_backup": is_backup,
+                    "is_nextcloud_data": bool(
+                        nc_data_source and dev_name in nc_data_source
+                    ),
                 }
             )
 
@@ -1516,6 +1527,41 @@ def format_drive():
 
     threading.Thread(
         target=run_background_task, args=("Format Drive", cmd, "setup")
+    ).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/api/nextcloud/storage")
+def nextcloud_storage():
+    """Where the user's files live, and how much room is left there."""
+    path = get_env_config().get("NEXTCLOUD_DATA_DIR") or "/home/homebrain/nextcloud-data"
+    info = {"path": path, "external": os.path.ismount(path)}
+    try:
+        total, used, free = shutil.disk_usage(path)
+        info["used_gb"] = round(used / (1024**3), 1)
+        info["total_gb"] = round(total / (1024**3), 1)
+        info["percent"] = round((used / total) * 100, 1)
+    except OSError as e:
+        info["error"] = str(e)
+    return jsonify(info)
+
+
+@app.route("/api/drives/nextcloud-data", methods=["POST"])
+@limiter.limit("3 per minute")
+def move_nextcloud_data():
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "Task running"}), 409
+
+    drive_path = request.json.get("path")
+    if not drive_path or "mmcblk" in drive_path:
+        return jsonify({"error": "Invalid drive"}), 400
+
+    # Every other pre-flight (root disk, backup drive, capacity) lives in the
+    # script, which is also reachable from a shell and must refuse there too.
+    cmd = (f"bash {shlex.quote(SCRIPT_MOVE_NC_DATA)} {shlex.quote(drive_path)} "
+           f">> {LOG_FILES['storage']} 2>&1")
+    threading.Thread(
+        target=run_background_task, args=("Move Nextcloud Data", cmd, "storage")
     ).start()
     return jsonify({"status": "started"})
 

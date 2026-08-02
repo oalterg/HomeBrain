@@ -1877,8 +1877,13 @@ migrate_to_consolidated_layout() {
         # Phase E: NEXTCLOUD_DATA_DIR pointing to a non-canonical, populated
         # path (e.g. legacy /home/admin/nextcloud on non-AI ARM installs, or
         # any custom location set by an earlier provision).
+        #
+        # A mount point is not that. move_nc_data.sh mounts a dedicated drive
+        # at the data directory, and dragging those files back onto the root
+        # disk is the exact problem that feature exists to solve.
         if [[ -n "${NEXTCLOUD_DATA_DIR:-}" ]] \
             && [[ "${NEXTCLOUD_DATA_DIR}" != "${nc_dir}" ]] \
+            && ! mountpoint -q "${NEXTCLOUD_DATA_DIR}" \
             && [[ -d "${NEXTCLOUD_DATA_DIR}" ]] \
             && [[ -n "$(ls -A "${NEXTCLOUD_DATA_DIR}" 2>/dev/null)" ]] \
             && [[ -z "$(ls -A "${nc_dir}" 2>/dev/null || true)" ]]; then
@@ -2092,6 +2097,7 @@ migrate_to_consolidated_layout() {
     local current_nc_path="${NEXTCLOUD_DATA_DIR:-}"
     if [[ -n "$current_nc_path" ]] \
         && [[ "$current_nc_path" != "$nc_dir" ]] \
+        && ! mountpoint -q "$current_nc_path" \
         && [[ -d "$current_nc_path" ]] \
         && [[ -n "$(ls -A "$current_nc_path" 2>/dev/null)" ]]; then
         if [[ -n "$(ls -A "$nc_dir" 2>/dev/null || true)" ]]; then
