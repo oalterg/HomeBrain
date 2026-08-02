@@ -568,6 +568,73 @@ def email_subject(alerts, recoveries):
     return "HomeBrain: resolved"
 
 
+# ---------------------------------------------------------------------------
+# Dead-man's switch
+# ---------------------------------------------------------------------------
+# Every alert in this file is sent BY the box. A box that is off, unplugged,
+# stolen, or whose disk has died sends nothing — and silence is indistinguish-
+# able from healthy. That is the one failure the owner finds out about weeks
+# later, usually when they need a backup that stopped being made in March.
+#
+# The fix has to live somewhere that is not this box. The registrar Worker is
+# already deployed and already knows the owner's email, so the device half is
+# one POST on the timer that is already running: no new service, no new
+# credential, no new schedule. If the Worker stops hearing from us, IT sends
+# the mail.
+#
+# Off unless HEARTBEAT_URL is set, because the Worker's half is deployed by the
+# owner into their own Cloudflare account. See registrar/worker.js.
+
+FACTORY_CONFIG = ("/boot/firmware/factory_config.txt"
+                  if os.path.isdir("/boot/firmware")
+                  else f"{INSTALL_DIR}/factory_config.txt")
+
+
+def factory_config():
+    try:
+        with open(FACTORY_CONFIG) as f:
+            return parse_env(f.read())
+    except OSError:
+        return {}
+
+
+def heartbeat_url(env, factory):
+    """Where to POST, or "" when the switch is not armed."""
+    explicit = env.get("HEARTBEAT_URL", "").strip()
+    if explicit:
+        return explicit
+    if env.get("HEARTBEAT_ENABLED", "false").lower() != "true":
+        return ""
+    base = factory.get("REGISTRAR_URL", "").strip().rstrip("/")
+    return f"{base}/heartbeat" if base else ""
+
+
+def send_heartbeat(env, factory, overall, now):
+    """One POST saying "still here". Never fatal: a heartbeat that cannot be
+    delivered must not stop the box checking its own health."""
+    url = heartbeat_url(env, factory)
+    if not url:
+        return None
+    secret = factory.get("REGISTRAR_SECRET", "")
+    if not secret:
+        log("[WARN] heartbeat configured but no REGISTRAR_SECRET — not sending")
+        return False
+    payload = json.dumps({
+        "device_id": factory.get("NEWT_ID", "unknown"),
+        "overall": overall,
+        "ts": int(now),
+    }).encode()
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {secret}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return 200 <= r.status < 300
+    except Exception as e:
+        log(f"[WARN] heartbeat failed: {e}")
+        return False
+
+
 def compose_message(alerts, recoveries):
     lines = []
     if alerts:
@@ -687,6 +754,13 @@ def main():
 
     if (alerts or recoveries) and not pushed and not emailed:
         log(f"[WARN] {len(alerts)} alert(s) reached NOBODY — dashboard banner only")
+
+    # Unconditional: the heartbeat says "this box is still running", which is
+    # exactly as true on a healthy run as on a failing one. Gating it on alerts
+    # would mean a healthy box looks dead.
+    beat = send_heartbeat(env, factory_config(), overall, now)
+    if beat is not None:
+        log(f"[INFO] heartbeat: {'sent' if beat else 'FAILED'}")
 
     atomic_write_json(HEALTH_FILE, {
         "ts": int(now),

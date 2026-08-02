@@ -489,3 +489,79 @@ def test_subject_reflects_severity():
     assert healthcheck.email_subject(crit, []) == "HomeBrain needs attention"
     assert healthcheck.email_subject(warn, []) == "HomeBrain: something to look at"
     assert healthcheck.email_subject([], [{"summary": "y"}]) == "HomeBrain: resolved"
+
+
+# --- dead-man's switch ------------------------------------------------------
+# The switch must be OFF until the Worker half exists: a heartbeat posted into
+# the void is worse than none, because the owner believes they are covered.
+
+def test_heartbeat_is_off_by_default():
+    assert healthcheck.heartbeat_url({}, {}) == ""
+
+
+def test_heartbeat_stays_off_without_a_registrar():
+    assert healthcheck.heartbeat_url({"HEARTBEAT_ENABLED": "true"}, {}) == ""
+
+
+def test_heartbeat_derives_the_url_from_the_registrar():
+    url = healthcheck.heartbeat_url(
+        {"HEARTBEAT_ENABLED": "true"},
+        {"REGISTRAR_URL": "https://reg.example.com/"})
+    assert url == "https://reg.example.com/heartbeat"
+
+
+def test_an_explicit_url_wins_and_needs_no_toggle():
+    url = healthcheck.heartbeat_url({"HEARTBEAT_URL": "https://x/hb"},
+                                    {"REGISTRAR_URL": "https://reg.example.com"})
+    assert url == "https://x/hb"
+
+
+def test_no_secret_means_no_heartbeat(monkeypatch):
+    logged = []
+    monkeypatch.setattr(healthcheck, "log", lambda m: logged.append(m))
+    out = healthcheck.send_heartbeat({"HEARTBEAT_URL": "https://x/hb"}, {}, "ok", NOW)
+    assert out is False
+    assert any("REGISTRAR_SECRET" in m for m in logged)
+
+
+def test_unconfigured_heartbeat_returns_none_not_false():
+    """None means 'not armed' and stays silent; False means 'armed and it
+    failed' and gets logged. Collapsing them would either spam an unconfigured
+    box or hide a broken switch."""
+    assert healthcheck.send_heartbeat({}, {}, "ok", NOW) is None
+
+
+def test_heartbeat_posts_device_id_and_health(monkeypatch):
+    seen = {}
+
+    class FakeResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"] = req.full_url
+        seen["auth"] = req.get_header("Authorization")
+        seen["body"] = json.loads(req.data.decode())
+        return FakeResp()
+
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen", fake_urlopen)
+    out = healthcheck.send_heartbeat(
+        {"HEARTBEAT_URL": "https://x/hb"},
+        {"REGISTRAR_SECRET": "s3cret", "NEWT_ID": "newt-abc"}, "warn", NOW)
+    assert out is True
+    assert seen["url"] == "https://x/hb"
+    assert seen["auth"] == "Bearer s3cret"
+    assert seen["body"]["device_id"] == "newt-abc"
+    assert seen["body"]["overall"] == "warn"
+
+
+def test_a_failing_heartbeat_is_logged_not_raised(monkeypatch):
+    logged = []
+    monkeypatch.setattr(healthcheck, "log", lambda m: logged.append(m))
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    out = healthcheck.send_heartbeat({"HEARTBEAT_URL": "https://x/hb"},
+                                     {"REGISTRAR_SECRET": "s"}, "ok", NOW)
+    assert out is False
+    assert any("heartbeat failed" in m for m in logged)
