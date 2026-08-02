@@ -297,8 +297,13 @@ def check_remote_access(env):
 
 
 def check_version(local_version, latest_version):
-    if not local_version:
-        return result("Version", SKIP, "The installed version is unknown.")
+    # get_local_version() returns the literal string "unknown" for a box that
+    # is not on a released ref — a dev checkout, or one built from a branch.
+    # Reporting that as "you are behind" is the same lie in the other
+    # direction: it is a fact we do not have, not a fact we have.
+    if not local_version or local_version == "unknown":
+        return result("Version", SKIP, "The installed version is unknown.",
+                      "This box is not running a tagged release.")
     if not latest_version:
         return result("Version", SKIP, "Could not reach GitHub to check for updates.")
     if local_version != latest_version:

@@ -215,3 +215,10 @@ def test_version_current():
 
 def test_github_unreachable_is_a_skip_not_a_pass():
     assert selftest.check_version("v2026.08.01", "")["status"] == SKIP
+
+
+def test_an_untagged_box_is_a_skip_not_a_failure():
+    """get_local_version() returns the literal "unknown" for a dev checkout.
+    Reporting that as "you are behind" is the same lie in the other direction."""
+    r = selftest.check_version("unknown", "v2026.08.01")
+    assert r["status"] == SKIP and "not running a tagged release" in r["hint"]
