@@ -3992,79 +3992,209 @@ def recovery_regenerate():
     return jsonify({"status": "ok", "recovery_phrase": phrase})
 
 
-# --- Routes: Phone photo backup ---
-@app.route("/api/photos/pair", methods=["POST"])
-@limiter.limit("5 per minute")
-def photos_pair():
-    """Everything a phone needs to start backing up its camera roll, as one QR
-    code. Nextcloud's mobile apps read `nc://login/...` from their login
-    screen's scanner and configure the account from it — no server address and
-    no password typed on a phone keyboard.
+# --- Routes: Phone photo backup & household members ---
+class NextcloudError(Exception):
+    """An occ command said no. The message is meant for the dashboard."""
 
-    The app password is minted fresh on each call and returned once. It is
-    never written to disk: it exists in this response and in the QR the
-    browser draws from it."""
-    env = get_env_config()
-    user = env.get("NEXTCLOUD_ADMIN_USER", "")
-    password = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
-    if not user or not password:
-        return jsonify({"error": "Nextcloud admin credentials are not in .env"}), 500
 
+def nc_occ(*args, env_extra=None, timeout=60):
+    """Run an occ command in the Nextcloud container."""
     nc_cid = compose_ps_q("nextcloud")
     if not nc_cid:
-        return jsonify({"error": "Nextcloud is not running"}), 503
+        raise NextcloudError("Nextcloud is not running")
+    cmd = ["docker", "exec", "-i", "-u", "www-data"]
+    for k, v in (env_extra or {}).items():
+        cmd += ["-e", f"{k}={v}"]
+    return subprocess.run(cmd + [nc_cid, "php", "occ", *args],
+                          capture_output=True, text=True, timeout=timeout)
 
-    def occ(*args, timeout=60, env_extra=None):
-        cmd = ["docker", "exec", "-i", "-u", "www-data"]
-        for k, v in (env_extra or {}).items():
-            cmd += ["-e", f"{k}={v}"]
-        return subprocess.run(cmd + [nc_cid, "php", "occ", *args],
-                              capture_output=True, text=True, timeout=timeout)
 
-    # Photos ships enabled, but say so out loud rather than assume it.
-    occ("app:enable", "photos")
-    # A phone camera roll is the heaviest thing this box will ever preview.
-    # Nextcloud's 4096px default renders 16MP thumbnails nobody looks at; the
-    # Photos grid never asks for more than a fraction of that.
-    for key in ("preview_max_x", "preview_max_y"):
-        occ("config:system:set", key, "--value", "2048")
+def nc_client_url(env):
+    """The address to hand a phone, and whether it works away from home.
 
-    proc = occ("user:add-app-password", user, "--password-from-env",
-               env_extra={"OC_PASS": password})
+    Prefer the tunnel: a phone that only syncs inside the house is not a photo
+    backup. The LAN fallback works, but the phone will ask about this box's
+    certificate unless its CA has been installed."""
+    domains = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()
+    if domains:
+        return f"https://{domains[0]}", True
+    return f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
+
+
+def pairing_payload(user, password, env):
+    """Mint a single-phone app password and draw it as a login QR code.
+
+    The token is returned once and never written to disk. It goes to qrencode
+    on stdin, not argv, so it does not sit in the process table either."""
+    proc = nc_occ("user:add-app-password", user, "--password-from-env",
+                  env_extra={"OC_PASS": password})
     out = proc.stdout.strip().splitlines()
     if proc.returncode != 0 or not out:
-        return jsonify({"error": f"Could not create an app password: {proc.stderr.strip()[:200]}"}), 502
+        raise NextcloudError(f"Could not create an app password: {proc.stderr.strip()[:200]}")
     token = out[-1].split()[-1]
     if len(token) < 20:
-        return jsonify({"error": "Nextcloud returned an unexpected app password"}), 502
+        raise NextcloudError("Nextcloud returned an unexpected app password")
 
-    # Prefer the tunnel: a phone that only works inside the house is not a
-    # photo backup. Fall back to the LAN name, whose certificate the phone
-    # will ask about unless the box's CA is installed.
-    nc_domain = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()[0] if env.get(
-        "NEXTCLOUD_TRUSTED_DOMAINS") else ""
-    if nc_domain:
-        url, remote = f"https://{nc_domain}", True
-    else:
-        url, remote = f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
-
+    url, remote = nc_client_url(env)
     try:
-        # Content on stdin, not argv: the app password would otherwise sit in
-        # the process table for anything on the box to read.
         qr = subprocess.run(
             ["qrencode", "-t", "SVG", "-m", "1", "-o", "-"],
             input=f"nc://login/server:{url}&user:{user}&password:{token}",
             capture_output=True, text=True, timeout=10, check=True,
         ).stdout
     except FileNotFoundError:
-        return jsonify({"error": "qrencode is not installed — run a system update"}), 503
+        raise NextcloudError("qrencode is not installed — run a system update")
     except subprocess.CalledProcessError as e:
-        return jsonify({"error": f"Could not draw the QR code: {e.stderr[:200]}"}), 500
+        raise NextcloudError(f"Could not draw the QR code: {e.stderr[:200]}")
 
-    return jsonify({
-        "qr": "data:image/svg+xml;base64," + base64.b64encode(qr.encode()).decode(),
-        "url": url, "user": user, "remote": remote,
-    })
+    return {"qr": "data:image/svg+xml;base64," + base64.b64encode(qr.encode()).decode(),
+            "url": url, "user": user, "remote": remote}
+
+
+@app.route("/api/photos/pair", methods=["POST"])
+@limiter.limit("5 per minute")
+def photos_pair():
+    """Everything a phone needs to start backing up its camera roll, as one QR
+    code. Nextcloud's mobile apps read `nc://login/...` from their login
+    screen's scanner and configure the account from it — no server address and
+    no password typed on a phone keyboard."""
+    env = get_env_config()
+    user = env.get("NEXTCLOUD_ADMIN_USER", "")
+    password = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
+    if not user or not password:
+        return jsonify({"error": "Nextcloud admin credentials are not in .env"}), 500
+    try:
+        # Photos ships enabled, but say so out loud rather than assume it.
+        nc_occ("app:enable", "photos")
+        # A phone camera roll is the heaviest thing this box will ever
+        # preview. Nextcloud's 4096px default renders 16MP thumbnails nobody
+        # looks at; the Photos grid never asks for a fraction of that.
+        for key in ("preview_max_x", "preview_max_y"):
+            nc_occ("config:system:set", key, "--value", "2048")
+        return jsonify(pairing_payload(user, password, env))
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+
+
+# HomeBrain is deliberately single-admin: one master password opens the
+# dashboard, Home Assistant and the Vault. A household member is therefore a
+# Nextcloud user and nothing more — their own files, their own photo backup,
+# no access to how the house is run.
+MEMBER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+RESERVED_MEMBERS = {"replica"}   # the off-site receiver account, not a person
+
+
+def member_password():
+    """A memorable password, or a random one if the wordlist is missing — a
+    missing asset must not stop someone adding their partner to the box."""
+    try:
+        return recovery.generate_password()
+    except recovery.RecoveryError:
+        return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+
+
+@app.route("/api/household/members")
+def list_household_members():
+    env = get_env_config()
+    admin_user = env.get("NEXTCLOUD_ADMIN_USER", "")
+    try:
+        proc = nc_occ("user:list")
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 503
+    if proc.returncode != 0:
+        return jsonify({"error": proc.stderr.strip()[:200]}), 502
+    members = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        uid, _, display = line[2:].partition(": ")
+        if uid in RESERVED_MEMBERS or uid == admin_user:
+            continue
+        members.append({"user": uid, "name": display or uid})
+    return jsonify({"members": members})
+
+
+@app.route("/api/household/members", methods=["POST"])
+@limiter.limit("10 per minute")
+def add_household_member():
+    """Create a Nextcloud user and pair a phone to it in one step.
+
+    The password is generated here, shown once, and never stored — the QR is
+    what the member actually uses. Losing it costs a new code, not the account."""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    user = (body.get("user") or name).strip().lower().replace(" ", "")
+    if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS:
+        return jsonify({"error": "Use 2-32 letters or digits — no spaces"}), 400
+
+    env = get_env_config()
+    if user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+        return jsonify({"error": "That is the owner's account"}), 400
+
+    password = member_password()
+    try:
+        proc = nc_occ("user:add", "--password-from-env",
+                      "--display-name", name or user, user,
+                      env_extra={"OC_PASS": password})
+        if proc.returncode != 0:
+            # occ reports "The account ... already exists." on stdout, not
+            # stderr — read both or the owner gets a shrug.
+            return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                      or "Could not add the user")[:200]}), 400
+        payload = pairing_payload(user, password, env)
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    payload["password"] = password
+    return jsonify(payload)
+
+
+@app.route("/api/household/members/<user>/pair", methods=["POST"])
+@limiter.limit("10 per minute")
+def repair_household_member(user):
+    """A replacement code for a member who lost theirs.
+
+    Minting an app password needs the member's own password, which is not
+    stored anywhere, so this resets it. Safe on this box because server-side
+    encryption is never enabled — with it on, a reset would orphan their keys."""
+    env = get_env_config()
+    if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS \
+            or user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+        return jsonify({"error": "Not a household member"}), 400
+
+    password = member_password()
+    try:
+        enc = nc_occ("encryption:status")
+        if "enabled: true" in enc.stdout:
+            return jsonify({"error": "Server-side encryption is on — resetting a "
+                                     "password here would lose that user's files"}), 409
+        proc = nc_occ("user:resetpassword", "--password-from-env", user,
+                      env_extra={"OC_PASS": password})
+        if proc.returncode != 0:
+            return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                      or "Could not reset the password")[:200]}), 400
+        payload = pairing_payload(user, password, env)
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    payload["password"] = password
+    return jsonify(payload)
+
+
+@app.route("/api/household/members/<user>", methods=["DELETE"])
+@limiter.limit("10 per minute")
+def delete_household_member(user):
+    env = get_env_config()
+    if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS \
+            or user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+        return jsonify({"error": "Not a household member"}), 400
+    try:
+        proc = nc_occ("user:delete", user)
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    if proc.returncode != 0:
+        return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                  or "Could not remove the user")[:200]}), 400
+    return jsonify({"status": "removed"})
 
 
 # --- Routes: FTP Management ---
