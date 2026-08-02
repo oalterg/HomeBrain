@@ -172,6 +172,32 @@ def _ensure_self_token() -> str:
     return tok
 
 
+def _repad_env_key(name: str, padded: str) -> None:
+    """Repair a base64 key in .env that lost its padding.
+
+    Restores made before 2026-08 split .env lines on every '=' instead of the
+    first, eating the trailing '=' a Fernet key always carries. Reading the
+    padded form is enough to make decryption work again, but backup.sh copies
+    the raw .env value into the archive's instance_secrets.env — so leaving
+    the truncated value on disk would hand the corruption to every future
+    restore. Rewrite every occurrence (the key legitimately appears twice on
+    some boxes, and _read_env takes the last one).
+    """
+    env_file = os.path.join(INSTALL_DIR, ".env")
+    try:
+        with open(env_file) as f:
+            lines = f.readlines()
+        fixed = [f"{name}={padded}\n" if ln.startswith(f"{name}=") else ln for ln in lines]
+        if fixed == lines:
+            return
+        with open(env_file, "w") as f:
+            f.writelines(fixed)
+        os.chmod(env_file, 0o600)
+        logging.warning("Repaired truncated %s in .env (base64 padding lost by an older restore).", name)
+    except OSError:
+        pass
+
+
 def _email_fernet_key() -> str:
     """Derive a Fernet-format key from MASTER_PASSWORD. Stored on disk so
     the dashboard and the email MCP both reach the same value across
@@ -180,7 +206,10 @@ def _email_fernet_key() -> str:
     env = _read_env()
     existing = env.get("HOMEBRAIN_EMAIL_KEY")
     if existing:
-        return existing
+        padded = existing + "=" * (-len(existing) % 4)
+        if padded != existing:
+            _repad_env_key("HOMEBRAIN_EMAIL_KEY", padded)
+        return padded
     # Use PBKDF2 to derive a 32-byte key, then base64 url-safe per Fernet.
     mp = _master_password()
     if not mp:

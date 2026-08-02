@@ -35,7 +35,7 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    Consent, audit, consent_required, err, ok, serve, unavailable,
+    Consent, audit, consent_required, decrypt_secret, err, ok, serve, unavailable,
 )
 
 HA_ACCOUNTS_FILE = os.environ.get("HA_ACCOUNTS_FILE", "")
@@ -72,13 +72,7 @@ RAW_NUCLEAR_DENYLIST = {
 
 
 def _decrypt(blob: str) -> str:
-    if not INTEGRATIONS_KEY:
-        return blob
-    try:
-        from cryptography.fernet import Fernet  # type: ignore
-        return Fernet(INTEGRATIONS_KEY.encode()).decrypt(blob.encode()).decode()
-    except Exception:
-        return blob
+    return decrypt_secret(blob, INTEGRATIONS_KEY)
 
 
 def _accounts() -> list[dict]:

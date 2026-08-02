@@ -32,7 +32,7 @@ from email.utils import parsedate_to_datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    Consent, audit, consent_required, err, ok, serve, unavailable,
+    Consent, audit, consent_required, decrypt_secret, err, ok, serve, unavailable,
 )
 
 ACCOUNTS_FILE = os.environ.get(
@@ -44,13 +44,7 @@ SEND_DIRECT_ENABLED = os.environ.get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").low
 
 
 def _decrypt(blob: str) -> str:
-    if not KEY_B64:
-        return blob  # development / unencrypted mode
-    try:
-        from cryptography.fernet import Fernet  # type: ignore
-        return Fernet(KEY_B64.encode()).decrypt(blob.encode()).decode()
-    except Exception:
-        return ""
+    return decrypt_secret(blob, KEY_B64)
 
 
 def _accounts() -> list[dict]:

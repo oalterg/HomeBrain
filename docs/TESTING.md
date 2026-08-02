@@ -153,6 +153,20 @@ No external tunnel; access via `homebrain.local`.
 - [ ] OpenClaw config and agent workspace are present in backup archive
 - [ ] Restore from archive → Nextcloud and Home Assistant data intact after restore
 
+**Portable instance secrets survive the round trip.** This is the check that would have caught
+the truncation bug: for eight months `restore.sh` shortened `HOMEBRAIN_EMAIL_KEY` from 44 to 43
+characters on *every* restore, and nothing anywhere reported it — the MCP servers handed the
+still-encrypted token to Home Assistant as a bearer token and the user saw a bare 401.
+
+- [ ] Before backing up: `sudo grep '^HOMEBRAIN_EMAIL_KEY=' /opt/homebrain/.env` — note the value
+- [ ] After restoring: **same value, still 44 characters, still ending in `=`**
+      (a 43-character key means the merge is truncating again)
+- [ ] A stored account token still decrypts:
+      `sudo python3 -c "import sys,json;sys.path.insert(0,'/opt/homebrain/scripts');from mcp_common import decrypt_secret;print(decrypt_secret(json.load(open('/home/homebrain/.openclaw/ha_accounts.json'))['accounts'][0]['token'], KEY))"`
+      → the plaintext token, **never** a string starting `gAAAAA`
+- [ ] Truncate the key by hand, restart `homebrain-manager`, and confirm the dashboard repairs it
+      back to 44 characters and logs "Repaired truncated HOMEBRAIN_EMAIL_KEY"
+
 ### Always-on behaviour (HomeBrain only)
 
 - [ ] `cat /sys/bus/pci/devices/.../power/control` → `on` (GPU PM disabled)

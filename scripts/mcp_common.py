@@ -55,6 +55,63 @@ def consent_required(action_id: str, summary: str, expires_in: int = 60) -> dict
 
 
 # ---------------------------------------------------------------------------
+# Secrets at rest
+# ---------------------------------------------------------------------------
+
+def fernet_key(raw: str) -> str:
+    """Normalise a Fernet key read from the environment.
+
+    A Fernet key is url-safe base64 of 32 bytes, so it always ends in exactly
+    one '='. Shell .env parsers that split key=value on *every* '=' rather
+    than the first one eat that padding (restore.sh did, for every restore),
+    leaving a 43-character key that `Fernet()` rejects outright. Re-padding on
+    read means a box whose .env was truncated by an older release still
+    decrypts, instead of failing three layers away as an unexplained 401.
+
+    Idempotent: a correctly padded key is returned unchanged.
+    """
+    raw = raw.strip()
+    return raw + "=" * (-len(raw) % 4) if raw else ""
+
+
+_decrypt_warned = False
+
+
+def decrypt_secret(blob: str, key: str) -> str:
+    """Decrypt a secret stored at rest. Returns "" when it cannot.
+
+    Never returns `blob` on failure. Handing back an undecrypted Fernet token
+    means the caller sends `gAAAAA...` over the wire as a bearer token and the
+    user sees a bare 401 with nothing anywhere pointing at the key — the exact
+    failure this function exists to make visible.
+
+    Blobs that are not Fernet-shaped are passed through: accounts written
+    before at-rest encryption existed hold plaintext, and those keep working.
+    """
+    if not blob:
+        return ""
+    if not key:
+        return blob  # development / unencrypted mode
+    try:
+        from cryptography.fernet import Fernet  # type: ignore
+        return Fernet(fernet_key(key).encode()).decrypt(blob.encode()).decode()
+    except Exception:
+        pass
+    if not blob.startswith("gAAAAA"):
+        return blob  # legacy plaintext, stored before at-rest encryption
+    global _decrypt_warned
+    if not _decrypt_warned:
+        _decrypt_warned = True
+        print(
+            f"[homebrain] a stored secret could not be decrypted — wrong key or "
+            f"corrupt value (key length {len(fernet_key(key))}, expected 44). "
+            f"Treating the credential as missing rather than sending ciphertext.",
+            file=sys.stderr, flush=True,
+        )
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Audit log
 # ---------------------------------------------------------------------------
 

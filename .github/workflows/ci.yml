@@ -36,7 +36,7 @@ jobs:
           # limiter falls back to memory — limits raises at Limiter() without it.
           pip install -q pytest cryptography Flask flask-limiter flask-sock redis requests
           python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py \
-                            scripts/tests/test_master_password.py -q
+                            scripts/tests/test_master_password.py scripts/tests/test_mcp_crypto.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
@@ -45,6 +45,8 @@ jobs:
         run: bash scripts/tests/test_platform_detect.sh
       - name: backup dir guard (internal-storage restore)
         run: bash scripts/tests/test_restore_internal.sh
+      - name: portable instance-secret merge (base64 padding)
+        run: bash scripts/tests/test_instance_secrets.sh
       - name: backup retention, off-site copy + resume semantics
         run: |
           # rclone drives the off-site half against a temp-dir alias remote.
