@@ -96,7 +96,10 @@ What this means when reasoning about agent risk:
 
 ```
 scripts/           Bash scripts: provision.sh, deploy.sh, backup.sh, restore.sh, update.sh, utilities.sh, common.sh
-src/               Flask app (app.py ~1750 lines), migration.py, templates/
+src/               Flask app (app.py, integrations.py, migration.py, templates/, static/)
+                   app.py and integrations.py are both large — read the section you
+                   need rather than the whole file. No line count here on purpose:
+                   the last one said "~1750" while app.py was past 4,000.
 config/            .env.template, platform_models.json, systemd units, udev rules
 docs/              BENCHMARKS.md, ROADMAP.md, TESTING.md, plans/
 docker-compose.yml Service definitions with profiles (pangolin, cloudflare-nc, cloudflare-ha)

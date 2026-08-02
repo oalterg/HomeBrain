@@ -255,6 +255,15 @@ systemctl enable --now homebrain-health.timer 2>/dev/null \
     && log_info "Health check timer enabled." \
     || log_warn "Failed to enable health check timer."
 
+# Rotate /var/log/homebrain. Without this it grows for the life of the box.
+cp "${SCRIPT_DIR}/../config/logrotate-homebrain" /etc/logrotate.d/homebrain
+chmod 644 /etc/logrotate.d/homebrain
+if logrotate --debug /etc/logrotate.d/homebrain >/dev/null 2>&1; then
+    log_info "Log rotation configured."
+else
+    log_warn "logrotate rejected /etc/logrotate.d/homebrain — logs will grow unbounded."
+fi
+
 # Resume timer for interrupted off-site copies. Harmless when off-site is not
 # configured — offsite_resume exits immediately on OFFSITE_ENABLED=false.
 cp "${SCRIPT_DIR}/../config/homebrain-offsite.service" /etc/systemd/system/

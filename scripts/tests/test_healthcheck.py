@@ -7,6 +7,8 @@ import os
 import sys
 import tempfile
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import healthcheck  # noqa: E402
@@ -183,6 +185,14 @@ def test_offsite_stale_and_fresh():
     assert weekly["level"] == "ok"
 
 
+# offsite_is_syncing() proves a PID is alive by looking for /proc/<pid>, which
+# is correct on the box and absent on a developer's Mac. Skip rather than fail:
+# four red tests that mean "wrong OS" teach people to ignore red tests.
+needs_proc = pytest.mark.skipif(not os.path.isdir("/proc"),
+                                reason="offsite_is_syncing() reads /proc; Linux only")
+
+
+@needs_proc
 def test_offsite_in_progress_outranks_a_previous_failure():
     """A running mirror is the truth; the state file describes the LAST run.
 
@@ -195,6 +205,7 @@ def test_offsite_in_progress_outranks_a_previous_failure():
     assert running["level"] == "ok" and "in progress" in running["summary"]
 
 
+@needs_proc
 def test_offsite_in_progress_outranks_staleness():
     env = {"OFFSITE_ENABLED": "true"}
     assert _offsite(env, {"ts": NOW - 3 * DAY, "ok": True})["level"] == "warn"
@@ -202,6 +213,7 @@ def test_offsite_in_progress_outranks_staleness():
     assert running["level"] == "ok" and "in progress" in running["summary"]
 
 
+@needs_proc
 def test_offsite_first_ever_copy_in_progress_is_not_a_warning():
     """No state file yet, because the first mirror has not finished one."""
     running = _offsite({"OFFSITE_ENABLED": "true"}, syncing=True)
@@ -214,6 +226,7 @@ def test_offsite_still_silent_when_disabled_even_while_syncing():
     assert _offsite({"OFFSITE_ENABLED": "false"}, syncing=True) is None
 
 
+@needs_proc
 def test_offsite_is_syncing_reads_a_live_pid():
     orig, d = _run_file(f"{os.getpid()}\n")
     try:

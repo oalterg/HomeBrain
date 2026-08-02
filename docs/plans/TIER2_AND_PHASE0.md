@@ -1,7 +1,7 @@
 # Tier 2 + Phase 0 — Handoff for the next agent session
 
-**Status:** Not started (2026-08-02). Written to be picked up cold, in a session that has *not*
-seen the conversation this came out of.
+**Status:** Phase 0 complete (2026-08-02). Tier 2 not started. Written to be picked up cold, in a
+session that has *not* seen the conversation this came out of.
 **Date:** 2026-08-02
 **Companion doc:** [`TIER1_PROVE_IT.md`](TIER1_PROVE_IT.md) — Tier 1 is in flight in a separate
 session. Nothing here depends on it. Nothing here should touch `restore.sh`, `provision.sh`,
@@ -55,12 +55,18 @@ Version bumps are currently a manual campaign (see PRs #36–#42, #126–#133). 
 and `update.sh` has a guard that blocks them. Dependabot PRs are *proposals to test on hardware*,
 never auto-merge. Say so in the PR template if one gets added.
 
-### 0.5 — CI never imports the app
-`.github/workflows/ci.yml` runs `compileall`, which catches syntax errors and nothing else.
-Module-level breakage — a bad import, a decorator that throws, a missing constant — ships. Add a
-smoke test that imports `app` and `integrations` with a temp `INSTALL_DIR`, and asserts the Flask
-app has routes. This is the cheapest test in the repo and `app.py` and `integrations.py` currently
-have **zero**.
+### 0.5 — ~~CI never imports the app~~ — wrong; the real gap was the MCP servers
+The claim as first written was false. `test_master_password.py` drives the Flask app through its
+test client, which imports `app.py`, which imports `integrations.py` at line 21 — so both are
+exercised in CI today.
+
+What genuinely shipped unguarded were the five **MCP servers**. Each is a standalone stdio process
+OpenClaw spawns on demand, so a module-level error fails nothing at build time and surfaces later
+as "the agent's Nextcloud tools stopped working", traceback buried in a subprocess log — the same
+invisible-failure shape as the Fernet key bug. `scripts/tests/test_mcp_servers_load.py` now imports
+all five and checks that `TOOLS` and `DISPATCH` agree, which is the one invariant that can drift
+(they are hand-maintained in two places in the same file, and a tool in `TOOLS` with no `DISPATCH`
+entry is advertised to the model and errors when called).
 
 ---
 
