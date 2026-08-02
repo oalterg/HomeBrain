@@ -49,6 +49,41 @@ Transform tasks into verifiable goals:
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 - "Refactor X" → "Ensure tests pass before and after"
 
+## 5. The hardware test target is shared. Take the lock.
+
+Real-hardware E2E is the merge gate, and there is one test box. More than one
+agent session runs against it at a time, and the operations that matter —
+`nuclear_reset.sh`, `provision.sh`, `restore.sh` — wipe the machine and reboot
+it. One session's factory reset lands in the middle of another's restore, and
+both walk away with results that describe a box neither of them was testing.
+This has happened.
+
+**Before touching the target, take the mutex. It is a file on the box:**
+
+```bash
+LOCK=/home/admin/using_test_target
+
+ssh admin@<target> "cat $LOCK 2>/dev/null"          # who has it, if anyone
+ssh admin@<target> "echo 'holder: <session-id> (<what you are doing>)' > $LOCK"
+ssh admin@<target> "rm -f $LOCK"                    # when you are done
+```
+
+- **Held by someone else → wait.** Do not reset a box you do not hold, and do
+  not "just check something" on it — a read is fine, a `docker compose` is not.
+- **Say who you are and what you are doing** in the file. "Held" with no name
+  is indistinguishable from a leftover, and the next agent will take it.
+- **Release it when your E2E ends**, including when it ends badly. A lock left
+  behind costs the next session a wait; a wipe mid-run costs it a whole run.
+- **Check for activity too.** A missing lock file does not mean the box is
+  idle: `pgrep -f 'scripts/(deploy|provision|nuclear_reset|restore|update)\.sh'`
+  before claiming.
+- **`/home/admin` deliberately** — a bare `touch using_test_target` over ssh
+  lands there, and it survives the reboots a reset causes (`/tmp` does not).
+
+If a run produces results that contradict what you did — a log with no matching
+timestamp, data you did not delete — check the lock and `who` before believing
+them.
+
 ## Project
 HomeBrain is a self-hosted home automation system targeting x86_64 Ubuntu servers with AMD GPUs. It combines an OpenClaw AI assistant (backed by llama.cpp/llama-server), Nextcloud, Home Assistant, and optional Pangolin tunnel for remote access. All services run in Docker; the user interacts exclusively through a Flask dashboard — no SSH required.
 

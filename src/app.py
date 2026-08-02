@@ -247,6 +247,9 @@ COMPOSE_FILE = f"{INSTALL_DIR}/docker-compose.yml"
 OVERRIDE_FILE = f"{INSTALL_DIR}/docker-compose.override.yml"
 LOG_DIR = "/var/log/homebrain"
 BACKUP_DIR = "/mnt/backup"
+# The no-drive location (BACKUP_INTERNAL=true). Named so restore can still
+# find archives here after a factory reset regenerates .env.
+INTERNAL_BACKUP_DIR = "/var/backups/homebrain"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
 LEGACY_BACKUP_CRON_FILE = "/etc/cron.d/nextcloud-backup"
 PROVISION_SCRIPT = f"{INSTALL_DIR}/scripts/provision.sh"
@@ -768,6 +771,33 @@ def backup_storage_dir():
     no-drive mode (BACKUP_INTERNAL=true). Drive-management flows keep using
     the BACKUP_DIR constant — that is where a physical drive mounts."""
     return get_env_config().get("BACKUP_MOUNTDIR") or BACKUP_DIR
+
+
+def backup_search_dirs():
+    """Everywhere an archive of this box could be — the configured location
+    first, then the other one.
+
+    Backups have to survive a factory reset and still be restorable, and a
+    reset regenerates .env from the template. The no-drive setting goes with
+    it, so a box that had been keeping archives internally comes back looking
+    only at /mnt/backup and reports "no backups" while the owner's archives
+    sit untouched a directory away. Reading from both places costs nothing;
+    writing still goes wherever the setting says."""
+    dirs = [backup_storage_dir(), BACKUP_DIR, INTERNAL_BACKUP_DIR]
+    seen = []
+    for d in dirs:
+        if d not in seen and os.path.isdir(d):
+            seen.append(d)
+    return seen
+
+
+def find_backup(filename):
+    """Absolute path of an archive by bare name, or None."""
+    for d in backup_search_dirs():
+        path = os.path.join(d, filename)
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def backup_storage_internal():
@@ -1630,7 +1660,7 @@ def backup_internal():
         return jsonify({"error": "A backup drive is connected — use that instead"}), 400
     if enabled:
         update_env_var("BACKUP_INTERNAL", "true")
-        update_env_var("BACKUP_MOUNTDIR", "/var/backups/homebrain")
+        update_env_var("BACKUP_MOUNTDIR", INTERNAL_BACKUP_DIR)
     else:
         update_env_var("BACKUP_INTERNAL", "false")
         update_env_var("BACKUP_MOUNTDIR", "/mnt/backup")
@@ -1903,12 +1933,15 @@ def backup_epoch():
 @app.route("/api/backups/list")
 def list_backups():
     backups = []
-    storage = backup_storage_dir()
     epoch = backup_epoch()
-    if os.path.exists(storage):
+    seen = set()
+    for storage in backup_search_dirs():
         for f in os.listdir(storage):
+            if f in seen:
+                continue
             if f.endswith(".tar.gz") or f.endswith(".tar.gz.gpg"):
                 path = os.path.join(storage, f)
+                seen.add(f)
                 try:
                     size = os.path.getsize(path) / (1024 * 1024)
                     # Infer type from filename injected by backup.sh
@@ -2010,7 +2043,9 @@ def trigger_restore():
         target = filename
         offsite_flag = " --from-offsite"
     else:
-        target = os.path.join(backup_storage_dir(), filename)
+        target = find_backup(filename)
+        if not target:
+            return jsonify({"error": "That archive is no longer on this box"}), 404
         offsite_flag = ""
 
     # Optional passphrase for encrypted archives made under a DIFFERENT master
