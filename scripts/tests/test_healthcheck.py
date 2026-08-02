@@ -393,3 +393,28 @@ def test_beta_channel_is_skipped(tmp_path):
         json.dump({"channel": "beta", "ref": "main"}, f)
     healthcheck.VERSION_FILE = path
     assert check_update({}, NOW) is None
+
+
+# --- files drive ------------------------------------------------------------
+# The drive holding the user's photos is either mounted or Nextcloud is down.
+# The regression: with it unplugged every container still reported "running",
+# the container check said "Containers healthy", and nothing told the owner.
+
+def test_files_drive_silent_when_on_internal_disk():
+    assert healthcheck.check_files_drive({}) is None
+    assert healthcheck.check_files_drive(
+        {"NEXTCLOUD_DATA_DIR": healthcheck.NC_DATA_DEFAULT}) is None
+
+
+def test_files_drive_missing_is_critical():
+    out = healthcheck.check_files_drive({"NEXTCLOUD_DATA_DIR": "/mnt/nextcloud-data"})
+    assert out["level"] == "crit"
+    assert "not connected" in out["summary"]
+
+
+def test_files_drive_mounted_reports_its_own_usage(tmp_path, monkeypatch):
+    path = str(tmp_path)
+    monkeypatch.setattr(healthcheck.os.path, "ismount", lambda p: p == path)
+    out = healthcheck.check_files_drive({"NEXTCLOUD_DATA_DIR": path})
+    assert out["id"] == "disk_files"
+    assert "Files drive" in out["summary"]

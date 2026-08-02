@@ -678,6 +678,15 @@ def get_local_version():
             pass
     return {"channel": "unknown", "ref": "unknown", "updated_at": "unknown"}
 
+def roll_setup_log():
+    """Move the setup log aside, keeping one predecessor — same contract as
+    deploy.sh's own roll, which no-ops when this has already run."""
+    try:
+        os.replace(LOG_FILES["setup"], LOG_FILES["setup"] + ".1")
+    except OSError:
+        pass   # nothing to roll, or an unwritable log dir deploy.sh will report
+
+
 def run_background_task(task_name, command, log_type):
     # The one deliberate shell=True in this codebase: callers hand over
     # internally-built command strings with log redirection (>> file 2>&1) and
@@ -992,6 +1001,14 @@ def start_setup():
         update_env_var("MYSQL_PASSWORD", secrets.token_hex(16))
 
     # 5. Trigger deploy
+    # Roll the setup log HERE, before the thread starts — not only inside
+    # deploy.sh. The wizard polls /api/logs/setup every 2 s from the moment
+    # this response lands and treats "Deployment Complete - Ready for Handover"
+    # as done, while deploy.sh needs a second or two to reach its own roll.
+    # That window is wide enough for the browser to read the PREVIOUS run's
+    # marker and skip to the credentials screen for an install that has not
+    # happened. Measured on the RPi4: still visible at t+2 s, gone by t+4 s.
+    roll_setup_log()
     cmd = f"bash {SCRIPT_DEPLOY} >> {LOG_FILES['setup']} 2>&1"
     threading.Thread(
         target=run_background_task, args=("Initial Setup", cmd, "setup")
@@ -1532,13 +1549,26 @@ def format_drive():
     return jsonify({"status": "started"})
 
 
+NC_DATA_DEFAULT = "/home/homebrain/nextcloud-data"
+
+
 @app.route("/api/nextcloud/storage")
 def nextcloud_storage():
     """Where the user's files live, and how much room is left there."""
-    path = get_env_config().get("NEXTCLOUD_DATA_DIR") or "/home/homebrain/nextcloud-data"
-    info = {"path": path, "external": os.path.ismount(path)}
+    path = get_env_config().get("NEXTCLOUD_DATA_DIR") or NC_DATA_DEFAULT
+    external = os.path.ismount(path)
+    info = {"path": path, "external": external}
+
+    # A data directory that was moved to a drive and is no longer a mount point
+    # means the drive is gone. Reporting disk usage here would measure the
+    # empty mountpoint's parent — the root disk — and tell the owner their
+    # files are fine and on the internal disk while Nextcloud 503s behind it.
+    if not external and path != NC_DATA_DEFAULT:
+        info["missing"] = True
+        return jsonify(info)
+
     try:
-        total, used, free = shutil.disk_usage(path)
+        total, used, _ = shutil.disk_usage(path)
         info["used_gb"] = round(used / (1024**3), 1)
         info["total_gb"] = round(total / (1024**3), 1)
         info["percent"] = round((used / total) * 100, 1)
