@@ -528,6 +528,37 @@
                 </div>
             </section>
 
+            <section class="section" id="household-card">
+                <h3>Household <span class="h-note">— everyone else in the house</span></h3>
+                <p class="lede">A household member gets their own files and their own photo backup on this box.
+                    They do not get the dashboard, Home Assistant or the Vault — those stay yours, behind the master
+                    password.</p>
+                <div id="household-list"><span class="skeleton sk-wide"></span></div>
+                <form class="mt" onsubmit="addMember(event)">
+                    <div class="fields fields-2 fields-end">
+                        <div>
+                            <label for="member-name">Their name</label>
+                            <input type="text" id="member-name" placeholder="Alex" autocomplete="off" required>
+                        </div>
+                        <button type="submit" class="btn-primary">Add member</button>
+                    </div>
+                </form>
+                <div id="member-pair" class="notice notice-warning mt" style="display:none;">
+                    <strong>Show this to <span id="member-pair-who"></span> now — it is not shown again.</strong>
+                    <div class="mt" style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">
+                        <img id="member-qr" alt="Nextcloud login QR code"
+                             style="width:200px; height:200px; background:#fff; padding:10px; border-radius:8px;">
+                        <div class="small mono" style="overflow-wrap:anywhere;">
+                            <div>Scan from the Nextcloud app's login screen.</div>
+                            <div class="mt">Username: <span id="member-user"></span></div>
+                            <div>Password: <span id="member-pass"></span></div>
+                            <div id="member-url"></div>
+                        </div>
+                    </div>
+                    <p class="hint">The password is only needed to sign in on a computer — the code covers the phone.</p>
+                </div>
+            </section>
+
             <section class="section" id="ftp-card">
                 <h3>FTP Server <span class="h-note">— for camera uploads</span></h3>
                 <p class="lede">Create dedicated FTP accounts that deliver into a Nextcloud user's folder.</p>
