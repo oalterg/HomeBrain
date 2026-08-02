@@ -47,6 +47,8 @@ jobs:
         run: bash scripts/tests/test_restore_internal.sh
       - name: portable instance-secret merge (base64 padding)
         run: bash scripts/tests/test_instance_secrets.sh
+      - name: fresh-install wipe (volumes + bind mounts together)
+        run: bash scripts/tests/test_fresh_install_wipe.sh
       - name: backup retention, off-site copy + resume semantics
         run: |
           # rclone drives the off-site half against a temp-dir alias remote.

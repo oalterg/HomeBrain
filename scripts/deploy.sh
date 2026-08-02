@@ -29,14 +29,7 @@ ensure_homebrain_user
 # install (.setup_complete present) we MUST NOT wipe — that would destroy
 # real user data.
 if [[ ! -f "$INSTALL_DIR/.setup_complete" ]]; then
-    nc_data_dir="${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}"
-    vault_data_dir="${VAULT_DATA_DIR:-/home/homebrain/vault-data}"
-    for d in "$nc_data_dir" "$vault_data_dir"; do
-        if [[ -d "$d" ]] && [[ -n "$(ls -A "$d" 2>/dev/null)" ]]; then
-            log_info "Fresh install: clearing stale bind-mount data at $d"
-            rm -rf -- "$d"
-        fi
-    done
+    clear_partial_install
 fi
 
 # --- 0b. Migrate legacy /home/admin data to /home/homebrain (no-op on fresh installs) ---

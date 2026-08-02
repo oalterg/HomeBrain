@@ -623,6 +623,52 @@ get_compose_args() {
     echo "$args"
 }
 
+# Clear every trace of a partial first install — named volumes AND host bind
+# mounts, together. Called by deploy.sh only when .setup_complete is absent.
+#
+# Both halves of Nextcloud's state must go together, or neither. config.php
+# lives in the nextcloud_html VOLUME; user files live in the BIND MOUNT.
+# Clearing only the bind mount — as deploy.sh used to — leaves a Nextcloud that
+# still believes it is installed but whose data directory is empty. Every
+# request then 503s with "Your data directory is invalid", and re-running
+# deploy cannot repair it, because the next run wipes the directory again.
+#
+# That state is reachable on any box where the FIRST deploy installs Nextcloud
+# and then fails for any reason — a slow machine missing the wait_for_healthy
+# budget is enough — because .setup_complete is only written once deploy
+# succeeds. Reproduced on an RPi4, where one health-check timeout turned every
+# subsequent retry into a permanent 503.
+#
+# `down -v` rather than dropping just the html volume: Nextcloud's schema lives
+# in the db volume, so re-installing against a surviving database fails on
+# tables that already exist. Safe because deploy.sh is only ever invoked by the
+# setup wizard and writes .setup_complete itself on success — no marker means
+# no deploy has ever completed, so there is no claimed user data to lose.
+clear_partial_install() {
+    local nc_data_dir="${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}"
+    local vault_data_dir="${VAULT_DATA_DIR:-/home/homebrain/vault-data}"
+    local d
+
+    log_info "Fresh install: clearing any partial state from an earlier attempt"
+    # shellcheck disable=SC2046  # get_compose_args is intentionally word-split
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) down -v --remove-orphans \
+        >/dev/null 2>&1 || true
+
+    for d in "$nc_data_dir" "$vault_data_dir"; do
+        [[ -d "$d" ]] || continue
+        [[ -n "$(ls -A "$d" 2>/dev/null)" ]] || continue
+        log_info "Fresh install: clearing stale bind-mount data at $d"
+        # Contents, not the directory itself. Removing a bind-mount source out
+        # from under a running container severs the mount: the container keeps
+        # the deleted inode and never sees the recreated directory, so no
+        # host-side repair is visible until it is force-recreated. Keeping the
+        # directory also preserves the ownership Nextcloud requires (33:33).
+        # -mindepth 1 so dotfiles go too — .ncdata is the file whose absence
+        # produces "Your data directory is invalid".
+        find "$d" -mindepth 1 -delete 2>/dev/null || true
+    done
+}
+
 get_nc_cid() {
     docker compose $(get_compose_args) ps -a -q nextcloud 2>/dev/null || true
 }
