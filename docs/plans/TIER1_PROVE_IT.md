@@ -1,6 +1,7 @@
 # Tier 1 — "Prove It" — Design & Implementation Plan
 
-**Status:** Planning (2026-08-02). Item 0 in progress.
+**Status:** Item 0 shipped (#147). Item 1 shipped (#160) — hardware E2E on a wiped RPi4.
+Items 2–4 not started. (2026-08-02)
 **Date:** 2026-08-02
 **Context:** Every serious defect found in the last three months shares one shape: **the box
 asserts a success it never verified.** HA password rotation reported "rotated" for months while
