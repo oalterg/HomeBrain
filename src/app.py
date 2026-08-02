@@ -240,6 +240,10 @@ FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/fir
 HOMEBRAIN_ROOT = "/opt/homebrain"
 INSTALL_DIR = HOMEBRAIN_ROOT # Alias for backward compatibility if needed
 SETUP_STARTED_MARKER = f"{INSTALL_DIR}/.setup_started"
+# Present only while a wizard-driven off-site restore is running. The install
+# and the restore stream into one log, and the page has to know which "Ready
+# for Handover" line means it is safe to show the owner their credentials.
+RESTORING_MARKER = f"{INSTALL_DIR}/.restoring"
 REGISTRATION_MARKER = f"{INSTALL_DIR}/.registration_complete"
 ENV_FILE = f"{INSTALL_DIR}/.env"
 ENV_TEMPLATE = f"{INSTALL_DIR}/config/.env.template"
@@ -657,6 +661,8 @@ def cleanup_credentials():
         os.remove(INSTALL_CREDS_PATH)
     if os.path.exists(REGISTRATION_MARKER):
         os.remove(REGISTRATION_MARKER)
+    if os.path.exists(RESTORING_MARKER):
+        os.remove(RESTORING_MARKER)
     session.pop('authenticated', None) # Force re-login with new master password
     
     # Now, start the remaining profile tunnel containers
@@ -909,6 +915,38 @@ def start_setup():
     deployment_mode = data.get("deployment_mode", "local")
     update_env_var("DEPLOYMENT_MODE", deployment_mode)
 
+    # --- Restoring an existing HomeBrain onto bare metal ---------------------
+    # The off-site copy could be written and listed but never used to bring a
+    # box back: the scenario it exists for — the machine is gone — needs a user
+    # who by design never opens a shell to run rclone and gpg on new hardware.
+    #
+    # Deliberately NOT a separate bootstrap path. restore.sh's tail needs a
+    # running stack (docker exec occ, wait_for_healthy), so this deploys
+    # exactly as a fresh install does and then runs the ordinary restore. One
+    # install path, one restore implementation.
+    #
+    # The supplied password becomes this box's master password rather than a
+    # generated one. It has to: the archive is encrypted with it, and the
+    # Nextcloud, Home Assistant and Vault databases inside carry it too. A box
+    # restored under a *new* password would come back with services that reject
+    # the password its owner was just shown. Restoring a HomeBrain restores its
+    # master password with it.
+    restore_req = data.get("restore") or {}
+    restore_archive = (restore_req.get("archive") or "").strip()
+    if restore_archive:
+        if "/" in restore_archive or restore_archive.startswith("."):
+            return jsonify({"error": "Invalid archive name"}), 400
+        supplied = restore_req.get("master_password") or ""
+        if not recovery.NEW_PASSWORD_RE.match(supplied):
+            return jsonify({"error": (
+                "That does not look like a HomeBrain master password. Enter the "
+                "one that was in use when this backup was made.")}), 400
+        # Seed it before the generation step below, which only mints a password
+        # when .env does not already carry one.
+        update_env_var("MASTER_PASSWORD", supplied)
+        with open(RESTORING_MARKER, "w") as f:
+            f.write(restore_archive)
+
     # Map credentials: prefer form submission, fall back to factory config
     factory = get_factory_config()
 
@@ -1010,8 +1048,27 @@ def start_setup():
     # happened. Measured on the RPi4: still visible at t+2 s, gone by t+4 s.
     roll_setup_log()
     cmd = f"bash {SCRIPT_DEPLOY} >> {LOG_FILES['setup']} 2>&1"
+    task_name = "Initial Setup"
+    if restore_archive:
+        # Chained, not parallel: restore.sh needs the stack deploy.sh brings up.
+        # Both halves stream into the setup log so the wizard's existing log
+        # view shows one continuous install.
+        #
+        # The trailing marker matters. deploy.sh emits "Deployment Complete -
+        # Ready for Handover" the moment IT finishes, and the wizard treats
+        # that as done — which on this path would hand the owner their
+        # credentials while their data was still being written. The restore
+        # flow waits for this marker instead, which only lands if restore.sh
+        # also succeeded.
+        cmd = (
+            f"({cmd} && bash {SCRIPT_RESTORE} {shlex.quote(restore_archive)}"
+            f" --no-prompt --from-offsite"
+            f" && echo '=== Restore Complete - Ready for Handover ===')"
+            f" >> {LOG_FILES['setup']} 2>&1"
+        )
+        task_name = "Restore From Off-site"
     threading.Thread(
-        target=run_background_task, args=("Initial Setup", cmd, "setup")
+        target=run_background_task, args=(task_name, cmd, "setup")
     ).start()
     # Session already established by login
     return jsonify({"status": "started"})
@@ -1143,13 +1200,16 @@ def index():
     # Robustness: If credentials exist, we are in the "Handover Phase".
     # We MUST show the installing/success view so the user can claim them,
     # even if the setup is marked as complete.
+    restoring = os.path.exists(RESTORING_MARKER)
     if os.path.exists(INSTALL_CREDS_PATH):
-        return render_template("installing.html", handover_ready=True, has_gpu=has_gpu())
+        return render_template("installing.html", handover_ready=True,
+                               restore_mode=restoring, has_gpu=has_gpu())
 
     if not is_setup_complete():
         # If setup is running, show progress (No auth required for this specific view state)
         if is_setup_started():
-            return render_template("installing.html", has_gpu=has_gpu())
+            return render_template("installing.html", restore_mode=restoring,
+                                   has_gpu=has_gpu())
         return render_template("welcome.html", config=get_factory_config(), has_gpu=has_gpu())
 
     factory = get_factory_config()
