@@ -19,6 +19,7 @@ import fcntl
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort, stream_with_context
 import migration
+import selftest
 import integrations
 import recovery
 from flask_limiter import Limiter
@@ -3966,6 +3967,31 @@ def change_master_password():
         "message": ("Rotation started. Watch the status banner — until it finishes, "
                     "your old password is still the live one.")
     })
+
+
+@app.route("/api/system/selftest", methods=["POST"])
+@limiter.limit("6 per minute")
+def system_selftest():
+    """Check the claims the box makes, through the real interfaces.
+
+    Slow on purpose — it logs in to three services and may talk to the off-site
+    remote — so it is a button, not a poll. The rate limit is what keeps it
+    from being used as one.
+    """
+    local = get_local_version().get("ref", "")
+    latest = ""
+    try:
+        r = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
+        if r.status_code == 200:
+            latest = r.json().get("tag_name", "")
+    except Exception:
+        pass  # check_version reports this as "could not tell", not as a pass
+    return jsonify(selftest.run_all(
+        get_env_config(),
+        storage_dir=backup_storage_dir(),
+        local_version=local,
+        latest_version=latest,
+    ))
 
 
 @app.route("/api/system/suggest-password", methods=["GET"])
