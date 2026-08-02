@@ -508,6 +508,26 @@
                 </div>
             </section>
 
+            <section class="section" id="photos-card">
+                <h3>Phone Photos <span class="h-note">— replace Google Photos and iCloud</span></h3>
+                <p class="lede">Install the Nextcloud app on a phone, scan this code on its login screen, and turn on
+                    Auto Upload. Every photo the phone takes lands here from then on — nothing to type.</p>
+                <div class="inline-row">
+                    <button id="photos-btn" class="btn-primary" onclick="pairPhone()">Show the code</button>
+                </div>
+                <div id="photos-pair" class="mt" style="display:none;">
+                    <img id="photos-qr" alt="Nextcloud login QR code"
+                         style="width:220px; height:220px; background:#fff; padding:10px; border-radius:8px;">
+                    <p class="small mt">Signs in as <strong id="photos-user"></strong> at
+                        <span id="photos-url" class="mono"></span>.</p>
+                    <p id="photos-lan-note" class="hint" style="display:none;">No remote address is set up yet, so the
+                        phone must be on your home Wi-Fi and will ask whether to trust this box's certificate. Set up
+                        remote access if you want uploads to work away from home.</p>
+                    <p class="hint">The code contains a password for that phone alone. Show it to one phone, then move
+                        on — pressing the button again issues a new one.</p>
+                </div>
+            </section>
+
             <section class="section" id="ftp-card">
                 <h3>FTP Server <span class="h-note">— for camera uploads</span></h3>
                 <p class="lede">Create dedicated FTP accounts that deliver into a Nextcloud user's folder.</p>
