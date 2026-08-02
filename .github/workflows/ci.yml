@@ -36,7 +36,8 @@ jobs:
           # limiter falls back to memory — limits raises at Limiter() without it.
           pip install -q pytest cryptography Flask flask-limiter flask-sock redis requests
           python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py \
-                            scripts/tests/test_master_password.py scripts/tests/test_mcp_crypto.py -q
+                            scripts/tests/test_master_password.py scripts/tests/test_mcp_crypto.py \
+                            scripts/tests/test_setup_credentials.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
