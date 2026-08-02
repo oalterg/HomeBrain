@@ -532,6 +532,32 @@ env_value() {
     printf '%s' "$v"
 }
 
+# Merge an archive's portable instance secrets (instance_secrets.env, written
+# by backup.sh) into .env. Used by restore.sh before any container starts.
+#
+# Splits each line on the FIRST '=' only. `IFS='=' read -r key value` looks
+# equivalent, but it consumes a *trailing* '=' as a field delimiter — and a
+# Fernet key is base64 of 32 bytes, so it always ends in exactly one. That cut
+# HOMEBRAIN_EMAIL_KEY from 44 characters to 43 on every single restore. Fernet
+# then rejects the key outright, which left every stored account token
+# undecryptable: the block that exists to carry the key across a restore was
+# destroying it instead. See scripts/tests/test_instance_secrets.sh.
+merge_instance_secrets() {
+    local src="$1" line key value
+    [[ -f "$src" ]] || return 0
+    while read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ -n "$key" ]] || continue
+        # Strip any surrounding quotes the value picked up on the way out.
+        value="${value%\"}"; value="${value#\"}"
+        value="${value%\'}"; value="${value#\'}"
+        update_env_var "$key" "$value"
+        log_info "  imported ${key}"
+    done < "$src"
+}
+
 # --- Self-MCP bearer token -------------------------------------------------
 # The homebrain-self MCP server authenticates to the dashboard with a bearer
 # token derived from the master password:

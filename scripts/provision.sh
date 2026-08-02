@@ -116,8 +116,14 @@ declare -A _FC=( [NEWT_ID]="" [NEWT_SECRET]="" [PANGOLIN_DOMAIN]="" \
                  [PANGOLIN_ENDPOINT]="" [FACTORY_PASSWORD]="" \
                  [REGISTRAR_URL]="" [REGISTRAR_SECRET]="" )
 if [[ -f "$BOOT_CONFIG" ]]; then
-    while IFS='=' read -r _k _v; do
-        [[ -n "$_k" && "$_k" != \#* ]] && _FC[$_k]="$_v"
+    # Split on the first '=' only — NEWT_SECRET / FACTORY_PASSWORD /
+    # REGISTRAR_SECRET are generated values that can legitimately end in '=',
+    # which `IFS='=' read` would eat as a delimiter. See restore.sh for the
+    # same bug caught in the act on HOMEBRAIN_EMAIL_KEY.
+    while read -r _line || [[ -n "$_line" ]]; do
+        [[ -z "$_line" || "$_line" == \#* || "$_line" != *=* ]] && continue
+        _k="${_line%%=*}"
+        [[ -n "$_k" ]] && _FC[$_k]="${_line#*=}"
     done < "$BOOT_CONFIG"
 fi
 [[ -n "$PROV_NEWT_ID"           ]] && _FC[NEWT_ID]="$PROV_NEWT_ID"

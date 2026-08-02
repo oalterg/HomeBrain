@@ -155,20 +155,7 @@ fi
 # undecryptable account tokens. See backup.sh for the rationale.
 if [[ -f "${TMP_DIR}/instance_secrets.env" ]]; then
     log_info "Merging portable instance secrets from backup..."
-    while IFS='=' read -r key value; do
-        [[ -z "$key" || "$key" == \#* ]] && continue
-        # Strip any surrounding quotes the value may have picked up.
-        value="${value%\"}"; value="${value#\"}"
-        value="${value%\'}"; value="${value#\'}"
-        if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-            # Replace existing. Use | delimiter to avoid clashing with the
-            # base64 / urlsafe characters in Fernet keys.
-            sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
-        else
-            echo "${key}=${value}" >> "$ENV_FILE"
-        fi
-        log_info "  imported ${key}"
-    done < "${TMP_DIR}/instance_secrets.env"
+    merge_instance_secrets "${TMP_DIR}/instance_secrets.env"
 fi
 
 # --- Smart Detection ---
