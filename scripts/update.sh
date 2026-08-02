@@ -317,6 +317,11 @@ ensure_homebrain_sudo || log_warn "Could not configure passwordless sudo for ${H
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
 
+# Boxes provisioned before phone pairing shipped have no qrencode, and the
+# pairing card is the whole feature.
+command -v qrencode >/dev/null 2>&1 || apt-get install -y -qq qrencode 2>/dev/null \
+    || log_warn "qrencode install failed — the phone pairing code cannot be drawn."
+
 # OS security patches apply themselves nightly (Debian defaults: security
 # origin only, no automatic reboots — kernel updates wait for the next manual
 # reboot). Idempotent, best-effort.

@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import base64
 import shutil
 import secrets
 import string
@@ -3989,6 +3990,81 @@ def recovery_regenerate():
     except Exception as e:
         return jsonify({"error": f"Could not generate recovery phrase: {e}"}), 500
     return jsonify({"status": "ok", "recovery_phrase": phrase})
+
+
+# --- Routes: Phone photo backup ---
+@app.route("/api/photos/pair", methods=["POST"])
+@limiter.limit("5 per minute")
+def photos_pair():
+    """Everything a phone needs to start backing up its camera roll, as one QR
+    code. Nextcloud's mobile apps read `nc://login/...` from their login
+    screen's scanner and configure the account from it — no server address and
+    no password typed on a phone keyboard.
+
+    The app password is minted fresh on each call and returned once. It is
+    never written to disk: it exists in this response and in the QR the
+    browser draws from it."""
+    env = get_env_config()
+    user = env.get("NEXTCLOUD_ADMIN_USER", "")
+    password = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
+    if not user or not password:
+        return jsonify({"error": "Nextcloud admin credentials are not in .env"}), 500
+
+    nc_cid = compose_ps_q("nextcloud")
+    if not nc_cid:
+        return jsonify({"error": "Nextcloud is not running"}), 503
+
+    def occ(*args, timeout=60, env_extra=None):
+        cmd = ["docker", "exec", "-i", "-u", "www-data"]
+        for k, v in (env_extra or {}).items():
+            cmd += ["-e", f"{k}={v}"]
+        return subprocess.run(cmd + [nc_cid, "php", "occ", *args],
+                              capture_output=True, text=True, timeout=timeout)
+
+    # Photos ships enabled, but say so out loud rather than assume it.
+    occ("app:enable", "photos")
+    # A phone camera roll is the heaviest thing this box will ever preview.
+    # Nextcloud's 4096px default renders 16MP thumbnails nobody looks at; the
+    # Photos grid never asks for more than a fraction of that.
+    for key in ("preview_max_x", "preview_max_y"):
+        occ("config:system:set", key, "--value", "2048")
+
+    proc = occ("user:add-app-password", user, "--password-from-env",
+               env_extra={"OC_PASS": password})
+    out = proc.stdout.strip().splitlines()
+    if proc.returncode != 0 or not out:
+        return jsonify({"error": f"Could not create an app password: {proc.stderr.strip()[:200]}"}), 502
+    token = out[-1].split()[-1]
+    if len(token) < 20:
+        return jsonify({"error": "Nextcloud returned an unexpected app password"}), 502
+
+    # Prefer the tunnel: a phone that only works inside the house is not a
+    # photo backup. Fall back to the LAN name, whose certificate the phone
+    # will ask about unless the box's CA is installed.
+    nc_domain = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()[0] if env.get(
+        "NEXTCLOUD_TRUSTED_DOMAINS") else ""
+    if nc_domain:
+        url, remote = f"https://{nc_domain}", True
+    else:
+        url, remote = f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
+
+    try:
+        # Content on stdin, not argv: the app password would otherwise sit in
+        # the process table for anything on the box to read.
+        qr = subprocess.run(
+            ["qrencode", "-t", "SVG", "-m", "1", "-o", "-"],
+            input=f"nc://login/server:{url}&user:{user}&password:{token}",
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout
+    except FileNotFoundError:
+        return jsonify({"error": "qrencode is not installed — run a system update"}), 503
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": f"Could not draw the QR code: {e.stderr[:200]}"}), 500
+
+    return jsonify({
+        "qr": "data:image/svg+xml;base64," + base64.b64encode(qr.encode()).decode(),
+        "url": url, "user": user, "remote": remote,
+    })
 
 
 # --- Routes: FTP Management ---
