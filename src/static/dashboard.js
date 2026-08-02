@@ -351,6 +351,7 @@ function openTab(id) {
         loadFtpUsers();
         populateFtpNcUserSelect();
         loadNetworkStatus();
+        loadHousehold();
     }
     if (id === 'settings') {
         loadSystemConfig();
@@ -1543,6 +1544,93 @@ async function loadFtpUsers() {
             </tr>`).join('') +
             '</tbody></table>';
     } catch (e) { el.innerHTML = '<p class="faint small">Failed to load users.</p>'; }
+}
+
+async function loadHousehold() {
+    const el = document.getElementById('household-list');
+    if (!el) return;
+    try {
+        const res = await fetch('/api/household/members', { credentials: 'include' });
+        const d = await res.json();
+        if (d.error) { el.innerHTML = `<p class="faint small">${escapeHtml(d.error)}</p>`; return; }
+        if (!d.members.length) {
+            el.innerHTML = '<p class="faint small">No one else has an account on this box yet.</p>';
+            return;
+        }
+        el.innerHTML = d.members.map(m => `
+            <div class="drive-row">
+              <div class="row-main">
+                <strong>${escapeHtml(m.name)}</strong>
+                <span class="row-meta">${escapeHtml(m.user)}</span>
+              </div>
+              <div class="row-actions">
+                <button onclick="repairMember('${m.user}')">New code</button>
+                <button class="btn-danger" onclick="removeMember('${m.user}', '${escapeHtml(m.name)}')">Remove</button>
+              </div>
+            </div>`).join('');
+    } catch (e) { el.innerHTML = '<p class="faint small">Failed to load members.</p>'; }
+}
+
+function showMemberPairing(d) {
+    document.getElementById('member-pair-who').textContent = d.user;
+    document.getElementById('member-qr').src = d.qr;
+    document.getElementById('member-user').textContent = d.user;
+    document.getElementById('member-pass').textContent = d.password;
+    document.getElementById('member-url').textContent = d.remote
+        ? '' : 'At home only — no remote address is set up yet.';
+    document.getElementById('member-pair').style.display = '';
+}
+
+async function addMember(e) {
+    e.preventDefault();
+    const input = document.getElementById('member-name');
+    const name = input.value.trim();
+    if (!name) return;
+    try {
+        const res = await fetch('/api/household/members', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'include', body: JSON.stringify({ name }),
+        });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not add them.', 'error'); return; }
+        input.value = '';
+        showMemberPairing(d);
+        loadHousehold();
+    } catch (e) { hbToast('Could not add them — see the browser console.', 'error'); }
+}
+
+async function repairMember(user) {
+    if (!await hbConfirm({
+        title: `Issue a new code for ${user}?`,
+        body: 'Their password changes, so they need this new code to sign in on a computer. Phones paired '
+            + 'earlier keep working — each holds its own app password — so this does not cut off a lost phone. '
+            + 'For that, revoke the device in Nextcloud’s security settings.',
+        confirm: 'New code',
+    })) return;
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/pair`,
+            { method: 'POST', credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not issue a code.', 'error'); return; }
+        showMemberPairing(d);
+    } catch (e) { hbToast('Could not issue a code.', 'error'); }
+}
+
+async function removeMember(user, name) {
+    if (!await hbConfirm({
+        title: `Remove ${name}?`,
+        body: `Deletes ${user}'s account and everything in their files on this box. This cannot be undone.`,
+        confirm: 'Remove', danger: true, requireText: 'REMOVE',
+    })) return;
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}`,
+            { method: 'DELETE', credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not remove them.', 'error'); return; }
+        hbToast(`${name} removed.`);
+        document.getElementById('member-pair').style.display = 'none';
+        loadHousehold();
+    } catch (e) { hbToast('Could not remove them.', 'error'); }
 }
 
 async function pairPhone() {
