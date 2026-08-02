@@ -1545,6 +1545,27 @@ async function loadFtpUsers() {
     } catch (e) { el.innerHTML = '<p class="faint small">Failed to load users.</p>'; }
 }
 
+async function pairPhone() {
+    const btn = document.getElementById('photos-btn');
+    btn.disabled = true;
+    btn.textContent = 'Preparing…';
+    try {
+        const res = await fetch('/api/photos/pair', { method: 'POST', credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not prepare the code.', 'error'); return; }
+        document.getElementById('photos-qr').src = d.qr;
+        document.getElementById('photos-user').textContent = d.user;
+        document.getElementById('photos-url').textContent = d.url;
+        document.getElementById('photos-lan-note').style.display = d.remote ? 'none' : '';
+        document.getElementById('photos-pair').style.display = '';
+    } catch (e) {
+        hbToast('Could not prepare the code — see the browser console.', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Show a new code';
+    }
+}
+
 async function setupFtp(e) {
     e.preventDefault();
     const ncUser = document.getElementById('ftp-nc-user').value || 'admin';
