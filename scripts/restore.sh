@@ -29,7 +29,21 @@ done
 # --- Prerequisites ---
 # Shared with backup.sh so the two can't drift again: no-drive boxes
 # (BACKUP_INTERNAL=true) have no mountpoint to check. See common.sh.
-ensure_backup_dir
+#
+# Skipped when the archive is already readable. The guard exists so we can
+# FIND an archive on the backup drive; insisting on the drive when we were
+# handed a file that is right there refuses the exact restore a factory reset
+# leaves you needing — .env is regenerated, the no-drive setting goes with it,
+# and archives sitting in /var/backups/homebrain become unreachable.
+#
+# An off-site restore is the same argument taken one step further: it doesn't
+# need an archive found, it needs somewhere to put the one it is fetching —
+# and the box that needs it most is a replacement that has never had a drive.
+if [[ "$FROM_OFFSITE" == "true" ]]; then
+    ensure_staging_dir
+elif [[ ! -f "$BACKUP_FILE" ]]; then
+    ensure_backup_dir
+fi
 
 # --- Off-site fetch ---------------------------------------------------------
 # The off-site copy existed but could only be written, never read: rclone

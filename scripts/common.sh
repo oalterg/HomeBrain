@@ -10,6 +10,9 @@ export ENV_FILE="$INSTALL_DIR/.env"
 export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 export OVERRIDE_FILE="$INSTALL_DIR/docker-compose.override.yml"
 export BACKUP_MOUNTDIR="/mnt/backup"
+# The no-drive location (BACKUP_INTERNAL=true). Mirrors INTERNAL_BACKUP_DIR in
+# app.py; the two must name the same directory.
+export INTERNAL_BACKUP_DIR="${INTERNAL_BACKUP_DIR:-/var/backups/homebrain}"
 
 # --- Canonical HomeBrain OS User ---
 export HOMEBRAIN_USER="homebrain"
@@ -1140,6 +1143,31 @@ ensure_backup_dir() {
         log_info "Attempting to mount $BACKUP_MOUNTDIR..."
         mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
     fi
+}
+
+# Somewhere to put an archive we are bringing to the box ourselves, and export
+# $BACKUP_MOUNTDIR pointing at it.
+#
+# ensure_backup_dir refuses when the drive is absent, and it is right to: a
+# backup written to the root disk because the USB fell off is not a backup. An
+# off-site restore is the mirror image — nothing is being written for
+# safekeeping, an archive is being staged on its way in — and the box that
+# needs it most is the replacement that has never had a backup drive at all.
+# Insisting on the drive there fails the restore before the fetch starts, with
+# "Failed to mount backup drive", in a flow whose whole premise is that the
+# drive is gone.
+#
+# Prefer the configured location when it is really there, so an archive lands
+# on the drive when there is one; fall back to the internal disk and say so.
+ensure_staging_dir() {
+    if [[ "${BACKUP_INTERNAL:-false}" != "true" ]] \
+        && ! mountpoint -q "$BACKUP_MOUNTDIR" 2>/dev/null \
+        && ! mount "$BACKUP_MOUNTDIR" 2>/dev/null; then
+        log_warn "No backup drive at $BACKUP_MOUNTDIR — staging the off-site archive on the internal disk."
+        BACKUP_MOUNTDIR="$INTERNAL_BACKUP_DIR"
+    fi
+    mkdir -p "$BACKUP_MOUNTDIR" \
+        || die "Cannot create staging directory $BACKUP_MOUNTDIR."
 }
 
 # --- Off-site backup copy ---------------------------------------------------

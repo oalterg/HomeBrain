@@ -2135,6 +2135,12 @@ migrate_to_consolidated_layout() {
 
                 # Persist new path to .env so docker-compose picks it up.
                 update_env_var "NEXTCLOUD_DATA_DIR" "${nc_dir}"
+                # And re-export it: load_env put the OLD path in this shell's
+                # environment, and Compose resolves ${NEXTCLOUD_DATA_DIR} from
+                # the environment before it reads --env-file. Without this the
+                # recreate below silently re-mounts the directory we just
+                # emptied — data moved, .env correct, Nextcloud 503.
+                export NEXTCLOUD_DATA_DIR="${nc_dir}"
                 log_info "  .env updated: NEXTCLOUD_DATA_DIR=${nc_dir}"
 
                 # Match container UID immediately so a quick restart doesn't EACCES.

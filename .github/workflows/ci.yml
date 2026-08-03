@@ -9,7 +9,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: shellcheck (error severity)
         run: |
           sudo apt-get install -y -qq shellcheck
@@ -28,7 +28,7 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: pytest
         run: |
           # test_master_password.py drives the Flask app through its test client,
@@ -38,6 +38,7 @@ jobs:
           python3 -m pytest scripts/tests/test_healthcheck.py scripts/tests/test_recovery.py \
                             scripts/tests/test_master_password.py scripts/tests/test_mcp_crypto.py \
                             scripts/tests/test_setup_credentials.py \
+                            scripts/tests/test_backup_discovery.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
@@ -72,7 +73,7 @@ jobs:
   compose:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: docker compose config
         run: |
           cp config/.env.template .env
