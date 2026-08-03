@@ -66,6 +66,10 @@ cleanup() {
         rm -rf "$STAGING_DIR"
         log_info "Staging directory removed."
     fi
+    # A partial archive from a run that died mid-write. On success it has
+    # already been renamed to its published name, so this is a no-op then.
+    if [[ -n "${ARCHIVE_TMP:-}" ]]; then rm -f "$ARCHIVE_TMP"; fi
+
     rm -f "$LOCK_FILE"  # Ensure lock release
     log_info "Backup cleanup complete."
 }
@@ -91,6 +95,12 @@ ensure_backup_dir
 if [ ! -w "$BACKUP_MOUNTDIR" ]; then
     die "Backup mount point is read-only or inaccessible."
 fi
+
+# Partial archives from a run that died mid-write. We hold the backup lock, so
+# no live run can own one. They are invisible to retention by design (see
+# ARCHIVE_TMP below) — which is exactly what would let them sit on the drive
+# forever. Swept before the space check so the room comes back first.
+rm -f "$BACKUP_MOUNTDIR"/.homebrain_backup*.part
 
 # 2. Check Service Health (Required to identify volumes)
 HA_CID=$(get_ha_cid)
@@ -163,6 +173,21 @@ if [[ "${BACKUP_ENCRYPT:-true}" != "false" ]] && [[ -n "${MASTER_PASSWORD:-}" ]]
 elif [[ "${BACKUP_ENCRYPT:-true}" != "false" ]]; then
     log_warn "MASTER_PASSWORD not set — backup will NOT be encrypted."
 fi
+
+# Build under a name nothing recognises as a backup, publish by rename once the
+# archive is written AND verified.
+#
+# Three readers scan this drive on their own schedule and match on the final
+# name: the off-site mirror (common.sh:offsite_sync, hourly), local retention,
+# and the dashboard's backup list. Writing straight to that name published a
+# file that was still growing — an 89 GB full takes ~30 minutes to write, so an
+# hourly mirror lands inside that window most weeks, and rclone rightly refuses
+# a source whose size changes underneath it ("can't copy - source file is being
+# updated"). That recorded a real off-site failure, and alerted, for a backup
+# that was in fact fine. The same window let the dashboard offer a half-written
+# archive as restorable. A rename is atomic: those readers now only ever see a
+# finished, verified archive.
+ARCHIVE_TMP="${BACKUP_MOUNTDIR}/.$(basename "$ARCHIVE_PATH").part"
 
 mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$STAGING_DIR/nc_config" "$STAGING_DIR/ha_config"
 
@@ -418,11 +443,11 @@ if [[ "$ENCRYPT" == "true" ]]; then
     tar -C "$STAGING_DIR" -cz . | gpg --batch --yes --symmetric \
         --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
         --s2k-count 65011712 --compress-algo none \
-        --passphrase-fd 3 -o "$ARCHIVE_PATH" 3<<<"$MASTER_PASSWORD" \
-        || { rm -f "$ARCHIVE_PATH"; die "Compression/encryption failed."; }
+        --passphrase-fd 3 -o "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
+        || { rm -f "$ARCHIVE_TMP"; die "Compression/encryption failed."; }
 else
     log_info "Compressing archive (unencrypted — BACKUP_ENCRYPT=false)..."
-    tar -C "$STAGING_DIR" -czf "$ARCHIVE_PATH" . || die "Compression failed."
+    tar -C "$STAGING_DIR" -czf "$ARCHIVE_TMP" . || die "Compression failed."
 fi
 sync
 
@@ -432,15 +457,22 @@ sync
 if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
     log_info "Verifying archive integrity..."
     if [[ "$ENCRYPT" == "true" ]]; then
-        gpg --batch --quiet --decrypt --passphrase-fd 3 "$ARCHIVE_PATH" 3<<<"$MASTER_PASSWORD" \
+        gpg --batch --quiet --decrypt --passphrase-fd 3 "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
             | tar -tz > /dev/null \
-            || { rm -f "$ARCHIVE_PATH"; die "Archive verification FAILED — bad archive deleted."; }
+            || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     else
-        tar -tzf "$ARCHIVE_PATH" > /dev/null \
-            || { rm -f "$ARCHIVE_PATH"; die "Archive verification FAILED — bad archive deleted."; }
+        tar -tzf "$ARCHIVE_TMP" > /dev/null \
+            || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     fi
     log_info "Archive verified."
 fi
+
+# Publish. Before this rename the archive exists under no name the mirror,
+# retention or the dashboard will match; after it, it is complete by
+# construction. Deliberately after verification — a corrupt archive is deleted
+# above and never becomes visible at all, where previously the mirror could
+# already have started uploading one.
+mv -f "$ARCHIVE_TMP" "$ARCHIVE_PATH" || die "Could not publish the finished archive."
 
 # 13. Retention
 log_info "Applying retention (Keep: $BACKUP_RETENTION)..."
