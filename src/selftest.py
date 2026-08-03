@@ -108,6 +108,26 @@ def newest_archive(directory):
     return best
 
 
+def ha_owner_username(cid):
+    """The login name of Home Assistant's owner account, or "" if unreadable.
+
+    Not "admin". A fresh HomeBrain install creates `admin` (utilities.sh), but a
+    box whose Home Assistant predates HomeBrain — migrated from another system,
+    or onboarded by hand — carries whatever name its owner chose. On such a box
+    every password operation aimed at `admin` addresses a user who does not
+    exist: `hass --script auth` prints "User not found" and exits 0, and a login
+    check reports a rejected password that was never even tried.
+    """
+    rc, out = docker_exec(cid, [
+        "python3", "-c",
+        "import json;d=json.load(open('/config/.storage/auth'))['data'];"
+        "o=[u['id'] for u in d['users'] if u.get('is_owner')];"
+        "print(next((c['data']['username'] for c in d['credentials']"
+        " if c.get('auth_provider_type')=='homeassistant' and c['user_id'] in o), ''))",
+    ], timeout=20)
+    return out.strip() if rc == 0 else ""
+
+
 def is_mountpoint(directory):
     """True if something is really mounted at this path."""
     try:
@@ -191,6 +211,16 @@ def check_ha_password(env):
     pw = env.get("HA_ADMIN_PASSWORD", "")
     if not pw:
         return result("Home Assistant password", SKIP, "No HA admin password is recorded.")
+    ha_cid = container_id("homeassistant")
+    if not ha_cid:
+        return result("Home Assistant password", SKIP,
+                      "The Home Assistant container is not running.")
+    user = ha_owner_username(ha_cid)
+    if not user:
+        return result("Home Assistant password", SKIP,
+                      "Could not read which account owns Home Assistant.",
+                      "Without the owner's login name, a password test would be "
+                      "answering a question nobody asked.")
     cid = "http://127.0.0.1:8123/"
     payload = json.dumps({"client_id": cid, "handler": ["homeassistant", None],
                           "redirect_uri": cid}).encode()
@@ -203,13 +233,14 @@ def check_ha_password(env):
     except Exception:
         return result("Home Assistant password", SKIP,
                       f"Could not start a Home Assistant login flow (HTTP {code}).")
-    payload = json.dumps({"username": "admin", "password": pw, "client_id": cid}).encode()
+    payload = json.dumps({"username": user, "password": pw, "client_id": cid}).encode()
     code, body = http("POST", f"http://127.0.0.1:8123/auth/login_flow/{flow}", data=payload,
                       headers={"Content-Type": "application/json"})
     if '"type": "create_entry"' in body or '"type":"create_entry"' in body:
-        return result("Home Assistant password", OK, "Home Assistant accepts the recorded password.")
+        return result("Home Assistant password", OK,
+                      f"Home Assistant accepts the recorded password for '{user}'.")
     return result("Home Assistant password", FAIL,
-                  "Home Assistant rejected the recorded password.",
+                  f"Home Assistant rejected the recorded password for '{user}'.",
                   "Set a new master password in Settings → Master Password.")
 
 

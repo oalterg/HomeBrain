@@ -931,15 +931,35 @@ set_maintenance_mode() {
 #     still returns success.
 # Together those produced months of HA_ADMIN_PASSWORD holding a password Home
 # Assistant had never accepted (#145).
+# The login name of Home Assistant's owner account, or "" if it cannot be read.
+#
+# Not "admin". A fresh install creates `admin` (utilities.sh), but a box whose
+# Home Assistant predates HomeBrain — migrated from another system, or
+# onboarded by hand — carries whatever name its owner chose. Aiming a password
+# change at `admin` there edits nobody: `hass --script auth` prints "User not
+# found" and exits 0, and the login that verifies it fails for a reason that
+# has nothing to do with the password.
+ha_owner_username() {
+    local cid="$1"
+    docker exec "$cid" python3 -c "
+import json
+d = json.load(open('/config/.storage/auth'))['data']
+owners = [u['id'] for u in d['users'] if u.get('is_owner')]
+print(next((c['data']['username'] for c in d['credentials']
+            if c.get('auth_provider_type') == 'homeassistant'
+            and c['user_id'] in owners), ''))" 2>/dev/null | tr -d '\r\n'
+}
+
 ha_login_works() {
-    local pw="$1" flow_id payload
+    local pw="$1" user="$2" flow_id payload
+    [[ -n "$user" ]] || return 1
     flow_id=$(curl -s --max-time 10 -H 'Content-Type: application/json' \
         -d '{"client_id":"http://127.0.0.1:8123/","handler":["homeassistant",null],"redirect_uri":"http://127.0.0.1:8123/"}' \
         "http://127.0.0.1:8123/auth/login_flow" 2>/dev/null | jq -r '.flow_id // empty' 2>/dev/null)
     [[ -n "$flow_id" ]] || return 1
     # jq builds the body so the password is JSON-escaped rather than pasted in.
-    payload=$(jq -nc --arg p "$pw" \
-        '{client_id:"http://127.0.0.1:8123/", username:"admin", password:$p}') || return 1
+    payload=$(jq -nc --arg u "$user" --arg p "$pw" \
+        '{client_id:"http://127.0.0.1:8123/", username:$u, password:$p}') || return 1
     curl -s --max-time 10 -H 'Content-Type: application/json' -d "$payload" \
         "http://127.0.0.1:8123/auth/login_flow/${flow_id}" 2>/dev/null \
         | grep -q '"type": *"create_entry"'
@@ -952,13 +972,20 @@ ha_login_works() {
 # Returns non-zero when HA still refuses the password; every caller treats that
 # as non-fatal but must say so out loud.
 ha_sync_admin_password() {
-    local pw="$1" cid
+    local pw="$1" cid user
     cid="$(get_ha_cid 2>/dev/null || true)"
     [[ -n "$cid" ]] || return 1
     [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]] || return 1
 
+    user="$(ha_owner_username "$cid")"
+    if [[ -z "$user" ]]; then
+        log_warn "Could not read which account owns Home Assistant — not guessing."
+        return 1
+    fi
+    log_info "Home Assistant owner account: ${user}"
+
     docker exec "$cid" hass --script auth -c /config \
-        change_password admin "$pw" >/dev/null 2>&1 || return 1
+        change_password "$user" "$pw" >/dev/null 2>&1 || return 1
     docker restart "$cid" >/dev/null 2>&1 || return 1
 
     # Container health flips before the auth API answers, so poll that.
@@ -968,7 +995,7 @@ ha_sync_admin_password() {
             http://127.0.0.1:8123/api/onboarding 2>/dev/null)" == "200" ]] && break
         sleep 2
     done
-    ha_login_works "$pw"
+    ha_login_works "$pw" "$user"
 }
 
 # Configures Trusted Proxies in Home Assistant configuration.yaml
