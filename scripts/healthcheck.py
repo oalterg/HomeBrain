@@ -479,6 +479,162 @@ def send_push(channel, target, text):
     return False
 
 
+# ---------------------------------------------------------------------------
+# Email delivery — the second transport
+# ---------------------------------------------------------------------------
+# A notification system with one channel that the owner can silently uninstall
+# is not one. Push goes out through the agent's Telegram link, which lives on
+# this box: unlink it, or break OpenClaw, and the box loses its voice at
+# exactly the moment it has something to say. SMTP credentials are already in
+# the stack, so the second transport costs a function rather than a service.
+#
+# Fallback, not fan-out. Email fires only when the push did not go — the owner
+# who wired Telegram wants Telegram, and two copies of every warning is how a
+# notification channel gets muted.
+
+EMAIL_ACCOUNTS_FILE = f"{OPENCLAW_DIR}/email_accounts.json"
+
+
+def resolve_email_target(env):
+    """(account, recipient) for the owner, or None if email cannot be sent.
+
+    Recipient is NOTIFY_EMAIL if set, else the address used at registration.
+    """
+    to = (env.get("NOTIFY_EMAIL") or env.get("CLOUD_EMAIL") or "").strip()
+    if not to:
+        return None
+    try:
+        with open(EMAIL_ACCOUNTS_FILE) as f:
+            accounts = json.load(f).get("accounts", [])
+    except Exception:
+        return None
+    for a in accounts:
+        if a.get("smtp_host") and a.get("user"):
+            return (a, to)
+    return None
+
+
+def send_email(env, account, to, subject, text):
+    """Send one plain-text message over SMTP. True if the server accepted it."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import smtplib
+        from email.message import EmailMessage
+
+        from mcp_common import decrypt_secret
+    except Exception as e:
+        log(f"[WARN] email unavailable: {e}")
+        return False
+
+    password = decrypt_secret(
+        account.get("smtp_password", "") or account.get("imap_password", ""),
+        env.get("HOMEBRAIN_EMAIL_KEY", ""))
+    if not password:
+        # decrypt_secret returns "" rather than ciphertext when the key is
+        # wrong — sending that as a password would fail at the SMTP server
+        # with nothing pointing at the real cause.
+        log("[WARN] email skipped: the stored SMTP password could not be decrypted")
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = account["user"]
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(text)
+
+    host = account["smtp_host"]
+    port = int(account.get("smtp_port", 587))
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=20) as s:
+                s.login(account["user"], password)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as s:
+                s.starttls()
+                s.login(account["user"], password)
+                s.send_message(msg)
+    except Exception as e:
+        log(f"[WARN] email send failed: {e}")
+        return False
+    return True
+
+
+def email_subject(alerts, recoveries):
+    if any(a["level"] == "crit" for a in alerts):
+        return "HomeBrain needs attention"
+    if alerts:
+        return "HomeBrain: something to look at"
+    return "HomeBrain: resolved"
+
+
+# ---------------------------------------------------------------------------
+# Dead-man's switch
+# ---------------------------------------------------------------------------
+# Every alert in this file is sent BY the box. A box that is off, unplugged,
+# stolen, or whose disk has died sends nothing — and silence is indistinguish-
+# able from healthy. That is the one failure the owner finds out about weeks
+# later, usually when they need a backup that stopped being made in March.
+#
+# The fix has to live somewhere that is not this box. The registrar Worker is
+# already deployed and already knows the owner's email, so the device half is
+# one POST on the timer that is already running: no new service, no new
+# credential, no new schedule. If the Worker stops hearing from us, IT sends
+# the mail.
+#
+# Off unless HEARTBEAT_URL is set, because the Worker's half is deployed by the
+# owner into their own Cloudflare account. See registrar/worker.js.
+
+FACTORY_CONFIG = ("/boot/firmware/factory_config.txt"
+                  if os.path.isdir("/boot/firmware")
+                  else f"{INSTALL_DIR}/factory_config.txt")
+
+
+def factory_config():
+    try:
+        with open(FACTORY_CONFIG) as f:
+            return parse_env(f.read())
+    except OSError:
+        return {}
+
+
+def heartbeat_url(env, factory):
+    """Where to POST, or "" when the switch is not armed."""
+    explicit = env.get("HEARTBEAT_URL", "").strip()
+    if explicit:
+        return explicit
+    if env.get("HEARTBEAT_ENABLED", "false").lower() != "true":
+        return ""
+    base = factory.get("REGISTRAR_URL", "").strip().rstrip("/")
+    return f"{base}/heartbeat" if base else ""
+
+
+def send_heartbeat(env, factory, overall, now):
+    """One POST saying "still here". Never fatal: a heartbeat that cannot be
+    delivered must not stop the box checking its own health."""
+    url = heartbeat_url(env, factory)
+    if not url:
+        return None
+    secret = factory.get("REGISTRAR_SECRET", "")
+    if not secret:
+        log("[WARN] heartbeat configured but no REGISTRAR_SECRET — not sending")
+        return False
+    payload = json.dumps({
+        "device_id": factory.get("NEWT_ID", "unknown"),
+        "overall": overall,
+        "ts": int(now),
+    }).encode()
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {secret}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return 200 <= r.status < 300
+    except Exception as e:
+        log(f"[WARN] heartbeat failed: {e}")
+        return False
+
+
 def compose_message(alerts, recoveries):
     lines = []
     if alerts:
@@ -580,8 +736,31 @@ def main():
         text = compose_message(alerts, recoveries)
         pushed = send_push(push[0], push[1], text)
         log(f"[INFO] push via {push[0]}: {'sent' if pushed else 'FAILED'} — {len(alerts)} alert(s), {len(recoveries)} recovery(ies)")
-    elif alerts or recoveries:
-        log(f"[INFO] {len(alerts)} alert(s) — no push channel linked or push disabled; dashboard banner only")
+    # Second transport. Only when the push did not go — see the note above
+    # resolve_email_target. A box whose Telegram link is gone, or whose
+    # OpenClaw is broken, still gets to say so.
+    emailed = False
+    email_enabled = env.get("NOTIFY_EMAIL_ENABLED", "true").lower() != "false"
+    if (alerts or recoveries) and not pushed and email_enabled:
+        mail = resolve_email_target(env)
+        if mail:
+            emailed = send_email(env, mail[0], mail[1],
+                                 email_subject(alerts, recoveries),
+                                 compose_message(alerts, recoveries))
+            log(f"[INFO] email to {mail[1]}: {'sent' if emailed else 'FAILED'}")
+        else:
+            log("[INFO] no email fallback configured (needs a connected email "
+                "account and NOTIFY_EMAIL or CLOUD_EMAIL)")
+
+    if (alerts or recoveries) and not pushed and not emailed:
+        log(f"[WARN] {len(alerts)} alert(s) reached NOBODY — dashboard banner only")
+
+    # Unconditional: the heartbeat says "this box is still running", which is
+    # exactly as true on a healthy run as on a failing one. Gating it on alerts
+    # would mean a healthy box looks dead.
+    beat = send_heartbeat(env, factory_config(), overall, now)
+    if beat is not None:
+        log(f"[INFO] heartbeat: {'sent' if beat else 'FAILED'}")
 
     atomic_write_json(HEALTH_FILE, {
         "ts": int(now),
@@ -589,6 +768,7 @@ def main():
         "checks": [{"id": c["id"], "level": c["level"], "summary": c["summary"]}
                    for c in checks],
         "push_channel": push[0] if push and push_enabled else None,
+        "last_delivery": "push" if pushed else ("email" if emailed else None),
     })
     atomic_write_json(STATE_FILE, state, mode=0o600)
     log(f"[INFO] health: {overall} — " +

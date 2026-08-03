@@ -35,7 +35,13 @@ done
 # handed a file that is right there refuses the exact restore a factory reset
 # leaves you needing — .env is regenerated, the no-drive setting goes with it,
 # and archives sitting in /var/backups/homebrain become unreachable.
-if [[ "$FROM_OFFSITE" == "true" ]] || [[ ! -f "$BACKUP_FILE" ]]; then
+#
+# An off-site restore is the same argument taken one step further: it doesn't
+# need an archive found, it needs somewhere to put the one it is fetching —
+# and the box that needs it most is a replacement that has never had a drive.
+if [[ "$FROM_OFFSITE" == "true" ]]; then
+    ensure_staging_dir
+elif [[ ! -f "$BACKUP_FILE" ]]; then
     ensure_backup_dir
 fi
 

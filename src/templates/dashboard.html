@@ -111,6 +111,16 @@
                 </div>
             </div>
 
+            <div class="card" id="selftest-card">
+                <h3>Self-test</h3>
+                <p class="small muted">Checks what this box claims, through the real interfaces —
+                    logs in to each service with the password it has stored, reads the newest backup,
+                    and reports what it could not check as exactly that.</p>
+                <button class="btn-main" id="btn-selftest" onclick="runSelfTest()">Run self-test</button>
+                <p id="selftest-summary" class="small" style="min-height:1.3em;"></p>
+                <div id="selftest-rows"></div>
+            </div>
+
             <div class="card">
                 <h3>System Resources</h3>
                 {% if has_gpu %}

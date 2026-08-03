@@ -1,7 +1,8 @@
 # Tier 2 + Phase 0 — Handoff for the next agent session
 
-**Status:** Phase 0 complete (2026-08-02). Tier 2 not started. Written to be picked up cold, in a
-session that has *not* seen the conversation this came out of.
+**Status:** Done (2026-08-02). Phase 0 shipped in #148; Tier 2 shipped in #152 (drive move),
+#156 (phone photo backup) and #157 (household members). Kept for the reasoning, not as a to-do
+list. Remaining work is in [`TIER1_PROVE_IT.md`](TIER1_PROVE_IT.md).
 **Date:** 2026-08-02
 **Companion doc:** [`TIER1_PROVE_IT.md`](TIER1_PROVE_IT.md) — Tier 1 is in flight in a separate
 session. Nothing here depends on it. Nothing here should touch `restore.sh`, `provision.sh`,

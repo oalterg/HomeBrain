@@ -1,6 +1,17 @@
 # Tier 1 — "Prove It" — Design & Implementation Plan
 
-**Status:** Planning (2026-08-02). Item 0 in progress.
+**Status:** Item 0 shipped (#147). Items 1–4 on #160, each hardware-E2E'd on a wiped RPi4.
+Item 4 is half-shipped **by design**: `registrar/heartbeat.js` is source to deploy, not a
+deployed service, and the device-side toggle stays off until someone deploys it.
+
+Two things #160 does *not* prove, written down so nobody reads more into it than it earned:
+- The off-site remote was real SFTP through rclone, but on the same machine. That proves the
+  software path (save → list → fetch → decrypt → unpack → redeploy → re-sync). It does not
+  prove physical off-siteness or a WAN transfer of an 80 GB archive.
+- The restore ran on a box that still had its backup drive: `nuclear_reset` preserves
+  `/mnt/backup` and its fstab entry. The no-drive path — a replacement appliance, which is
+  what an off-site copy is *for* — is covered by `ensure_staging_dir` and its tests, and has
+  not been run on hardware. (2026-08-03)
 **Date:** 2026-08-02
 **Context:** Every serious defect found in the last three months shares one shape: **the box
 asserts a success it never verified.** HA password rotation reported "rotated" for months while

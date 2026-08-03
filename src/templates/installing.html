@@ -20,6 +20,22 @@
     <script>
         const BRAND_SUFFIX = {{ platform.product_suffix | tojson }};
         const handoverReady = {{ handover_ready|default('false')|lower }};
+        const restoreMode = {{ restore_mode|default('false')|lower }};
+        // A restore install streams deploy.sh AND restore.sh into one log, so
+        // deploy's own marker lands while the data is still being written.
+        // Waiting for the right one is what keeps the owner from being handed
+        // credentials to a half-restored box.
+        const DONE_MARKER = restoreMode
+            ? 'Restore Complete - Ready for Handover'
+            : 'Deployment Complete - Ready for Handover';
+
+        if (restoreMode) {
+            document.getElementById('status-title').textContent = 'Restoring your HomeBrain';
+            document.getElementById('status-sub').textContent =
+                'Please do not unplug. Installing, then downloading and unpacking your backup. '
+                + 'This takes longer than a fresh install — how much longer depends on the size '
+                + 'of the backup and your connection.';
+        }
 
         let finished = false;
         const logsEl = document.getElementById('logs');
@@ -33,7 +49,7 @@
                 if (!t) return;
                 logsEl.textContent = t;
                 logsEl.scrollTop = logsEl.scrollHeight;
-                if (t.includes('Deployment Complete - Ready for Handover')) {
+                if (t.includes(DONE_MARKER)) {
                     finished = true;
                     clearInterval(poller);
                     setTimeout(fetchCredentials, 1000);
@@ -70,8 +86,10 @@
                 <div class="brand">Home<span>${BRAND_SUFFIX}</span></div>
 
                 <div class="success-box mt">
-                    <h2>Setup complete</h2>
-                    <p>Your private cloud is ready. Save these credentials now.</p>
+                    <h2>${restoreMode ? 'Restore complete' : 'Setup complete'}</h2>
+                    <p>${restoreMode
+                        ? 'Your files, Home Assistant setup and vault are back. Your master password is unchanged — it is the one you just entered.'
+                        : 'Your private cloud is ready. Save these credentials now.'}</p>
 
                     <div class="creds-block">
                         <span class="creds-label">Master username</span>

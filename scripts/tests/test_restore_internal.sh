@@ -90,6 +90,59 @@ else
     fi
 fi
 
+echo "== ensure_staging_dir: an off-site restore needs a landing site, not a drive =="
+
+# The bug this pins: the wizard's restore-from-off-site called ensure_backup_dir
+# first, so a box with no backup drive died at "Failed to mount backup drive"
+# before the fetch started — on the one recovery path whose whole premise is
+# that the drive is gone. The E2E missed it because nuclear_reset preserves
+# /mnt/backup's fstab entry, so the wiped test box still had a drive to mount.
+if ! command -v mountpoint >/dev/null 2>&1; then
+    printf '  skip  falls back to the internal disk (no mountpoint(8) on this host)\n'
+else
+    plain="$TMP/absent"
+    mkdir -p "$plain"
+    internal="$TMP/var-backups"
+    staged="$(
+        BACKUP_INTERNAL=false
+        BACKUP_MOUNTDIR="$plain"
+        INTERNAL_BACKUP_DIR="$internal"
+        ensure_staging_dir 2>/dev/null
+        echo "$BACKUP_MOUNTDIR"
+    )"
+    if [ "$staged" = "$internal" ]; then
+        ok "falls back to the internal disk when the drive is absent"
+    else
+        bad "falls back to the internal disk when the drive is absent (got '${staged:-<nothing>}')"
+    fi
+    if [ -d "$internal" ]; then
+        ok "creates the fallback directory"
+    else
+        bad "creates the fallback directory (not created)"
+    fi
+fi
+
+# No fallback when the configured location is already usable: an archive lands
+# on the drive when there is one, and a no-drive box keeps its own setting.
+target="$TMP/internal/backups"
+staged="$(
+    BACKUP_INTERNAL=true
+    BACKUP_MOUNTDIR="$target"
+    INTERNAL_BACKUP_DIR="$TMP/never"
+    ensure_staging_dir 2>/dev/null
+    echo "$BACKUP_MOUNTDIR"
+)"
+if [ "$staged" = "$target" ]; then
+    ok "keeps BACKUP_MOUNTDIR when it is already usable"
+else
+    bad "keeps BACKUP_MOUNTDIR when it is already usable (got '${staged:-<nothing>}')"
+fi
+if [ -d "$TMP/never" ]; then
+    bad "does not touch the fallback when it is not needed (created it anyway)"
+else
+    ok "does not touch the fallback when it is not needed"
+fi
+
 echo "== both callers use the shared guard =="
 
 # Cheap structural check: if either script grows its own copy of the mount
@@ -106,6 +159,13 @@ for script in backup.sh restore.sh; do
         ok "$script has no private mount check"
     fi
 done
+
+# The wiring, not just the helper: calling the wrong one of the two is the bug.
+if grep -q 'ensure_staging_dir' "$SCRIPT_DIR/../restore.sh"; then
+    ok "restore.sh stages off-site fetches instead of demanding the drive"
+else
+    bad "restore.sh stages off-site fetches instead of demanding the drive (not found)"
+fi
 
 echo
 echo "passed: $pass   failed: $fail"

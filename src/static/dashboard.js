@@ -2714,6 +2714,73 @@ function showNuclearProgressScreen() {
     }, 1500);
 }
 
+/* --- self-test --- */
+
+// Three outcomes, rendered as three different things. A check that could not
+// run says so; it is never folded into the green count. "We could not tell you
+// whether your backups work" is information the owner needs.
+const SELFTEST_LOOK = {
+    ok:   { badge: 'status-running', label: 'pass' },
+    fail: { badge: 'status-stopped', label: 'FAIL' },
+    skip: { badge: 'status-unknown', label: 'not checked' },
+};
+
+function runSelfTest() {
+    const btn = document.getElementById('btn-selftest');
+    const summary = document.getElementById('selftest-summary');
+    const rows = document.getElementById('selftest-rows');
+
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    summary.textContent = 'Logging in to each service and reading the backups. This takes a moment.';
+    summary.style.color = '';
+    rows.innerHTML = '';
+
+    fetch('/api/system/selftest', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            const checks = data.checks || [];
+            checks.forEach(c => {
+                const look = SELFTEST_LOOK[c.status] || SELFTEST_LOOK.skip;
+                const row = document.createElement('div');
+                row.className = 'stat-item';
+
+                const name = document.createElement('span');
+                name.textContent = c.name;
+
+                const badge = document.createElement('span');
+                badge.className = 'status-badge ' + look.badge;
+                badge.textContent = look.label;
+
+                row.append(name, badge);
+                rows.appendChild(row);
+
+                const detail = document.createElement('p');
+                detail.className = 'small muted';
+                detail.style.margin = '0 0 10px';
+                detail.textContent = c.hint ? c.detail + ' — ' + c.hint : c.detail;
+                rows.appendChild(detail);
+            });
+
+            const n = s => checks.filter(c => c.status === s).length;
+            const parts = [`${n('ok')} passed`];
+            if (n('fail')) parts.push(`${n('fail')} failed`);
+            if (n('skip')) parts.push(`${n('skip')} not checked`);
+            summary.textContent = parts.join(', ') + '.';
+            summary.style.color = data.summary === 'fail' ? 'var(--danger)'
+                : data.summary === 'skip' ? 'var(--warning)' : 'var(--accent)';
+        })
+        .catch(e => {
+            summary.textContent = e.message || 'The self-test could not run.';
+            summary.style.color = 'var(--danger)';
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = 'Run self-test';
+        });
+}
+
 /* --- boot --- */
 
 // The subdomain preview under the tunnel form.
