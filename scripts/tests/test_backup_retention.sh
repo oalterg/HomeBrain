@@ -97,6 +97,33 @@ else
     bad "backup.sh prunes via prunable_archives (rolled its own find again)"
 fi
 
+echo "== backup.sh publishes the archive by rename, after verifying it =="
+BSH="$SCRIPT_DIR/../backup.sh"
+if grep -q 'mv -f "\$ARCHIVE_TMP" "\$ARCHIVE_PATH"' "$BSH"; then
+    ok "the finished archive is moved into its published name"
+else
+    bad "the finished archive is moved into its published name (rename gone)"
+fi
+if grep -qE -- '-o "\$ARCHIVE_PATH"|-czf "\$ARCHIVE_PATH"' "$BSH"; then
+    bad "compression writes straight to the published name again (mirror can see a growing file)"
+else
+    ok "compression writes to the partial name, not the published one"
+fi
+# Verification must gate the rename, or a corrupt archive becomes visible —
+# and mirrorable — before the check that deletes it has run.
+v_line=$(grep -n 'Archive verified' "$BSH" | head -1 | cut -d: -f1)
+m_line=$(grep -n 'mv -f "\$ARCHIVE_TMP"' "$BSH" | head -1 | cut -d: -f1)
+if [ -n "$v_line" ] && [ -n "$m_line" ] && [ "$v_line" -lt "$m_line" ]; then
+    ok "verification runs before the archive is published"
+else
+    bad "verification runs before the archive is published (order: verify=$v_line publish=$m_line)"
+fi
+if grep -q 'rm -f "\$BACKUP_MOUNTDIR"/\.homebrain_backup\*\.part' "$BSH"; then
+    ok "leftover partials from a dead run are swept"
+else
+    bad "leftover partials from a dead run are swept (retention cannot see them, so nothing else will)"
+fi
+
 # ── Off-site copy semantics (needs rclone) ──────────────────────────────────
 
 if ! command -v rclone >/dev/null 2>&1; then
@@ -383,6 +410,38 @@ if [ "${copies:-0}" -ge 2 ] && [ "${copies:-0}" = "${staty:-0}" ]; then
 else
     bad "every rclone copy asks for periodic progress (only ${staty:-0} of ${copies:-0} carry --stats)"
 fi
+
+echo "== an archive still being written is invisible to the mirror =="
+# The failure this pins, seen live on 2026-08-03: an 89 GB full takes ~30
+# minutes to write, homebrain-offsite.timer fires hourly, so the mirror landed
+# mid-write, picked the growing file as the newest full, and rclone refused it
+# ("can't copy - source file is being updated"). That recorded an off-site
+# failure and pushed an alert for a backup that was fine — and, worse, the
+# newest FINISHED archive was skipped, because the partial outranked it.
+rm -f "$TMP"/local/*.tar.gz.gpg "$REMOTE"/*.tar.gz.gpg
+echo "payload-finished" > "$TMP/local/homebrain_backup_2026-08-01.tar.gz.gpg"
+sleep 1
+# Newer than the finished one — the ordering that made this bite.
+echo "still-growing" > "$TMP/local/.homebrain_backup_2026-08-02.tar.gz.gpg.part"
+offsite_sync >/dev/null 2>&1
+if [ -f "$REMOTE/homebrain_backup_2026-08-01.tar.gz.gpg" ]; then
+    ok "the newest finished archive is mirrored even with a partial beside it"
+else
+    bad "the newest finished archive is mirrored even with a partial beside it (partial won 'newest')"
+fi
+if find "$REMOTE" -name '*.part' 2>/dev/null | grep -q .; then
+    bad "a partial archive is never uploaded (it was)"
+else
+    ok "a partial archive is never uploaded"
+fi
+if [ "$HAVE_GNU_FIND" = true ]; then
+    if prunable_archives "$TMP/local" | grep -q '\.part'; then
+        bad "local retention ignores partials (offered one for deletion)"
+    else
+        ok "local retention ignores partials"
+    fi
+fi
+rm -f "$TMP"/local/.homebrain_backup*.part
 
 echo
 echo "passed: $pass   failed: $fail"
