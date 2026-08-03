@@ -34,13 +34,22 @@ bad() { printf '  FAIL  %s\n' "$1"; fail=$((fail + 1)); }
 RUNNING=true        # docker inspect .State.Running
 CLI_RC=0            # `hass --script auth change_password` exit status
 LOGIN='{"type": "create_entry"}'
+OWNER=admin         # what the auth store says owns Home Assistant
+CHANGED_USER=""     # which username change_password was actually aimed at
 
 get_ha_cid() { echo "ha-test-cid"; }
 
 docker() {
     case "$1" in
         inspect) echo "$RUNNING" ;;
-        exec)    return "$CLI_RC" ;;
+        exec)
+            # `docker exec <cid> python3 -c ...` is the owner lookup;
+            # `docker exec <cid> hass --script auth ...` is the change.
+            case "$3" in
+                python3) echo "$OWNER"; return 0 ;;
+                hass)    CHANGED_USER="${*: -2:1}"; return "$CLI_RC" ;;
+            esac
+            return "$CLI_RC" ;;
         restart) return 0 ;;
         *)       return 0 ;;
     esac
@@ -81,6 +90,32 @@ if ha_sync_admin_password "hunter2" >/dev/null 2>&1; then
 else
     bad "reports success only when a login actually works (said no)"
 fi
+
+echo "== the owner is not always called admin =="
+
+# Live on the production box: Home Assistant migrated from an older system,
+# owner account `oliaidanaberlin`, no user named `admin` at all. Aiming at
+# `admin` there edits nobody, and the CLI still exits 0.
+OWNER=oliaidanaberlin
+CHANGED_USER=""
+LOGIN='{"type": "create_entry"}'
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+if [ "$CHANGED_USER" = "oliaidanaberlin" ]; then
+    ok "changes the password of the account that owns HA"
+else
+    bad "changes the password of the account that owns HA (aimed at '${CHANGED_USER:-nothing}')"
+fi
+
+# Refusing beats guessing: `admin` is a real account on most boxes, so a
+# fallback would quietly rotate the wrong user's password on the boxes where
+# the lookup failed.
+OWNER=""
+if ha_sync_admin_password "hunter2" >/dev/null 2>&1; then
+    bad "refuses rather than guessing when the owner cannot be read"
+else
+    ok "refuses rather than guessing when the owner cannot be read"
+fi
+OWNER=admin
 
 echo "== nothing to talk to =="
 
