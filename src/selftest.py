@@ -108,6 +108,14 @@ def newest_archive(directory):
     return best
 
 
+def is_mountpoint(directory):
+    """True if something is really mounted at this path."""
+    try:
+        return os.path.ismount(directory)
+    except OSError:
+        return False
+
+
 def offsite_listing():
     """Parsed `rclone lsjson` of the off-site remote, or None if it failed."""
     try:
@@ -231,6 +239,17 @@ def check_nextcloud_data(env):
 
 
 def check_local_backup(env, now, storage_dir):
+    # Before the archives: is the drive they are supposedly on actually there?
+    # The fstab entry carries `nofail`, so when the drive dies `mount` still
+    # exits 0 and the backups keep landing in the mountpoint directory — on the
+    # root disk, growing, reported as successful. Found on a box holding 244 MB
+    # of archives it believed were on a USB drive that had been gone for weeks.
+    if env.get("BACKUP_INTERNAL", "false") != "true" and not is_mountpoint(storage_dir):
+        return result("Local backup", FAIL,
+                      f"No backup drive is mounted at {storage_dir} — "
+                      f"anything written there is on the internal disk.",
+                      "Reconnect the drive from the Backup card, or switch on "
+                      "no-drive mode if you meant to keep backups internally.")
     newest = newest_archive(storage_dir)
     if newest is None:
         return result("Local backup", FAIL, f"No backup archive found in {storage_dir}.",

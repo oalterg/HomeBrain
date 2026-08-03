@@ -90,6 +90,50 @@ else
     fi
 fi
 
+echo "== a mount that exits 0 without mounting is still not a drive =="
+
+# The bug this pins, measured on the test box: the fstab entry the dashboard
+# writes carries `nofail`, and `mount /mnt/backup` with a `nofail` entry whose
+# device is gone exits 0 having mounted nothing. The guard trusted that exit
+# code, so every backup after a drive died was written to the root disk and
+# reported as success — 244 MB of them, on a box whose dashboard showed a
+# healthy backup drive.
+#
+# Stubbing mount(8) is the point: a real one cannot be made to lie on demand.
+STUB="$TMP/stub"
+mkdir -p "$STUB"
+printf '#!/bin/sh\nexit 0\n' > "$STUB/mount"        # the nofail liar
+chmod +x "$STUB/mount"
+
+if ! command -v mountpoint >/dev/null 2>&1; then
+    printf '  skip  refuses a mount that did not happen (no mountpoint(8) on this host)\n'
+else
+    plain="$TMP/notadrive"
+    mkdir -p "$plain"
+    if ( PATH="$STUB:$PATH" BACKUP_MOUNTDIR="$plain" ensure_backup_dir ) >/dev/null 2>&1; then
+        bad "refuses a mount that did not happen (accepted it — backups would go to the root disk)"
+    else
+        ok "refuses a mount that did not happen"
+    fi
+
+    # And the staging path must reach the same conclusion, or an off-site
+    # restore quietly stages onto a directory it thinks is a drive.
+    internal2="$TMP/var-backups-2"
+    staged="$(
+        PATH="$STUB:$PATH"
+        BACKUP_INTERNAL=false
+        BACKUP_MOUNTDIR="$plain"
+        INTERNAL_BACKUP_DIR="$internal2"
+        ensure_staging_dir 2>/dev/null
+        echo "$BACKUP_MOUNTDIR"
+    )"
+    if [ "$staged" = "$internal2" ]; then
+        ok "staging falls back when the mount silently did nothing"
+    else
+        bad "staging falls back when the mount silently did nothing (got '${staged:-<nothing>}')"
+    fi
+fi
+
 echo "== ensure_staging_dir: an off-site restore needs a landing site, not a drive =="
 
 # The bug this pins: the wizard's restore-from-off-site called ensure_backup_dir

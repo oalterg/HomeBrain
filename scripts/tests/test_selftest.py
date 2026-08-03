@@ -132,27 +132,56 @@ def test_nextcloud_not_running_is_a_skip():
 
 # --- backups ----------------------------------------------------------------
 
-def test_no_local_backup_is_a_failure():
+@pytest.fixture
+def drive(monkeypatch):
+    """A backup drive that is really mounted. Most backup checks are about the
+    archives, not the drive, so they say so instead of leaning on the host."""
+    monkeypatch.setattr(selftest, "is_mountpoint", lambda d: True)
+
+
+def test_no_local_backup_is_a_failure(drive):
     assert selftest.check_local_backup({}, NOW, "/mnt/backup")["status"] == FAIL
 
 
-def test_fresh_local_backup(monkeypatch):
+def test_fresh_local_backup(drive, monkeypatch):
     monkeypatch.setattr(selftest, "newest_archive",
                         lambda d: ("homebrain_backup.tar.gz.gpg", NOW - selftest.DAY))
     assert selftest.check_local_backup({}, NOW, "/mnt/backup")["status"] == OK
 
 
-def test_stale_local_backup(monkeypatch):
+def test_stale_local_backup(drive, monkeypatch):
     monkeypatch.setattr(selftest, "newest_archive",
                         lambda d: ("homebrain_backup.tar.gz.gpg", NOW - 5 * selftest.DAY))
     assert selftest.check_local_backup({}, NOW, "/mnt/backup")["status"] == FAIL
 
 
-def test_a_weekly_schedule_tolerates_a_week_old_backup(monkeypatch):
+def test_a_weekly_schedule_tolerates_a_week_old_backup(drive, monkeypatch):
     monkeypatch.setattr(selftest, "newest_archive",
                         lambda d: ("homebrain_backup.tar.gz.gpg", NOW - 5 * selftest.DAY))
     env = {"BACKUP_DAY_WEEK": "0"}
     assert selftest.check_local_backup(env, NOW, "/mnt/backup")["status"] == OK
+
+
+def test_recent_archives_on_a_drive_that_is_gone_are_a_failure(monkeypatch):
+    """The one a fresh timestamp cannot catch. `nofail` in fstab means `mount`
+    exits 0 with the drive absent, so backups keep succeeding onto the root
+    disk — newest archive an hour old, and not one of them on the drive."""
+    monkeypatch.setattr(selftest, "is_mountpoint", lambda d: False)
+    monkeypatch.setattr(selftest, "newest_archive",
+                        lambda d: ("homebrain_backup.tar.gz.gpg", NOW - 3600))
+    r = selftest.check_local_backup({}, NOW, "/mnt/backup")
+    assert r["status"] == FAIL
+    assert "internal disk" in r["detail"]
+
+
+def test_no_drive_mode_does_not_want_a_mountpoint(monkeypatch):
+    """Internal storage is a directory on the root disk by definition, so the
+    drive check must not fire there."""
+    monkeypatch.setattr(selftest, "is_mountpoint", lambda d: False)
+    monkeypatch.setattr(selftest, "newest_archive",
+                        lambda d: ("homebrain_backup.tar.gz.gpg", NOW - selftest.DAY))
+    env = {"BACKUP_INTERNAL": "true"}
+    assert selftest.check_local_backup(env, NOW, "/var/backups/homebrain")["status"] == OK
 
 
 def test_offsite_disabled_is_a_skip_that_says_why():

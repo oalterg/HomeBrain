@@ -1135,13 +1135,28 @@ prunable_archives() {
         | sort -n | awk '{print $2}' | sed '$d'
 }
 
+# Is the backup drive actually mounted at $BACKUP_MOUNTDIR right now?
+#
+# Asked after the mount attempt as well as before it, because `mount` exiting 0
+# does not mean anything got mounted. The fstab entry the dashboard writes
+# carries `nofail` (app.py, both drive-setup paths), and `mount /mnt/backup`
+# with a `nofail` entry whose device is gone exits **0** having mounted
+# nothing. Measured on the test box: UUID absent, `mount` exit 0,
+# `mountpoint` says no — and 244 MB of "backups" on the root disk, written
+# over weeks by a guard that believed it had checked.
+backup_drive_mounted() {
+    mountpoint -q "$BACKUP_MOUNTDIR" 2>/dev/null
+}
+
 ensure_backup_dir() {
     if [[ "${BACKUP_INTERNAL:-false}" == "true" ]]; then
         mkdir -p "$BACKUP_MOUNTDIR" \
             || die "Cannot create backup directory $BACKUP_MOUNTDIR."
-    elif ! mountpoint -q "$BACKUP_MOUNTDIR"; then
+    elif ! backup_drive_mounted; then
         log_info "Attempting to mount $BACKUP_MOUNTDIR..."
-        mount "$BACKUP_MOUNTDIR" || die "Failed to mount backup drive."
+        mount "$BACKUP_MOUNTDIR" 2>/dev/null
+        backup_drive_mounted \
+            || die "Failed to mount backup drive at $BACKUP_MOUNTDIR."
     fi
 }
 
@@ -1160,11 +1175,12 @@ ensure_backup_dir() {
 # Prefer the configured location when it is really there, so an archive lands
 # on the drive when there is one; fall back to the internal disk and say so.
 ensure_staging_dir() {
-    if [[ "${BACKUP_INTERNAL:-false}" != "true" ]] \
-        && ! mountpoint -q "$BACKUP_MOUNTDIR" 2>/dev/null \
-        && ! mount "$BACKUP_MOUNTDIR" 2>/dev/null; then
-        log_warn "No backup drive at $BACKUP_MOUNTDIR — staging the off-site archive on the internal disk."
-        BACKUP_MOUNTDIR="$INTERNAL_BACKUP_DIR"
+    if [[ "${BACKUP_INTERNAL:-false}" != "true" ]] && ! backup_drive_mounted; then
+        mount "$BACKUP_MOUNTDIR" 2>/dev/null
+        if ! backup_drive_mounted; then
+            log_warn "No backup drive at $BACKUP_MOUNTDIR — staging the off-site archive on the internal disk."
+            BACKUP_MOUNTDIR="$INTERNAL_BACKUP_DIR"
+        fi
     fi
     mkdir -p "$BACKUP_MOUNTDIR" \
         || die "Cannot create staging directory $BACKUP_MOUNTDIR."
