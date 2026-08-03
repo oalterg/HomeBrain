@@ -475,6 +475,29 @@ docker compose $(get_compose_args) restart nextcloud homeassistant
 wait_for_healthy "nextcloud" 120 || log_error "Nextcloud failed to get healthy after proxy config" 
 wait_for_healthy "homeassistant" 120 || log_error "Homeassistant failed to get healthy after proxy config" 
 
+# --- Home Assistant admin password -----------------------------------------
+# The mirror of the Nextcloud sync above, which HA never had. Restoring HA's
+# config restores its auth store, so the box comes back answering to whatever
+# password the *archive* was made under — while .env, the dashboard, Nextcloud
+# and the password the owner was just shown all say something else. On a
+# bare-metal restore that is the only password they have, and Home Assistant is
+# the one service that refuses it.
+#
+# Found by the self-test on a restored box: dashboard ok, Nextcloud ok, "Home
+# Assistant rejected the recorded password" — an inconsistency that had been
+# sitting there since the previous restore, unnoticed because nothing asked.
+if [[ -n "${HA_ADMIN_PASSWORD:-}" ]]; then
+    log_info "Synchronizing Home Assistant admin password to match current environment..."
+    if ha_sync_admin_password "$HA_ADMIN_PASSWORD"; then
+        log_info "Home Assistant accepts the current password."
+    else
+        log_warn "Home Assistant kept the password from the backup — the master password will NOT open it."
+        log_warn "Change it in HA → Profile, or run scripts/rotate_master_password.sh (non-fatal)."
+    fi
+else
+    log_warn "HA_ADMIN_PASSWORD not set in .env — Home Assistant keeps the password from the backup."
+fi
+
 log_info "Disabling maintenance mode"
 set_maintenance_mode "--off"
 
