@@ -98,56 +98,17 @@ else
 fi
 
 # --- 3. Home Assistant admin login (BEST-EFFORT) ---------------------------
-# Confirms the change by logging in, because neither of the obvious signals is
-# trustworthy here:
-#   * `-c /config` is NOT optional. The `auth` sub-parser owns that flag and
-#     defaults to ~/.homeassistant, which does not exist inside the container —
-#     so without it the CLI edits an empty store and changes nothing.
-#   * The CLI exits 0 either way. Missing the user prints "User not found" and
-#     still returns success, so its status cannot gate the .env write.
-# Together those two silently produced the exact state this script's safety
-# model exists to prevent: HA_ADMIN_PASSWORD in .env holding a password that
-# Home Assistant had never accepted.
-# HA also caches the credential in memory, so the change only goes live after a
-# restart — hence change, restart, verify, and only then record.
-ha_login_works() {
-    local pw="$1" flow_id payload
-    flow_id=$(curl -s --max-time 10 -H 'Content-Type: application/json' \
-        -d '{"client_id":"http://127.0.0.1:8123/","handler":["homeassistant",null],"redirect_uri":"http://127.0.0.1:8123/"}' \
-        "http://127.0.0.1:8123/auth/login_flow" 2>/dev/null | jq -r '.flow_id // empty' 2>/dev/null)
-    [[ -n "$flow_id" ]] || return 1
-    # jq builds the body so the password is JSON-escaped rather than pasted in.
-    payload=$(jq -nc --arg p "$pw" \
-        '{client_id:"http://127.0.0.1:8123/", username:"admin", password:$p}') || return 1
-    curl -s --max-time 10 -H 'Content-Type: application/json' -d "$payload" \
-        "http://127.0.0.1:8123/auth/login_flow/${flow_id}" 2>/dev/null \
-        | grep -q '"type": *"create_entry"'
-}
-
-HA_CID="$(get_ha_cid 2>/dev/null || true)"
-if [[ -n "$HA_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$HA_CID" 2>/dev/null)" == "true" ]]; then
-    log_info "Rotating Home Assistant admin password (best-effort)..."
-    if docker exec "$HA_CID" hass --script auth -c /config \
-            change_password admin "$NEW_PASS" >/dev/null 2>&1 \
-       && docker restart "$HA_CID" >/dev/null 2>&1; then
-        # Container health flips before the auth API answers, so poll that.
-        for _ in $(seq 1 30); do
-            [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-                http://127.0.0.1:8123/api/onboarding 2>/dev/null)" == "200" ]] && break
-            sleep 2
-        done
-        if ha_login_works "$NEW_PASS"; then
-            update_env_var "HA_ADMIN_PASSWORD" "$NEW_PASS"
-            log_info "Home Assistant password rotated and verified."
-        else
-            log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
-            log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)."
-        fi
-    else
-        log_warn "HA auth CLI failed — HA keeps its old password; change it via HA → Profile (non-fatal)."
-    fi
+# ha_sync_admin_password (common.sh) changes, restarts and then *proves* the
+# change by logging in — neither the CLI's exit code nor its output can be
+# trusted. Shared with restore.sh, which has the same job to do after putting
+# an older box's auth store back on disk.
+log_info "Rotating Home Assistant admin password (best-effort)..."
+if ha_sync_admin_password "$NEW_PASS"; then
+    update_env_var "HA_ADMIN_PASSWORD" "$NEW_PASS"
+    log_info "Home Assistant password rotated and verified."
 else
-    log_warn "Home Assistant container not running — skipping (non-fatal)."
+    log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
+    log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)."
 fi
 
 # --- 4. Canonical master + dashboard-login password ------------------------
