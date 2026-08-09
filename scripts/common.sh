@@ -921,24 +921,41 @@ set_maintenance_mode() {
 }
 
 # --- Home Assistant admin password -----------------------------------------
-# Does Home Assistant accept this password for `admin`, right now?
+# HA_ADMIN_PASSWORD is not like the other passwords .env holds.
 #
-# Asked because neither obvious signal can be trusted:
+# MANAGER_PASSWORD, NEXTCLOUD_ADMIN_PASSWORD and MYSQL_ROOT_PASSWORD are
+# credentials HomeBrain created and solely owns, so recording one is recording
+# a fact. HA_ADMIN_PASSWORD is a *mirror* of a credential that lives in Home
+# Assistant's own auth store — which the owner can change from HA's profile
+# page at any time, and which on a migrated box predates HomeBrain entirely.
+# Treating that mirror as authoritative is what produced #145 and #164: a
+# rotation aimed at a user who did not exist, reported as done, for months.
+#
+# So who HomeBrain manages, and whether it owns the password on that account,
+# are recorded in .env rather than assumed:
+#
+#   HA_ADMIN_USER        the account HomeBrain manages
+#   HA_PASSWORD_MANAGED  true  — HomeBrain created it. The master password owns
+#                                it, rotation and restore enforce it, and drift
+#                                is a defect worth a red row.
+#                        false — Home Assistant's own. HomeBrain never writes
+#                                it and does not claim to know it.
+#
+# Neither signal the CLI gives back can be trusted, which is why every write
+# below is proved by a real login:
 #   * `-c /config` is NOT optional. The `auth` sub-parser owns that flag and
 #     defaults to ~/.homeassistant, which does not exist in the container — so
 #     without it the CLI edits an empty store and changes nothing.
 #   * The CLI exits 0 either way. Missing the user prints "User not found" and
 #     still returns success.
-# Together those produced months of HA_ADMIN_PASSWORD holding a password Home
-# Assistant had never accepted (#145).
+
 # The login name of Home Assistant's owner account, or "" if it cannot be read.
 #
 # Not "admin". A fresh install creates `admin` (utilities.sh), but a box whose
 # Home Assistant predates HomeBrain — migrated from another system, or
-# onboarded by hand — carries whatever name its owner chose. Aiming a password
-# change at `admin` there edits nobody: `hass --script auth` prints "User not
-# found" and exits 0, and the login that verifies it fails for a reason that
-# has nothing to do with the password.
+# onboarded by hand — carries whatever name its owner chose. Used to fill in
+# the record above on boxes provisioned before it existed, and to find the
+# account when the owner asks HomeBrain to take over the password.
 ha_owner_username() {
     local cid="$1"
     docker exec "$cid" python3 -c "
@@ -965,25 +982,51 @@ ha_login_works() {
         | grep -q '"type": *"create_entry"'
 }
 
-# Make Home Assistant accept $1 for admin, and prove it did.
+ha_record_account() {
+    # In-process too, not just on disk: load_env exported the old values, and a
+    # caller that writes .env and then reads its own stale copy is the shape of
+    # bug this file has been bitten by before.
+    HA_ADMIN_USER="$1"
+    HA_PASSWORD_MANAGED="$2"
+    update_env_var "HA_ADMIN_USER" "$1"
+    update_env_var "HA_PASSWORD_MANAGED" "$2"
+}
+
+# Loads the recorded account into HA_ACCOUNT_USER / HA_ACCOUNT_MANAGED,
+# filling the record in on a box provisioned before those keys existed.
+# Returns non-zero only when the account cannot be determined at all.
 #
-# Change, restart, verify — HA caches the credential in memory, so the change
-# only goes live after a restart, and only a login proves it went live at all.
-# Returns non-zero when HA still refuses the password; every caller treats that
-# as non-fatal but must say so out loud.
-ha_sync_admin_password() {
-    local pw="$1" cid user
-    cid="$(get_ha_cid 2>/dev/null || true)"
-    [[ -n "$cid" ]] || return 1
-    [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]] || return 1
-
-    user="$(ha_owner_username "$cid")"
-    if [[ -z "$user" ]]; then
-        log_warn "Could not read which account owns Home Assistant — not guessing."
-        return 1
+# The migration proves ownership rather than guessing at it: Home Assistant
+# either accepts the password HomeBrain has on record for that account, or it
+# does not. Accepting means HomeBrain's password is already the live one, which
+# is what "managed" means. A guess from the account's *name* would be wrong on
+# exactly the boxes that matter — `admin` is a perfectly ordinary name for a
+# user to pick themselves.
+ha_load_account_record() {
+    local cid="$1"
+    HA_ACCOUNT_USER="${HA_ADMIN_USER:-}"
+    HA_ACCOUNT_MANAGED="${HA_PASSWORD_MANAGED:-}"
+    if [[ -n "$HA_ACCOUNT_USER" && -n "$HA_ACCOUNT_MANAGED" ]]; then
+        return 0
     fi
-    log_info "Home Assistant owner account: ${user}"
 
+    HA_ACCOUNT_USER="$(ha_owner_username "$cid")"
+    [[ -n "$HA_ACCOUNT_USER" ]] || return 1
+    if ha_login_works "${HA_ADMIN_PASSWORD:-}" "$HA_ACCOUNT_USER"; then
+        HA_ACCOUNT_MANAGED="true"
+        log_info "Home Assistant account '${HA_ACCOUNT_USER}' accepts the recorded password — recording it as HomeBrain-managed."
+    else
+        HA_ACCOUNT_MANAGED="false"
+        log_info "Home Assistant account '${HA_ACCOUNT_USER}' does not accept the recorded password — recording it as self-managed, and leaving it alone."
+    fi
+    ha_record_account "$HA_ACCOUNT_USER" "$HA_ACCOUNT_MANAGED"
+}
+
+# The write itself: change, restart, verify. HA caches the credential in
+# memory, so the change only goes live after a restart, and only a login proves
+# it went live at all. Holds no opinion about who may ask for it.
+ha_set_password() {
+    local cid="$1" user="$2" pw="$3"
     docker exec "$cid" hass --script auth -c /config \
         change_password "$user" "$pw" >/dev/null 2>&1 || return 1
     docker restart "$cid" >/dev/null 2>&1 || return 1
@@ -996,6 +1039,48 @@ ha_sync_admin_password() {
         sleep 2
     done
     ha_login_works "$pw" "$user"
+}
+
+# Make Home Assistant accept $1 on the account HomeBrain manages, and prove it.
+#
+# The exit codes are distinct because the callers have to say different things,
+# and "nothing was attempted" must never be reported as "your password was
+# rejected" — that sentence sent the owner to fix a password that was fine.
+#   0  changed and verified
+#   1  Home Assistant refused it, or could not be reached
+#   2  the account could not be determined — nothing was attempted
+#   3  the password is not HomeBrain's to set — nothing was attempted
+ha_sync_admin_password() {
+    local pw="$1" cid
+    cid="$(get_ha_cid 2>/dev/null || true)"
+    [[ -n "$cid" ]] || return 1
+    [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]] || return 1
+
+    ha_load_account_record "$cid" || return 2
+    [[ "$HA_ACCOUNT_MANAGED" == "true" ]] || return 3
+
+    ha_set_password "$cid" "$HA_ACCOUNT_USER" "$pw"
+}
+
+# Take over Home Assistant's password: set it to $1 and record that HomeBrain
+# manages it from now on.
+#
+# The deliberate act behind the dashboard's "Let HomeBrain manage this
+# password". Everything else in this file refuses to touch a self-managed
+# account; this is the one path that changes that answer, and it exists so the
+# refusal is a decision the owner can reverse rather than a dead end.
+ha_adopt_admin_password() {
+    local pw="$1" cid user
+    cid="$(get_ha_cid 2>/dev/null || true)"
+    [[ -n "$cid" ]] || return 1
+    [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]] || return 1
+
+    user="$(ha_owner_username "$cid")"
+    [[ -n "$user" ]] || return 2
+    ha_set_password "$cid" "$user" "$pw" || return 1
+
+    ha_record_account "$user" "true"
+    update_env_var "HA_ADMIN_PASSWORD" "$pw"
 }
 
 # Configures Trusted Proxies in Home Assistant configuration.yaml

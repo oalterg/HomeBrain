@@ -36,6 +36,16 @@ CLI_RC=0            # `hass --script auth change_password` exit status
 LOGIN='{"type": "create_entry"}'
 OWNER=admin         # what the auth store says owns Home Assistant
 CHANGED_USER=""     # which username change_password was actually aimed at
+RECORDED=""         # what was written back to .env
+
+# The recorded ownership these cases run under. Set explicitly rather than
+# left to the migration path, so each case exercises the branch it names.
+HA_ADMIN_USER=admin
+HA_PASSWORD_MANAGED=true
+HA_ADMIN_PASSWORD=onrecord
+
+update_env_var() { RECORDED="${RECORDED}${1}=${2} "; }
+harden_env_file() { :; }
 
 get_ha_cid() { echo "ha-test-cid"; }
 
@@ -93,11 +103,15 @@ fi
 
 echo "== the owner is not always called admin =="
 
-# Live on the production box: Home Assistant migrated from an older system,
-# owner account `oliaidanaberlin`, no user named `admin` at all. Aiming at
-# `admin` there edits nobody, and the CLI still exits 0.
+# A box provisioned before HA_ADMIN_USER existed has no record to read, so the
+# account is discovered once and written down. Live on the production box:
+# Home Assistant migrated from an older system, owner account
+# `oliaidanaberlin`, no user named `admin` at all. Aiming at `admin` there
+# edits nobody, and the CLI still exits 0.
+unrecorded() { HA_ADMIN_USER=""; HA_PASSWORD_MANAGED=""; RECORDED=""; CHANGED_USER=""; }
+
+unrecorded
 OWNER=oliaidanaberlin
-CHANGED_USER=""
 LOGIN='{"type": "create_entry"}'
 ha_sync_admin_password "hunter2" >/dev/null 2>&1
 if [ "$CHANGED_USER" = "oliaidanaberlin" ]; then
@@ -108,14 +122,104 @@ fi
 
 # Refusing beats guessing: `admin` is a real account on most boxes, so a
 # fallback would quietly rotate the wrong user's password on the boxes where
-# the lookup failed.
+# the lookup failed. Code 2 is "nothing was attempted" — the callers must not
+# report that as a rejected password.
+unrecorded
 OWNER=""
-if ha_sync_admin_password "hunter2" >/dev/null 2>&1; then
-    bad "refuses rather than guessing when the owner cannot be read"
-else
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+if [ "$?" -eq 2 ]; then
     ok "refuses rather than guessing when the owner cannot be read"
+else
+    bad "refuses rather than guessing when the owner cannot be read"
 fi
 OWNER=admin
+
+echo "== a password HomeBrain never set is not HomeBrain's to change =="
+
+# Home Assistant lets its owner change their own password, and on a migrated
+# box the account predates HomeBrain entirely. Rotating it there would take
+# away the login they have been using.
+HA_ADMIN_USER=admin
+HA_PASSWORD_MANAGED=false
+CHANGED_USER=""
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
+    ok "leaves a self-managed password alone, and says so distinctly (3)"
+else
+    bad "leaves a self-managed password alone (rc=$rc, aimed at '${CHANGED_USER:-nothing}')"
+fi
+
+# The migration decides ownership by *proof*, not by the account's name:
+# HA either already accepts the password on record, or it does not.
+unrecorded
+LOGIN='{"type": "create_entry"}'
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+case "$RECORDED" in
+    *"HA_PASSWORD_MANAGED=true"*) ok "records a box whose HA accepts the recorded password as managed" ;;
+    *) bad "records a box whose HA accepts the recorded password as managed (got '$RECORDED')" ;;
+esac
+
+unrecorded
+LOGIN='{"errors":{"base":"invalid_auth"}}'
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
+    case "$RECORDED" in
+        *"HA_PASSWORD_MANAGED=false"*) ok "records a box whose HA refuses it as self-managed, and changes nothing" ;;
+        *) bad "records a box whose HA refuses it as self-managed (got '$RECORDED')" ;;
+    esac
+else
+    bad "a box whose HA refuses the recorded password must not be rotated (rc=$rc)"
+fi
+
+echo "== taking ownership is a separate, deliberate act =="
+
+# The dashboard's "Let HomeBrain manage it". The one path that may overwrite a
+# self-managed password — because the owner asked for it by name.
+HA_ADMIN_USER=admin
+HA_PASSWORD_MANAGED=false
+RECORDED=""
+CHANGED_USER=""
+OWNER=oliaidanaberlin
+LOGIN='{"type": "create_entry"}'
+if ha_adopt_admin_password "newmaster" >/dev/null 2>&1; then
+    ok "adopting sets the password even on a self-managed account"
+else
+    bad "adopting sets the password even on a self-managed account"
+fi
+if [ "$CHANGED_USER" = "oliaidanaberlin" ]; then
+    ok "adopting aims at the account that owns HA"
+else
+    bad "adopting aims at the account that owns HA (aimed at '${CHANGED_USER:-nothing}')"
+fi
+case "$RECORDED" in
+    *"HA_PASSWORD_MANAGED=true"*) ok "adopting records that HomeBrain manages it from now on" ;;
+    *) bad "adopting records that HomeBrain manages it from now on (got '$RECORDED')" ;;
+esac
+case "$RECORDED" in
+    *"HA_ADMIN_PASSWORD=newmaster"*) ok "adopting records the password it just set" ;;
+    *) bad "adopting records the password it just set (got '$RECORDED')" ;;
+esac
+
+# A refused change must not leave .env claiming a password HA never took —
+# that is #145 with an extra step.
+RECORDED=""
+LOGIN='{"errors":{"base":"invalid_auth"}}'
+if ha_adopt_admin_password "newmaster" >/dev/null 2>&1; then
+    bad "adopting reports failure when HA refuses the new password"
+else
+    ok "adopting reports failure when HA refuses the new password"
+fi
+case "$RECORDED" in
+    *HA_*) bad "a refused adoption must record nothing (recorded '$RECORDED')" ;;
+    *) ok "a refused adoption records nothing" ;;
+esac
+
+OWNER=admin
+HA_ADMIN_USER=admin
+HA_PASSWORD_MANAGED=true
+LOGIN='{"type": "create_entry"}'
 
 echo "== nothing to talk to =="
 
@@ -158,7 +262,59 @@ for script in restore.sh rotate_master_password.sh; do
     else
         ok "$script has no private copy of the auth CLI call"
     fi
+    # "Nothing was attempted" read as "your password was rejected" is what sent
+    # the owner to fix a password that was fine. Both callers must branch on
+    # the code, not on success/failure.
+    if grep -q '^\s*3)' "$SCRIPT_DIR/../$script"; then
+        ok "$script says something different when the password is not ours"
+    else
+        bad "$script says something different when the password is not ours (no case for 3)"
+    fi
 done
+
+# Ownership is recorded where it is known for certain — at creation — so that
+# nothing downstream has to infer it from the account's name.
+if grep -q 'ha_record_account "admin" "true"' "$SCRIPT_DIR/../utilities.sh"; then
+    ok "create_ha_admin records the account it just created as managed"
+else
+    bad "create_ha_admin records the account it just created as managed (not found)"
+fi
+
+echo "== a caller under 'set -e' survives every outcome =="
+
+# restore.sh and utilities.sh both run `set -euo pipefail`. A bare
+# `ha_sync_admin_password "$pw"` followed by `case "$?"` ends the script on the
+# spot for any non-zero code — so a box whose Home Assistant manages its own
+# password (a perfectly ordinary answer) would abort the restore right after
+# the data went back on disk. The callers must use `|| rc=$?`.
+for script in restore.sh rotate_master_password.sh utilities.sh; do
+    if grep -qE '(ha_sync_admin_password|ha_adopt_admin_password) "[^"]*" \|\| [a-z_]*rc=\$\?' \
+        "$SCRIPT_DIR/../$script"; then
+        ok "$script captures the code instead of letting set -e swallow it"
+    else
+        bad "$script captures the code instead of letting set -e swallow it"
+    fi
+done
+
+# The real thing: run it the way restore.sh does, under the same flags.
+for code_case in "3:self-managed" "2:unreadable owner" "1:refused"; do
+    rc_want="${code_case%%:*}"; what="${code_case#*:}"
+    case "$rc_want" in
+        3) HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=false ;;
+        2) unrecorded; OWNER="" ;;
+        1) HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true; CLI_RC=1 ;;
+    esac
+    if ( set -euo pipefail
+         rc=0
+         ha_sync_admin_password "hunter2" >/dev/null 2>&1 || rc=$?
+         [ "$rc" -eq "$rc_want" ] ) 2>/dev/null; then
+        ok "set -e caller reaches its own error handling for: $what"
+    else
+        bad "set -e caller reaches its own error handling for: $what"
+    fi
+    CLI_RC=0; OWNER=admin
+done
+HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true
 
 echo
 echo "passed: $pass   failed: $fail"

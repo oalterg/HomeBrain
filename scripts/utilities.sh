@@ -731,6 +731,13 @@ create_ha_admin() {
         return 1
     fi
 
+    # HomeBrain created this account, so HomeBrain owns its password. Recorded
+    # here, at the one moment the answer is known for certain, rather than
+    # re-derived later from whoever happens to own the auth store — on a box
+    # whose Home Assistant we did *not* create, that derivation is a guess, and
+    # acting on it rotates a stranger's password (see common.sh).
+    ha_record_account "admin" "true"
+
     log_info "Home Assistant admin user created and minimal onboarding completed successfully."
     return 0
 }
@@ -2358,6 +2365,20 @@ case "${1:-}" in
         ;;
     backup_timer)
         configure_backup_timer
+        ;;
+    ha_adopt_password)
+        # Take over Home Assistant's login password and record that HomeBrain
+        # manages it from now on. Deliberately a separate command from any
+        # rotation: it changes a password on a live home system that HomeBrain
+        # did not set, so it happens only when the owner asks for it by name.
+        load_env
+        adopt_rc=0
+        ha_adopt_admin_password "${MASTER_PASSWORD:-}" || adopt_rc=$?
+        case "$adopt_rc" in
+            0) echo '{"ok": true, "message": "Home Assistant now accepts the master password."}' ;;
+            2) echo '{"ok": false, "message": "Could not read which account owns Home Assistant."}' ;;
+            *) echo '{"ok": false, "message": "Home Assistant did not accept the change."}' ;;
+        esac
         ;;
     offsite_test)
         offsite_test

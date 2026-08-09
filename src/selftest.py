@@ -155,8 +155,16 @@ def offsite_listing():
 # Result helper
 # ---------------------------------------------------------------------------
 
-def result(name, status, detail, hint=""):
-    return {"name": name, "status": status, "detail": detail, "hint": hint}
+def result(name, status, detail, hint="", action=None):
+    """`action` is an optional {"label", "endpoint"} the dashboard renders as a
+    button on the row. A check that found something the owner can fix should
+    carry the fix; sending them to "Settings → Master Password" to repair one
+    service means changing every password in the house to correct one of them.
+    """
+    r = {"name": name, "status": status, "detail": detail, "hint": hint}
+    if action:
+        r["action"] = action
+    return r
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +211,19 @@ def check_nextcloud_password(env):
                   "Set a new master password in Settings → Master Password.")
 
 
+ADOPT_HA = {"label": "Let HomeBrain manage it", "endpoint": "/api/ha/password/adopt"}
+
+
 def check_ha_password(env):
     """Drives the real login flow. This is the check that would have caught
     the rotation bug the day it shipped: `hass --script auth` exits 0 even on
     "User not found", so for months the box reported a rotation it never made.
+
+    Only asks the question where HomeBrain owns the answer. Home Assistant lets
+    its owner change their own password, and on a migrated box the account
+    predates HomeBrain entirely — there, "Home Assistant rejected the recorded
+    password" describes .env being out of date, not a broken login, and no
+    amount of red makes that the owner's problem to fix.
     """
     pw = env.get("HA_ADMIN_PASSWORD", "")
     if not pw:
@@ -215,12 +232,21 @@ def check_ha_password(env):
     if not ha_cid:
         return result("Home Assistant password", SKIP,
                       "The Home Assistant container is not running.")
-    user = ha_owner_username(ha_cid)
+    # The recorded account, falling back to discovery on a box provisioned
+    # before it was recorded. Read-only: the write half of that migration
+    # belongs to common.sh, which runs where a change is actually intended.
+    user = env.get("HA_ADMIN_USER", "") or ha_owner_username(ha_cid)
     if not user:
         return result("Home Assistant password", SKIP,
                       "Could not read which account owns Home Assistant.",
                       "Without the owner's login name, a password test would be "
                       "answering a question nobody asked.")
+    if env.get("HA_PASSWORD_MANAGED", "").lower() == "false":
+        return result("Home Assistant password", OK,
+                      f"Home Assistant manages its own password for '{user}'.",
+                      "HomeBrain does not change it, and the master password "
+                      "does not open it.",
+                      action=ADOPT_HA)
     cid = "http://127.0.0.1:8123/"
     payload = json.dumps({"client_id": cid, "handler": ["homeassistant", None],
                           "redirect_uri": cid}).encode()
@@ -241,7 +267,9 @@ def check_ha_password(env):
                       f"Home Assistant accepts the recorded password for '{user}'.")
     return result("Home Assistant password", FAIL,
                   f"Home Assistant rejected the recorded password for '{user}'.",
-                  "Set a new master password in Settings → Master Password.")
+                  "Set Home Assistant's password to the master password, or "
+                  "leave it alone if you set it yourself in Home Assistant.",
+                  action=ADOPT_HA)
 
 
 def check_nextcloud_data(env):

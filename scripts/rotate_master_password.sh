@@ -103,13 +103,20 @@ fi
 # trusted. Shared with restore.sh, which has the same job to do after putting
 # an older box's auth store back on disk.
 log_info "Rotating Home Assistant admin password (best-effort)..."
-if ha_sync_admin_password "$NEW_PASS"; then
-    update_env_var "HA_ADMIN_PASSWORD" "$NEW_PASS"
-    log_info "Home Assistant password rotated and verified."
-else
-    log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
-    log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)."
-fi
+ha_rc=0
+ha_sync_admin_password "$NEW_PASS" || ha_rc=$?
+case "$ha_rc" in
+    0)  update_env_var "HA_ADMIN_PASSWORD" "$NEW_PASS"
+        log_info "Home Assistant password rotated and verified." ;;
+    3)  # Not ours to rotate. Saying nothing here would leave the owner
+        # believing their new master password opens Home Assistant too.
+        log_info "Home Assistant manages its own password — left untouched."
+        log_info "Its login is unchanged; the new master password does not open it." ;;
+    2)  log_warn "Could not read which account owns Home Assistant — nothing was changed."
+        log_warn "Home Assistant keeps its old password (non-fatal)." ;;
+    *)  log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
+        log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)." ;;
+esac
 
 # --- 4. Canonical master + dashboard-login password ------------------------
 # After the service rotations, so MASTER_PASSWORD reflects the value the tokens
