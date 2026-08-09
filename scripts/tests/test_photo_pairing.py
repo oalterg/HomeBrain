@@ -105,7 +105,8 @@ def test_member_pairing_still_returns_a_scannable_payload(occ_calls, no_qrencode
     assert payload["url"] == "https://nc.example.house"
     assert payload["remote"] is True
     assert payload["qr"].startswith("data:image/svg+xml;base64,")
-    assert ("user:add-app-password", MEMBER, "--password-from-env") in occ_calls
+    assert any(c[:3] == ("user:add-app-password", MEMBER, "--password-from-env")
+               for c in occ_calls)
 
 
 def test_token_never_reaches_the_process_table(monkeypatch, occ_calls):
@@ -128,6 +129,79 @@ def test_photo_settings_are_asserted_idempotently(occ_calls):
     assert ("app:enable", "photos") in occ_calls
     assert ("config:system:set", "preview_max_x", "--value", "2048") in occ_calls
     assert ("config:system:set", "preview_max_y", "--value", "2048") in occ_calls
+
+
+# --- previews ---------------------------------------------------------------
+
+def test_heic_previews_are_enabled(occ_calls):
+    hb.ensure_photo_settings()
+    written = [c for c in occ_calls if c[:2] == ("config:system:set", "enabledPreviewProviders")]
+    assert any(c[-1] == "OC\\Preview\\HEIC" for c in written), \
+        "HEIC missing — iPhone photos would upload with no thumbnail"
+
+
+def test_setting_the_provider_list_keeps_the_built_in_formats(occ_calls):
+    """Writing the key REPLACES Nextcloud's list. Dropping JPEG or PNG here
+    would silently blank the thumbnails that already work."""
+    hb.ensure_photo_settings()
+    written = {c[-1] for c in occ_calls if c[:2] == ("config:system:set", "enabledPreviewProviders")}
+    for essential in ("OC\\Preview\\JPEG", "OC\\Preview\\PNG", "OC\\Preview\\WebP"):
+        assert essential in written, f"{essential} would lose its previews"
+
+
+def test_provider_list_is_cleared_before_it_is_written(occ_calls):
+    """Indices are set one by one, so a shorter list later would otherwise
+    leave the tail of the old one behind."""
+    hb.ensure_photo_settings()
+    delete_at = occ_calls.index(("config:system:delete", "enabledPreviewProviders"))
+    first_set = next(i for i, c in enumerate(occ_calls)
+                     if c[:2] == ("config:system:set", "enabledPreviewProviders"))
+    assert delete_at < first_set
+
+
+def test_video_previews_stay_out(occ_calls):
+    """Movie needs ffmpeg, which is not in the Nextcloud image. Enabling it
+    without shipping the binary yields broken thumbnails, not video ones."""
+    hb.ensure_photo_settings()
+    written = {c[-1] for c in occ_calls if c[:2] == ("config:system:set", "enabledPreviewProviders")}
+    assert "OC\\Preview\\Movie" not in written
+
+
+# --- devices ----------------------------------------------------------------
+
+def test_app_password_is_named_after_the_device(occ_calls, no_qrencode):
+    """occ names an unnamed token "cli". A row of identical "cli" entries is
+    unrevokable in practice — you cannot tell which one is the lost phone."""
+    hb.pairing_payload(MEMBER, "pw", ENV)
+    add = next(c for c in occ_calls if c[0] == "user:add-app-password")
+    assert "--name" in add
+    assert add[add.index("--name") + 1] != "cli"
+
+
+# --- quota ------------------------------------------------------------------
+
+def test_default_quota_is_finite_and_derived_from_the_disk(monkeypatch, occ_calls):
+    monkeypatch.setattr(hb.shutil, "disk_usage",
+                        lambda p: type("U", (), {"total": 400 * 1024 ** 3})())
+    monkeypatch.setattr(hb, "get_env_config", lambda: {"NEXTCLOUD_DATA_DIR": "/data"})
+    hb.ensure_default_quota()
+    write = next(c for c in occ_calls if c[:3] == ("config:app:set", "files", "default_quota"))
+    assert write[-1] == "100 GB"
+
+
+def test_existing_default_quota_is_left_alone(monkeypatch, occ_calls):
+    """Once set, the value is the owner's. This must not argue with them."""
+    monkeypatch.setattr(hb, "nc_occ", lambda *a, **k: FakeProc(stdout="50 GB\n"))
+    hb.ensure_default_quota()
+    assert occ_calls == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("200 GB", 200 * 1024 ** 3), ("200GB", 200 * 1024 ** 3),
+    ("1.5 TB", int(1.5 * 1024 ** 4)), ("512 MB", 512 * 1024 ** 2), ("nonsense", 0),
+])
+def test_parse_size(text, expected):
+    assert hb.parse_size(text) == expected
 
 
 if __name__ == "__main__":

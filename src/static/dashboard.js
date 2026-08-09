@@ -1561,14 +1561,126 @@ async function loadHousehold() {
             <div class="drive-row">
               <div class="row-main">
                 <strong>${escapeHtml(m.name)}</strong>
-                <span class="row-meta">${escapeHtml(m.user)}</span>
+                <span class="row-meta">${escapeHtml(m.user)} — last seen ${hbAgo(m.last_seen)}</span>
               </div>
               <div class="row-actions">
+                <button onclick="toggleMemberDetail('${m.user}')">Storage &amp; devices</button>
                 <button onclick="repairMember('${m.user}')">New code</button>
                 <button class="btn-danger" onclick="removeMember('${m.user}', '${escapeHtml(m.name)}')">Remove</button>
               </div>
-            </div>`).join('');
+            </div>
+            <div id="detail-${m.user}" class="mt" style="display:none;"></div>`).join('');
     } catch (e) { el.innerHTML = '<p class="faint small">Failed to load members.</p>'; }
+}
+
+function hbBytes(n) {
+    if (!n) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
+}
+
+function hbAgo(when) {
+    // Nextcloud says "never" for an account that has never signed in, and an
+    // ISO timestamp otherwise. A device that stopped syncing looks exactly
+    // like one that never started, so both have to read plainly.
+    if (!when || when === 'never') return 'never';
+    const then = typeof when === 'number' ? when * 1000 : Date.parse(when);
+    if (isNaN(then)) return 'unknown';
+    const days = Math.floor((Date.now() - then) / 86400000);
+    if (days <= 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 31) return `${days} days ago`;
+    return `${Math.floor(days / 30)} months ago`;
+}
+
+function toggleMemberDetail(user) {
+    const el = document.getElementById(`detail-${user}`);
+    if (!el) return;
+    if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+    el.style.display = '';
+    loadMemberDetail(user);
+}
+
+async function loadMemberDetail(user) {
+    const el = document.getElementById(`detail-${user}`);
+    if (!el || el.style.display === 'none') return;
+    el.innerHTML = '<span class="skeleton sk-wide"></span>';
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}`,
+            { credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { el.innerHTML = `<p class="faint small">${escapeHtml(d.error || 'Unavailable.')}</p>`; return; }
+        renderMemberDetail(el, d);
+    } catch (e) { el.innerHTML = '<p class="faint small">Could not load their details.</p>'; }
+}
+
+function renderMemberDetail(el, d) {
+    const unlimited = !d.total || d.quota === 'none';
+    const pct = unlimited ? 0 : Math.min(100, Math.round(d.used / d.total * 100));
+    const devices = d.devices.length ? d.devices.map(dev => `
+        <div class="drive-row">
+          <div class="row-main">
+            <strong>${dev.name === 'cli' ? 'Unnamed device' : escapeHtml(dev.name)}</strong>
+            <span class="row-meta">last active ${hbAgo(dev.last_activity)}</span>
+          </div>
+          <div class="row-actions">
+            <button class="btn-danger" onclick="revokeDevice('${d.user}', ${dev.id})">Revoke</button>
+          </div>
+        </div>`).join('')
+        : '<p class="faint small">No device has signed in as them yet.</p>';
+
+    el.innerHTML = `
+        <div class="meter">
+          <div class="meter-head">
+            <span>Storage</span>
+            <span class="meter-value">${hbBytes(d.used)}${unlimited ? ' — no limit set' : ` of ${hbBytes(d.total)}`}</span>
+          </div>
+          <div class="progress-bg"><div class="progress-fill${pct >= 90 ? ' is-high' : ''}" style="width:${pct}%"></div></div>
+        </div>
+        <div class="inline-row mt" style="align-items:end; flex-wrap:wrap;">
+          <div>
+            <label for="quota-${d.user}">Limit</label>
+            <input type="text" id="quota-${d.user}" style="width:120px;"
+                   value="${escapeHtml(d.quota === 'none' ? '' : d.quota)}" placeholder="200 GB">
+          </div>
+          <button onclick="setMemberQuota('${d.user}')">Set limit</button>
+        </div>
+        <p class="hint">Their phone stops uploading when they reach it. Blank or “none” means no limit.</p>
+        <label class="mt" style="display:block;">Devices signed in as them</label>
+        ${devices}`;
+}
+
+async function setMemberQuota(user) {
+    const quota = document.getElementById(`quota-${user}`).value.trim() || 'none';
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/quota`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'include', body: JSON.stringify({ quota }),
+        });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not set the limit.', 'error'); return; }
+        hbToast(`Limit set to ${quota}.`);
+        loadMemberDetail(user);
+    } catch (e) { hbToast('Could not set the limit.', 'error'); }
+}
+
+async function revokeDevice(user, id) {
+    if (!await hbConfirm({
+        title: 'Revoke this device?',
+        body: 'It stops syncing immediately and has to be paired again with a new code. '
+            + 'Their other devices and their files are untouched.',
+        confirm: 'Revoke', danger: true,
+    })) return;
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/devices/${id}`,
+            { method: 'DELETE', credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not revoke it.', 'error'); return; }
+        hbToast('Device revoked.');
+        loadMemberDetail(user);
+    } catch (e) { hbToast('Could not revoke it.', 'error'); }
 }
 
 function showMemberPairing(d) {

@@ -4229,6 +4229,16 @@ def nc_client_url(env):
     return f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
 
 
+# Nextcloud's built-in preview list, plus HEIC. Kept whole because setting the
+# config key replaces the built-in list instead of extending it.
+PREVIEW_PROVIDERS = [
+    "OC\\Preview\\MarkDown", "OC\\Preview\\TXT", "OC\\Preview\\OpenDocument",
+    "OC\\Preview\\PNG", "OC\\Preview\\JPEG", "OC\\Preview\\GIF",
+    "OC\\Preview\\BMP", "OC\\Preview\\XBitmap", "OC\\Preview\\Krita",
+    "OC\\Preview\\WebP", "OC\\Preview\\HEIC",
+]
+
+
 def ensure_photo_settings():
     """Box-level settings the photo grid needs, asserted where a phone is about
     to start filling it. Idempotent, so a box that predates them heals itself.
@@ -4242,6 +4252,21 @@ def ensure_photo_settings():
     # Photos grid never asks for a fraction of that.
     for key in ("preview_max_x", "preview_max_y"):
         nc_occ("config:system:set", key, "--value", "2048")
+    # HEIC is what every current iPhone shoots, and Nextcloud's built-in
+    # provider list does not include it — those photos upload fine and then sit
+    # in the grid as generic file icons. imagick already carries the delegate,
+    # so this costs nothing but saying so.
+    #
+    # Setting the key REPLACES the built-in list rather than adding to it, so
+    # the whole set has to be written or every other format loses its previews.
+    # Movie is deliberately absent: it needs ffmpeg, which is not in the
+    # Nextcloud image, and adding a runtime dependency is a bigger decision
+    # than a config line.
+    # Cleared first so a shorter list later cannot leave stale entries behind.
+    nc_occ("config:system:delete", "enabledPreviewProviders")
+    for i, provider in enumerate(PREVIEW_PROVIDERS):
+        nc_occ("config:system:set", "enabledPreviewProviders", str(i),
+               "--value", provider)
 
 
 def pairing_payload(user, password, env):
@@ -4259,7 +4284,11 @@ def pairing_payload(user, password, env):
         raise NextcloudError(
             "The owner's account cannot be paired to a phone — add yourself as "
             "a person and pair that account instead")
+    # Named so the revoke list reads as devices instead of a row of identical
+    # "cli" entries — occ's default name. Losing a phone is the moment this
+    # matters, and that is the worst moment to be guessing which token is which.
     proc = nc_occ("user:add-app-password", user, "--password-from-env",
+                  "--name", f"Phone paired {datetime.now():%-d %b %Y}",
                   env_extra={"OC_PASS": password})
     out = proc.stdout.strip().splitlines()
     if proc.returncode != 0 or not out:
@@ -4301,26 +4330,172 @@ def member_password():
         return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
 
 
+def nc_occ_json(*args):
+    """An occ command that speaks JSON, parsed. Beats scraping occ's tables,
+    which are formatted for people and change between versions."""
+    proc = nc_occ(*args, "--output=json")
+    if proc.returncode != 0:
+        # occ reports some failures on stdout, not stderr — read both or the
+        # owner gets a shrug.
+        raise NextcloudError((proc.stderr.strip() or proc.stdout.strip()
+                              or "Nextcloud refused the command")[:200])
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise NextcloudError("Nextcloud returned something that is not JSON")
+
+
+def not_a_member(user, env):
+    """The check every member route repeats: a plausible id, not the off-site
+    receiver, and never the owner — whose account runs occ and holds the Vault."""
+    return (not MEMBER_ID.match(user) or user in RESERVED_MEMBERS
+            or user == env.get("NEXTCLOUD_ADMIN_USER", ""))
+
+
+SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+
+
+def parse_size(text):
+    """"200 GB" -> bytes, on Nextcloud's 1024-based reading of those units."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT]?B)", text.strip(), re.I)
+    return int(float(m.group(1)) * SIZE_UNITS[m.group(2).upper()]) if m else 0
+
+
+def human_size(num):
+    """Bytes -> the shortest unit that keeps it under four digits."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if num < 1024:
+            return f"{num:.0f} {unit}" if unit == "B" else f"{num:.1f} {unit}"
+        num /= 1024
+    return f"{num:.1f} TB"
+
+
+def ensure_default_quota():
+    """Give accounts a finite ceiling. Unlimited is the Nextcloud default.
+
+    Where the files sit on the same filesystem as Docker, Home Assistant and
+    the backup staging area, one camera roll filling the disk does not merely
+    stop photo upload — it stops the house. A quota cannot make overcommitment
+    impossible, since several people can each be under theirs and over the
+    disk between them, but it bounds any single account, which is the runaway
+    this actually sees.
+
+    Derived from the filesystem rather than hardcoded, because a constant that
+    is sensible on a 4 TB box is absurd on a 250 GB one. Asserted once: after
+    that the value is the owner's, and this must not argue with them."""
+    if nc_occ("config:app:get", "files", "default_quota").stdout.strip():
+        return
+    path = get_env_config().get("NEXTCLOUD_DATA_DIR") or NC_DATA_DEFAULT
+    try:
+        total = shutil.disk_usage(path).total
+    except OSError:
+        return          # no filesystem to reason about; leave the default alone
+    quota_gb = max(10, total // 4 // (1024 ** 3))
+    nc_occ("config:app:set", "files", "default_quota", "--value", f"{quota_gb} GB")
+
+
 @app.route("/api/household/members")
 def list_household_members():
     env = get_env_config()
     admin_user = env.get("NEXTCLOUD_ADMIN_USER", "")
     try:
-        proc = nc_occ("user:list")
+        accounts = nc_occ_json("user:list", "--info")
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 503
-    if proc.returncode != 0:
-        return jsonify({"error": proc.stderr.strip()[:200]}), 502
-    members = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
-            continue
-        uid, _, display = line[2:].partition(": ")
-        if uid in RESERVED_MEMBERS or uid == admin_user:
-            continue
-        members.append({"user": uid, "name": display or uid})
+    members = [
+        {"user": uid, "name": a.get("display_name") or uid,
+         "quota": a.get("quota") or "default",
+         "last_seen": a.get("last_seen") or "never"}
+        for uid, a in accounts.items()
+        if uid not in RESERVED_MEMBERS and uid != admin_user
+    ]
     return jsonify({"members": members})
+
+
+@app.route("/api/household/members/<user>")
+def household_member_detail(user):
+    """What one person is using, and every device that can sign in as them.
+
+    Both halves come from the same place for a reason: a phone that stopped
+    uploading and a phone that should no longer be able to are the same
+    question asked twice, and the answer to both is this list."""
+    env = get_env_config()
+    if not_a_member(user, env):
+        return jsonify({"error": "Not a household member"}), 400
+    try:
+        info = nc_occ_json("user:info", user)
+        tokens = nc_occ_json("user:auth-tokens:list", user)
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    # Nextcloud reports storage as an empty list, not an object, until the
+    # account has logged in once — so the ceiling has to come from the quota
+    # itself or a newly added person reads as having no limit at all.
+    storage = info.get("storage") or {}
+    quota = info.get("quota") or "none"
+    return jsonify({
+        "user": user,
+        "name": info.get("display_name") or user,
+        "quota": quota,
+        "used": storage.get("used", 0),
+        "total": storage.get("total") or parse_size(quota),
+        "last_seen": info.get("last_seen") or "never",
+        # occ names an unnamed app password "cli"; so does every token occ
+        # itself creates. Anything paired before device naming shipped looks
+        # like that, and the owner still needs to be able to revoke it.
+        "devices": sorted(
+            ({"id": t.get("id"), "name": t.get("name") or "cli",
+              "last_activity": t.get("lastActivity", 0)} for t in tokens),
+            key=lambda d: d["last_activity"], reverse=True),
+    })
+
+
+@app.route("/api/household/members/<user>/devices/<int:token_id>", methods=["DELETE"])
+@limiter.limit("20 per minute")
+def revoke_household_device(user, token_id):
+    """Cut off one device without disturbing the others or the account."""
+    env = get_env_config()
+    if not_a_member(user, env):
+        return jsonify({"error": "Not a household member"}), 400
+    try:
+        proc = nc_occ("user:auth-tokens:delete", user, str(token_id))
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    if proc.returncode != 0:
+        return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                  or "Could not revoke the device")[:200]}), 400
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/household/members/<user>/quota", methods=["POST"])
+@limiter.limit("20 per minute")
+def set_household_quota(user):
+    """Set one person's ceiling.
+
+    Refuses to set it below what they are already storing. Nextcloud accepts
+    that happily and the person simply stops being able to upload, with
+    nothing on their phone explaining why — a quota is a limit on growth here,
+    not a demand to delete."""
+    env = get_env_config()
+    if not_a_member(user, env):
+        return jsonify({"error": "Not a household member"}), 400
+    quota = (request.get_json(silent=True) or {}).get("quota", "")
+    quota = str(quota).strip()
+    if not re.fullmatch(r"(none|default|\d+(\.\d+)?\s*[KMGT]?B)", quota, re.I):
+        return jsonify({"error": "Use a size like \"200 GB\", or \"none\""}), 400
+    try:
+        if quota.lower() not in ("none", "default"):
+            used = (nc_occ_json("user:info", user).get("storage") or {}).get("used", 0)
+            if parse_size(quota) < used:
+                return jsonify({"error": f"They are already storing "
+                                         f"{human_size(used)} — a smaller quota "
+                                         f"would stop their uploads, not free space"}), 409
+        proc = nc_occ("user:setting", user, "files", "quota", quota)
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+    if proc.returncode != 0:
+        return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                  or "Could not set the quota")[:200]}), 400
+    return jsonify({"status": "ok", "quota": quota})
 
 
 @app.route("/api/household/members", methods=["POST"])
@@ -4342,6 +4517,9 @@ def add_household_member():
 
     password = member_password()
     try:
+        # Before the account exists, so it inherits the ceiling rather than
+        # being created unlimited and capped a moment later.
+        ensure_default_quota()
         proc = nc_occ("user:add", "--password-from-env",
                       "--display-name", name or user, user,
                       env_extra={"OC_PASS": password})
@@ -4367,8 +4545,7 @@ def repair_household_member(user):
     stored anywhere, so this resets it. Safe on this box because server-side
     encryption is never enabled — with it on, a reset would orphan their keys."""
     env = get_env_config()
-    if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS \
-            or user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+    if not_a_member(user, env):
         return jsonify({"error": "Not a household member"}), 400
 
     password = member_password()
@@ -4394,8 +4571,7 @@ def repair_household_member(user):
 @limiter.limit("10 per minute")
 def delete_household_member(user):
     env = get_env_config()
-    if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS \
-            or user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+    if not_a_member(user, env):
         return jsonify({"error": "Not a household member"}), 400
     try:
         proc = nc_occ("user:delete", user)
