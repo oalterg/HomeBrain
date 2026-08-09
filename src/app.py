@@ -4004,6 +4004,37 @@ def change_master_password():
     })
 
 
+@app.route("/api/ha/password/adopt", methods=["POST"])
+@limiter.limit("3 per minute")
+def ha_password_adopt():
+    """Set Home Assistant's login to the master password and take ownership.
+
+    The repair behind the self-test's Home Assistant row. Scoped on purpose:
+    the alternative the row used to offer was "set a new master password",
+    which changes the password on every service in the house to correct the
+    one that drifted.
+
+    Restarts Home Assistant — the credential is cached in memory, so the
+    change is not live until it comes back, and utilities.sh proves it with a
+    real login before reporting success.
+    """
+    try:
+        r = subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "ha_adopt_password"],
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Home Assistant did not come back in time."}), 500
+    try:
+        # utilities.sh logs to stderr and puts only the verdict on stdout.
+        out = json.loads((r.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return jsonify({"error": "Could not change the Home Assistant password."}), 500
+    if not out.get("ok"):
+        return jsonify({"error": out.get("message", "The change was refused.")}), 400
+    return jsonify({"status": "success", "message": out.get("message", "")})
+
+
 @app.route("/api/system/selftest", methods=["POST"])
 @limiter.limit("6 per minute")
 def system_selftest():

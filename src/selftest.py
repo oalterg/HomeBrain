@@ -108,6 +108,26 @@ def newest_archive(directory):
     return best
 
 
+def ha_owner_username(cid):
+    """The login name of Home Assistant's owner account, or "" if unreadable.
+
+    Not "admin". A fresh HomeBrain install creates `admin` (utilities.sh), but a
+    box whose Home Assistant predates HomeBrain — migrated from another system,
+    or onboarded by hand — carries whatever name its owner chose. On such a box
+    every password operation aimed at `admin` addresses a user who does not
+    exist: `hass --script auth` prints "User not found" and exits 0, and a login
+    check reports a rejected password that was never even tried.
+    """
+    rc, out = docker_exec(cid, [
+        "python3", "-c",
+        "import json;d=json.load(open('/config/.storage/auth'))['data'];"
+        "o=[u['id'] for u in d['users'] if u.get('is_owner')];"
+        "print(next((c['data']['username'] for c in d['credentials']"
+        " if c.get('auth_provider_type')=='homeassistant' and c['user_id'] in o), ''))",
+    ], timeout=20)
+    return out.strip() if rc == 0 else ""
+
+
 def is_mountpoint(directory):
     """True if something is really mounted at this path."""
     try:
@@ -135,8 +155,16 @@ def offsite_listing():
 # Result helper
 # ---------------------------------------------------------------------------
 
-def result(name, status, detail, hint=""):
-    return {"name": name, "status": status, "detail": detail, "hint": hint}
+def result(name, status, detail, hint="", action=None):
+    """`action` is an optional {"label", "endpoint"} the dashboard renders as a
+    button on the row. A check that found something the owner can fix should
+    carry the fix; sending them to "Settings → Master Password" to repair one
+    service means changing every password in the house to correct one of them.
+    """
+    r = {"name": name, "status": status, "detail": detail, "hint": hint}
+    if action:
+        r["action"] = action
+    return r
 
 
 # ---------------------------------------------------------------------------
@@ -183,14 +211,42 @@ def check_nextcloud_password(env):
                   "Set a new master password in Settings → Master Password.")
 
 
+ADOPT_HA = {"label": "Let HomeBrain manage it", "endpoint": "/api/ha/password/adopt"}
+
+
 def check_ha_password(env):
     """Drives the real login flow. This is the check that would have caught
     the rotation bug the day it shipped: `hass --script auth` exits 0 even on
     "User not found", so for months the box reported a rotation it never made.
+
+    Only asks the question where HomeBrain owns the answer. Home Assistant lets
+    its owner change their own password, and on a migrated box the account
+    predates HomeBrain entirely — there, "Home Assistant rejected the recorded
+    password" describes .env being out of date, not a broken login, and no
+    amount of red makes that the owner's problem to fix.
     """
     pw = env.get("HA_ADMIN_PASSWORD", "")
     if not pw:
         return result("Home Assistant password", SKIP, "No HA admin password is recorded.")
+    ha_cid = container_id("homeassistant")
+    if not ha_cid:
+        return result("Home Assistant password", SKIP,
+                      "The Home Assistant container is not running.")
+    # The recorded account, falling back to discovery on a box provisioned
+    # before it was recorded. Read-only: the write half of that migration
+    # belongs to common.sh, which runs where a change is actually intended.
+    user = env.get("HA_ADMIN_USER", "") or ha_owner_username(ha_cid)
+    if not user:
+        return result("Home Assistant password", SKIP,
+                      "Could not read which account owns Home Assistant.",
+                      "Without the owner's login name, a password test would be "
+                      "answering a question nobody asked.")
+    if env.get("HA_PASSWORD_MANAGED", "").lower() == "false":
+        return result("Home Assistant password", OK,
+                      f"Home Assistant manages its own password for '{user}'.",
+                      "HomeBrain does not change it, and the master password "
+                      "does not open it.",
+                      action=ADOPT_HA)
     cid = "http://127.0.0.1:8123/"
     payload = json.dumps({"client_id": cid, "handler": ["homeassistant", None],
                           "redirect_uri": cid}).encode()
@@ -203,14 +259,17 @@ def check_ha_password(env):
     except Exception:
         return result("Home Assistant password", SKIP,
                       f"Could not start a Home Assistant login flow (HTTP {code}).")
-    payload = json.dumps({"username": "admin", "password": pw, "client_id": cid}).encode()
+    payload = json.dumps({"username": user, "password": pw, "client_id": cid}).encode()
     code, body = http("POST", f"http://127.0.0.1:8123/auth/login_flow/{flow}", data=payload,
                       headers={"Content-Type": "application/json"})
     if '"type": "create_entry"' in body or '"type":"create_entry"' in body:
-        return result("Home Assistant password", OK, "Home Assistant accepts the recorded password.")
+        return result("Home Assistant password", OK,
+                      f"Home Assistant accepts the recorded password for '{user}'.")
     return result("Home Assistant password", FAIL,
-                  "Home Assistant rejected the recorded password.",
-                  "Set a new master password in Settings → Master Password.")
+                  f"Home Assistant rejected the recorded password for '{user}'.",
+                  "Set Home Assistant's password to the master password, or "
+                  "leave it alone if you set it yourself in Home Assistant.",
+                  action=ADOPT_HA)
 
 
 def check_nextcloud_data(env):

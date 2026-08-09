@@ -7,6 +7,7 @@ it is fine".
 
 Run:  python3 -m pytest scripts/tests/test_selftest.py
 """
+import json
 import os
 import sys
 
@@ -79,7 +80,14 @@ def test_no_recorded_password_is_a_skip():
     assert selftest.check_ha_password({})["status"] == SKIP
 
 
-def test_ha_rejection_is_a_failure(monkeypatch):
+@pytest.fixture
+def ha(monkeypatch):
+    """A running Home Assistant whose owner account is called `admin`."""
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "ha_owner_username", lambda cid: "admin")
+
+
+def test_ha_rejection_is_a_failure(ha, monkeypatch):
     """The #145 regression: `hass --script auth` exits 0 on "User not found",
     so for months the box reported a rotation it had never made."""
     calls = []
@@ -96,7 +104,7 @@ def test_ha_rejection_is_a_failure(monkeypatch):
     assert any("login_flow/abc" in c for c in calls), "never completed the flow"
 
 
-def test_ha_acceptance(monkeypatch):
+def test_ha_acceptance(ha, monkeypatch):
     def fake_http(method, url, **kw):
         if url.endswith("/auth/login_flow"):
             return 200, '{"flow_id": "abc"}'
@@ -104,6 +112,101 @@ def test_ha_acceptance(monkeypatch):
 
     monkeypatch.setattr(selftest, "http", fake_http)
     assert selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})["status"] == OK
+
+
+def test_the_owner_is_not_always_called_admin(monkeypatch):
+    """Live on the production box: Home Assistant migrated from an older
+    system, owner `oliaidanaberlin`, no `admin` account at all. Testing
+    `admin`'s password there reports a rejection that was never even tried."""
+    sent = {}
+
+    def fake_http(method, url, data=None, **kw):
+        if url.endswith("/auth/login_flow"):
+            return 200, '{"flow_id": "abc"}'
+        sent.update(json.loads(data.decode()))
+        return 200, '{"type": "create_entry"}'
+
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "ha_owner_username", lambda cid: "oliaidanaberlin")
+    monkeypatch.setattr(selftest, "http", fake_http)
+    r = selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})
+    assert sent["username"] == "oliaidanaberlin"
+    assert r["status"] == OK
+    assert "oliaidanaberlin" in r["detail"], "the row must name the account it tested"
+
+
+def test_an_unreadable_owner_is_a_skip_not_a_failure(monkeypatch):
+    """'We could not tell' is not 'your password is wrong'. Guessing `admin`
+    would put a red row on a box whose password is perfectly fine."""
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "ha_owner_username", lambda cid: "")
+    assert selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})["status"] == SKIP
+
+
+def test_ha_not_running_is_a_skip(monkeypatch):
+    monkeypatch.setattr(selftest, "container_id", lambda s: "")
+    assert selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})["status"] == SKIP
+
+
+def test_a_self_managed_ha_password_is_not_a_failure(ha, monkeypatch):
+    """Home Assistant lets its owner set their own password, and on a migrated
+    box the account predates HomeBrain. "HA rejected the recorded password"
+    there describes .env being out of date, not a broken login — and a red row
+    demands the owner fix something that is not broken."""
+    def boom(*a, **kw):
+        raise AssertionError("must not test a password it does not own")
+
+    monkeypatch.setattr(selftest, "http", boom)
+    r = selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x",
+                                    "HA_PASSWORD_MANAGED": "false"})
+    assert r["status"] == OK
+    assert "admin" in r["detail"], "the row must name the account it means"
+
+
+def test_the_recorded_account_wins_over_discovery(monkeypatch):
+    """Ownership is a fact HomeBrain wrote down when it knew the answer, not a
+    guess re-derived per run. Discovery is the fallback for boxes provisioned
+    before it was recorded — where it disagrees, the record is the truth."""
+    sent = {}
+
+    def fake_http(method, url, data=None, **kw):
+        if url.endswith("/auth/login_flow"):
+            return 200, '{"flow_id": "abc"}'
+        sent.update(json.loads(data.decode()))
+        return 200, '{"type": "create_entry"}'
+
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "ha_owner_username", lambda cid: "someone-else")
+    monkeypatch.setattr(selftest, "http", fake_http)
+    selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x", "HA_ADMIN_USER": "recorded"})
+    assert sent["username"] == "recorded"
+
+
+def test_a_rejected_password_offers_the_repair(ha, monkeypatch):
+    """A row the owner can act on carries the action. The old hint sent them to
+    "Settings → Master Password" — changing every password in the house to
+    correct the one service that drifted."""
+    def fake_http(method, url, **kw):
+        if url.endswith("/auth/login_flow"):
+            return 200, '{"flow_id": "abc"}'
+        return 200, '{"type": "invalid_auth"}'
+
+    monkeypatch.setattr(selftest, "http", fake_http)
+    r = selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})
+    assert r["status"] == FAIL
+    assert r["action"]["endpoint"] == "/api/ha/password/adopt"
+
+
+def test_a_passing_check_carries_no_action(ha, monkeypatch):
+    """Buttons are for rows that found something. A green row with a button on
+    it invites the owner to change a password that is already correct."""
+    def fake_http(method, url, **kw):
+        if url.endswith("/auth/login_flow"):
+            return 200, '{"flow_id": "abc"}'
+        return 200, '{"type": "create_entry"}'
+
+    monkeypatch.setattr(selftest, "http", fake_http)
+    assert "action" not in selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})
 
 
 # --- Nextcloud data directory ----------------------------------------------

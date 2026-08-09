@@ -2725,6 +2725,36 @@ const SELFTEST_LOOK = {
     skip: { badge: 'status-unknown', label: 'not checked' },
 };
 
+/* The button a self-test row can carry. Reports the outcome in place of the
+   row's detail line rather than in an alert, so the answer stays attached to
+   the question — and leaves the button gone on success, because the thing it
+   offered to do is done. */
+function selfTestAction(action, detail) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-primary';
+    btn.style.margin = '0 0 12px';
+    btn.textContent = action.label;
+    btn.onclick = () => {
+        btn.disabled = true;
+        btn.textContent = 'Working…';
+        fetch(action.endpoint, { method: 'POST' })
+            .then(r => r.json().then(d => ({ ok: r.ok, d })))
+            .then(({ ok, d }) => {
+                if (!ok) throw new Error(d.error || 'That did not work.');
+                detail.textContent = d.message || 'Done. Run the self-test again to confirm.';
+                detail.style.color = 'var(--accent)';
+                btn.remove();
+            })
+            .catch(e => {
+                detail.textContent = e.message;
+                detail.style.color = 'var(--danger)';
+                btn.disabled = false;
+                btn.textContent = action.label;
+            });
+    };
+    return btn;
+}
+
 function runSelfTest() {
     const btn = document.getElementById('btn-selftest');
     const summary = document.getElementById('selftest-summary');
@@ -2761,6 +2791,14 @@ function runSelfTest() {
                 detail.style.margin = '0 0 10px';
                 detail.textContent = c.hint ? c.detail + ' — ' + c.hint : c.detail;
                 rows.appendChild(detail);
+
+                // A check that found something fixable carries its own fix, so
+                // the owner is not sent to a settings page to work out which of
+                // several passwords the row was talking about.
+                if (c.action && c.action.endpoint && c.action.label) {
+                    detail.style.margin = '0 0 6px';
+                    rows.appendChild(selfTestAction(c.action, detail));
+                }
             });
 
             const n = s => checks.filter(c => c.status === s).length;

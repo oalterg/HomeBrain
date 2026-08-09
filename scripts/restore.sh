@@ -486,14 +486,25 @@ wait_for_healthy "homeassistant" 120 || log_error "Homeassistant failed to get h
 # Found by the self-test on a restored box: dashboard ok, Nextcloud ok, "Home
 # Assistant rejected the recorded password" — an inconsistency that had been
 # sitting there since the previous restore, unnoticed because nothing asked.
+#
+# Only for an account HomeBrain manages. Where Home Assistant keeps its own
+# password, the archive's auth store is the owner's own and forcing .env's
+# value over it would be HomeBrain overwriting a password it never set — the
+# restore would take away the login they have been using.
 if [[ -n "${HA_ADMIN_PASSWORD:-}" ]]; then
     log_info "Synchronizing Home Assistant admin password to match current environment..."
-    if ha_sync_admin_password "$HA_ADMIN_PASSWORD"; then
-        log_info "Home Assistant accepts the current password."
-    else
-        log_warn "Home Assistant kept the password from the backup — the master password will NOT open it."
-        log_warn "Change it in HA → Profile, or run scripts/rotate_master_password.sh (non-fatal)."
-    fi
+    # `|| ha_rc=$?`, not a bare call: under `set -e` a bare call that returns
+    # non-zero ends the restore on the spot, and "Home Assistant manages its
+    # own password" is a perfectly ordinary answer here.
+    ha_rc=0
+    ha_sync_admin_password "$HA_ADMIN_PASSWORD" || ha_rc=$?
+    case "$ha_rc" in
+        0)  log_info "Home Assistant accepts the current password." ;;
+        3)  log_info "Home Assistant manages its own password — restored as it was in the backup." ;;
+        2)  log_warn "Could not read which account owns Home Assistant — its password was left as the backup had it." ;;
+        *)  log_warn "Home Assistant kept the password from the backup — the master password will NOT open it."
+            log_warn "Change it in HA → Profile, or run scripts/rotate_master_password.sh (non-fatal)." ;;
+    esac
 else
     log_warn "HA_ADMIN_PASSWORD not set in .env — Home Assistant keeps the password from the backup."
 fi
