@@ -3,9 +3,9 @@
 Written 2026-08-09, after a review of the photo path shipped in #156 (Phone Photos) and #157
 (household members). Findings were verified against the live box, not read off the source.
 
-Item 1 shipped in #167 — the design below is kept because the reasoning is the point, not the
-to-do. Items 2 and 3 are recorded with their evidence so the next session does not have to
-rediscover them; neither is scheduled.
+All of it has now shipped — item 1 in #167, the rest in #168 — except video previews, which are
+still open and explain themselves below. The designs are kept because the reasoning is the point,
+not the to-do.
 
 ---
 
@@ -93,7 +93,7 @@ accumulated more than sample PDFs.
 
 ---
 
-## 2. No quotas anywhere, on the disk that also runs the house *(recorded, not scheduled)*
+## 2. No quotas anywhere, on the disk that also runs the house — ✅ shipped in #168
 
 `grep -rn quota` over `src/` and `scripts/` returns nothing. On the live box `files default_quota` is
 unset, `admin` is `none`, and `OliAidana` is `default` — i.e. unlimited.
@@ -115,9 +115,19 @@ Two independent mitigations, either of which helps:
 - Adopt the dedicated files drive from #152, which this box is not using. It converts "the house
   goes down" into "photo uploads stop" — the failure you want.
 
+**#168 did the first.** The default is derived from the filesystem rather than hardcoded — a
+constant sensible on a 4 TB box is absurd on a 250 GB one — and asserted once, so the value stays
+the owner's after that. Setting a quota below what someone already stores is refused: Nextcloud
+accepts it happily and the person simply stops being able to upload, with nothing on their phone
+explaining why.
+
+**The second is still open, and still worth doing.** A quota bounds one account; it cannot stop
+several people each being under theirs and over the disk between them. Only moving the files off
+the root LV changes what failing looks like.
+
 ---
 
-## 3. HEIC and video have no thumbnails *(recorded, not scheduled)*
+## 3. HEIC and video have no thumbnails — ✅ HEIC shipped in #168, video still open
 
 `enabledPreviewProviders` is unset, so Nextcloud's built-in default list applies. Read from
 `PreviewManager.php` on the box, that list is `PNG, JPEG, GIF, BMP, XBitmap, Krita, WebP` plus
@@ -149,17 +159,34 @@ The two halves have very different costs:
 This one sits badly against the card's own copy — "replace Google Photos and iCloud". The grid is the
 product, and for an iPhone household it is partly blank.
 
+**#168 shipped the HEIC half**, proven by control on hardware: with the provider enabled,
+`occ preview:generate` on a real HEIC returns "preview generated"; with it removed, "No preview
+generator available for file of type image/heic". Because setting the key replaces the built-in
+list, the whole set is written and cleared first, and a test pins that JPEG/PNG/WebP survive —
+dropping one there would silently blank thumbnails that already work.
+
+**Video remains open** for the reason above: it is a container-image change, not a config line.
+
 ---
 
-## Also found, not scheduled
+## Also found — ✅ both shipped in #168
 
-- **No liveness signal for uploads.** Nothing on the dashboard reports when a photo last arrived.
+- **No liveness signal for uploads.** Nothing on the dashboard reported when a photo last arrived.
   Every failure mode is silent: paired against a LAN address so it never syncs off-network, Auto
   Upload switched off by an app update, iOS suspending background upload, the credential revoked.
   This is the class of bug #160 fixed for off-site backups — silence looking like health — left
-  unfixed on the ingest side. The cheap version is the newest mtime under each user's
-  `files/InstantUpload`, shown on the card.
-- **App passwords accumulate unnamed.** Each press mints another and the old one stays live
-  (`app.py:4237`). Tokens land without a device name, so "revoke the phone I lost" is guesswork, and
-  there is no revoke UI outside Nextcloud's own settings. The card says pressing again "issues a new
-  one" but not that the previous one keeps working.
+  unfixed on the ingest side.
+
+  It cost nothing in the end. The planned version walked `files/InstantUpload` for the newest mtime,
+  which is both expensive and wrong for iOS, where the upload folder is whatever the owner picked.
+  A device that stopped uploading and a device that should no longer be able to are the same
+  question, and `user:auth-tokens:list` answers both — so the liveness signal is the device list.
+- **App passwords accumulate unnamed.** Each press mints another and the old one stays live. Tokens
+  landed without a device name, so "revoke the phone I lost" was guesswork, and there was no revoke
+  UI outside Nextcloud's own settings.
+
+  Cheaper than this document first claimed: `occ user:auth-tokens:add` takes `--name` (it defaults
+  to `cli`, which is why every token looked alike), and `:list` and `:delete` complete the set. No
+  OCS HTTP call was needed — all of it goes through the existing `nc_occ` helper. Tokens minted
+  before #168 still read as `cli`; they render as "Unnamed device" and are revokable, which is what
+  #167's migration note asked for.
