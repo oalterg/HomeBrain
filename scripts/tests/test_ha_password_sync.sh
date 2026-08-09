@@ -280,6 +280,63 @@ else
     bad "create_ha_admin records the account it just created as managed (not found)"
 fi
 
+echo "== a record that no longer describes this auth store is discarded =="
+
+# The wizard's off-site restore deploys as a fresh install *first*: that runs
+# create_ha_admin, which makes `admin` and records it in the regenerated .env.
+# restore.sh then lays the archive's auth store on top, owned by whoever owned
+# the box the archive came from. Believing the record there aims the change at
+# a user who no longer exists — and the restored box keeps the archive's old
+# Home Assistant password, which is the whole reason restore.sh syncs it.
+HA_ADMIN_USER=admin          # what deploy.sh just recorded
+HA_PASSWORD_MANAGED=true
+OWNER=oliaidanaberlin        # what the restored auth store actually says
+HA_ADMIN_PASSWORD=onrecord
+LOGIN='{"type": "create_entry"}'
+RECORDED=""; CHANGED_USER=""
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+if [ "$CHANGED_USER" = "oliaidanaberlin" ]; then
+    ok "a restored box aims at the account that owns the restored store"
+else
+    bad "a restored box aims at the account that owns the restored store (aimed at '${CHANGED_USER:-nothing}')"
+fi
+case "$RECORDED" in
+    *"HA_ADMIN_USER=oliaidanaberlin"*) ok "the stale record is replaced with the real owner" ;;
+    *) bad "the stale record is replaced with the real owner (got '$RECORDED')" ;;
+esac
+
+# Ownership must be re-proved for the new account, not inherited. Here the
+# restored store refuses the recorded password, so managed must flip to false
+# even though the stale record said true.
+OWNER=someone-else
+LOGIN='{"errors":{"base":"invalid_auth"}}'
+HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true
+RECORDED=""; CHANGED_USER=""
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
+    case "$RECORDED" in
+        *"HA_PASSWORD_MANAGED=false"*) ok "ownership is re-proved for the new account, not inherited" ;;
+        *) bad "ownership is re-proved for the new account (got '$RECORDED')" ;;
+    esac
+else
+    bad "ownership is re-proved for the new account (rc=$rc, aimed at '${CHANGED_USER:-nothing}')"
+fi
+
+# A record that still matches must not be re-proved — that is the whole point
+# of writing it down, and re-probing would undo a deliberate adoption.
+OWNER=admin
+HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true
+LOGIN='{"errors":{"base":"invalid_auth"}}'   # would prove "false" if re-probed
+RECORDED=""; CHANGED_USER=""
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+if [ "$CHANGED_USER" = "admin" ] && [ -z "$RECORDED" ]; then
+    ok "a record that still matches is believed, not re-proved"
+else
+    bad "a record that still matches is believed (aimed at '${CHANGED_USER:-nothing}', recorded '$RECORDED')"
+fi
+LOGIN='{"type": "create_entry"}'
+
 echo "== ownership is not decided while HA is still starting =="
 
 # restore.sh reaches the migration right after wait_for_healthy, which returns
@@ -375,6 +432,37 @@ for code_case in "3:self-managed" "2:unreadable owner" "1:refused"; do
     CLI_RC=0; OWNER=admin
 done
 HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true
+
+echo "== what a fresh provision creates, and what it writes down =="
+
+# deploy.sh runs `utilities.sh ha_admin "$MASTER_PASSWORD"` on every deploy, so
+# a new box always gets the account HomeBrain onboards for it. The name is a
+# literal in the onboarding request; pin it, because everything downstream
+# treats `admin` as HomeBrain's own account rather than someone's choice.
+if grep -q '\\"username\\": \\"admin\\"' "$SCRIPT_DIR/../utilities.sh"; then
+    ok "a fresh provision onboards Home Assistant as 'admin'"
+else
+    bad "a fresh provision onboards Home Assistant as 'admin' (not found)"
+fi
+
+# ...but only when it really created it. create_ha_admin returns early on a box
+# whose Home Assistant was already onboarded — someone else's account, which
+# HomeBrain must not claim to manage. Recording "admin/true" there would assert
+# ownership of a stranger's login and let a later rotation overwrite it.
+#
+# Checked by line order rather than by calling it: utilities.sh must not be
+# sourced from a test. It resolves SCRIPT_DIR from "$0", so sourcing it here
+# makes it load scripts/tests/common.sh — and its `set -euo pipefail` then
+# kills the sourcing shell when that fails, taking the rest of this suite with
+# it silently.
+UTIL="$SCRIPT_DIR/../utilities.sh"
+skip_line=$(grep -n 'user onboarding already complete' "$UTIL" | head -1 | cut -d: -f1)
+rec_line=$(grep -n 'ha_record_account "admin" "true"' "$UTIL" | head -1 | cut -d: -f1)
+if [ -n "$skip_line" ] && [ -n "$rec_line" ] && [ "$skip_line" -lt "$rec_line" ]; then
+    ok "an already-onboarded Home Assistant is left unclaimed"
+else
+    bad "an already-onboarded Home Assistant is left unclaimed (skip@${skip_line:-?} record@${rec_line:-?})"
+fi
 
 echo
 echo "passed: $pass   failed: $fail"
