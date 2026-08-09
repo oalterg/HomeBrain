@@ -280,6 +280,66 @@ else
     bad "create_ha_admin records the account it just created as managed (not found)"
 fi
 
+echo "== ownership is not decided while HA is still starting =="
+
+# restore.sh reaches the migration right after wait_for_healthy, which returns
+# before the auth API answers — this file's own ha_set_password says so. A
+# probe in that window refuses every password, which would file a
+# HomeBrain-owned box as self-managed and permanently end the password sync
+# that restore exists to perform.
+# The countdown lives in a file: common.sh calls curl inside `$(...)`, so a
+# shell variable would be decremented in a subshell and never seen here.
+READY_AFTER=$(mktemp)
+curl() {
+    local url="${*: -1}" n
+    n=$(cat "$READY_AFTER")
+    case "$url" in
+        */api/onboarding)
+            if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$READY_AFTER"; echo 000
+            else echo 200; fi ;;
+        */auth/login_flow)   [ "$n" -gt 0 ] && echo "" || echo '{"flow_id":"F1"}' ;;
+        */auth/login_flow/*) [ "$n" -gt 0 ] && echo "" || echo "$LOGIN" ;;
+    esac
+}
+jq() { case "$1" in
+           -r)  cat >/dev/null; [ "$(cat "$READY_AFTER")" -gt 0 ] && echo "" || echo "F1" ;;
+           -nc) echo '{"client_id":"c","username":"u","password":"p"}' ;;
+       esac; }
+echo 3 > "$READY_AFTER"   # refuses three times, then the auth API is up
+
+unrecorded
+LOGIN='{"type": "create_entry"}'
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+case "$RECORDED" in
+    *"HA_PASSWORD_MANAGED=true"*) ok "waits for the auth API before deciding who owns the password" ;;
+    *) bad "waits for the auth API before deciding who owns the password (got '$RECORDED')" ;;
+esac
+
+# Never coming up must not be recorded as an answer at all.
+echo 999 > "$READY_AFTER"
+unrecorded
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$RECORDED" ]; then
+    ok "records nothing when the auth API never answers"
+else
+    bad "records nothing when the auth API never answers (rc=$rc, recorded '$RECORDED')"
+fi
+
+# Restore the plain fakes for the remaining cases.
+rm -f "$READY_AFTER"
+curl() {
+    local url="${*: -1}"
+    case "$url" in
+        */api/onboarding)   echo 200 ;;
+        */auth/login_flow)  echo '{"flow_id":"F1"}' ;;
+        */auth/login_flow/*) echo "$LOGIN" ;;
+    esac
+}
+jq() { case "$1" in -r) cat >/dev/null; echo "F1" ;;
+                    -nc) echo '{"client_id":"c","username":"u","password":"p"}' ;; esac; }
+HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true
+
 echo "== a caller under 'set -e' survives every outcome =="
 
 # restore.sh and utilities.sh both run `set -euo pipefail`. A bare
