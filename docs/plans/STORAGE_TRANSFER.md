@@ -1,7 +1,8 @@
 # Storage on a second disk — what actually needs building
 
-**Status:** Implemented and verified on hardware 2026-08-09 (uncommitted; see
-"What shipped" at the end). All three steps done, plus a catalog slim to two models.
+**Status:** Done — shipped in PR #169 (2026-08-09), verified on hardware. All three
+steps, plus a catalog slim to two models. Kept for the reasoning, not as a to-do list;
+the one open trade-off is the 27B's context window, under "What shipped".
 **Date:** 2026-08-09
 **Scope:** Moving user data off the system disk, and reclaiming the system disk.
 
