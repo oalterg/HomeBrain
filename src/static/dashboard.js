@@ -1577,7 +1577,8 @@ function showMemberPairing(d) {
     document.getElementById('member-user').textContent = d.user;
     document.getElementById('member-pass').textContent = d.password;
     document.getElementById('member-url').textContent = d.remote
-        ? '' : 'At home only — no remote address is set up yet.';
+        ? '' : 'At home only — no remote address is set up yet, so the phone must be on your home '
+             + 'Wi-Fi and will ask whether to trust this box\'s certificate.';
     document.getElementById('member-pair').style.display = '';
 }
 
