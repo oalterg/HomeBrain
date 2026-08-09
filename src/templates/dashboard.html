@@ -518,36 +518,19 @@
                 </div>
             </section>
 
-            <section class="section" id="photos-card">
-                <h3>Phone Photos <span class="h-note">— replace Google Photos and iCloud</span></h3>
-                <p class="lede">Install the Nextcloud app on a phone, scan this code on its login screen, and turn on
-                    Auto Upload. Every photo the phone takes lands here from then on — nothing to type.</p>
-                <div class="inline-row">
-                    <button id="photos-btn" class="btn-primary" onclick="pairPhone()">Show the code</button>
-                </div>
-                <div id="photos-pair" class="mt" style="display:none;">
-                    <img id="photos-qr" alt="Nextcloud login QR code"
-                         style="width:220px; height:220px; background:#fff; padding:10px; border-radius:8px;">
-                    <p class="small mt">Signs in as <strong id="photos-user"></strong> at
-                        <span id="photos-url" class="mono"></span>.</p>
-                    <p id="photos-lan-note" class="hint" style="display:none;">No remote address is set up yet, so the
-                        phone must be on your home Wi-Fi and will ask whether to trust this box's certificate. Set up
-                        remote access if you want uploads to work away from home.</p>
-                    <p class="hint">The code contains a password for that phone alone. Show it to one phone, then move
-                        on — pressing the button again issues a new one.</p>
-                </div>
-            </section>
-
             <section class="section" id="household-card">
-                <h3>Household <span class="h-note">— everyone else in the house</span></h3>
-                <p class="lede">A household member gets their own files and their own photo backup on this box.
-                    They do not get the dashboard, Home Assistant or the Vault — those stay yours, behind the master
-                    password.</p>
+                <h3>Phone Photos <span class="h-note">— replace Google Photos and iCloud</span></h3>
+                <p class="lede">Everyone in the house — you included — gets an account here, with their own files and
+                    their own photo backup. Add a person, then show them their code: they scan it from the Nextcloud
+                    app's login screen and turn on Auto Upload, and every photo that phone takes lands here from then
+                    on. Nothing to type.</p>
+                <p class="lede">Nobody else gets the dashboard, Home Assistant or the Vault — those stay yours, behind
+                    the master password.</p>
                 <div id="household-list"><span class="skeleton sk-wide"></span></div>
                 <form class="mt" onsubmit="addMember(event)">
                     <div class="fields fields-2 fields-end">
                         <div>
-                            <label for="member-name">Their name</label>
+                            <label for="member-name">Name</label>
                             <input type="text" id="member-name" placeholder="Alex" autocomplete="off" required>
                         </div>
                         <button type="submit" class="btn-primary">Add member</button>
