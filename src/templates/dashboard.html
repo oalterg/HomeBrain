@@ -228,6 +228,8 @@
                 <p id="nc-storage" class="small faint mt"></p>
                 <div class="inline-row mt">
                     <button onclick="loadDrives()">Scan for drives</button>
+                    <button id="btn-nc-internal" onclick="moveNcDataInternal()" style="display:none;">Move files
+                        to internal disk</button>
                 </div>
                 <label class="check mt">
                     <input type="checkbox" id="internal-backup" onchange="toggleInternalBackup(this.checked)">
@@ -237,6 +239,12 @@
                 <hr>
 
                 <div class="meter">
+                    <div class="meter-head"><span>System disk</span><span class="meter-value" id="sys-disk-text">—</span></div>
+                    <div class="progress-bg"><div class="progress-fill" id="sys-disk-bar"></div></div>
+                </div>
+                <p id="sys-disk-note" class="small faint"></p>
+
+                <div class="meter mt">
                     <div class="meter-head"><span>Backup drive usage</span><span class="meter-value" id="disk-text">—</span></div>
                     <div class="progress-bg"><div class="progress-fill" id="disk-bar"></div></div>
                 </div>
@@ -764,6 +772,13 @@
                     <label for="ai-model-select">Model</label>
                     <select id="ai-model-select" onchange="onModelSelectChange()"></select>
                     <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
+                </div>
+
+                <div id="models-on-disk" class="mt" style="display:none;">
+                    <label>Downloaded models</label>
+                    <p class="lede">Switching models keeps the old one so switching back is instant. They are large;
+                        delete the ones you are not using. Any of them can be downloaded again.</p>
+                    <div id="models-on-disk-list"></div>
                 </div>
 
                 <div class="inline-row mt" style="justify-content:space-between;">

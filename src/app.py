@@ -1667,6 +1667,51 @@ def format_drive():
 
 
 NC_DATA_DEFAULT = "/home/homebrain/nextcloud-data"
+MODELS_DIR = os.path.join(os.environ.get("HOMEBRAIN_HOME", "/home/homebrain"), "models")
+
+
+def models_on_disk():
+    """Every model file actually downloaded, largest first.
+
+    A directory listing, not a catalog lookup. Switching models keeps the old
+    one on purpose (utilities.sh: "kept on disk for faster switching"), and the
+    catalog has shrunk since — so the files taking the space are exactly the
+    ones the catalog can no longer name. Asking the catalog would hide them,
+    which is how a box ends up 307 GB deep with nothing to show for it.
+    """
+    out = []
+    try:
+        with os.scandir(MODELS_DIR) as entries:
+            for e in entries:
+                if e.is_file() and e.name.endswith(".gguf"):
+                    out.append({"filename": e.name,
+                                "size_gb": round(e.stat().st_size / (1024**3), 1)})
+    except OSError:
+        return []
+    return sorted(out, key=lambda m: -m["size_gb"])
+
+
+@app.route("/api/system/storage")
+def system_storage():
+    """The disk everything lands on when it has nowhere else to go.
+
+    Deliberately does not measure the Nextcloud data directory: that is tens
+    of thousands of files and `du` on it would block the request. The models
+    directory is flat and a stat per file, so it is free.
+    """
+    try:
+        total, used, _ = shutil.disk_usage("/")
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+    models = models_on_disk()
+    return jsonify({
+        "used_gb": round(used / (1024**3), 1),
+        "total_gb": round(total / (1024**3), 1),
+        "percent": round((used / total) * 100, 1),
+        "models_gb": round(sum(m["size_gb"] for m in models), 1),
+        "models_count": len(models),
+    })
 
 
 @app.route("/api/nextcloud/storage")
@@ -1700,13 +1745,19 @@ def move_nextcloud_data():
     if current_task_status["status"] == "running":
         return jsonify({"error": "Task running"}), 409
 
-    drive_path = request.json.get("path")
-    if not drive_path or "mmcblk" in drive_path:
-        return jsonify({"error": "Invalid drive"}), 400
+    body = request.json or {}
+    if body.get("internal"):
+        arg = "--internal"
+    else:
+        drive_path = body.get("path")
+        if not drive_path or "mmcblk" in drive_path:
+            return jsonify({"error": "Invalid drive"}), 400
+        arg = drive_path
 
-    # Every other pre-flight (root disk, backup drive, capacity) lives in the
-    # script, which is also reachable from a shell and must refuse there too.
-    cmd = (f"bash {shlex.quote(SCRIPT_MOVE_NC_DATA)} {shlex.quote(drive_path)} "
+    # Every other pre-flight (root disk, backup drive, capacity, a drive that
+    # already holds someone else's library) lives in the script, which is also
+    # reachable from a shell and must refuse there too.
+    cmd = (f"bash {shlex.quote(SCRIPT_MOVE_NC_DATA)} {shlex.quote(arg)} "
            f">> {LOG_FILES['storage']} 2>&1")
     threading.Thread(
         target=run_background_task, args=("Move Nextcloud Data", cmd, "storage")
@@ -2640,13 +2691,56 @@ def get_ai_models():
         models_file = os.path.join(INSTALL_DIR, "config", "platform_models.json")
         with open(models_file, "r") as f:
             data = json.load(f)
+        active = get_env_config().get("AI_MODEL_FILENAME", "")
+        on_disk = models_on_disk()
+        for m in on_disk:
+            m["active"] = m["filename"] == active
         return jsonify({
             "models": data.get("models", []),
             "llama_server": data.get("llama_server", {}),
-            "whisper_models": data.get("whisper", {}).get("models", [])
+            "whisper_models": data.get("whisper", {}).get("models", []),
+            "on_disk": on_disk,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai/models/<path:filename>", methods=["DELETE"])
+# 30, not 10: clearing out a box that has accumulated a model per switch is the
+# case this endpoint exists for, and 10 stopped a real 15-model cleanup halfway
+# with a 429. The limit is here to blunt abuse, not to pace a legitimate tidy-up.
+@limiter.limit("30 per minute")
+def delete_ai_model(filename):
+    """Delete a downloaded model file to reclaim its disk.
+
+    Deliberately not GPU-gated, unlike the rest of /api/ai: the files sit on
+    the disk whether or not the GPU still works, and a box that has lost its
+    GPU is exactly where reclaiming 30 GB should not be blocked.
+    """
+    if current_task_status["status"] == "running":
+        return jsonify({"error": "Task running"}), 409
+
+    # basename() strips any traversal; comparing the resolved parent to the
+    # resolved models directory is what proves it, and also refuses a symlink
+    # inside the directory that points somewhere else.
+    name = os.path.basename(filename)
+    target = os.path.realpath(os.path.join(MODELS_DIR, name))
+    if not name.endswith(".gguf") or os.path.dirname(target) != os.path.realpath(MODELS_DIR):
+        return jsonify({"error": "Not a model file"}), 400
+
+    if name == get_env_config().get("AI_MODEL_FILENAME", ""):
+        return jsonify({"error": "That model is the one currently loaded"}), 409
+
+    try:
+        freed_gb = round(os.path.getsize(target) / (1024**3), 1)
+        os.remove(target)
+    except FileNotFoundError:
+        return jsonify({"error": "That model is already gone"}), 404
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+    app.logger.info(f"[model deleted] {name} ({freed_gb} GB reclaimed)")
+    return jsonify({"status": "deleted", "freed_gb": freed_gb})
 
 @app.route("/api/ai/model", methods=["POST"])
 @limiter.limit("5 per minute")

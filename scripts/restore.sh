@@ -204,6 +204,20 @@ if [ "$HAS_NC_DATA" = false ] && [ "$HAS_HA_CONFIG" = false ]; then
     die "Invalid backup: No Data or HA config found."
 fi
 
+# A relocated data directory that is not a mount point means the files drive is
+# absent. Restoring anyway writes the whole library onto the root disk at the
+# mountpoint, fills it, and hides it under the drive on the next boot. Refuse
+# here — before a single container is stopped, so the box keeps serving.
+# :- covers unset AND empty — .env.template ships NEXTCLOUD_DATA_DIR= blank, and
+# under set -u a bare expansion would abort the restore instead of guarding it.
+NC_DATA_DEFAULT="${HOMEBRAIN_HOME}/nextcloud-data"
+NC_DATA_EFFECTIVE="${NEXTCLOUD_DATA_DIR:-$NC_DATA_DEFAULT}"
+if [ "$HAS_NC_DATA" = true ] \
+    && [ "$NC_DATA_EFFECTIVE" != "$NC_DATA_DEFAULT" ] \
+    && ! mountpoint -q "$NC_DATA_EFFECTIVE"; then
+    die "Your files drive is not connected. $NC_DATA_EFFECTIVE should be a drive but nothing is mounted there. Reconnect it and run the restore again — nothing has been changed."
+fi
+
 # --- Stop Stack ---
 log_info "Stopping services..."
 # Attempt to enable maintenance mode, but proceed if container is already down
