@@ -237,7 +237,7 @@ else
     fi
 
     # A model with no profiles block must fall through to its own values.
-    if [[ "$(resolve Qwen3.5-9B-MTP-Q8_0 aarch64-cuda context_window)" == "81920" ]]; then
+    if [[ "$(resolve Qwen3.6-27B-IQ4_XS aarch64-cuda context_window)" == "32768" ]]; then
         ok "model without a profile falls back to its top-level values"
     else
         bad "unprofiled model did not fall back on an unknown tag"

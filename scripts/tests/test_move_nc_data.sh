@@ -31,6 +31,12 @@ TMP="$(mktemp -d)"
 LOOPS=()
 cleanup() {
     umount "$TMP/backupmnt" 2>/dev/null
+    umount "$TMP/livemnt" 2>/dev/null
+    umount "$TMP/foreignmnt" 2>/dev/null
+    # The foreign-drive guard mounts the candidate to inspect it and unmounts
+    # before refusing; the directory it used is this script's to clear up.
+    umount /mnt/nextcloud-data.new 2>/dev/null
+    rmdir /mnt/nextcloud-data.new 2>/dev/null
     for l in "${LOOPS[@]}"; do losetup -d "$l" 2>/dev/null; done
     rm -rf "$TMP"
 }
@@ -88,18 +94,59 @@ refuses "refuses the backup drive" "backup drive" "$backup_dev"
 echo "== refuses a move that cannot succeed =="
 
 small="$(mkloop 8)"    # 8 MB for ~20 MB of files
-refuses "refuses a drive smaller than the data" "needs" "$small"
+refuses "refuses a drive smaller than the data" "plus overhead" "$small"
 
 refuses "refuses a path that is not a block device" "not a block device" "$TMP/nosuchdev"
 refuses "refuses no argument at all" "Usage" ""
 
+refuses "refuses --internal when the files are already internal" \
+    "already on the internal disk" "--internal"
+
+echo "== refuses to move a drive onto itself =="
+
+# The files live on a drive, and that same drive is offered as the target.
+# Only reachable since the move stopped being one-way.
+livedev="$(mkloop 64)"
+mkfs.ext4 -q -F -L NextcloudData "$livedev"
+mkdir -p "$TMP/livemnt"
+mount "$livedev" "$TMP/livemnt"
+head -c 1000000 /dev/zero > "$TMP/livemnt/bulk"
 cat > "$TMP/install/.env" <<EOF
-NEXTCLOUD_DATA_DIR=/mnt/nextcloud-data
+NEXTCLOUD_DATA_DIR=$TMP/livemnt
 BACKUP_MOUNTDIR=$TMP/backupmnt
 HAS_GPU=false
 EOF
-big="$(mkloop 64)"
-refuses "refuses when the data is already on the target" "already on" "$big"
+refuses "refuses moving a drive onto itself" "already on" "$livedev"
+
+echo "== refuses a drive carrying another box's library =="
+
+# A files drive moved from a dead box to a replacement one: same NextcloudData
+# label, full of somebody's photos, and this box has never written to it. The
+# label alone used to mean "my own half-finished copy — resume", and pass 1
+# runs with --delete.
+foreign="$(mkloop 64)"
+mkfs.ext4 -q -F -L NextcloudData "$foreign"
+mkdir -p "$TMP/foreignmnt"
+mount "$foreign" "$TMP/foreignmnt"
+mkdir -p "$TMP/foreignmnt/alice/files"
+echo "the only copy of a wedding photo" > "$TMP/foreignmnt/alice/files/photo.jpg"
+touch "$TMP/foreignmnt/.ncdata"
+umount "$TMP/foreignmnt"
+cat > "$TMP/install/.env" <<EOF
+NEXTCLOUD_DATA_DIR=$TMP/ncdata
+BACKUP_MOUNTDIR=$TMP/backupmnt
+HAS_GPU=false
+EOF
+refuses "refuses a NextcloudData drive this box did not write" "did not put it there" "$foreign"
+
+# Refusing is only half of it: the files have to still be there afterwards.
+mount "$foreign" "$TMP/foreignmnt"
+if [[ -s "$TMP/foreignmnt/alice/files/photo.jpg" ]]; then
+    ok "the refused drive still holds its files"
+else
+    bad "the refused drive still holds its files"
+fi
+umount "$TMP/foreignmnt"
 
 echo
 echo "$pass passed, $fail failed"

@@ -343,6 +343,7 @@ function openTab(id) {
         loadOffsiteStatus();
         loadReplicaStatus();
         loadDiskStats();
+        loadSystemStorage();
         loadNcStorage();
         loadOpenClawBackupStatus();
     }
@@ -355,6 +356,7 @@ function openTab(id) {
     }
     if (id === 'settings') {
         loadSystemConfig();
+        loadModelsOnDisk();
         loadSerialDevices();
         connRefresh();
         vaultMcpRefresh();
@@ -1340,9 +1342,67 @@ async function loadAIModels(currentModelId) {
             if (currentModelId ? m.id === currentModelId : m.default) opt.selected = true;
             select.appendChild(opt);
         });
+        // A box can be running a model this build no longer offers. Show what
+        // is actually loaded instead of letting the picker display the first
+        // catalog entry as though it were selected.
+        if (currentModelId && !(data.models || []).some(m => m.id === currentModelId)) {
+            const opt = document.createElement('option');
+            opt.value = currentModelId;
+            opt.textContent = `${currentModelId} (installed, no longer offered)`;
+            opt.selected = true;
+            select.insertBefore(opt, select.firstChild);
+        }
         if (currentModelId) select.dataset.currentModel = currentModelId;
         aiModelsLoaded = true;
     } catch (e) { console.error('Failed to load AI models', e); }
+}
+
+/* On-demand, not part of the 10 s status poll: this is a directory listing and
+   nothing about it changes unless the owner switches or deletes a model. */
+async function loadModelsOnDisk() {
+    const wrap = document.getElementById('models-on-disk');
+    const list = document.getElementById('models-on-disk-list');
+    if (!wrap || !list) return;
+    try {
+        const res = await fetch('/api/ai/models', { credentials: 'include' });
+        const data = await res.json();
+        const models = data.on_disk || [];
+        if (!models.length) { wrap.style.display = 'none'; return; }
+        wrap.style.display = 'block';
+        list.innerHTML = models.map(m => `
+            <div class="drive-row">
+              <div class="row-main">
+                <strong>${escapeHtml(m.filename)}</strong>
+                <span class="row-meta">${m.size_gb} GB</span>
+              </div>
+              ${m.active
+                ? '<span class="status-badge status-running">In use</span>'
+                : `<div class="row-actions">
+                     <button class="btn-danger" onclick="deleteModel('${escapeHtml(m.filename)}')">Delete</button>
+                   </div>`}
+            </div>`).join('');
+    } catch (e) { wrap.style.display = 'none'; }
+}
+
+async function deleteModel(filename) {
+    if (!await hbConfirm({
+        title: 'Delete this model?',
+        body: `${filename} is removed from the disk. It is not your data — if you want it back later, `
+            + 'switching to it downloads it again.',
+        confirm: 'Delete model', danger: true,
+    })) return;
+    const res = await fetch(`/api/ai/models/${encodeURIComponent(filename)}`, {
+        method: 'DELETE', credentials: 'include',
+    });
+    // A rate-limit reply is HTML, not JSON, so it lands here with no .error and
+    // would otherwise read as "that model could not be deleted" — which is both
+    // wrong and the sort of thing an owner retries forever.
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) hbToast(`Deleted — ${d.freed_gb} GB reclaimed.`, 'success');
+    else if (res.status === 429) hbToast('Deleting too quickly — wait a moment and continue.', 'error');
+    else hbToast(d.error || 'Could not delete that model.', 'error');
+    loadModelsOnDisk();
+    loadSystemStorage();
 }
 
 function onModelSelectChange() {
@@ -1969,12 +2029,32 @@ async function formatDrive(path) {
 async function moveNcData(path) {
     if (!await hbConfirm({
         title: 'Store your files on this drive?',
-        body: `Everything on ${path} will be erased, then your Nextcloud files are copied onto it `
-            + 'and the old copy is deleted once the new one is verified. A large library can take '
-            + 'hours; Nextcloud goes offline only for the last, short pass. Leave the drive connected.',
+        body: `Everything on ${path} will be erased, then your Nextcloud files are copied onto it. `
+            + 'A large library can take hours; Nextcloud goes offline only for the last, short pass. '
+            + 'Leave the drive connected.',
+        detail: 'If your files are already on a drive, that drive is left untouched as a spare copy '
+            + 'once the move is verified. If they are on the internal disk, that space is reclaimed.',
         confirm: 'Move files', danger: true, requireText: 'MOVE',
     })) return;
     await triggerAction('/api/drives/nextcloud-data', 'Move Nextcloud Data', { path });
+    showStorageLog();
+}
+
+async function moveNcDataInternal() {
+    if (!await hbConfirm({
+        title: 'Move your files back to the internal disk?',
+        body: 'Your files are copied from the drive onto the box\'s own disk. Once that is verified '
+            + 'and Nextcloud is serving from it, the drive is released and can be unplugged — it '
+            + 'keeps its copy and nothing on it is erased.',
+        detail: 'This only works if the internal disk has room for the whole library.',
+        confirm: 'Move to internal disk', danger: true, requireText: 'MOVE',
+    })) return;
+    await triggerAction('/api/drives/nextcloud-data', 'Move Nextcloud Data', { internal: true });
+    showStorageLog();
+}
+
+/* The move runs for hours and its only progress report is the storage log. */
+function showStorageLog() {
     currentLogSource = 'storage';
     const sel = document.getElementById('log-selector');
     if (sel) sel.value = 'storage';
@@ -1984,9 +2064,13 @@ async function moveNcData(path) {
 async function loadNcStorage() {
     const el = document.getElementById('nc-storage');
     if (!el) return;
+    const backBtn = document.getElementById('btn-nc-internal');
     try {
         const res = await fetch('/api/nextcloud/storage', { credentials: 'include' });
         const d = await res.json();
+        // Offered only when there is something to move back, and never while
+        // the drive is missing — that case needs the drive, not a migration.
+        if (backBtn) backBtn.style.display = (d.external && !d.missing) ? 'inline-block' : 'none';
         if (d.missing) {
             el.innerHTML = `<strong>Your files drive is not connected.</strong> Nextcloud cannot start `
                 + `without it and will not write a second copy to the internal disk. Reconnect `
@@ -2000,6 +2084,22 @@ async function loadNcStorage() {
             ? `Your files live on ${where}: ${d.path}`
             : `Your files live on ${where}: ${d.path} — ${d.used_gb} of ${d.total_gb} GB used`;
     } catch (e) { el.textContent = ''; }
+}
+
+async function loadSystemStorage() {
+    try {
+        const res = await fetch('/api/system/storage', { credentials: 'include' });
+        const d = await res.json();
+        if (d.error) return;
+        setMeter('sys-disk-bar', 'sys-disk-text', d.percent, `${d.used_gb} / ${d.total_gb} GB`);
+        const note = document.getElementById('sys-disk-note');
+        if (note) {
+            note.textContent = d.models_count
+                ? `${d.models_gb} GB of that is ${d.models_count} downloaded AI model`
+                  + `${d.models_count === 1 ? '' : 's'} — the Assistant tab can remove the ones you are not using.`
+                : '';
+        }
+    } catch (e) { /* silent */ }
 }
 
 async function loadDiskStats() {
