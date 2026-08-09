@@ -1012,6 +1012,17 @@ ha_load_account_record() {
 
     HA_ACCOUNT_USER="$(ha_owner_username "$cid")"
     [[ -n "$HA_ACCOUNT_USER" ]] || return 1
+
+    # The verdict is written down once and believed forever after, so it must
+    # not be taken while Home Assistant is still coming up. restore.sh reaches
+    # here right after `wait_for_healthy`, which returns before the auth API
+    # answers — probing then would refuse every password and file a
+    # HomeBrain-owned box as self-managed, quietly ending the password sync
+    # that restore exists to perform.
+    if ! ha_wait_auth_api; then
+        log_warn "Home Assistant's auth API did not come up — not deciding who owns its password yet."
+        return 1
+    fi
     if ha_login_works "${HA_ADMIN_PASSWORD:-}" "$HA_ACCOUNT_USER"; then
         HA_ACCOUNT_MANAGED="true"
         log_info "Home Assistant account '${HA_ACCOUNT_USER}' accepts the recorded password — recording it as HomeBrain-managed."
@@ -1020,6 +1031,21 @@ ha_load_account_record() {
         log_info "Home Assistant account '${HA_ACCOUNT_USER}' does not accept the recorded password — recording it as self-managed, and leaving it alone."
     fi
     ha_record_account "$HA_ACCOUNT_USER" "$HA_ACCOUNT_MANAGED"
+}
+
+# Wait until Home Assistant's auth API actually answers.
+#
+# `wait_for_healthy` is not enough: the container's health flips before the
+# auth API is up. Anything that asks a login question in that window gets "no"
+# and cannot tell it apart from a wrong password.
+ha_wait_auth_api() {
+    local _
+    for _ in $(seq 1 30); do
+        [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            http://127.0.0.1:8123/api/onboarding 2>/dev/null)" == "200" ]] && return 0
+        sleep 2
+    done
+    return 1
 }
 
 # The write itself: change, restart, verify. HA caches the credential in
@@ -1031,13 +1057,7 @@ ha_set_password() {
         change_password "$user" "$pw" >/dev/null 2>&1 || return 1
     docker restart "$cid" >/dev/null 2>&1 || return 1
 
-    # Container health flips before the auth API answers, so poll that.
-    local _
-    for _ in $(seq 1 30); do
-        [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-            http://127.0.0.1:8123/api/onboarding 2>/dev/null)" == "200" ]] && break
-        sleep 2
-    done
+    ha_wait_auth_api
     ha_login_works "$pw" "$user"
 }
 
