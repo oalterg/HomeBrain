@@ -4229,11 +4229,36 @@ def nc_client_url(env):
     return f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
 
 
+def ensure_photo_settings():
+    """Box-level settings the photo grid needs, asserted where a phone is about
+    to start filling it. Idempotent, so a box that predates them heals itself.
+
+    Not per-pairing facts — they are settings that happen to have a natural
+    moment to be checked."""
+    # Photos ships enabled, but say so out loud rather than assume it.
+    nc_occ("app:enable", "photos")
+    # A phone camera roll is the heaviest thing this box will ever preview.
+    # Nextcloud's 4096px default renders 16MP thumbnails nobody looks at; the
+    # Photos grid never asks for a fraction of that.
+    for key in ("preview_max_x", "preview_max_y"):
+        nc_occ("config:system:set", key, "--value", "2048")
+
+
 def pairing_payload(user, password, env):
     """Mint a single-phone app password and draw it as a login QR code.
 
     The token is returned once and never written to disk. It goes to qrencode
-    on stdin, not argv, so it does not sit in the process table either."""
+    on stdin, not argv, so it does not sit in the process table either.
+
+    A Nextcloud app password carries its account's full rights — it is not
+    scoped to files — so minting one for the admin account would put the Vault
+    and every other account behind a QR code held up to a phone camera. The
+    admin account runs `occ` and holds the Vault; it is never a phone's login.
+    Every pairing route funnels through here so the rule cannot be forgotten."""
+    if user and user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+        raise NextcloudError(
+            "The owner's account cannot be paired to a phone — add yourself as "
+            "a person and pair that account instead")
     proc = nc_occ("user:add-app-password", user, "--password-from-env",
                   env_extra={"OC_PASS": password})
     out = proc.stdout.strip().splitlines()
@@ -4257,31 +4282,6 @@ def pairing_payload(user, password, env):
 
     return {"qr": "data:image/svg+xml;base64," + base64.b64encode(qr.encode()).decode(),
             "url": url, "user": user, "remote": remote}
-
-
-@app.route("/api/photos/pair", methods=["POST"])
-@limiter.limit("5 per minute")
-def photos_pair():
-    """Everything a phone needs to start backing up its camera roll, as one QR
-    code. Nextcloud's mobile apps read `nc://login/...` from their login
-    screen's scanner and configure the account from it — no server address and
-    no password typed on a phone keyboard."""
-    env = get_env_config()
-    user = env.get("NEXTCLOUD_ADMIN_USER", "")
-    password = env.get("NEXTCLOUD_ADMIN_PASSWORD", "")
-    if not user or not password:
-        return jsonify({"error": "Nextcloud admin credentials are not in .env"}), 500
-    try:
-        # Photos ships enabled, but say so out loud rather than assume it.
-        nc_occ("app:enable", "photos")
-        # A phone camera roll is the heaviest thing this box will ever
-        # preview. Nextcloud's 4096px default renders 16MP thumbnails nobody
-        # looks at; the Photos grid never asks for a fraction of that.
-        for key in ("preview_max_x", "preview_max_y"):
-            nc_occ("config:system:set", key, "--value", "2048")
-        return jsonify(pairing_payload(user, password, env))
-    except NextcloudError as e:
-        return jsonify({"error": str(e)}), 502
 
 
 # HomeBrain is deliberately single-admin: one master password opens the
@@ -4350,6 +4350,7 @@ def add_household_member():
             # stderr — read both or the owner gets a shrug.
             return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
                                       or "Could not add the user")[:200]}), 400
+        ensure_photo_settings()
         payload = pairing_payload(user, password, env)
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 502
@@ -4381,6 +4382,7 @@ def repair_household_member(user):
         if proc.returncode != 0:
             return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
                                       or "Could not reset the password")[:200]}), 400
+        ensure_photo_settings()
         payload = pairing_payload(user, password, env)
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 502

@@ -1554,7 +1554,7 @@ async function loadHousehold() {
         const d = await res.json();
         if (d.error) { el.innerHTML = `<p class="faint small">${escapeHtml(d.error)}</p>`; return; }
         if (!d.members.length) {
-            el.innerHTML = '<p class="faint small">No one else has an account on this box yet.</p>';
+            el.innerHTML = '<p class="faint small">Nobody has an account on this box yet — add yourself first.</p>';
             return;
         }
         el.innerHTML = d.members.map(m => `
@@ -1631,27 +1631,6 @@ async function removeMember(user, name) {
         document.getElementById('member-pair').style.display = 'none';
         loadHousehold();
     } catch (e) { hbToast('Could not remove them.', 'error'); }
-}
-
-async function pairPhone() {
-    const btn = document.getElementById('photos-btn');
-    btn.disabled = true;
-    btn.textContent = 'Preparing…';
-    try {
-        const res = await fetch('/api/photos/pair', { method: 'POST', credentials: 'include' });
-        const d = await res.json();
-        if (!res.ok) { hbToast(d.error || 'Could not prepare the code.', 'error'); return; }
-        document.getElementById('photos-qr').src = d.qr;
-        document.getElementById('photos-user').textContent = d.user;
-        document.getElementById('photos-url').textContent = d.url;
-        document.getElementById('photos-lan-note').style.display = d.remote ? 'none' : '';
-        document.getElementById('photos-pair').style.display = '';
-    } catch (e) {
-        hbToast('Could not prepare the code — see the browser console.', 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Show a new code';
-    }
 }
 
 async function setupFtp(e) {
