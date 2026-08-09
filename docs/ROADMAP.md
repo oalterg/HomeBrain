@@ -48,8 +48,8 @@ The next two tiers of work are planned in detail:
 - [`TIER2_AND_PHASE0.md`](plans/TIER2_AND_PHASE0.md) — limits real deployments have already hit.
   Moving Nextcloud data to a second drive, phone photo backup as a first-class feature.
 - [`PHOTOS_HARDENING.md`](plans/PHOTOS_HARDENING.md) — follow-ups to the shipped photo path. A phone
-  must never hold an admin credential (designed, ready to build); storage quotas and HEIC/video
-  thumbnails recorded with evidence.
+  never holding an admin credential is done; storage quotas and HEIC/video thumbnails are recorded
+  with evidence and still open.
 
 ---
 

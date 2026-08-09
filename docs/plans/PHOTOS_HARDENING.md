@@ -3,12 +3,13 @@
 Written 2026-08-09, after a review of the photo path shipped in #156 (Phone Photos) and #157
 (household members). Findings were verified against the live box, not read off the source.
 
-Item 1 has a design and is ready to build. Items 2 and 3 are recorded with their evidence so the
-next session does not have to rediscover them; neither is scheduled.
+Item 1 shipped in #167 — the design below is kept because the reasoning is the point, not the
+to-do. Items 2 and 3 are recorded with their evidence so the next session does not have to
+rediscover them; neither is scheduled.
 
 ---
 
-## 1. A phone must never hold an admin credential *(S — the security item)*
+## 1. A phone must never hold an admin credential *(S — the security item)* — ✅ shipped in #167
 
 ### What is wrong
 
