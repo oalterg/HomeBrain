@@ -1003,15 +1003,32 @@ ha_record_account() {
 # exactly the boxes that matter — `admin` is a perfectly ordinary name for a
 # user to pick themselves.
 ha_load_account_record() {
-    local cid="$1"
+    local cid="$1" owner
     HA_ACCOUNT_USER="${HA_ADMIN_USER:-}"
     HA_ACCOUNT_MANAGED="${HA_PASSWORD_MANAGED:-}"
-    if [[ -n "$HA_ACCOUNT_USER" && -n "$HA_ACCOUNT_MANAGED" ]]; then
+
+    # The record describes an auth store, so it is only worth believing while
+    # it still describes *this* one. Restoring a backup replaces the store
+    # wholesale, and the wizard's off-site restore deploys as a fresh install
+    # first — so the record says `admin` (just created here, in a regenerated
+    # .env) while the store that landed on top belongs to whoever owned the
+    # box the archive came from. Trusting it there aims the password change at
+    # a user who no longer exists, `hass --script auth` exits 0 as ever, and
+    # the restored box comes back on the archive's old Home Assistant password
+    # — the exact failure the restore's password sync exists to prevent.
+    owner="$(ha_owner_username "$cid")"
+    [[ -n "$owner" ]] || return 1
+    if [[ -n "$HA_ACCOUNT_USER" && -n "$HA_ACCOUNT_MANAGED" && "$HA_ACCOUNT_USER" == "$owner" ]]; then
         return 0
     fi
+    if [[ -n "$HA_ACCOUNT_USER" && "$HA_ACCOUNT_USER" != "$owner" ]]; then
+        log_info "Home Assistant is now owned by '${owner}', not the recorded '${HA_ACCOUNT_USER}' — working out ownership again."
+    fi
 
-    HA_ACCOUNT_USER="$(ha_owner_username "$cid")"
-    [[ -n "$HA_ACCOUNT_USER" ]] || return 1
+    # Re-proved from scratch for the account that actually owns the store now.
+    # Inheriting the stale record's answer would carry a verdict about one
+    # account over onto a different one.
+    HA_ACCOUNT_USER="$owner"
 
     # The verdict is written down once and believed forever after, so it must
     # not be taken while Home Assistant is still coming up. restore.sh reaches
