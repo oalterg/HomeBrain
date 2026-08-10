@@ -38,6 +38,22 @@
         "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local \u2014 nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. MTP CLIFF: the draft-mtp speculative path accelerates ONLY at ctx <= ~34816 (cliff between 34816 and 36864); above it TG snaps back to the ~17.5 baseline. ctx was 49152 (over the cliff, MTP gave ~+2%); lowered to 32768 to capture the full MTP gain: ~17.1 -> ~30 t/s (+75%) with n_max=2, q4_0 KV. Crossing any of {ctx>~35K, n_max>=3, q8 KV} silently disables speculation. NOT fixed by b9381 (DeltaNet-specific; the MoE 35B cliff WAS fixed by b9381). See docs/BENCHMARKS.md '27B cliff localization'."
       },
       "default": false
+    },
+    {
+      "id": "Muse-Glimmer-30B-UD-Q4_K_XL",
+      "filename": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+      "min_size_bytes": 15000000000,
+      "context_window": 131072,
+      "min_healthy_vram_mb": 15500,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"high\"}'",
+      "benchmark": {
+        "tg_ts": 18.83,
+        "pp_ts": 479.5,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp master 689e227, q8_0 KV, -ub 1024, ctx 131072, whisper on CPU",
+        "notes": "NOT SELECTABLE ON THE PINNED BUILD. muse-glimmer support merged upstream 2026-08-10 (PR #26841) and is in no release tag as of b10344, so the b10107 binary in versions.json cannot load this file at all -- switching to it from the dashboard will fail until llama_cpp.tag is bumped to a release containing the arch. Verified live on .58 only by pointing llama-server at a master build. Dense 30B + 1.8B ViT perception encoder. The whole 131072 window fits in 16 GB because the KV is unusually cheap: 52 layers of which only 13 are full-attention (the rest sliding-window 2048) and GQA with 2 KV heads. -ub 1024 is the lever that matters -- it sizes the compute buffer, and -ub 2048 costs ~460 MiB more for the same throughput. Headroom is 335 MiB idle / 275 MiB after a 108292-token fill, just above the ~250 MiB knee where TG and PP collapse together; 3/3 byte-identical starts and TG recovered to 18.81 t/s after the deep fill, but there is little room for a heavier future build (b9672 once idled +545 MiB at an identical config). If that happens, q4_0 KV holds the same 131072 window at 720 MiB headroom for ~1% TG. The shipped DFlash drafter (dflash-kquant.gguf, --spec-type draft-dflash) is a LOSS here: it costs ~2.3 GiB, dropping TG 21.6 -> 15.3 and PP 425 -> 39 t/s at 21% acceptance -- it wants the 24 GB card the model card targets. UD-Q3_K_XL is the roomier alternative at 21.61 t/s TG / 2977 MiB headroom (ctx 81920, -ub 2048) if throughput matters more than quantization quality. reasoning_strength (low/medium/high/xhigh) is a chat-template kwarg and defaults to high, which spends ~900 reasoning tokens on even a trivial question; drop it to medium for latency-sensitive chat. See docs/BENCHMARKS.md (2026-08-10)."
+      },
+      "default": false
     }
   ],
   "llama_server": {
