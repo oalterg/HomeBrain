@@ -668,3 +668,112 @@ Conservative alternative if KV growth is the worry: `-ot blk.18-39` with `-ub 20
 
 Unmeasured / caveats: n=2–3 per cell, single session, one prompt shape. The eviction is stochastic,
 so "PASS 2/2" bounds the failure rate loosely, not tightly. Whisper was on CPU throughout.
+
+---
+
+## 2026-08-10 — Muse Glimmer 30B (new arch, same 16 GB card)
+
+Meta's Muse Glimmer 30B dropped 2026-08-09 and Unsloth's GGUFs the morning after.
+It is the first model evaluated here that is **dense** rather than MoE, and the
+first with a vision tower. Swept on .58 the same day.
+
+**Upstream support is master-only.** `muse-glimmer` merged as PR #26841 on
+2026-08-10 11:07 UTC. The newest release at time of writing, **b10344, was cut ~5
+commits before that merge and does not contain the arch** — every release tag
+back to b10331 404s on `src/models/muse-glimmer.cpp`. The pinned b10107 binary
+cannot load the file at all, so everything below was measured on a source build
+of master `689e227` (Vulkan) staged at `~/llama.cpp-glimmer`. Building it needed
+`spirv-headers`, which `_build_llamacpp_from_source` does not install.
+
+### Why the whole 131072 window fits in 16 GB
+
+| | |
+|---|---|
+| Layers | 52 — only **13 full-attention**, 39 sliding-window (2048) |
+| Attention | GQA 32 Q / **2 KV** heads, head_dim 128 |
+| Position | RoPE θ=500,000 on local layers only; global layers are NoPE |
+
+Two KV heads and a 2048 window on three quarters of the layers make the cache
+almost free — the step from ctx 81920 to 131072 costs only ~370 MiB. That is the
+opposite of the 35B's profile and it is why context, not KV type, turned out to
+be the cheap axis here.
+
+### Fit sweep — UD-Q3_K_XL (13.36 GB) vs UD-Q4_K_XL (15.88 GB)
+
+TG is flat across every config: the model is bandwidth-bound, so quant size sets
+throughput and nothing else moves it. All cells `-ngl 99 -fa on -t 6`.
+
+| quant | ctx | KV | `-b`/`-ub` | TG | PP@2k | idle | headroom |
+|---|---:|---|---:|---:|---:|---:|---:|
+| Q3_K_XL | 81920 | q8_0 | 4096/2048 | **21.61** | 425.6 | 13286 | **2977** |
+| Q3_K_XL | 131072 | q8_0 | 4096/2048 | 20.80 | 271.8 | 13653 | 2647 |
+| Q3_K_XL | 131072 | q8_0 | 4096/4096 | 21.54 | 425.0 | 15072 | 1231 |
+| Q4_K_XL | 81920 | q8_0 | 4096/2048 | 18.83 | 477.9 | 16018 | 245 |
+| Q4_K_XL | 81920 | q8_0 | 2048/1024 | 18.82 | 479.8 | 15540 | 705 |
+| Q4_K_XL | 98304 | q8_0 | 2048/1024 | 18.82 | 479.6 | 15683 | 561 |
+| Q4_K_XL | 114688 | q8_0 | 2048/1024 | 18.83 | 479.5 | 15825 | 420 |
+| **Q4_K_XL** | **131072** | **q8_0** | **2048/1024** | **18.83** | **479.5** | **15969** | **335** |
+| Q4_K_XL | 131072 | q4_0 | 2048/1024 | 18.82 | 474.9 | 15524 | 780 |
+
+Q4 costs **−13% TG** against Q3 and buys **+13% PP** and a quantization tier
+(the model card puts its K-Quant-17GB at 1.0% degradation; Q3_K_XL sits below
+even that). `-ub 1024` is the lever that makes Q4 viable — it shrinks the
+compute buffer for ~460 MiB at identical throughput, the same mechanism the
+2026-07-25 entry identified.
+
+**Lowering context does not buy headroom here.** Q4 from 131072 down to 16384
+recovers only 738 MiB, because the weights dominate and the KV is tiny. There is
+no context to retreat to; either the quant fits or it does not.
+
+### Eviction gate at ctx 131072
+
+Both KV types were run three times from cold plus a 108,292-token prompt.
+
+| KV | 3× idle | post-108K | PP@108K | TG after fill | verdict |
+|---|---:|---:|---:|---:|---|
+| q8_0 | 15969 / 15969 / 15969 | 16029 (**275**) | 287.6 | 18.81 | PASS 3/3 |
+| q4_0 | 15524 / 15524 / 15524 | 15584 (**720**) | 305.1 | 18.78 | PASS 3/3 |
+
+Byte-identical idle across repeats, ~60 MiB of buffer growth under a full-depth
+fill, zero Vulkan allocation warnings, and TG returning to its shallow rate —
+neither evicts. **Shipped: q8_0**, for KV numerics over a 128K window. The
+reservation is upgrade margin, not today's behaviour: 275 MiB is just above the
+~250 MiB knee, and b9672 once idled +545 MiB at an identical config. If a future
+build tips it, q4_0 holds the same window at 720 MiB for ~1% TG.
+
+### DFlash speculative decoding — rejected on this card
+
+The model ships a block-diffusion drafter (`dflash-kquant.gguf`, 16-token blocks,
+`--spec-type draft-dflash`) that the card measures at **3.1× on an RTX 5090**.
+On 16 GB it is a large loss:
+
+| config | TG | PP@2k | idle | headroom | acceptance |
+|---|---:|---:|---:|---:|---:|
+| baseline, ctx 81920 | **21.61** | **425.6** | 13286 | 2977 | — |
+| + DFlash n_max 16 | 15.32 | 39.4 | 15566 | 738 | 21.1% |
+
+The drafter costs ~2.3 GiB. PP collapsing 10× while TG only drops 29% is the
+memory-pressure signature, not a drafting-quality one — and the cost is
+independent of `--spec-draft-n-max`, so smaller draft sizes cannot recover it.
+The card targets a 24 GB envelope for weights + KV + encoder + drafter
+simultaneously; that is the hardware this feature wants.
+
+### Behaviour notes
+
+- **`reasoning_strength` defaults to `high`.** It is a chat-template variable
+  (`low`/`medium`/`high`/`xhigh`), set via `--chat-template-kwargs`, and rendered
+  into the system prompt as `Reasoning strength: <value>.` At `high` the model
+  spent ~900 reasoning tokens on a three-sentence question — ~40 s before the
+  first visible word at 18.8 t/s. The card recommends high/xhigh for agentic
+  work; `medium` is the better default for interactive chat.
+- **Tool calls work natively.** llama.cpp parses the ATEM markup
+  (`<atem:invoke>`) into OpenAI-shaped `tool_calls`; verified end to end with a
+  namespaced `homeassistant.set_light` returning `{"room":"kitchen","brightness":30}`.
+- **Vision is untested.** An mmproj is published (2.05 GB Q8_0 / 1.40 GB kquant)
+  but was not loaded — at 335 MiB headroom there is nowhere to put it, so vision
+  needs Q3_K_XL or a smaller context.
+
+Unmeasured / caveats: one session, one prompt shape, n=3 per gated cell. TG
+figures are greedy 200–256-token completions. Quantization *quality* was not
+measured — the Q3-vs-Q4 quality claim is the model card's, not ours. Whisper was
+`--no-gpu` throughout, so none of this headroom is shared with speech.
