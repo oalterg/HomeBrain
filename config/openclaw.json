@@ -66,6 +66,9 @@
     "exec": {
       "mode": "full"
     },
+    "elevated": {
+      "enabled": true
+    },
     "media": {
       "audio": {
         "enabled": true,

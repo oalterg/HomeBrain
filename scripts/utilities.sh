@@ -1574,6 +1574,17 @@ patch_openclaw_config() {
         # combined"), and a stale granular key left behind by an older config
         # would fail validation and stop the gateway loading.
         .tools.exec = {"mode": "full"} |
+        # tools.elevated is a SEPARATE gate from tools.exec, added by a later
+        # OpenClaw. With exec at "full" but this unset, the agent still runs
+        # commands and still has NOPASSWD sudo on the box, yet every elevated
+        # call is refused before it executes: "elevated is not available right
+        # now (runtime=direct)", failing gate tools.elevated.enabled. Boxes
+        # provisioned before the gate existed inherit that refusal silently on
+        # upgrade, which reads as "sudo stopped working" long after the fact.
+        # Same trust boundary as tools.exec above, not a new capability.
+        # allowFrom is deliberately unset: HomeBrain owns the whole box and the
+        # channel policy (telegram dmPolicy=pairing) is the sender gate.
+        .tools.elevated = {"enabled": true} |
         # .approvals.* only controls where approval PROMPTS get delivered. With
         # ask=off nothing ever prompts, so forwarding has nothing to forward.
         .approvals.exec.enabled = false |
