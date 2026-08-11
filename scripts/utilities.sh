@@ -1503,12 +1503,37 @@ patch_openclaw_config() {
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
         # timeout (schema minimum 1) — not the keep-model-warm knob
-        # the legacy field was. Leave it unset so the schema default
-        # applies; also delete any stale 0 that an earlier release
-        # may have written (the value is rejected by the schema).
-        del(.models.providers.llamacpp.timeoutSeconds) |
+        # the legacy field was.
+        #
+        # This used to be left unset so the schema default applied. Measured
+        # 2026-08-11 on the 16 GB box: a real agent turn carries ~32.7k tokens
+        # of prompt, which prefills in 117 s at ~275 t/s — the default idle
+        # timeout fires before the model emits its first token. The turn dies,
+        # the harness retries, and the box reads as "the agent is looping"
+        # while llama-server is simply still prefilling. A cold prompt cache
+        # (any llama-server restart) makes it certain rather than occasional.
+        #
+        # An explicit generous ceiling instead. Assigning also overwrites any
+        # stale 0 an earlier release wrote, which is what the old del() was
+        # for — the schema rejects 0, so it must not survive.
+        .models.providers.llamacpp.timeoutSeconds = 900 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        # The browser plugin is enabled in config/openclaw.json, but a loaded
+        # plugin grants nothing on its own — the agent needs the tool allowed.
+        # That grant lived ONLY in the shipped config, so fresh installs got it
+        # and every box provisioned before it was added never did, on any
+        # number of updates. Found on .58: plugins.entries.browser.enabled was
+        # true, agents.list was absent entirely, and no browser tool was ever
+        # registered for the agent.
+        #
+        # Built additively rather than assigned: other agents in the list keep
+        # their entries, and main keeps any deny/alsoAllow it already carries.
+        .agents.list = ((.agents.list // [])
+          | (if any(.[]?; .id == "main") then . else . + [{"id":"main"}] end)
+          | map(if .id == "main"
+                then .tools = ((.tools // {}) | .profile = "full" | .alsoAllow = (((.alsoAllow // []) + ["browser"]) | unique))
+                else . end)) |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
