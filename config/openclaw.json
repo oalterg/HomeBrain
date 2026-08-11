@@ -86,7 +86,10 @@
           }
         ]
       }
-    }
+    },
+    "deny": [
+      "cron"
+    ]
   },
   "approvals": {
     "exec": {
