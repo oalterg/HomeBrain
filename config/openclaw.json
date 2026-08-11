@@ -11,6 +11,7 @@
         "baseUrl": "http://127.0.0.1:8001/v1",
         "apiKey": "1234",
         "api": "openai-completions",
+        "timeoutSeconds": 900,
         "models": [
           {
             "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
