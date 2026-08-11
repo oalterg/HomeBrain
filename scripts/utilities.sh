@@ -1519,21 +1519,6 @@ patch_openclaw_config() {
         .models.providers.llamacpp.timeoutSeconds = 900 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
-        # The browser plugin is enabled in config/openclaw.json, but a loaded
-        # plugin grants nothing on its own — the agent needs the tool allowed.
-        # That grant lived ONLY in the shipped config, so fresh installs got it
-        # and every box provisioned before it was added never did, on any
-        # number of updates. Found on .58: plugins.entries.browser.enabled was
-        # true, agents.list was absent entirely, and no browser tool was ever
-        # registered for the agent.
-        #
-        # Built additively rather than assigned: other agents in the list keep
-        # their entries, and main keeps any deny/alsoAllow it already carries.
-        .agents.list = ((.agents.list // [])
-          | (if any(.[]?; .id == "main") then . else . + [{"id":"main"}] end)
-          | map(if .id == "main"
-                then .tools = ((.tools // {}) | .profile = "full" | .alsoAllow = (((.alsoAllow // []) + ["browser"]) | unique))
-                else . end)) |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
