@@ -677,13 +677,19 @@ Meta's Muse Glimmer 30B dropped 2026-08-09 and Unsloth's GGUFs the morning after
 It is the first model evaluated here that is **dense** rather than MoE, and the
 first with a vision tower. Swept on .58 the same day.
 
-**Upstream support is master-only.** `muse-glimmer` merged as PR #26841 on
-2026-08-10 11:07 UTC. The newest release at time of writing, **b10344, was cut ~5
-commits before that merge and does not contain the arch** — every release tag
-back to b10331 404s on `src/models/muse-glimmer.cpp`. The pinned b10107 binary
-cannot load the file at all, so everything below was measured on a source build
-of master `689e227` (Vulkan) staged at `~/llama.cpp-glimmer`. Building it needed
-`spirv-headers`, which `_build_llamacpp_from_source` does not install.
+**Upstream support was master-only for one day.** `muse-glimmer` merged as PR
+#26841 on 2026-08-10 11:07 UTC, after b10344 had already been cut ~5 commits
+earlier — so on the day of the sweep no release tag contained the arch and the
+pinned b10107 binary could not load the file at all. Everything below was
+therefore measured on a source build of master `689e227` (Vulkan) staged at
+`~/llama.cpp-glimmer`. Building it needed `spirv-headers`, which
+`_build_llamacpp_from_source` does not install.
+
+**Resolved 2026-08-11: the arch reached the releases at b10356**, and the pin is
+now **b10361**. That build was re-measured against the master build every number
+here was taken on, and it is identical within noise — idle **15968 vs 15969 MiB**,
+TG **18.79 vs 18.83**, PP@2k **480.0 vs 479.5**, coherent output. So the results
+below stand on the shipped binary; the master worktree is no longer needed.
 
 ### Why the whole 131072 window fits in 16 GB
 
