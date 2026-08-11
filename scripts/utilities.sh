@@ -1595,6 +1595,19 @@ patch_openclaw_config() {
         # allowFrom is deliberately unset: HomeBrain owns the whole box and the
         # channel policy (telegram dmPolicy=pairing) is the sender gate.
         .tools.elevated = {"enabled": true} |
+        # The cron tool ships a schema llama.cpp cannot compile. Its
+        # job.declarationKey carries an unanchored regex, and llama.cpp turns
+        # tool schemas into GBNF where a pattern must be anchored at BOTH ends,
+        # so it answers 400 "JSON schema conversion failed". One bad schema
+        # fails the WHOLE request, so every agent turn dies -- not just turns
+        # that would use cron.
+        #
+        # It only bites once the sender is a recognised owner (see
+        # commands.ownerAllowFrom), because that is what stops the owner-only
+        # policy from stripping cron. Proven on .58 against a captured live
+        # payload: the same 66 tools with cron removed answer 200, cron alone
+        # answers 400.
+        .tools.deny = ((.tools.deny // []) + ["cron"] | unique) |
         # .approvals.* only controls where approval PROMPTS get delivered. With
         # ask=off nothing ever prompts, so forwarding has nothing to forward.
         .approvals.exec.enabled = false |
