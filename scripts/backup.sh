@@ -216,7 +216,7 @@ mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$ST
 # Format: shell-sourceable, NOT a complete .env (we strip everything else).
 INSTANCE_SECRETS_FILE="$STAGING_DIR/instance_secrets.env"
 {
-    [[ -n "${HOMEBRAIN_EMAIL_KEY:-}" ]] && echo "HOMEBRAIN_EMAIL_KEY=${HOMEBRAIN_EMAIL_KEY}"
+    [[ -n "${HOMEBRAIN_EMAIL_KEY:-}" ]] && echo "HOMEBRAIN_EMAIL_KEY=$(pad_fernet_key "$HOMEBRAIN_EMAIL_KEY")"
     [[ -n "${HOMEBRAIN_SELF_NONCE:-}" ]] && echo "HOMEBRAIN_SELF_NONCE=${HOMEBRAIN_SELF_NONCE}"
 } > "$INSTANCE_SECRETS_FILE"
 if [[ -s "$INSTANCE_SECRETS_FILE" ]]; then

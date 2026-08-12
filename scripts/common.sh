@@ -535,6 +535,18 @@ env_value() {
     printf '%s' "$v"
 }
 
+# Re-pad a Fernet key that lost its trailing '='. url-safe base64 of 32 bytes
+# is always 44 characters; `IFS='=' read` and some .env parsers eat the pad.
+# Idempotent on a correct key. Empty stays empty.
+pad_fernet_key() {
+    local v="$1"
+    [[ -n "$v" ]] || return 0
+    local n=$(( ${#v} % 4 ))
+    [[ "$n" -eq 0 ]] && { printf '%s' "$v"; return 0; }
+    printf '%s' "$v"
+    printf '%*s' $((4 - n)) '' | tr ' ' '='
+}
+
 # Merge an archive's portable instance secrets (instance_secrets.env, written
 # by backup.sh) into .env. Used by restore.sh before any container starts.
 #
@@ -556,6 +568,13 @@ merge_instance_secrets() {
         # Strip any surrounding quotes the value picked up on the way out.
         value="${value%\"}"; value="${value#\"}"
         value="${value%\'}"; value="${value#\'}"
+        # A Fernet key is url-safe base64 of 32 bytes and always ends in '='.
+        # Older restores ate that padding; an archive taken from such a box
+        # still carries 43 characters. Re-pad on import so .env on disk is
+        # usable without waiting for the manager to notice.
+        if [[ "$key" == "HOMEBRAIN_EMAIL_KEY" ]]; then
+            value="$(pad_fernet_key "$value")"
+        fi
         update_env_var "$key" "$value"
         log_info "  imported ${key}"
     done < "$src"
@@ -1380,6 +1399,16 @@ ensure_staging_dir() {
         if ! backup_drive_mounted; then
             log_warn "No backup drive at $BACKUP_MOUNTDIR — staging the off-site archive on the internal disk."
             BACKUP_MOUNTDIR="$INTERNAL_BACKUP_DIR"
+            BACKUP_INTERNAL=true
+            export BACKUP_INTERNAL BACKUP_MOUNTDIR
+            # Remember it. restore.sh's next backup would otherwise load_env
+            # and look for /mnt/backup again — measured 2026-08-12 after a
+            # wizard off-site restore. Only write when .env already exists:
+            # tests and a probe must not create /opt/homebrain/.env.
+            if [[ -f "$ENV_FILE" ]]; then
+                update_env_var BACKUP_INTERNAL true
+                update_env_var BACKUP_MOUNTDIR "$BACKUP_MOUNTDIR"
+            fi
         fi
     fi
     mkdir -p "$BACKUP_MOUNTDIR" \
