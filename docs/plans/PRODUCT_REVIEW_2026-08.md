@@ -184,16 +184,20 @@ master password, all six containers healthy.
 Honesty notes, same class as TIER1:
 - The SFTP remote was `127.0.0.1:/home/admin/offsite-e2e` (survives the
   wipe). Software path proven. Not a WAN transfer of an 80 GB archive.
-- `HOMEBRAIN_EMAIL_KEY` in the archive was already 43 characters (padding
-  lost on an earlier restore of this box). This run did not shorten it
-  further. Dashboard re-pads on read; `.env` on disk is still 43.
-- Wizard restore does not set `BACKUP_INTERNAL=true`. After this run the
-  box would have looked for `/mnt/backup` on the next backup. Set by
-  hand afterwards. The wizard should set it when it stages internally.
+- Wizard restore did not set `BACKUP_INTERNAL=true`. After this run the
+  box would have looked for `/mnt/backup` on the next backup. **Fixed:**
+  `ensure_staging_dir` now writes `BACKUP_INTERNAL=true` when it falls
+  back to the internal disk.
+- An apparent 43-character `HOMEBRAIN_EMAIL_KEY` was a measurement error
+  (`awk -F=` eats a trailing `=`). The archive and `.env` were 44.
+  `merge_instance_secrets` still re-pads on import so a *genuinely*
+  truncated key from an older restore is repaired, not just re-read.
 
 The runbook in [`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md) still
 described a two-pass install-then-overwrite; the wizard restore door is
-the path that was walked.
+the path that was walked. The other door — provision, complete the wizard
+as a **new** box, then restore from the dashboard with the old passphrase
+— has not been walked on this hardware.
 
 ### B. Security — product stance, then hardening
 
@@ -281,9 +285,9 @@ Done:
   order that doc specifies. Put new values in Vaultwarden. Do not put them
   in the repo tree.
 - **A3.** Closed. No HomeBrain-operated heartbeat. See §A3.
-- **A4.** Walked 2026-08-12 on `homebraintest.local`. See §A4. Follow-up:
-  wizard restore should set `BACKUP_INTERNAL=true` when it stages on the
-  internal disk.
+- **A4.** Walked 2026-08-12 on `homebraintest.local`. See §A4.
+  `BACKUP_INTERNAL` now persists when staging internally. Fernet re-pad
+  on import kept as defense for older truncated archives.
 
 ### Phase 2 — Hardening that matches invariants already written
 

@@ -166,6 +166,43 @@ else
     fi
 fi
 
+echo "== ensure_staging_dir persists no-drive so the next backup does not look for a drive =="
+
+# Measured 2026-08-12: wizard off-site restore staged internally, then left
+# BACKUP_INTERNAL=false in .env. The next backup.sh looked for /mnt/backup.
+# Stub mountpoint/mount so this runs on hosts that lack mountpoint(8).
+harden_env_file() { :; }
+stub="$TMP/stub-persist"
+mkdir -p "$stub"
+printf '#!/bin/sh\nexit 1\n' > "$stub/mountpoint"
+printf '#!/bin/sh\nexit 1\n' > "$stub/mount"
+chmod +x "$stub/mountpoint" "$stub/mount"
+persist_env="$TMP/persist.env"
+: > "$persist_env"
+plain="$TMP/absent-persist"
+mkdir -p "$plain"
+internal="$TMP/var-backups-persist"
+(
+    PATH="$stub:$PATH"
+    ENV_FILE="$persist_env"
+    BACKUP_INTERNAL=false
+    BACKUP_MOUNTDIR="$plain"
+    INTERNAL_BACKUP_DIR="$internal"
+    ensure_staging_dir >/dev/null
+)
+got_internal="$(ENV_FILE="$persist_env" env_value BACKUP_INTERNAL)"
+got_dir="$(ENV_FILE="$persist_env" env_value BACKUP_MOUNTDIR)"
+if [ "$got_internal" = "true" ]; then
+    ok "writes BACKUP_INTERNAL=true into .env"
+else
+    bad "writes BACKUP_INTERNAL=true into .env (got '${got_internal:-<empty>}')"
+fi
+if [ "$got_dir" = "$internal" ]; then
+    ok "writes the internal staging path into .env"
+else
+    bad "writes the internal staging path into .env (got '${got_dir:-<empty>}')"
+fi
+
 # No fallback when the configured location is already usable: an archive lands
 # on the drive when there is one, and a no-drive box keeps its own setting.
 target="$TMP/internal/backups"

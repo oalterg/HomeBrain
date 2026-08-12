@@ -133,10 +133,9 @@ skipped, so only the one that was in flight repeats.
 ## Known limitation
 
 A full-system archive can be tens of gigabytes. The fetch refuses up front
-if the staging disk is too small. Wizard restore does not yet set
-`BACKUP_INTERNAL=true` when it stages on the internal disk — set that
-under Backup → Storage after handover, or the next backup will look for a
-drive that is not there.
+if the staging disk is too small. If the wizard stages on the internal disk
+it now records `BACKUP_INTERNAL=true` so the next backup does not look for
+a drive that is not there.
 
 Verified 2026-08-12: wizard restore, no backup drive, SFTP off-site (same
 host), canary restored. Verified 2026-07-24: fetch from a live WebDAV

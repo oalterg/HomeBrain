@@ -62,6 +62,16 @@ expect "trailing '=' is kept (the regression)" "$FERNET" "$(env_value HOMEBRAIN_
 expect "key is still 44 chars"                 "44"      "${#FERNET}"
 expect "a second secret merges too"            "abc123"  "$(env_value HOMEBRAIN_SELF_NONCE)"
 
+echo "== a key that already lost its padding is repaired on import =="
+
+ENV_FILE="$TMP/trunc.env"
+: > "$ENV_FILE"
+printf 'HOMEBRAIN_EMAIL_KEY=%s\n' "${FERNET%=}" > "$TMP/trunc.src"
+merge_instance_secrets "$TMP/trunc.src" >/dev/null 2>&1
+expect "43-char key is re-padded to 44" "$FERNET" "$(env_value HOMEBRAIN_EMAIL_KEY)"
+expect "pad_fernet_key is a no-op on a correct key" "$FERNET" "$(pad_fernet_key "$FERNET")"
+expect "pad_fernet_key is a no-op on empty"         ""       "$(pad_fernet_key "")"
+
 echo "== an existing value is replaced, not duplicated =="
 
 if [[ "$HAVE_GNU_SED" == true ]]; then
