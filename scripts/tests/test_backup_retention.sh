@@ -404,7 +404,7 @@ offsite_sync >/dev/null 2>&1
 unset -f rclone
 copies=$(grep -c '^copy ' "$TMP/copy-log" || true)
 staty=$(grep '^copy ' "$TMP/copy-log" \
-    | grep -c -- '--stats 10m --stats-one-line --stats-log-level NOTICE' || true)
+    | grep -c -- '--stats [0-9]\+m --stats-one-line --stats-log-level NOTICE' || true)
 if [ "${copies:-0}" -ge 2 ] && [ "${copies:-0}" = "${staty:-0}" ]; then
     ok "every rclone copy asks for periodic progress ($staty/$copies)"
 else

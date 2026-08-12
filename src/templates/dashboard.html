@@ -254,6 +254,11 @@
                 <h3>Off-site Copy</h3>
                 <p class="lede">Mirror the encrypted archives to another machine or cloud storage after each backup.</p>
                 <p id="os-sync-status" class="small mono" style="display:none; margin-bottom:10px;"></p>
+                <div class="meter" id="os-progress" style="display:none; margin-bottom:10px;">
+                    <div class="meter-head"><span>Uploading</span><span class="meter-value" id="os-progress-text">—</span></div>
+                    <div class="progress-bg"><div class="progress-fill" id="os-progress-bar"></div></div>
+                </div>
+                <p id="os-inventory" class="small faint" style="display:none; margin-bottom:10px;"></p>
                 <form onsubmit="saveOffsiteConfig(event)">
                     <label class="check" style="margin-bottom:14px;">
                         <input type="checkbox" id="os-enabled">

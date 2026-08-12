@@ -2201,14 +2201,35 @@ async function loadOffsiteConfig() {
 async function loadOffsiteStatus() {
     const el = document.getElementById('os-sync-status');
     if (!el) return;
+    const meter = document.getElementById('os-progress');
+    const inv = document.getElementById('os-inventory');
+    const hide = () => {
+        el.style.display = 'none';
+        if (meter) meter.style.display = 'none';
+        if (inv) inv.style.display = 'none';
+    };
     try {
         const res = await fetch('/api/backup/offsite/status', { credentials: 'include' });
         const d = await res.json();
-        if (!d.configured) { el.style.display = 'none'; return; }
+        if (!d.configured) { hide(); return; }
         el.style.display = '';
         el.style.color = '';
+        // A full archive uploads for hours over a home uplink, so "in progress"
+        // on its own is indistinguishable from a wedged transfer. The bar is
+        // only drawn once rclone has reported a line for THIS run.
+        const p = d.syncing ? d.progress : null;
+        if (meter) meter.style.display = p ? '' : 'none';
+        if (p) {
+            document.getElementById('os-progress-text').textContent =
+                `${p.done} / ${p.total} · ${p.percent}%`;
+            // Not setMeter(): it reddens past 85%, which is the right signal
+            // for a filling disk and the wrong one for an upload nearing done.
+            document.getElementById('os-progress-bar').style.width = p.percent + '%';
+        }
         if (d.syncing) {
-            el.innerText = '🔄 Off-site sync in progress…';
+            el.innerText = p
+                ? `🔄 Off-site sync — ${p.speed}${p.eta ? `, ETA ${p.eta}` : ''}`
+                : '🔄 Off-site sync starting…';
         } else if (d.last_sync_ts) {
             const when = new Date(d.last_sync_ts * 1000).toLocaleString();
             if (d.last_sync_ok) {
@@ -2220,7 +2241,22 @@ async function loadOffsiteStatus() {
         } else {
             el.innerText = 'Not yet synced.';
         }
-    } catch (e) { el.style.display = 'none'; }
+        if (inv) {
+            const i = d.inventory;
+            inv.style.display = i ? '' : 'none';
+            if (i) {
+                // Only the newest full is kept off-site (it costs hours to send);
+                // snapshots keep their own 90-day window. Naming both stops the
+                // count from reading as "9 of my backups went missing".
+                const parts = [];
+                if (i.fulls) parts.push(`${i.fulls} full backup${i.fulls === 1 ? '' : 's'}`);
+                if (i.snapshots) parts.push(`${i.snapshots} system snapshot${i.snapshots === 1 ? '' : 's'}`);
+                inv.innerText = parts.length
+                    ? `☁️ Stored off-site: ${parts.join(' · ')} · ${hbBytes(i.bytes)}`
+                    : '☁️ Nothing stored off-site yet.';
+            }
+        }
+    } catch (e) { hide(); }
 }
 
 function pollOffsiteStatusIfVisible() {

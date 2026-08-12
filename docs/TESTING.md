@@ -6,8 +6,26 @@ A living checklist for verifying HomeBrain changes on real hardware. Run this be
 
 ## Pre-flight
 
+The hardware test target is shared. More than one agent session runs against
+it, and `nuclear_reset.sh` / `provision.sh` / `restore.sh` wipe the machine.
+Take the lock before any write (`docker compose` included). A read is fine
+without it.
+
+```bash
+LOCK=/home/admin/using_test_target
+ssh admin@<target> "cat $LOCK 2>/dev/null"          # who has it, if anyone
+ssh admin@<target> "echo 'holder: <session-id> (<what you are doing>)' > $LOCK"
+ssh admin@<target> "rm -f $LOCK"                    # when you are done, including failure
+```
+
+`/home/admin` survives the reboots a reset causes (`/tmp` does not). A missing
+file does not mean idle: `pgrep -f 'scripts/(deploy|provision|nuclear_reset|restore|update)\.sh'`
+before claiming. If results contradict what you did, check the lock and `who`
+before believing them.
+
 Before running any tests, confirm the environment is ready:
 
+- [ ] You hold `$LOCK` (or you are only reading)
 - [ ] SSH into the target device (`ssh homebrain@homebrain.local` or via Pangolin URL)
 - [ ] `sudo systemctl is-active homebrain-manager` → `active`
 - [ ] `docker compose ps` — all expected containers are `Up` and healthy

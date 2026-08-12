@@ -1958,13 +1958,67 @@ def offsite_is_syncing():
     return os.path.isdir(f"/proc/{pid}")
 
 
+# rclone --stats-one-line, as common.sh:offsite_sync configures it:
+#   2026/08/12 20:28:10 NOTICE:  54.686 GiB / 97.608 GiB, 56%, 4.047 MiB/s, ETA 3h1m1s
+# Sizes and speed are kept as rclone formatted them — re-deriving human units
+# from bytes here would be a second implementation of something already on the
+# line. ETA is \S+ because rclone writes "-" when it cannot estimate one.
+_OFFSITE_STATS_RE = re.compile(
+    r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) NOTICE:\s+"
+    r"([\d.]+ \S+) / ([\d.]+ \S+), (\d+)%, ([\d.]+ \S+/s), ETA (\S+)"
+)
+
+
+def offsite_progress(started_at):
+    """How far the running mirror has got, from rclone's own stats lines.
+
+    There is no cheaper source: rclone reports progress only to its log, and
+    giving it an --rc port to query would mean a listening socket and
+    credentials for one number on one page.
+
+    `started_at` is when the current mirror began. Stats lines from previous
+    runs stay in the log forever (nothing rotates it), so without that fence a
+    mirror in its first minute — before rclone has written any line of its own
+    — would show last week's percentage as if it were live. Returns None until
+    this run has actually reported something.
+    """
+    try:
+        with open(f"{LOG_DIR}/backup.log", "rb") as f:
+            f.seek(0, os.SEEK_END)
+            start = max(0, f.tell() - 65536)
+            f.seek(start)
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    if start and lines:
+        lines.pop(0)  # first line of a mid-file read is a fragment
+    for line in reversed(lines):
+        m = _OFFSITE_STATS_RE.match(line.strip())
+        if not m:
+            continue
+        try:
+            when = datetime.strptime(m.group(1), "%Y/%m/%d %H:%M:%S").timestamp()
+        except ValueError:
+            return None
+        if when < started_at:
+            return None
+        return {
+            "done": m.group(2), "total": m.group(3),
+            "percent": int(m.group(4)),
+            "speed": m.group(5),
+            "eta": None if m.group(6) == "-" else m.group(6),
+        }
+    return None
+
+
 @app.route("/api/backup/offsite/status")
 @limiter.limit("30 per minute")
 def backup_offsite_status():
-    """Last-mirror outcome + whether one is running right now, for the
-    dashboard's Off-site Copy status line. Cheap: a lock probe and a read of
-    the small state file offsite_mirror already writes on every run — no
-    rclone invocation, so this is safe to poll.
+    """Last-mirror outcome, live progress, and what is on the remote, for the
+    dashboard's Off-site Copy status line. Cheap: a PID probe plus two small
+    local file reads — no rclone invocation, so this is safe to poll. The
+    inventory is whatever the last mirror recorded (common.sh:offsite_inventory)
+    for that reason.
     """
     env = get_env_config()
     if env.get("OFFSITE_ENABLED", "false") != "true":
@@ -1975,9 +2029,18 @@ def backup_offsite_status():
             state = json.load(f)
     except (OSError, ValueError):
         pass
+    syncing = offsite_is_syncing()
+    progress = None
+    if syncing:
+        try:
+            progress = offsite_progress(os.path.getmtime("/var/run/homebrain-offsite.running"))
+        except OSError:
+            pass  # mirror finished between the probe and here
     return jsonify({
         "configured": True,
-        "syncing": offsite_is_syncing(),
+        "syncing": syncing,
+        "progress": progress,
+        "inventory": state.get("inventory"),
         "last_sync_ts": state.get("ts"),
         "last_sync_ok": state.get("ok"),
     })

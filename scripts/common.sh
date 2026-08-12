@@ -1478,7 +1478,14 @@ offsite_sync() {
     # backups off-site..." and "Off-site mirror complete" — leaving no way to
     # tell a slow transfer from a wedged one, or to see WHICH archive is
     # moving, without inspecting rclone's argv on the live box.
-    local -a progress=(--stats 10m --stats-one-line --stats-log-level NOTICE)
+    #
+    # 1m, not 10m: these lines are the dashboard's only source of upload
+    # progress (app.py:offsite_progress parses the last one), and a status
+    # line that can sit ten minutes behind reads as a wedged transfer — the
+    # exact thing the stats exist to rule out. An 8-hour upload writes ~480
+    # lines at this interval; backup.log has no rotation, so do not tighten
+    # this further without adding some.
+    local -a progress=(--stats 1m --stats-one-line --stats-log-level NOTICE)
 
     # --no-update-modtime: without it, a file that is still sitting locally
     # gets its remote ModTime silently bumped to "now" on every sync even
@@ -1642,16 +1649,50 @@ offsite_mirror() {
     printf '%d\n' "$$" > "$OFFSITE_RUN_FILE" 2>/dev/null || true
     if offsite_sync; then
         rm -f "$OFFSITE_RUN_FILE" 2>/dev/null || true
-        printf '{"ts": %d, "ok": true}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
-            && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+        offsite_state_write true
         log_info "Off-site mirror complete."
         return 0
     fi
     rm -f "$OFFSITE_RUN_FILE" 2>/dev/null || true
-    printf '{"ts": %d, "ok": false}\n' "$(date +%s)" > "${OFFSITE_STATE_FILE}.tmp" \
-        && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
+    offsite_state_write false
     log_warn "OFF-SITE COPY FAILED — the local backup is fine; check the off-site settings on the Backup page."
     return 1
+}
+
+# What is actually sitting on the remote, as {"fulls":N,"snapshots":N,"bytes":N}
+# — or empty when the remote cannot be listed.
+#
+# Counted here rather than in the dashboard because /api/backup/offsite/status
+# is polled while the Backup page is open, and its whole contract is that it
+# costs a file read: making it list the remote would put a WAN round trip
+# behind every poll. A mirror run is the only moment the answer changes, so
+# that is where it gets recorded.
+offsite_inventory() {
+    local listing
+    listing=$(offsite_list 2>/dev/null) || return 1
+    jq -c '{
+        fulls:     ([.[] | select(.Name | contains("_system_") | not)] | length),
+        snapshots: ([.[] | select(.Name | contains("_system_"))]       | length),
+        bytes:     ([.[].Size] | add // 0)
+    }' <<<"$listing" 2>/dev/null
+}
+
+# Record the outcome of a mirror, refreshing the remote inventory when the
+# remote is reachable enough to answer.
+#
+# A failed mirror usually means the remote is unreachable, so the inventory
+# call fails too — in that case the previous one is carried forward instead of
+# being overwritten with nothing. "What we last saw off-site" stays on screen
+# through an outage, which is when the owner most wants to know it.
+offsite_state_write() {
+    local ok="$1" inv
+    inv=$(offsite_inventory) || inv=""
+    if [[ -z "$inv" && -r "$OFFSITE_STATE_FILE" ]]; then
+        inv=$(jq -c '.inventory // empty' "$OFFSITE_STATE_FILE" 2>/dev/null)
+    fi
+    printf '{"ts": %d, "ok": %s, "inventory": %s}\n' \
+        "$(date +%s)" "$ok" "${inv:-null}" > "${OFFSITE_STATE_FILE}.tmp" \
+        && mv "${OFFSITE_STATE_FILE}.tmp" "$OFFSITE_STATE_FILE"
 }
 
 # HomeBrain archives on the remote, as rclone lsjson (Name/Size/ModTime).
