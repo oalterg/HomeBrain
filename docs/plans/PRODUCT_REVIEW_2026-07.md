@@ -1,5 +1,8 @@
 # Product review & improvement plan — July 2026
 
+**Superseded for next actions by** [`PRODUCT_REVIEW_2026-08.md`](PRODUCT_REVIEW_2026-08.md).
+This document is the record of Phases 1–5 and why they were ordered that way.
+
 **Status:** Phases 1–3 complete (CI shipped in #125; Phase 2 in #115 #117 #118 +
 replica target; Phase 3 hardening in #120). Caddy LAN-HTTPS edge stays deferred —
 both production boxes are remote-mode (Pangolin provides end-to-end TLS) and the

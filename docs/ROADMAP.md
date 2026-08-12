@@ -1,6 +1,8 @@
 # HomeBrain Roadmap
 
-Track planned features and shipped releases. For questions or contributions, open a GitHub issue.
+**Your private cloud and agent. Nothing leaves the box.**
+
+Track planned features and shipped releases against that. For questions or contributions, open a GitHub issue.
 
 ---
 
@@ -38,18 +40,23 @@ Track planned features and shipped releases. For questions or contributions, ope
 
 ## Planned
 
-- **ARGB AI feedback Lighting** — CPU fan ARGB control on GPU/AI activity.
+Current action list: [`PRODUCT_REVIEW_2026-08.md`](plans/PRODUCT_REVIEW_2026-08.md) —
+value-add vs the stack, and the findings we will act on (disclosed credentials,
+bare-metal off-site restore, inbound agent content, container hardening).
+A cloud dead-man's switch is a non-goal: it would phone home. ARGB lighting
+is not on that list.
 
-The next two tiers of work are planned in detail:
+Earlier plans, kept for the reasoning:
 
-- [`TIER1_PROVE_IT.md`](plans/TIER1_PROVE_IT.md) — make the box prove the claims it makes, and
-  fail loudly when it cannot. Bare-metal restore in the wizard, a system self-test, email as a
-  second notification channel, a dead-man's switch.
-- [`TIER2_AND_PHASE0.md`](plans/TIER2_AND_PHASE0.md) — limits real deployments have already hit.
-  Moving Nextcloud data to a second drive, phone photo backup as a first-class feature.
-- [`PHOTOS_HARDENING.md`](plans/PHOTOS_HARDENING.md) — follow-ups to the shipped photo path, all
-  done (#167, #168) bar two: video thumbnails need `ffmpeg` in the Nextcloud image, and the files
-  still share the root disk, which a quota bounds but cannot fix.
+- [`TIER1_PROVE_IT.md`](plans/TIER1_PROVE_IT.md) — mostly shipped (#160).
+  Heartbeat Worker declined (would phone home). Remaining: bare-metal restore
+  onto replacement hardware.
+- [`TIER2_AND_PHASE0.md`](plans/TIER2_AND_PHASE0.md) — done. Drive move, photo backup,
+  household members.
+- [`PHOTOS_HARDENING.md`](plans/PHOTOS_HARDENING.md) — follow-ups to the shipped photo
+  path, all done (#167, #168) bar two: video thumbnails need `ffmpeg` in the Nextcloud
+  image, and the files still share the root disk, which a quota bounds but cannot fix.
+- [`PRODUCT_REVIEW_2026-07.md`](plans/PRODUCT_REVIEW_2026-07.md) — Phases 1–5 shipped.
 
 ---
 

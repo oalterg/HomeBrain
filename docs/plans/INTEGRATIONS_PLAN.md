@@ -1,6 +1,12 @@
 # OpenClaw × HomeBrain — Holistic Integration Plan
 
-OpenClaw is the *only* surface most users will ever touch — WhatsApp message → answer or action.
+**Historical.** The five MCP servers shipped. Do not implement from this
+file. Telegram is the only channel; WhatsApp was deleted and must not come
+back. Current wiring is `src/integrations.py` and the dashboard Connections
+card. The "WhatsApp" consent loop below is the chat-native confirm that now
+runs on Telegram.
+
+OpenClaw is the *only* surface most users will ever touch — Telegram message → answer or action.
 For that surface to feel like a real personal AI, it needs first-class, out-of-the-box access to:
 
 - **Home Assistant** (already works via long-lived access token; productionise it through MCP)

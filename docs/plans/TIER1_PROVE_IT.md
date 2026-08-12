@@ -1,8 +1,11 @@
 # Tier 1 — "Prove It" — Design & Implementation Plan
 
 **Status:** Item 0 shipped (#147). Items 1–4 on #160, each hardware-E2E'd on a wiped RPi4.
-Item 4 is half-shipped **by design**: `registrar/heartbeat.js` is source to deploy, not a
-deployed service, and the device-side toggle stays off until someone deploys it.
+Item 4 is **declined as a product**, not unfinished. A Worker heartbeat is a
+HomeBrain cloud (device id + health leaving the box on a timer). That
+contradicts *nothing leaves the box*. Device half stays off;
+`registrar/heartbeat.js` is not to be deployed. See
+[`PRODUCT_REVIEW_2026-08.md`](PRODUCT_REVIEW_2026-08.md) §A3.
 
 Two things #160 does *not* prove, written down so nobody reads more into it than it earned:
 - The off-site remote was real SFTP through rclone, but on the same machine. That proves the
