@@ -36,8 +36,15 @@ the master password that encrypted it → Restore. The wizard deploys a
 throwaway stack and then runs the ordinary restore into it. The box comes
 back using **that same master password**, not a new one.
 
-Walked 2026-08-12 on `homebraintest.local` (RPi4, no backup drive): canary
-in Nextcloud survived nuclear reset → wizard restore from off-site SFTP.
+Walked 2026-08-12 on `homebraintest.local` (RPi4, no backup drive):
+
+- **Wizard restore** — canary survived nuclear reset → Restore system from
+  off-site SFTP. The box comes back on the **old** master password.
+- **Two-pass** — nuclear reset → wizard as a **new** box → dashboard
+  restore from off-site with the old passphrase. Canary restored;
+  dashboard login is the **new** master password. All six containers
+  healthy.
+
 The fetch staged on the internal disk (`ensure_staging_dir`). Not proven:
 a WAN transfer of a multi-tens-of-GB archive.
 
