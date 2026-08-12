@@ -193,11 +193,10 @@ Honesty notes, same class as TIER1:
   `merge_instance_secrets` still re-pads on import so a *genuinely*
   truncated key from an older restore is repaired, not just re-read.
 
-The runbook in [`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md) still
-described a two-pass install-then-overwrite; the wizard restore door is
-the path that was walked. The other door — provision, complete the wizard
-as a **new** box, then restore from the dashboard with the old passphrase
-— has not been walked on this hardware.
+The other door — provision, complete the wizard as a **new** box, then
+restore from the dashboard with the old passphrase — walked the same day
+on the same box: canary restored, dashboard login is the **new** master
+password, all six containers healthy.
 
 ### B. Security — product stance, then hardening
 
