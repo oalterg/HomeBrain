@@ -172,13 +172,28 @@ owner chose) — not a ping to us. The device half stays behind
 A user who wants a watchdog can point `HEARTBEAT_URL` at an endpoint they
 run; we will not operate one.
 
-**A4. Bare-metal off-site restore onto replacement hardware is unproven.**
-The “drive died, box alive” path is dashboard-complete. The fire/theft path
-— the reason off-site exists — has a runbook in
-[`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md) and has not been walked on
-a box that did not already have `/mnt/backup`. TIER1 recorded this. Walk it
-once on real hardware, or stop implying the off-site copy has been proven
-end-to-end.
+**A4. Bare-metal off-site restore onto replacement hardware — walked 2026-08-12.**
+On `homebraintest.local` (RPi4, no backup drive, `BACKUP_INTERNAL` was not
+set). Canary file in Nextcloud → full backup → off-site SFTP →
+`nuclear_reset` → wizard **Restore system** (not the two-pass dashboard
+path) → `ensure_staging_dir` logged *No backup drive at /mnt/backup —
+staging the off-site archive on the internal disk* → fetch 63 MB →
+decrypt → unpack → canary present, dashboard login with the pre-reset
+master password, all six containers healthy.
+
+Honesty notes, same class as TIER1:
+- The SFTP remote was `127.0.0.1:/home/admin/offsite-e2e` (survives the
+  wipe). Software path proven. Not a WAN transfer of an 80 GB archive.
+- `HOMEBRAIN_EMAIL_KEY` in the archive was already 43 characters (padding
+  lost on an earlier restore of this box). This run did not shorten it
+  further. Dashboard re-pads on read; `.env` on disk is still 43.
+- Wizard restore does not set `BACKUP_INTERNAL=true`. After this run the
+  box would have looked for `/mnt/backup` on the next backup. Set by
+  hand afterwards. The wizard should set it when it stages internally.
+
+The runbook in [`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md) still
+described a two-pass install-then-overwrite; the wizard restore door is
+the path that was walked.
 
 ### B. Security — product stance, then hardening
 
@@ -266,8 +281,9 @@ Done:
   order that doc specifies. Put new values in Vaultwarden. Do not put them
   in the repo tree.
 - **A3.** Closed. No HomeBrain-operated heartbeat. See §A3.
-- **A4.** Walk bare-metal restore onto replacement hardware once. Record
-  the result in `DISASTER_RECOVERY.md` (proven / not, and what broke).
+- **A4.** Walked 2026-08-12 on `homebraintest.local`. See §A4. Follow-up:
+  wizard restore should set `BACKUP_INTERNAL=true` when it stages on the
+  internal disk.
 
 ### Phase 2 — Hardening that matches invariants already written
 

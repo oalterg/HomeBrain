@@ -30,7 +30,24 @@ Restore. That path is fully dashboard-driven.
 
 ## Procedure
 
-### 1. Install HomeBrain on the new hardware, normally
+The setup wizard has a **Restore system** checkbox. That is the path for a
+replacement box: factory password → off-site details → pick the archive →
+the master password that encrypted it → Restore. The wizard deploys a
+throwaway stack and then runs the ordinary restore into it. The box comes
+back using **that same master password**, not a new one.
+
+Walked 2026-08-12 on `homebraintest.local` (RPi4, no backup drive): canary
+in Nextcloud survived nuclear reset → wizard restore from off-site SFTP.
+The fetch staged on the internal disk (`ensure_staging_dir`). Not proven:
+a WAN transfer of a multi-tens-of-GB archive.
+
+The two-pass path below still works when the wizard is already past and the
+box is up. The new box keeps **its own** master password; you type the old
+one only as the archive passphrase.
+
+### Alternative: install first, then restore from the dashboard
+
+#### 1. Install HomeBrain on the new hardware, normally
 
 Provision and complete the setup wizard exactly as you would for a new box.
 Let it generate a new master password and write it down.
@@ -42,7 +59,7 @@ and Home Assistant it creates are replaced wholesale in step 4.
 The new box keeps its **own** master password afterwards. It does not inherit
 the old one, and you do not need them to match.
 
-### 2. Give it somewhere to stage the download
+#### 2. Give it somewhere to stage the download
 
 Dashboard → **Backup** → **Storage**.
 
@@ -50,7 +67,7 @@ Dashboard → **Backup** → **Storage**.
 - If this box has no drive, tick **"No drive — keep backups on the internal
   disk"**. The download needs a writable staging area either way.
 
-### 3. Point it at your off-site copy
+#### 3. Point it at your off-site copy
 
 Dashboard → **Backup** → **Off-site Copy**. Enter the details from the old box
 and save, then press the connection test. You do not need to enable the
@@ -59,7 +76,7 @@ scheduled copy yet.
 Once saved, archives held only at the off-site remote appear in the restore
 list marked with ☁️.
 
-### 4. Restore
+#### 4. Restore
 
 Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
@@ -69,7 +86,7 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
   the dashboard will sit on the restore log — that is normal. If there is not
   enough free space the restore refuses up front rather than filling the disk.
 
-### 5. Afterwards
+#### 5. Afterwards
 
 - Log in with the **new** box's master password from step 1.
 - Nextcloud, Home Assistant, Vaultwarden and the AI agent's workspace come back
@@ -115,11 +132,13 @@ skipped, so only the one that was in flight repeats.
 
 ## Known limitation
 
-Steps 1–3 have to happen before you can restore, so recovery onto new hardware
-is a two-pass operation: install, then overwrite. Restoring directly from the
-setup wizard is not supported yet — the wizard runs before a stack exists, and
-the restore needs one.
+A full-system archive can be tens of gigabytes. The fetch refuses up front
+if the staging disk is too small. Wizard restore does not yet set
+`BACKUP_INTERNAL=true` when it stages on the internal disk — set that
+under Backup → Storage after handover, or the next backup will look for a
+drive that is not there.
 
-Verified on 2026-07-24: fetch from a live WebDAV remote onto a box with a
-different master password, including the cross-instance key import, up to the
-point of unpacking into the stack.
+Verified 2026-08-12: wizard restore, no backup drive, SFTP off-site (same
+host), canary restored. Verified 2026-07-24: fetch from a live WebDAV
+remote onto a box with a different master password, including the
+cross-instance key import, up to the point of unpacking into the stack.

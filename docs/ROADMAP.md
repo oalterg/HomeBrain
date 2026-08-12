@@ -42,15 +42,14 @@ Track planned features and shipped releases against that. For questions or contr
 
 Current action list: [`PRODUCT_REVIEW_2026-08.md`](plans/PRODUCT_REVIEW_2026-08.md) —
 value-add vs the stack, and the findings we will act on (disclosed credentials,
-bare-metal off-site restore, inbound agent content, container hardening).
-A cloud dead-man's switch is a non-goal: it would phone home. ARGB lighting
-is not on that list.
+inbound agent content, container hardening). Bare-metal no-drive restore
+walked 2026-08-12. A cloud dead-man's switch is a non-goal: it would phone
+home. ARGB lighting is not on that list.
 
 Earlier plans, kept for the reasoning:
 
-- [`TIER1_PROVE_IT.md`](plans/TIER1_PROVE_IT.md) — mostly shipped (#160).
-  Heartbeat Worker declined (would phone home). Remaining: bare-metal restore
-  onto replacement hardware.
+- [`TIER1_PROVE_IT.md`](plans/TIER1_PROVE_IT.md) — shipped (#160). Heartbeat
+  Worker declined. No-drive off-site restore walked 2026-08-12.
 - [`TIER2_AND_PHASE0.md`](plans/TIER2_AND_PHASE0.md) — done. Drive move, photo backup,
   household members.
 - [`PHOTOS_HARDENING.md`](plans/PHOTOS_HARDENING.md) — follow-ups to the shipped photo
