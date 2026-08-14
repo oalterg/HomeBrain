@@ -1501,7 +1501,7 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
         # llama.cpp puts Glimmer/Qwen thoughts in delta.reasoning_content
-        # (deepseek-shaped). OpenClaw's openai-completions default is
+        # (deepseek-shaped). The openai-completions provider default is
         # thinkingFormat=openai, which does not surface that field even when
         # /reasoning stream is on. reasoning=true marks the model as
         # thinking-capable so the Control UI and /reasoning actually render it.
@@ -1523,10 +1523,17 @@ patch_openclaw_config() {
         # An explicit generous ceiling instead. Assigning also overwrites any
         # stale 0 an earlier release wrote, which is what the old del() was
         # for — the schema rejects 0, so it must not survive.
-        .models.providers.llamacpp.timeoutSeconds = 900 |
+        #
+        # Raised 900 -> 1800 on 2026-08-14, when the 27B slot moved to an
+        # 81920-token window. Worst case on the 16 GB box is now a full-depth
+        # prompt prefilling at ~270 t/s (~303 s) followed by a maxTokens 8192
+        # completion at ~17 t/s (~479 s) — ~782 s, already 87% of the old
+        # ceiling. The llama-server --timeout default is 3600, so 1800
+        # stays the binding limit and the server will not cut us off first.
+        .models.providers.llamacpp.timeoutSeconds = 1800 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
-        # OpenClaw's schema default is 30m. HomeBrain wakes the local GPU
+        # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
         .browser.noSandbox = true |

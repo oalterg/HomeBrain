@@ -11,7 +11,7 @@
         "baseUrl": "http://127.0.0.1:8001/v1",
         "apiKey": "1234",
         "api": "openai-completions",
-        "timeoutSeconds": 900,
+        "timeoutSeconds": 1800,
         "models": [
           {
             "id": "Muse-Glimmer-30B-UD-Q4_K_XL",
