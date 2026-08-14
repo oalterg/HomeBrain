@@ -783,3 +783,147 @@ Unmeasured / caveats: one session, one prompt shape, n=3 per gated cell. TG
 figures are greedy 200–256-token completions. Quantization *quality* was not
 measured — the Q3-vs-Q4 quality claim is the model card's, not ours. Whisper was
 `--no-gpu` throughout, so none of this headroom is shared with speech.
+
+## 2026-08-14 — Qwen3.8-27B IQ4_XS (supersedes the Qwen3.6-27B entry)
+
+`unsloth/Qwen3.8-27B-GGUF` at IQ4_XS — 15,705,861,088 bytes (14,978 MiB) against
+16,304 MiB usable, on the pinned **b10361**. Arch is `qwen35`, the same
+Gated-DeltaNet hybrid as the Qwen3.6-27B it replaces, so the DeltaNet rules carry
+over unchanged: `-ngl 99`, no `-ot`, no `--no-kv-offload`, and `-fa` with an
+explicit `--cache-type-k/v` (mandatory on AMD Vulkan).
+
+**Shipped: ctx 81920, q4_0 KV, `-b 2048 -ub 1024`, 17.14 t/s TG / 438.7 PP@2k.**
+
+### Why KV type is the context lever here
+
+GGUF metadata: `block_count 65` (64 + 1 MTP), `full_attention_interval 4`,
+`head_count_kv 4`, `key_length`/`value_length` **256**, native
+`context_length 262144`.
+
+Only 16 of 64 layers are full-attention, but those 16 carry a fat cache —
+4 KV heads × 256 head_dim × 2 (K+V) × 16 layers = **32,768 values per token**:
+
+| KV type | per token | 32768 | 49152 | 65536 | 81920 |
+|---|---:|---:|---:|---:|---:|
+| q8_0 | 34.0 KiB | 1088 MiB | 1632 MiB | 2176 MiB | 2720 MiB |
+| q4_0 | 18.0 KiB | 576 MiB | 864 MiB | 1152 MiB | 1440 MiB |
+
+Measured: q8_0 minus q4_0 at ctx 32768 was **+512 MiB** (15,661 vs 15,149) —
++16 KiB/token, the theoretical delta to the byte.
+
+| q8_0 ctx | idle | headroom | TG | PP@2k |
+|---:|---:|---:|---:|---:|
+| 32768 | 15661 | 643 | 17.18 | 456.9 |
+| 49152 | 16237 | **67** | crash | — |
+| 65536 | 16135 | 169 | 11.43 | 69.5 |
+
+**8-bit KV caps this model between 32K and 49K — roughly half the q4_0 ceiling.**
+q4_0 is what makes 81920 reachable; it costs context, it does not save it.
+
+### Degradation is silent, and shallow probes miss it
+
+VRAM pins at **~16,110 MiB** for every ctx ≥ 81920 and stays there. Past that the
+driver spills to GTT instead of failing, so the server keeps answering — slower.
+A 200-token completion never touches the deep cache, so shallow TG reports full
+speed well past the point the cache stops fitting.
+
+Fit ladder, q4_0, `-b 2048 -ub 1024`, `-t 6`:
+
+| ctx | idle VRAM | headroom | TG | PP@2k | note |
+|---:|---:|---:|---:|---:|---|
+| 32768 | 15149 | 1155 | 17.29 | 453.8 | |
+| 49152 | 15469 | 834 | 17.17 | 439.7 | |
+| 57344 | 15629 | 675 | 17.18 | — | |
+| 65536 | 15640 | 664 | **14.91** | — | value-specific dip, see below |
+| 73728 | 15949 | 355 | 17.17 | — | |
+| **81920** | **16109** | **195** | **17.15** | **438.7** | **shipped** |
+| 98304 | 15973 | 331 | 12.60 | — | spilling |
+| 114688 | 16111 | 193 | 11.41 | 70.8 | spilling: PP −84% |
+| 131072 | 16112 | 192 | crash | — | dies on first request |
+
+### Eviction gate — the deciding test
+
+Protocol: fresh shallow TG → prompt filling ~92% of the window → re-measure ×2.
+Eviction signature is VRAM dropping and staying down while shallow TG collapses.
+
+| ctx | headroom | fill | fill PP | TG fresh → sustained | VRAM through fill | verdict |
+|---:|---:|---:|---:|---|---|---|
+| 49152 | 834 | 43,704 | 329.3 | 17.17 → 17.15 | 15470 flat | PASS |
+| 57344 | 675 | 50,983 | 312.2 | 17.18 → 17.13 | 15630 flat | PASS |
+| 65536 | 664 | 58,262 | 296.4 | 14.91 → 14.89 | 15640 flat | PASS, −13% TG |
+| 73728 | 355 | 65,541 | 283.2 | 17.17 → 17.14 | 15949 flat | PASS |
+| **81920** | **194** | **72,849** | **270.0** | **17.15 → 17.14** | **16110 flat** | **PASS — max** |
+| 98304 | 330 | aborted | 65 | 12.60 | — | degraded, not run to completion |
+
+Nothing evicts at or below 81920 — VRAM is byte-stable across a full-depth fill
+and TG returns to its shallow rate. 81920 holds full throughput on only 194 MiB
+of headroom, below the ~250 MiB knee seen on Muse Glimmer; that leaves little
+margin for a heavier future build, and 73728 (355 MiB) is the conservative
+fallback at identical throughput.
+
+**Oddity worth recording: ctx 65536 specifically is slow.** It runs 14.91 t/s
+while both 57344 and 73728 hold 17.17 — not a monotonic ceiling, a
+value-specific dip. The Qwen3.6-27B measured 14.93 t/s at 64K on this same card,
+so it reproduces across two models of this architecture. Avoid 65536.
+
+### Micro-batch
+
+At ctx 49152, q4_0:
+
+| `-b`/`-ub` | idle VRAM | headroom | TG | PP@2k |
+|---|---:|---:|---:|---:|
+| 2048/512 | 15110 | 1194 | 12.68 | 99.2 |
+| **2048/1024** | 15469 | 835 | **17.17** | **438.9** |
+| 4096/2048 | 15831 | 473 | 17.14 | — |
+| 4096/4096 | 16117 | 187 | 15.32 | 236.3 |
+
+`-ub 512` frees 359 MiB (≈20K more q4_0 tokens) but costs 26% TG and 77% PP — a
+bad trade even when context is the priority.
+
+### MTP — the throughput alternative, rejected for context
+
+This GGUF ships its MTP block (`blk.64.nextn.*`), reported
+`unused -- ignoring` until `--spec-type draft-mtp` is passed. It works, at ~68%
+draft acceptance (mean draft length 2.36–2.39), and costs ~684 MiB:
+
+| config | idle | headroom | TG | PP@2k |
+|---|---:|---:|---:|---:|
+| ctx 32768 + MTP n2 | 15833 | 471 | **30.37** | 403.3 |
+| ctx 40960 + MTP n2 | 16025 | 279 | **30.42** | 402.8 |
+| ctx 49152 + MTP n2 | 16217 | 87 | 30.41 | 394.6 |
+| ctx 81920 + MTP n2 | 16242 | **62** | 19.49 | **91.0** |
+
+**+76% TG** against the 17.29 baseline — the same magnitude the Qwen3.6-27B got
+from MTP. But the memory it needs comes straight out of the context budget: at
+81920 headroom falls to 62 MiB and PP collapses 438 → 91. `ctx 40960 +
+--spec-type draft-mtp --spec-draft-n-max 2` is the max-throughput operating
+point (30.42 t/s at 276 MiB headroom). **Max context was chosen over max
+throughput**; switch to the 40960 MTP config if that preference ever inverts.
+
+### Two things that free nothing
+
+- **The MTP tensors are already not resident.** The whole `blk.64` block
+  (~265 MB) loads only when `--spec-type draft-mtp` is passed; otherwise
+  llama.cpp lists every tensor as `unused -- ignoring`. Offloading them to CPU
+  frees 0 MiB.
+- **There are no vision tensors in this file.** Grep for `v.blk`/`vision`/
+  `mmproj` in the load log returns 0. The image encoder is a separate
+  `mmproj-*.gguf` this entry never loads, so vision costs nothing today — and
+  enabling it would *add* 1–2 GB, spending context rather than saving it.
+
+### Harness note
+
+Early passes produced scattered 0 t/s "failures" that did not reproduce
+standalone (a config flagged as crashing ran at 17.14 t/s when started by hand).
+Two causes, both fixed in `bench-qwen38-27b.sh`: `/health` flips to OK before the
+server can serve, so cells were measured mid-allocation; and the drain between
+cells waited on VRAM only, letting a dying server keep port 8099 and answer the
+next cell's health check. Readiness is now gated on a real completion and the
+drain waits for process exit plus port release. Any 0 t/s row in an older
+`q38-*.out` is harness noise, not a model result.
+
+Unmeasured / caveats: one session, one prompt shape. TG figures are greedy
+200-token completions; the deep-fill PP figures are single runs. 98304 was
+aborted mid-fill once degradation was unambiguous rather than run to a verdict.
+Contexts between 81920 and 98304 (e.g. 90112) were not tested. Quantization
+*quality* was not measured. Whisper was `--no-gpu` throughout.

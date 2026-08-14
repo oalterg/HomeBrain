@@ -11,12 +11,15 @@
         "baseUrl": "http://127.0.0.1:8001/v1",
         "apiKey": "1234",
         "api": "openai-completions",
-        "timeoutSeconds": 900,
+        "timeoutSeconds": 1800,
         "models": [
           {
-            "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
-            "name": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
-            "reasoning": false,
+            "id": "Muse-Glimmer-30B-UD-Q4_K_XL",
+            "name": "Muse-Glimmer-30B-UD-Q4_K_XL",
+            "reasoning": true,
+            "compat": {
+              "thinkingFormat": "deepseek"
+            },
             "input": [
               "text"
             ],
@@ -41,14 +44,17 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL"
+        "primary": "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL"
       },
       "models": {
-        "llamacpp/Qwen3.6-35B-A3B-UD-Q5_K_XL": {}
+        "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL": {}
       },
       "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
+      },
+      "heartbeat": {
+        "every": "1h"
       }
     },
     "list": [
