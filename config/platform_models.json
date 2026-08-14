@@ -1,5 +1,5 @@
 {
-  "default": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
+  "default": "Muse-Glimmer-30B-UD-Q4_K_XL",
   "models": [
     {
       "id": "Qwen3.6-35B-A3B-UD-Q5_K_XL",
@@ -20,9 +20,9 @@
         "tg_ts": 28.97,
         "pp_ts": 617.7,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b10107, q8 KV, -ub 2048, -ot blk.20-39, ctx 81920, whisper on CPU",
-        "notes": "DEFAULT (2026-07-25). Moved from -ub 4096/b9381 to -ub 2048/b10107 after the shipped ub4096 config was measured EVICTING 1-in-2 on the pinned build itself (guarded, single-server, drained: 28.7 t/s sustained on a good run vs 22.2 t/s and VRAM -477 MiB on a bad one, from a byte-identical starting allocation). -ub 2048 is deterministic instead: two runs produced identical idle (15197) and identical post-fill (15230) VRAM, 2/2 PASS on b10107, 3/3 on b9381. Net vs the old default's GOOD runs: sustained TG 28.7 -> 29.0, headroom 898 -> 1107 MiB, deep-fill PP 565 -> 625, and the 50%% eviction risk removed. The one cost is shallow-prompt PP@2k 758 -> 618 (-19%%); the micro-batch is what sizes the compute buffer, and that buffer relocating to GTT mid-fill was the whole failure. For maximum margin (headroom 2231) use -ot blk.18-39 with -ub 2048 at ~-4%% TG. See docs/BENCHMARKS.md (2026-07-25)."
+        "notes": "DEFAULT (2026-07-25). Moved from -ub 4096/b9381 to -ub 2048/b10107 after the shipped ub4096 config was measured EVICTING 1-in-2 on the pinned build itself (guarded, single-server, drained: 28.7 t/s sustained on a good run vs 22.2 t/s and VRAM -477 MiB on a bad one, from a byte-identical starting allocation). -ub 2048 is deterministic instead: two runs produced identical idle (15197) and identical post-fill (15230) VRAM, 2/2 PASS on b10107, 3/3 on b9381. Net vs the old default's GOOD runs: sustained TG 28.7 -> 29.0, headroom 898 -> 1107 MiB, deep-fill PP 565 -> 625, and the 50%% eviction risk removed. The one cost is shallow-prompt PP@2k 758 -> 618 (-19%%); the micro-batch is what sizes the compute buffer, and that buffer relocating to GTT mid-fill was the whole failure. For maximum margin (headroom 2231) use -ot blk.18-39 with -ub 2048 at ~-4%% TG. See docs/BENCHMARKS.md (2026-07-25). Superseded as the catalog default by Muse-Glimmer-30B-UD-Q4_K_XL (2026-08-14)."
       },
-      "default": true
+      "default": false
     },
     {
       "id": "Qwen3.6-27B-IQ4_XS",
@@ -46,14 +46,14 @@
       "min_size_bytes": 15000000000,
       "context_window": 131072,
       "min_healthy_vram_mb": 15500,
-      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"high\"}'",
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"medium\"}'",
       "benchmark": {
         "tg_ts": 18.83,
         "pp_ts": 479.5,
         "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp master 689e227, q8_0 KV, -ub 1024, ctx 131072, whisper on CPU",
-        "notes": "Selectable as of the b10361 pin. muse-glimmer support merged upstream 2026-08-10 (PR #26841) and first reached a release tag on 2026-08-11 (b10356+); the earlier b10107 pin could not load this file at all. b10361 was measured against the master build it was validated on and is identical: idle 15968 vs 15969 MiB, TG 18.79 vs 18.83, PP 480.0 vs 479.5. Dense 30B + 1.8B ViT perception encoder. The whole 131072 window fits in 16 GB because the KV is unusually cheap: 52 layers of which only 13 are full-attention (the rest sliding-window 2048) and GQA with 2 KV heads. -ub 1024 is the lever that matters -- it sizes the compute buffer, and -ub 2048 costs ~460 MiB more for the same throughput. Headroom is 335 MiB idle / 275 MiB after a 108292-token fill, just above the ~250 MiB knee where TG and PP collapse together; 3/3 byte-identical starts and TG recovered to 18.81 t/s after the deep fill, but there is little room for a heavier future build (b9672 once idled +545 MiB at an identical config). If that happens, q4_0 KV holds the same 131072 window at 720 MiB headroom for ~1% TG. The shipped DFlash drafter (dflash-kquant.gguf, --spec-type draft-dflash) is a LOSS here: it costs ~2.3 GiB, dropping TG 21.6 -> 15.3 and PP 425 -> 39 t/s at 21% acceptance -- it wants the 24 GB card the model card targets. UD-Q3_K_XL is the roomier alternative at 21.61 t/s TG / 2977 MiB headroom (ctx 81920, -ub 2048) if throughput matters more than quantization quality. reasoning_strength (low/medium/high/xhigh) is a chat-template kwarg and defaults to high, which spends ~900 reasoning tokens on even a trivial question; drop it to medium for latency-sensitive chat. See docs/BENCHMARKS.md (2026-08-10)."
+        "notes": "DEFAULT (2026-08-14). Selectable as of the b10361 pin. muse-glimmer support merged upstream 2026-08-10 (PR #26841) and first reached a release tag on 2026-08-11 (b10356+); the earlier b10107 pin could not load this file at all. b10361 was measured against the master build it was validated on and is identical: idle 15968 vs 15969 MiB, TG 18.79 vs 18.83, PP 480.0 vs 479.5. Dense 30B + 1.8B ViT perception encoder. The whole 131072 window fits in 16 GB because the KV is unusually cheap: 52 layers of which only 13 are full-attention (the rest sliding-window 2048) and GQA with 2 KV heads. -ub 1024 is the lever that matters -- it sizes the compute buffer, and -ub 2048 costs ~460 MiB more for the same throughput. Headroom is 335 MiB idle / 275 MiB after a 108292-token fill, just above the ~250 MiB knee where TG and PP collapse together; 3/3 byte-identical starts and TG recovered to 18.81 t/s after the deep fill, but there is little room for a heavier future build (b9672 once idled +545 MiB at an identical config). If that happens, q4_0 KV holds the same 131072 window at 720 MiB headroom for ~1% TG. The shipped DFlash drafter (dflash-kquant.gguf, --spec-type draft-dflash) is a LOSS here: it costs ~2.3 GiB, dropping TG 21.6 -> 15.3 and PP 425 -> 39 t/s at 21% acceptance -- it wants the 24 GB card the model card targets. UD-Q3_K_XL is the roomier alternative at 21.61 t/s TG / 2977 MiB headroom (ctx 81920, -ub 2048) if throughput matters more than quantization quality. reasoning_strength (low/medium/high/xhigh) is a chat-template kwarg; shipped at medium. high spends ~900 reasoning tokens on even a trivial question; xhigh stalled multi-call turns on the 16 GB box. See docs/BENCHMARKS.md (2026-08-10)."
       },
-      "default": false
+      "default": true
     }
   ],
   "llama_server": {

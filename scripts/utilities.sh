@@ -1519,6 +1519,9 @@ patch_openclaw_config() {
         .models.providers.llamacpp.timeoutSeconds = 900 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        # OpenClaw's schema default is 30m. HomeBrain wakes the local GPU
+        # agent once an hour.
+        .agents.defaults.heartbeat.every = "1h" |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
