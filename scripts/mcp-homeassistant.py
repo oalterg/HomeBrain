@@ -35,7 +35,8 @@ from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    Consent, audit, consent_required, decrypt_secret, err, ok, serve, unavailable,
+    MCP_CONTENT, MCP_MEDIA_PATH, Consent, audit, consent_required,
+    decrypt_secret, err, mcp_image, ok, serve, unavailable,
 )
 
 HA_ACCOUNTS_FILE = os.environ.get("HA_ACCOUNTS_FILE", "")
@@ -69,6 +70,21 @@ RAW_NUCLEAR_DENYLIST = {
     ("homeassistant", "stop"),
     ("homeassistant", "reload_core_config"),
 }
+
+# Camera stills. The agent must not HTTP-fetch these itself — ha.state used
+# to leak `access_token` / `entity_picture?token=` and the model would then
+# try `/api/camera_proxy` with that token (or the LLAT it does not have).
+CAMERA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_CAMERA_PROXY = {
+    "camera": "/api/camera_proxy/",
+    "image": "/api/image_proxy/",
+}
+_ATTR_ALWAYS_REDACT = {"access_token"}
+_PICTURE_REDACT_MARKERS = ("token=", "camera_proxy", "image_proxy")
+_CAMERA_IMAGE_HINT = (
+    "Use ha.camera_image to fetch a still. Do not HTTP-fetch camera URLs "
+    "or use tokens from entity attributes — the MCP server holds the HA token."
+)
 
 
 def _decrypt(blob: str) -> str:
@@ -156,6 +172,73 @@ def _http(account: dict, method: str, path: str, body: Any = None,
         return 0, str(e)
 
 
+def _http_bytes(account: dict, path: str,
+                timeout: int = 20) -> tuple[int, bytes, str]:
+    """GET a binary body. Returns (status, body, content_type_or_error)."""
+    base = (account.get("base_url") or "").rstrip("/")
+    tok = _decrypt(account.get("token") or "")
+    if not (base and tok):
+        return 0, b"", "account missing base_url or token"
+    req = urllib.request.Request(f"{base}{path}", method="GET")
+    req.add_header("Authorization", f"Bearer {tok}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip()
+            return r.status, r.read(), ctype
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()[:300], ""
+    except urllib.error.URLError as e:
+        return 0, b"", str(e)
+
+
+def _sanitize_attributes(attrs: Any) -> dict:
+    """Drop camera (and similar) tokens the agent would otherwise fetch with."""
+    if not isinstance(attrs, dict):
+        return {}
+    out = dict(attrs)
+    for k in _ATTR_ALWAYS_REDACT:
+        out.pop(k, None)
+    pic = out.get("entity_picture")
+    if isinstance(pic, str) and any(m in pic for m in _PICTURE_REDACT_MARKERS):
+        out.pop("entity_picture", None)
+    return out
+
+
+def _media_dir() -> str:
+    return os.environ.get(
+        "HOMEBRAIN_HA_MEDIA_DIR",
+        os.path.expanduser("~/.openclaw/workspace/media"),
+    )
+
+
+def _write_still(entity_id: str, body: bytes, mime: str) -> str | None:
+    ext = ".png" if mime == "image/png" else ".jpg"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in entity_id)
+    try:
+        dest_dir = _media_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+        path = os.path.join(dest_dir, safe + ext)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, body)
+        finally:
+            os.close(fd)
+        return path
+    except OSError:
+        return None
+
+
+def _sniff_mime(body: bytes, declared: str) -> str | None:
+    mime = (declared or "").lower()
+    if mime.startswith("image/"):
+        return mime
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body.startswith(b"\x89PNG"):
+        return "image/png"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -217,13 +300,18 @@ def t_state(args: dict) -> dict:
         return err("entity not found")
     if code != 200 or not isinstance(body, dict):
         return unavailable(f"HA unreachable: {body}")
-    return ok(
+    eid_out = body.get("entity_id") or eid
+    payload = dict(
         account=account["name"],
-        entity_id=body.get("entity_id"),
+        entity_id=eid_out,
         state=body.get("state"),
-        attributes=body.get("attributes") or {},
+        attributes=_sanitize_attributes(body.get("attributes") or {}),
         last_changed=body.get("last_changed"),
     )
+    domain = eid_out.split(".", 1)[0] if "." in eid_out else ""
+    if domain in _CAMERA_PROXY:
+        payload["hint"] = _CAMERA_IMAGE_HINT
+    return ok(**payload)
 
 
 def t_area_list(args: dict) -> dict:
@@ -411,6 +499,62 @@ def t_call_service_raw(args: dict) -> dict:
               response=resp if isinstance(resp, list) else None)
 
 
+def t_camera_image(args: dict) -> dict:
+    """Fetch a still from a camera (or image) entity via HA's proxy.
+
+    Uses the stored LLAT internally. The agent never sees the token and
+    must not reconstruct /api/camera_proxy requests itself.
+    """
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    eid = (args.get("entity_id") or "").strip()
+    if not eid or "." not in eid:
+        return err("entity_id is required (e.g. camera.front_door)")
+    domain = eid.split(".", 1)[0]
+    prefix = _CAMERA_PROXY.get(domain)
+    if not prefix:
+        return err(
+            f"'{eid}' is not a camera or image entity",
+            hint="Pass a camera.* (or image.*) entity_id. "
+                 "Use ha.entity_search to find cameras.",
+        )
+    code, body, ctype = _http_bytes(account, f"{prefix}{eid}", timeout=20)
+    if code == 404:
+        return err("entity not found")
+    if code == 401:
+        return unavailable("Home Assistant rejected the stored token")
+    if code != 200:
+        err_txt = body.decode("utf-8", "replace")[:200] if body else ctype
+        return unavailable(f"camera proxy failed ({code}): {err_txt}")
+    if len(body) > CAMERA_IMAGE_MAX_BYTES:
+        audit("homeassistant", "camera_image.too_large",
+              account=account["name"], entity_id=eid, bytes=len(body))
+        return err(
+            f"still is {len(body)} bytes (cap {CAMERA_IMAGE_MAX_BYTES})",
+        )
+    mime = _sniff_mime(body, ctype)
+    if not mime:
+        return err(f"HA did not return an image (content-type {ctype!r})")
+    path = _write_still(eid, body, mime)
+    audit("homeassistant", "camera_image.ok",
+          account=account["name"], entity_id=eid, bytes=len(body),
+          path=path)
+    envelope = ok(
+        account=account["name"],
+        entity_id=eid,
+        mime_type=mime,
+        size=len(body),
+        path=path,
+        hint=("Still is attached. Deliver the image to the user. "
+              "Do not fetch /api/camera_proxy or use HA tokens."),
+    )
+    envelope[MCP_CONTENT] = [mcp_image(body, mime)]
+    if path:
+        envelope[MCP_MEDIA_PATH] = path
+    return envelope
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": ("Configured account name to act on. Omit when only one "
@@ -435,7 +579,9 @@ TOOLS = [
                                     "account": _ACCOUNT_PROP},
                      "required": ["query"]}},
     {"name": "ha.state",
-     "description": "Fetch current state and attributes for one entity_id.",
+     "description": ("Fetch current state and attributes for one entity_id. "
+                     "Camera access tokens and proxy URLs are stripped — use "
+                     "ha.camera_image for a still, never HTTP-fetch HA."),
      "inputSchema": {"type": "object",
                      "properties": {"entity_id": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
@@ -525,6 +671,23 @@ TOOLS = [
          },
          "required": ["domain", "service"],
      }},
+    {"name": "ha.camera_image",
+     "description": (
+         "Fetch a still image from a Home Assistant camera (camera.*) or "
+         "image (image.*) entity. The MCP server authenticates to HA — do "
+         "NOT curl /api/camera_proxy, do NOT use entity_picture URLs or "
+         "access_token attributes, do NOT pass an API token. The still is "
+         "attached to the tool result for delivery to the user."
+     ),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "entity_id": {"type": "string",
+                           "description": "e.g. camera.front_door"},
+             "account": _ACCOUNT_PROP,
+         },
+         "required": ["entity_id"],
+     }},
 ]
 
 
@@ -539,6 +702,7 @@ DISPATCH = {
     "ha.history": t_history,
     "ha.call_service": t_call_service,
     "ha.call_service_raw": t_call_service_raw,
+    "ha.camera_image": t_camera_image,
 }
 
 
@@ -550,4 +714,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-homeassistant", "0.4.0", TOOLS, dispatch)
+    serve("homebrain-homeassistant", "0.5.0", TOOLS, dispatch)

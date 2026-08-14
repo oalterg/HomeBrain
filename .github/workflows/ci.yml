@@ -41,7 +41,8 @@ jobs:
                             scripts/tests/test_backup_discovery.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
-                            scripts/tests/test_offsite_progress.py -q
+                            scripts/tests/test_offsite_progress.py \
+                            scripts/tests/test_mcp_homeassistant.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard

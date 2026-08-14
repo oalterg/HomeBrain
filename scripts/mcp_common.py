@@ -20,6 +20,7 @@ See INTEGRATIONS_PLAN.md for the rationale.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -27,6 +28,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+# Handler envelopes may stash extra MCP content blocks under this key.
+# `tool_call_result` lifts them onto the wire and strips them from the
+# JSON the model reads, so a camera JPEG does not get base64'd twice.
+MCP_CONTENT = "_mcp_content"
+MCP_MEDIA_PATH = "_mcp_media_path"
 
 # ---------------------------------------------------------------------------
 # Envelopes
@@ -51,6 +58,36 @@ def consent_required(action_id: str, summary: str, expires_in: int = 60) -> dict
         "action_id": action_id,
         "summary": summary,
         "expires_in_seconds": expires_in,
+    }
+
+
+def mcp_image(data: bytes, mime_type: str = "image/jpeg") -> dict:
+    """An MCP image content block (SDK 1.29: top-level data + mimeType)."""
+    return {
+        "type": "image",
+        "data": base64.b64encode(data).decode("ascii"),
+        "mimeType": mime_type,
+    }
+
+
+def tool_call_result(result: dict) -> dict:
+    """Shape a handler envelope into an MCP tools/call result.
+
+    Text is the envelope minus `_mcp_*` keys. Image/audio blocks in
+    `_mcp_content` are appended as sibling content entries. A
+    `_mcp_media_path` is appended as a `MEDIA:` line so OpenClaw's
+    Telegram delivery can `sendPhoto` without the model fetching URLs.
+    """
+    extra = result.get(MCP_CONTENT) or []
+    media_path = result.get(MCP_MEDIA_PATH)
+    text_body = {k: v for k, v in result.items() if not str(k).startswith("_mcp_")}
+    text = json.dumps(text_body, default=str)
+    if media_path:
+        text = f"{text}\nMEDIA: {media_path}"
+    return {
+        "content": [{"type": "text", "text": text}, *extra],
+        "isError": not result.get("ok", False)
+                    and "requires_confirmation" not in result,
     }
 
 
@@ -228,9 +265,9 @@ def serve(server_name: str,
     """Tiny JSON-RPC 2.0 stdio loop, MCP 2025-06-18 spec.
 
     `tools` is the static tool catalogue (returned from tools/list).
-    `dispatch(name, args) -> dict` is the user-supplied handler. Whatever
-    dict it returns becomes the tool result's `content[0].text`. The handler
-    should return one of the envelope helpers above.
+    `dispatch(name, args) -> dict` is the user-supplied handler. The
+    envelope it returns is wrapped by `tool_call_result` (text JSON plus
+    any `_mcp_content` / `_mcp_media_path` the handler attached).
     """
     for line in sys.stdin:
         line = line.strip()
@@ -274,12 +311,7 @@ def serve(server_name: str,
                 result = err(f"unhandled exception: {e}")
             _write({
                 "jsonrpc": "2.0", "id": msg_id,
-                "result": {
-                    "content": [{"type": "text",
-                                 "text": json.dumps(result, default=str)}],
-                    "isError": not result.get("ok", False)
-                                and "requires_confirmation" not in result,
-                },
+                "result": tool_call_result(result),
             })
         elif method == "notifications/initialized":
             pass
