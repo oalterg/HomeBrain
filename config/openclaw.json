@@ -16,7 +16,10 @@
           {
             "id": "Muse-Glimmer-30B-UD-Q4_K_XL",
             "name": "Muse-Glimmer-30B-UD-Q4_K_XL",
-            "reasoning": false,
+            "reasoning": true,
+            "compat": {
+              "thinkingFormat": "deepseek"
+            },
             "input": [
               "text"
             ],

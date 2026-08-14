@@ -1500,6 +1500,13 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
+        # llama.cpp puts Glimmer/Qwen thoughts in delta.reasoning_content
+        # (deepseek-shaped). OpenClaw's openai-completions default is
+        # thinkingFormat=openai, which does not surface that field even when
+        # /reasoning stream is on. reasoning=true marks the model as
+        # thinking-capable so the Control UI and /reasoning actually render it.
+        .models.providers.llamacpp.models[0].reasoning = true |
+        .models.providers.llamacpp.models[0].compat.thinkingFormat = "deepseek" |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
         # timeout (schema minimum 1) — not the keep-model-warm knob
