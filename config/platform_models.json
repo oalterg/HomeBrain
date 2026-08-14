@@ -25,17 +25,18 @@
       "default": false
     },
     {
-      "id": "Qwen3.6-27B-IQ4_XS",
-      "filename": "Qwen3.6-27B-IQ4_XS.gguf",
-      "url": "https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF/resolve/main/Qwen3.6-27B-IQ4_XS.gguf",
+      "id": "Qwen3.8-27B-IQ4_XS",
+      "filename": "Qwen3.8-27B-IQ4_XS.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-IQ4_XS.gguf",
       "min_size_bytes": 15000000000,
-      "context_window": 32768,
-      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --spec-type draft-mtp --spec-draft-n-max 2 --chat-template-kwargs '{\"preserve_thinking\": true}'",
+      "context_window": 81920,
+      "min_healthy_vram_mb": 15700,
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve",
       "benchmark": {
-        "tg128_ts": 30.0,
-        "pp512_ts": 430,
-        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, DDR4, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b9186/b9381, ngl=99, MTP n_max=2, ctx 32768",
-        "notes": "Hybrid DeltaNet SSM+attn (16/64 standard attn layers, 48 DeltaNet). RS must stay GPU-local \u2014 nkvo breaks DeltaNet fused kernel (garbage output). ngl<99 drops to ~2 t/s; partial offload defeats DeltaNet GPU fusion. ctv/ctk with fa is mandatory on AMD Vulkan. MTP CLIFF: the draft-mtp speculative path accelerates ONLY at ctx <= ~34816 (cliff between 34816 and 36864); above it TG snaps back to the ~17.5 baseline. ctx was 49152 (over the cliff, MTP gave ~+2%); lowered to 32768 to capture the full MTP gain: ~17.1 -> ~30 t/s (+75%) with n_max=2, q4_0 KV. Crossing any of {ctx>~35K, n_max>=3, q8 KV} silently disables speculation. NOT fixed by b9381 (DeltaNet-specific; the MoE 35B cliff WAS fixed by b9381). See docs/BENCHMARKS.md '27B cliff localization'."
+        "tg_ts": 17.14,
+        "pp_ts": 438.7,
+        "measured_on": "AMD RX 9060 XT, AMD Ryzen 5 5600 6-core, Vulkan + RADV_PERFTEST=rm_kq=1, llama.cpp b10361, q4_0 KV, -ub 1024, ctx 81920, whisper on CPU",
+        "notes": "Supersedes Qwen3.6-27B-IQ4_XS (2026-08-14). Same `qwen35` Gated-DeltaNet hybrid, so the DeltaNet rules carry over unchanged: -ngl 99, no -ot, no nkvo (partial offload / nkvo break the fused kernel), and -fa with explicit ctk/ctv is mandatory on AMD Vulkan. 64 layers, only 16 full-attention (full_attention_interval 4) but those carry a FAT cache -- 4 KV heads x 256 head_dim x 2 x 16 = 32768 values/token, i.e. 18 KiB/token at q4_0 and 34 KiB/token at q8_0. That is why KV type is the context lever: q8_0 was measured at +512 MiB over q4_0 at ctx 32768 (the theoretical delta to the byte) and caps the model between 32K and 49K, roughly HALF the q4_0 ceiling -- q4_0 is what makes 81920 reachable. ctx 81920 is the eviction-gate maximum: VRAM pinned at 16110 MiB (194 MiB headroom) across a 72849-token fill with TG 17.15 -> 17.14 and byte-stable VRAM. Above it degrades rather than crashing, because the driver spills to GTT instead of failing: 98304 -> 12.6 t/s, 114688 -> 11.41 t/s with PP 70.8, 131072 dies on the first request. Shallow probes do NOT detect this -- a 200-token completion never touches the deep cache and reports full speed well past the point the cache stops fitting. Oddity: ctx 65536 specifically runs at 14.91 t/s (-13%) while both 57344 and 73728 hold 17.17; the Qwen3.6-27B measured 14.93 at 64K on this same card, so the dip is reproducible and value-specific, not a monotonic ceiling. -ub 1024 sizes the compute buffer and is the pick: -ub 512 frees 359 MiB but costs 26% TG and 77% PP. THROUGHPUT ALTERNATIVE: this GGUF carries its MTP block (blk.64.nextn.*, reported 'unused -- ignoring' until --spec-type draft-mtp is passed). Enabling it costs ~684 MiB and yields 30.4 t/s (+76%) at 68% draft acceptance, but only below ~49152 -- at ctx 81920 headroom falls to 62 MiB and PP collapses 438 -> 91. ctx 40960 + '--spec-type draft-mtp --spec-draft-n-max 2' is the max-throughput point (30.42 t/s, 276 MiB headroom). Max context was chosen over max throughput here. Vision is NOT available: the image encoder ships as a separate mmproj-*.gguf that this entry does not load, so no vision tensors are resident at all. See docs/BENCHMARKS.md (2026-08-14)."
       },
       "default": false
     },
