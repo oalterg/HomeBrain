@@ -14,6 +14,9 @@ Privacy posture (see INTEGRATIONS_PLAN.md §3.2):
     It writes the file onto THIS HomeBrain under the OpenClaw workspace
     and returns a `media` path for the message tool. The envelope never
     carries base64 or file bytes (except small UTF-8 text ≤ TEXT_INGEST_MAX).
+  * `nc.files_upload` is ACT tier — capped at 20 MB, audited. Reads a
+    file already on THIS box (Telegram inbound or workspace) and PUTs it
+    to WebDAV. The envelope never carries base64 or file bytes.
   * Bigger files: use `nc.files_share`; the user opens the link themselves
     so the LM never ingests the bytes.
 
@@ -28,6 +31,8 @@ Environment:
   HOMEBRAIN_OPENCLAW_WORKSPACE OpenClaw workspace root
                                (default ~/.openclaw/workspace); used to
                                make the returned `media` path relative.
+  HOMEBRAIN_OC_MEDIA_INBOUND   OpenClaw Telegram inbound store
+                               (default ~/.openclaw/media/inbound).
 
 Legacy fallback (single-account installs pre-multi-account):
   NC_BASE_URL, NC_USER, NC_TOKEN, NC_TOKEN_FILE — used only if
@@ -62,8 +67,10 @@ LEGACY_TOKEN_FILE = os.environ.get("NC_TOKEN_FILE", "")
 LEGACY_TOKEN = os.environ.get("NC_TOKEN", "")
 
 MAX_DOWNLOAD_BYTES = 20_000_000
+MAX_UPLOAD_BYTES = MAX_DOWNLOAD_BYTES
 TEXT_INGEST_MAX = 20_000  # characters
 DOWNLOAD_TIMEOUT = 60
+UPLOAD_TIMEOUT = 120
 
 DAV_NS = "{DAV:}"
 
@@ -205,12 +212,36 @@ _EXT_MIME = {
     "png": "image/png",
     "gif": "image/gif",
     "webp": "image/webp",
+    "heic": "image/heic",
+    "heif": "image/heif",
     "pdf": "application/pdf",
     "txt": "text/plain",
     "md": "text/markdown",
+    "csv": "text/csv",
     "doc": "application/msword",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "odt": "application/vnd.oasis.opendocument.text",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+
+_HEIC_BRANDS = {b"heic", b"heix", b"heif", b"mif1", b"msf1"}
+_OFFICE_ZIP_EXT = {"docx", "xlsx", "odt"}
+
+_UPLOAD_MIME = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "image/heic", "image/heif",
+    "application/pdf",
+    "text/plain", "text/markdown", "text/csv",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _filename_ext(filename: str) -> str:
+    base = (filename or "").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[-1].lower() if "." in base else ""
 
 
 def _sniff_mime(head: bytes, declared: str, filename: str) -> str:
@@ -223,13 +254,16 @@ def _sniff_mime(head: bytes, declared: str, filename: str) -> str:
         return "image/gif"
     if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if len(head) >= 12 and head[4:8] == b"ftyp" and head[8:12].lower() in _HEIC_BRANDS:
+        return "image/heic"
     if head.startswith(b"%PDF"):
         return "application/pdf"
+    ext = _filename_ext(filename)
+    if head.startswith(b"PK") and ext in _OFFICE_ZIP_EXT:
+        return _EXT_MIME[ext]
     ctype = (declared or "").split(";", 1)[0].strip().lower()
     if ctype and ctype not in ("application/octet-stream", "httpd/unix-directory"):
         return ctype
-    base = (filename or "").rsplit("/", 1)[-1]
-    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
     return _EXT_MIME.get(ext, "application/octet-stream")
 
 
@@ -242,6 +276,20 @@ def _media_dir() -> str:
     return os.environ.get(
         "HOMEBRAIN_NC_MEDIA_DIR",
         os.path.expanduser("~/.openclaw/workspace/media/nextcloud"),
+    )
+
+
+def _workspace_dir() -> str:
+    return os.environ.get(
+        "HOMEBRAIN_OPENCLAW_WORKSPACE",
+        os.path.expanduser("~/.openclaw/workspace"),
+    )
+
+
+def _inbound_dir() -> str:
+    return os.environ.get(
+        "HOMEBRAIN_OC_MEDIA_INBOUND",
+        os.path.expanduser("~/.openclaw/media/inbound"),
     )
 
 
@@ -334,6 +382,159 @@ def _http_get_capped(account, dav_path, dest_path, max_bytes,
         except OSError:
             pass
         return 0, 0, {}
+
+
+def _is_under(path: str, root: str) -> bool:
+    try:
+        real_path = os.path.realpath(path)
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except ValueError:
+        return False
+
+
+def _allowed_media_roots() -> list[str]:
+    return [_workspace_dir(), _inbound_dir(), _media_dir()]
+
+
+def _resolve_local_media(raw: str) -> tuple[str | None, dict | None]:
+    """Resolve an agent-supplied path to a real file under an allowed root.
+
+    Accepts a workspace-relative path, an absolute path, or
+    `media://inbound/<filename>` from OpenClaw's Telegram inbound store.
+    Symlinks that escape the allowlist are rejected via realpath.
+    """
+    s = (raw or "").strip()
+    if not s or "\x00" in s:
+        return None, err("local_path is required" if not s else "local_path is invalid")
+    prefix = "media://inbound/"
+    if s.startswith(prefix):
+        rest = s[len(prefix):]
+        if (not rest or rest.endswith("/") or "/" in rest.replace("\\", "/")
+                or rest in (".", "..")):
+            return None, err("local_path is invalid")
+        candidate = os.path.join(_inbound_dir(), rest)
+    elif os.path.isabs(s):
+        candidate = s
+    else:
+        ws_cand = os.path.join(_workspace_dir(), s)
+        parts = s.replace("\\", "/").split("/")
+        in_cand = os.path.join(_inbound_dir(), parts[-1]) if "inbound" in parts else ""
+        if os.path.isfile(ws_cand):
+            candidate = ws_cand
+        elif in_cand and os.path.isfile(in_cand):
+            candidate = in_cand
+        else:
+            candidate = ws_cand
+    real = os.path.realpath(candidate)
+    if not any(_is_under(real, root) for root in _allowed_media_roots()):
+        return None, err(
+            "local_path is not under an allowed directory",
+            hint="Pass the inbound MediaPath or a path under the OpenClaw workspace.",
+        )
+    if not os.path.isfile(real):
+        return None, err("local file not found")
+    return real, None
+
+
+def _local_file_meta(path: str) -> tuple[int, str, dict | None]:
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 0, "", err("local file not found")
+    if size <= 0:
+        return 0, "", err("local file is empty")
+    if size > MAX_UPLOAD_BYTES:
+        return size, "", err(
+            f"file is {size} bytes (cap {MAX_UPLOAD_BYTES})"
+        )
+    try:
+        with open(path, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return 0, "", err("could not read local file")
+    mime = _sniff_mime(head, "", os.path.basename(path))
+    if mime not in _UPLOAD_MIME:
+        return size, mime, err(
+            f"file type {mime} is not allowed",
+            hint="Photos and common documents only.",
+        )
+    return size, mime, None
+
+
+def _dest_forbidden(norm: str) -> str | None:
+    lower = (norm or "").lower()
+    if (lower == "/documents (encrypted)"
+            or lower.startswith("/documents (encrypted)/")):
+        return ("dest is an end-to-end encrypted folder; "
+                "the app-password user cannot write there")
+    if lower == "/instantupload" or lower.startswith("/instantupload/"):
+        return ("dest is the phone auto-upload folder; "
+                "use /Photos/From chat/ or /Documents/From chat/")
+    return None
+
+
+def _as_bool(v, default: bool = False) -> bool:
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes")
+
+
+def _http_put_file(account, dav_path, local_path, mime, size,
+                   timeout=UPLOAD_TIMEOUT) -> tuple[int, bytes, dict]:
+    """Stream a local file as WebDAV PUT. Does not buffer the body in RAM."""
+    auth = _auth_header(account)
+    if not auth:
+        return 0, b"account missing user or token", {}
+    base = (account.get("base_url") or "").rstrip("/")
+    url = f"{base}{dav_path}"
+    try:
+        with open(local_path, "rb") as f:
+            req = urllib.request.Request(url, data=f, method="PUT")
+            req.add_header("Authorization", auth)
+            req.add_header("Content-Type", mime or "application/octet-stream")
+            req.add_header("Content-Length", str(size))
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    return r.status, r.read(200), dict(r.headers)
+            except urllib.error.HTTPError as e:
+                try:
+                    body = e.read(200)
+                except OSError:
+                    body = b""
+                return e.code, body, dict(e.headers or {})
+    except OSError:
+        return 0, b"could not read local file", {}
+    except (urllib.error.URLError, TimeoutError):
+        return 0, b"", {}
+
+
+def _ensure_dav_parents(account, dest_file: str) -> dict | None:
+    """MKCOL each parent of dest_file. 405 = already exists. None = ok."""
+    parts = [p for p in dest_file.strip("/").split("/") if p]
+    if len(parts) <= 1:
+        return None
+    acc = ""
+    for seg in parts[:-1]:
+        acc += "/" + seg
+        code, body, _ = _http(account, "MKCOL", _dav_path(account, acc))
+        if code in (201, 200, 405, 301):
+            continue
+        if code in (401, 0):
+            return unavailable("Nextcloud unreachable or unauthorised")
+        if code == 403:
+            return err(
+                "access denied",
+                hint="This path may be end-to-end encrypted or not shared "
+                     "with the app-password user.",
+            )
+        return err(
+            f"could not create folder {acc}: {code}",
+            body=(body[:200].decode("utf-8", "replace") if body else ""),
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +813,133 @@ def t_files_download(args: dict) -> dict:
     return ok(**payload)
 
 
+_UPLOAD_HINT = "Saved on Nextcloud at `nc_path`. Do not paste the contents."
+_DEST_FOLDER_HINT = "dest must be a file path, or a folder ending with /."
+
+
+def t_files_upload(args: dict) -> dict:
+    """PUT a local inbound/workspace file onto Nextcloud. Consent-gated.
+
+    Reads bytes from disk and streams them to WebDAV. Never accepts or
+    returns base64. local_path must resolve under the workspace, the
+    OpenClaw inbound store, or HOMEBRAIN_NC_MEDIA_DIR.
+    """
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    local_raw = (args.get("local_path") or "").strip()
+    dest_raw = (args.get("dest") or "").strip()
+    overwrite = _as_bool(args.get("overwrite"), False)
+    if not local_raw:
+        return err("local_path is required")
+    if not dest_raw:
+        return err("dest is required")
+
+    local, ebody = _resolve_local_media(local_raw)
+    if ebody is not None:
+        return ebody
+    size, mime, ebody = _local_file_meta(local)
+    if ebody is not None:
+        return ebody
+
+    dest_is_folder = dest_raw.endswith("/")
+    dest = _normalize_nc_path(dest_raw)
+    if not dest:
+        return err("dest is invalid")
+    if dest_is_folder:
+        fname = os.path.basename(local)
+        if not fname or fname in (".", ".."):
+            return err("dest is invalid")
+        dest = _normalize_nc_path(dest + "/" + fname)
+        if not dest:
+            return err("dest is invalid")
+    if dest == "/":
+        return err("dest is a folder", hint=_DEST_FOLDER_HINT)
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+
+    dav = _dav_path(account, dest)
+    code, _, head_headers = _http(account, "HEAD", dav, timeout=15)
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
+    ctype = _header(head_headers, "Content-Type")
+    if code == 200 and "httpd/unix-directory" in ctype.lower():
+        return err("dest is a folder", hint=_DEST_FOLDER_HINT)
+    if code == 200 and not overwrite:
+        return err(
+            "dest already exists",
+            hint="Pass overwrite=true to replace it.",
+        )
+
+    summary = (
+        f"Nextcloud ({account['name']}): upload {os.path.basename(local)} "
+        f"({size} bytes, {mime}) to {dest}"
+    )
+    if overwrite and code == 200:
+        summary += " (overwrite)"
+    if not confirm:
+        action_id = Consent.issue(
+            "nextcloud", summary,
+            {"account": account["name"], "local_path": local,
+             "dest": dest, "overwrite": overwrite, "size": size, "mime": mime},
+            chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    local, ebody = _resolve_local_media(redeemed.get("local_path") or local)
+    if ebody is not None:
+        return ebody
+    size, mime, ebody = _local_file_meta(local)
+    if ebody is not None:
+        return ebody
+    dest = _normalize_nc_path(redeemed.get("dest") or dest)
+    if not dest or dest == "/":
+        return err("dest is invalid")
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+
+    mk = _ensure_dav_parents(redeem_account, dest)
+    if mk is not None:
+        return mk
+    code, body, _ = _http_put_file(
+        redeem_account, _dav_path(redeem_account, dest), local, mime, size)
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
+    if code == 409:
+        return err("parent folder missing or dest is a folder")
+    if code not in (200, 201, 204):
+        return err(f"upload failed: {code}",
+                   body=body[:200].decode("utf-8", "replace") if body else "")
+    audit("nextcloud", "upload", account=redeem_account["name"],
+          path=dest, bytes=size, mime=mime)
+    return ok(
+        account=redeem_account["name"],
+        nc_path=dest,
+        filename=os.path.basename(dest),
+        mime_type=mime,
+        size=size,
+        hint=_UPLOAD_HINT,
+    )
+
+
 def t_files_share(args: dict) -> dict:
     """Create a public read-only share link. Just call this directly."""
     account, ebody = _account_or_err(args)
@@ -827,6 +1155,29 @@ TOOLS = [
                                     "account": _ACCOUNT_PROP,
                                     "confirmation_token": {"type": "string"}},
                      "required": ["path"]}},
+    {"name": "nc.files_upload",
+     "description": (
+         "Upload a file already on this box to Nextcloud. local_path from "
+         "MediaPath; dest e.g. /Photos/From chat/x.jpg. Don't paste bytes."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "local_path": {
+                             "type": "string",
+                             "description": "Inbound MediaPath or workspace path.",
+                         },
+                         "dest": {
+                             "type": "string",
+                             "description": "NC path, e.g. /Photos/From chat/x.jpg",
+                         },
+                         "overwrite": {
+                             "type": "boolean",
+                             "description": "Replace existing dest. Default false.",
+                         },
+                         "account": _ACCOUNT_PROP,
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["local_path", "dest"]}},
     {"name": "nc.files_share",
      "description": "Create a public read-only share link.",
      "inputSchema": {"type": "object",
@@ -873,6 +1224,7 @@ DISPATCH = {
     "nc.files_list": t_files_list,
     "nc.files_search": t_files_search,
     "nc.files_download": t_files_download,
+    "nc.files_upload": t_files_upload,
     "nc.files_share": t_files_share,
     "nc.notes_list": t_notes_list,
     "nc.notes_get": t_notes_get,
@@ -889,4 +1241,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-nextcloud", "0.4.0", TOOLS, dispatch)
+    serve("homebrain-nextcloud", "0.5.0", TOOLS, dispatch)
