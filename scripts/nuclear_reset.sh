@@ -35,8 +35,9 @@ source "$SCRIPT_DIR/common.sh"
 
 # Load .env to get correct data paths (NEXTCLOUD_DATA_DIR, VAULT_DATA_DIR, etc.)
 # On re-run after power loss .env may already be deleted — that's fine, defaults apply.
+# Do not `source` the file: unquoted `$argon2id$…` aborts under set -u.
 if [[ -f "$ENV_FILE" ]]; then
-    set -a; source "$ENV_FILE"; set +a
+    export_env_file "$ENV_FILE" || true
 fi
 
 LOCK_FILE="/var/run/homebrain-nuclear-reset.lock"
