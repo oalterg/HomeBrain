@@ -87,8 +87,9 @@ No external tunnel; access via `homebrain.local`.
 ### Provisioning / Setup wizard
 
 - [ ] Fresh-install: run `provision.sh` end-to-end without errors
-- [ ] Setup wizard loads at first boot (`/setup` route)
-- [ ] Deployment mode selector (Local / Remote Access) sets `.env` correctly
+- [ ] Setup wizard is reachable as soon as provision finishes (reboot is not a gate)
+- [ ] HomeBrain (GPU): wizard defaults to Local network, copy names Telegram as the remote path, Pangolin is optional and not auto-selected even if `factory_config` has Newt creds
+- [ ] HomeCloud (no GPU): Local / Remote access; factory Newt creds auto-select Remote; initializing without re-typing the secret succeeds
 - [ ] Credentials page shows generated username + password exactly once, then deletes staging file
 - [ ] Re-running `deploy.sh` is idempotent (no errors, services remain healthy)
 

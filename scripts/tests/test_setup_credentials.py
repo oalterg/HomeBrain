@@ -187,6 +187,54 @@ def test_a_legacy_box_whose_db_password_is_the_master_password_is_left_alone():
         h.close()
 
 
+FACTORY_TUNNEL = {
+    "NEWT_ID": "newt-factory",
+    "NEWT_SECRET": "factory-secret-value",
+    "PANGOLIN_ENDPOINT": "https://pan.example",
+    "PANGOLIN_DOMAIN": "box.example.com",
+}
+
+
+def test_remote_setup_uses_factory_secret_when_form_sends_empty():
+    """The wizard must not require re-typing a secret already in factory_config.
+
+    JS used to block a blank secret even though /start_setup falls back to
+    factory NEWT_SECRET. Empty string is what the fixed wizard sends.
+    """
+    h = _fresh()
+    try:
+        hb.get_factory_config = lambda: dict(FACTORY_TUNNEL)
+        r = h.start(
+            deployment_mode="remote",
+            pangolin_id="newt-factory",
+            pangolin_secret="",
+            pangolin_endpoint="https://pan.example",
+            pangolin_domain="box.example.com",
+        )
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert h.written("NEWT_SECRET") == "factory-secret-value"
+        assert h.written("NEWT_ID") == "newt-factory"
+    finally:
+        h.close()
+
+
+def test_remote_setup_form_secret_overrides_factory():
+    h = _fresh()
+    try:
+        hb.get_factory_config = lambda: dict(FACTORY_TUNNEL)
+        r = h.start(
+            deployment_mode="remote",
+            pangolin_id="newt-factory",
+            pangolin_secret="override-secret",
+            pangolin_endpoint="https://pan.example",
+            pangolin_domain="box.example.com",
+        )
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert h.written("NEWT_SECRET") == "override-secret"
+    finally:
+        h.close()
+
+
 def _run_standalone():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

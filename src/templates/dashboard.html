@@ -410,8 +410,11 @@
                         </svg>
                     </span>
                     <h4>Tunnel inactive</h4>
-                    <p>This device is in Local Network mode. Switch to Remote Access during setup to expose services
-                        through a tunnel.</p>
+                    {% if has_gpu %}
+                    <p>The dashboard stays on this network. Pair Telegram to use the agent from your phone. A public tunnel is optional.</p>
+                    {% else %}
+                    <p>This device is reachable on your home network only. A Pangolin tunnel is how you reach the apps from outside.</p>
+                    {% endif %}
                 </div>
 
                 {% elif tunnel.mode == 'pangolin' %}
