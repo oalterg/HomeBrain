@@ -378,6 +378,10 @@ def _spec_nextcloud() -> dict | None:
             "NC_ACCOUNTS_FILE": NC_ACCOUNTS_FILE,
             "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            "HOMEBRAIN_OPENCLAW_WORKSPACE": os.path.join(OPENCLAW_DIR, "workspace"),
+            # NC MCP writes downloads here so the agent can send them with
+            # the message tool's media= parameter.
+            "HOMEBRAIN_NC_MEDIA_DIR": os.path.join(OPENCLAW_DIR, "workspace", "media", "nextcloud"),
             **_mcp_consent_env(),
         },
     }

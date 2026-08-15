@@ -10,9 +10,12 @@ Personal → Security → App passwords flow.
 Privacy posture (see INTEGRATIONS_PLAN.md §3.2):
   * `nc.files_list` returns paths and sizes only, never contents.
   * `nc.files_search` returns paths matching the query, never bodies.
-  * `nc.files_download` is REVEAL tier — capped at 2 MB and audited.
-  * Bigger files: agent gets a one-shot share link; the user opens it
-    themselves so the LM never ingests the bytes.
+  * `nc.files_download` is REVEAL tier — capped at 20 MB and audited.
+    It writes the file onto THIS HomeBrain under the OpenClaw workspace
+    and returns a `media` path for the message tool. The envelope never
+    carries base64 or file bytes (except small UTF-8 text ≤ TEXT_INGEST_MAX).
+  * Bigger files: use `nc.files_share`; the user opens the link themselves
+    so the LM never ingests the bytes.
 
 Environment:
   NC_ACCOUNTS_FILE             path to ~/.openclaw/nc_accounts.json
@@ -20,6 +23,11 @@ Environment:
                                with token Fernet-encrypted using
                                HOMEBRAIN_INTEGRATIONS_KEY).
   HOMEBRAIN_INTEGRATIONS_KEY   Fernet key for at-rest decryption.
+  HOMEBRAIN_NC_MEDIA_DIR       where downloads land
+                               (default ~/.openclaw/workspace/media/nextcloud).
+  HOMEBRAIN_OPENCLAW_WORKSPACE OpenClaw workspace root
+                               (default ~/.openclaw/workspace); used to
+                               make the returned `media` path relative.
 
 Legacy fallback (single-account installs pre-multi-account):
   NC_BASE_URL, NC_USER, NC_TOKEN, NC_TOKEN_FILE — used only if
@@ -32,9 +40,11 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
@@ -51,7 +61,9 @@ LEGACY_USER = os.environ.get("NC_USER", "")
 LEGACY_TOKEN_FILE = os.environ.get("NC_TOKEN_FILE", "")
 LEGACY_TOKEN = os.environ.get("NC_TOKEN", "")
 
-MAX_DOWNLOAD_BYTES = 2_000_000
+MAX_DOWNLOAD_BYTES = 20_000_000
+TEXT_INGEST_MAX = 20_000  # characters
+DOWNLOAD_TIMEOUT = 60
 
 DAV_NS = "{DAV:}"
 
@@ -148,6 +160,180 @@ def _http(account: dict, method: str, path: str, body: bytes | None = None,
 
 def _dav_files_prefix(account: dict) -> str:
     return f"/remote.php/dav/files/{account.get('user', '')}"
+
+
+def _normalize_nc_path(path: str) -> str | None:
+    if path is None:
+        return None
+    s = str(path).strip()
+    if not s:
+        return None
+    if not s.startswith("/"):
+        s = "/" + s
+    parts = []
+    for seg in s.split("/"):
+        if seg == "" or seg == ".":
+            continue
+        if seg == "..":
+            return None
+        parts.append(seg)
+    return "/" + "/".join(parts)
+
+
+def _dav_path(account, path) -> str:
+    user = quote(account.get("user", "") or "", safe="")
+    segs = [quote(seg, safe="") for seg in str(path).strip("/").split("/") if seg]
+    rest = "/".join(segs)
+    if rest:
+        return f"/remote.php/dav/files/{user}/{rest}"
+    return f"/remote.php/dav/files/{user}"
+
+
+def _header(headers, name) -> str:
+    if not headers:
+        return ""
+    want = name.lower()
+    for k, v in headers.items():
+        if str(k).lower() == want:
+            return "" if v is None else str(v)
+    return ""
+
+
+_EXT_MIME = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def _sniff_mime(head: bytes, declared: str, filename: str) -> str:
+    head = head or b""
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head.startswith(b"GIF8"):
+        return "image/gif"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith(b"%PDF"):
+        return "application/pdf"
+    ctype = (declared or "").split(";", 1)[0].strip().lower()
+    if ctype and ctype not in ("application/octet-stream", "httpd/unix-directory"):
+        return ctype
+    base = (filename or "").rsplit("/", 1)[-1]
+    ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+    return _EXT_MIME.get(ext, "application/octet-stream")
+
+
+def _is_text_mime(mime: str) -> bool:
+    m = (mime or "").lower()
+    return m.startswith("text/") or m in ("application/json", "application/xml")
+
+
+def _media_dir() -> str:
+    return os.environ.get(
+        "HOMEBRAIN_NC_MEDIA_DIR",
+        os.path.expanduser("~/.openclaw/workspace/media/nextcloud"),
+    )
+
+
+def _agent_media_path(path: str) -> str:
+    """Workspace-relative path when the file landed under the OpenClaw
+    workspace, otherwise the absolute path. The message tool resolves
+    either; relative is what the agent should pass as `media`."""
+    ws = os.environ.get(
+        "HOMEBRAIN_OPENCLAW_WORKSPACE",
+        os.path.expanduser("~/.openclaw/workspace"),
+    )
+    try:
+        rel = os.path.relpath(path, ws)
+    except ValueError:
+        return path
+    if rel.startswith(".."):
+        return path
+    return rel
+
+
+def _safe_basename(nc_path: str) -> str:
+    seg = (nc_path or "").rstrip("/").rsplit("/", 1)[-1]
+    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in seg)
+    cleaned = cleaned[:120]
+    return cleaned or "file"
+
+
+def _prune_media(dest_dir: str, ttl: int = 86400) -> None:
+    try:
+        names = os.listdir(dest_dir)
+    except OSError:
+        return
+    cutoff = time.time() - ttl
+    for name in names:
+        fp = os.path.join(dest_dir, name)
+        try:
+            if not os.path.isfile(fp):
+                continue
+            if os.path.getmtime(fp) < cutoff:
+                os.remove(fp)
+        except OSError:
+            continue
+
+
+def _http_get_capped(account, dav_path, dest_path, max_bytes,
+                     timeout=DOWNLOAD_TIMEOUT) -> tuple[int, int, dict]:
+    auth = _auth_header(account)
+    if not auth:
+        return 0, 0, {}
+    base = (account.get("base_url") or "").rstrip("/")
+    url = f"{base}{dav_path}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", auth)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            headers = dict(r.headers)
+            cl = _header(headers, "Content-Length").strip()
+            if cl.isdigit() and int(cl) > max_bytes:
+                return 200, int(cl), headers
+            fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            written = 0
+            try:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        os.close(fd)
+                        fd = -1
+                        try:
+                            os.remove(dest_path)
+                        except OSError:
+                            pass
+                        return 200, written, headers
+                    os.write(fd, chunk)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+            return r.status, written, headers
+    except urllib.error.HTTPError as e:
+        try:
+            e.read(200)
+        except OSError:
+            pass
+        return e.code, 0, dict(e.headers or {})
+    except (urllib.error.URLError, TimeoutError):
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+        return 0, 0, {}
 
 
 # ---------------------------------------------------------------------------
@@ -283,9 +469,21 @@ def t_files_search(args: dict) -> dict:
     return ok(account=account["name"], results=matches, total=len(matches))
 
 
+_FOLDER_HINT = "Pick a file, or use nc.files_share for a folder link."
+_SEND_FILE_HINT = (
+    "File saved on THIS HomeBrain at `media`. "
+    "Send it with the message tool (media=<that path>). "
+    "Do not paste the contents. For larger files, use nc.files_share."
+)
+
+
 def t_files_download(args: dict) -> dict:
-    """Fetch a small file's contents. Capped at 2 MB.
-    Just call this directly; the runtime prompts the user for approval."""
+    """Fetch a file ≤20 MB onto THIS HomeBrain. Consent-gated.
+
+    Writes the bytes under the OpenClaw workspace and returns a `media`
+    path for the message tool. Never returns base64 or file bytes in the
+    envelope (except small UTF-8 text ≤ TEXT_INGEST_MAX).
+    """
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
@@ -294,44 +492,124 @@ def t_files_download(args: dict) -> dict:
     chat_id = args.get("_chat_id")
     if not path:
         return err("path is required")
-    summary = (f"Nextcloud ({account['name']}): download contents of {path} "
-               f"(capped at {MAX_DOWNLOAD_BYTES // 1000} kB)")
+    norm = _normalize_nc_path(path)
+    if not norm:
+        return err("path is invalid")
+    if norm == "/":
+        return err("path is a folder", hint=_FOLDER_HINT)
+    dav = _dav_path(account, norm)
+    code, _, head_headers = _http(account, "HEAD", dav, timeout=15)
+    if code == 404:
+        return err("file not found")
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
+    ctype = _header(head_headers, "Content-Type")
+    if "httpd/unix-directory" in ctype.lower():
+        return err("path is a folder", hint=_FOLDER_HINT)
+    head_size = None
+    cl = _header(head_headers, "Content-Length").strip()
+    if cl.isdigit():
+        head_size = int(cl)
+        if head_size > MAX_DOWNLOAD_BYTES:
+            audit("nextcloud", "download.too_large",
+                  account=account["name"], path=norm, bytes=head_size)
+            return err(
+                f"file is {head_size} bytes (cap {MAX_DOWNLOAD_BYTES}); "
+                "use nc.files_share for large files"
+            )
+    summary = (f"Nextcloud ({account['name']}): fetch {norm} onto this box "
+               f"so it can be sent in chat")
+    if head_size is not None:
+        summary += f" ({head_size} bytes)"
     if not confirm:
         action_id = Consent.issue("nextcloud", summary,
-                                  {"account": account["name"], "path": path},
+                                  {"account": account["name"], "path": norm},
                                   chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "nextcloud", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
     redeem_account = _pick_account(redeemed.get("account")) or account
-    p = redeemed["path"] if redeemed.get("path") else path
-    if not p.startswith("/"):
-        p = "/" + p
-    code, body, _ = _http(redeem_account, "GET",
-                          f"{_dav_files_prefix(redeem_account)}{p}")
-    if code in (0, 401):
-        return unavailable("Nextcloud unreachable or unauthorised")
+    p = redeemed["path"] if redeemed.get("path") else norm
+    p = _normalize_nc_path(p)
+    if not p:
+        return err("path is invalid")
+    if p == "/":
+        return err("path is a folder", hint=_FOLDER_HINT)
+    dav = _dav_path(redeem_account, p)
+
+    dest_dir = _media_dir()
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        try:
+            os.chmod(dest_dir, 0o700)
+        except OSError:
+            pass
+    except OSError:
+        return err("could not write file to the OpenClaw workspace")
+    dest = os.path.join(dest_dir, f"{int(time.time())}_{_safe_basename(p)}")
+    code, nbytes, headers = _http_get_capped(
+        redeem_account, dav, dest, MAX_DOWNLOAD_BYTES)
     if code == 404:
         return err("file not found")
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
     if code != 200:
         return err(f"download failed: {code}")
-    if len(body) > MAX_DOWNLOAD_BYTES:
+    if nbytes > MAX_DOWNLOAD_BYTES:
         audit("nextcloud", "download.too_large",
-              account=redeem_account["name"], path=p, bytes=len(body))
+              account=redeem_account["name"], path=p, bytes=nbytes)
         return err(
-            f"file is {len(body)} bytes (cap {MAX_DOWNLOAD_BYTES}); "
+            f"file is {nbytes} bytes (cap {MAX_DOWNLOAD_BYTES}); "
             "use nc.files_share for large files"
         )
-    audit("nextcloud", "download", account=redeem_account["name"],
-          path=p, bytes=len(body))
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        return err("could not write file to the OpenClaw workspace")
     try:
-        text = body.decode("utf-8")
-        return ok(account=redeem_account["name"], path=p,
-                  encoding="utf-8", content=text, size=len(body))
-    except UnicodeDecodeError:
-        return ok(account=redeem_account["name"], path=p, encoding="base64",
-                  content=base64.b64encode(body).decode(), size=len(body))
+        with open(dest, "rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return err("could not write file to the OpenClaw workspace")
+    filename = _safe_basename(p)
+    mime = _sniff_mime(head, _header(headers, "Content-Type"), filename)
+    try:
+        _prune_media(dest_dir)
+    except OSError:
+        pass
+    audit("nextcloud", "download", account=redeem_account["name"],
+          path=p, bytes=nbytes)
+    payload = {
+        "account": redeem_account["name"],
+        "path": dest,
+        "nc_path": p,
+        "media": _agent_media_path(dest),
+        "filename": filename,
+        "mime_type": mime,
+        "size": nbytes,
+        "hint": _SEND_FILE_HINT,
+    }
+    if nbytes <= TEXT_INGEST_MAX and _is_text_mime(mime):
+        try:
+            with open(dest, encoding="utf-8") as f:
+                text = f.read()
+            if len(text) <= TEXT_INGEST_MAX:
+                payload["content"] = text
+                payload["encoding"] = "utf-8"
+        except (UnicodeDecodeError, OSError):
+            pass
+    return ok(**payload)
 
 
 def t_files_share(args: dict) -> dict:
@@ -513,40 +791,36 @@ def t_notes_update(args: dict) -> dict:
 
 _ACCOUNT_PROP = {
     "type": "string",
-    "description": ("Configured account name to act on. Omit when only one "
-                    "account is configured; required when multiple are. Use "
-                    "nc.list_accounts to enumerate."),
+    "description": "Nextcloud account name. Required if several are configured.",
 }
 
 TOOLS = [
     {"name": "nc.list_accounts",
-     "description": "List configured Nextcloud accounts (name + base_url + user).",
+     "description": "List Nextcloud accounts (name, url, user).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "nc.health",
      "description": "Check Nextcloud reachability and report version.",
      "inputSchema": {"type": "object",
                      "properties": {"account": _ACCOUNT_PROP}}},
     {"name": "nc.files_list",
-     "description": ("List files in a Nextcloud folder. Returns paths, sizes, "
-                     "and modification times only — never file contents."),
+     "description": "List a folder (paths, sizes, mtimes). Not contents.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "path": {"type": "string",
-                                  "description": "Folder path, e.g. '/Documents'. Default '/'."},
+                                  "description": "Folder path. Default '/'."},
                          "account": _ACCOUNT_PROP,
                      }}},
     {"name": "nc.files_search",
-     "description": ("Search Nextcloud files by name (substring match). "
-                     "Returns paths only — never file contents."),
+     "description": "Search files by name. Paths only — not contents.",
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
                      "required": ["query"]}},
     {"name": "nc.files_download",
      "description": (
-         "Fetch contents of a small file (≤2 MB). Just call this; the runtime "
-         "will prompt the user for approval automatically. For larger files, "
-         "use nc.files_share to get a link the user can open themselves."
+         "Fetch a file ≤20 MB onto this box. Returns `media`; send with "
+         "the message tool (media=path). Don't paste contents. "
+         "Larger: nc.files_share."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},
@@ -554,11 +828,7 @@ TOOLS = [
                                     "confirmation_token": {"type": "string"}},
                      "required": ["path"]}},
     {"name": "nc.files_share",
-     "description": ("Create a public read-only share link for a Nextcloud "
-                     "file or folder. Just call this directly with the path "
-                     "and expire_days; the runtime prompts the user for "
-                     "approval automatically — you do not need to ask the "
-                     "user for a token first."),
+     "description": "Create a public read-only share link.",
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},
                                     "expire_days": {"type": "integer"},
@@ -576,9 +846,7 @@ TOOLS = [
                                     "account": _ACCOUNT_PROP},
                      "required": ["id"]}},
     {"name": "nc.notes_create",
-     "description": ("Create a Nextcloud note. Call this directly with "
-                     "title/content; the runtime prompts the user for "
-                     "approval automatically."),
+     "description": "Create a note.",
      "inputSchema": {"type": "object",
                      "properties": {"title": {"type": "string"},
                                     "content": {"type": "string"},
@@ -587,9 +855,7 @@ TOOLS = [
                                     "confirmation_token": {"type": "string"}},
                      "required": ["title", "content"]}},
     {"name": "nc.notes_update",
-     "description": ("Update an existing Nextcloud note by id. Only fields "
-                     "you provide (title, content, category) are changed. "
-                     "Consent-gated."),
+     "description": "Patch a note by id. Only supplied fields change.",
      "inputSchema": {"type": "object",
                      "properties": {"id": {"type": "integer"},
                                     "title": {"type": "string"},
@@ -623,4 +889,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-nextcloud", "0.3.0", TOOLS, dispatch)
+    serve("homebrain-nextcloud", "0.4.0", TOOLS, dispatch)

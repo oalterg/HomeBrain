@@ -64,6 +64,20 @@ def test_advertises_tools(server):
             f"{name}: {tool.get('name')} has no inputSchema"
 
 
+def test_tool_descriptions_stay_short_for_the_model(server):
+    """tools/list is injected into every agent turn. Verbose copy here is
+    permanent context tax; keep the catalogue terse."""
+    name, mod = server
+    for tool in mod.TOOLS:
+        desc = tool["description"]
+        assert len(desc) <= 160, f"{name}: {tool['name']} description is {len(desc)} chars"
+        for key, prop in (tool.get("inputSchema") or {}).get("properties", {}).items():
+            pdesc = prop.get("description") or ""
+            assert len(pdesc) <= 80, (
+                f"{name}: {tool['name']}.{key} description is {len(pdesc)} chars"
+            )
+
+
 def test_every_advertised_tool_is_dispatchable(server):
     """The regression this guards: a tool the model can see and cannot call."""
     name, mod = server
