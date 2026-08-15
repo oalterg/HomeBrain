@@ -444,17 +444,61 @@ ensure_admin_user() {
 }
 
 # --- Environment Loading ---
+# Export KEY=VALUE lines from a dotenv file without bash expansion.
+# `source` under `set -u` dies on unquoted PHC hashes (`$argon2id$…`);
+# Compose interpolates the same `$` as empty. Writers quote; this reader
+# must still tolerate an unquoted write so the dashboard cannot 500 into
+# "AI agent not installed".
+export_env_file() {
+    local file="$1"
+    local line key val q enc rest out
+    # $'\x27' is a single quote. enc is the four-char sequence '\'' that
+    # update_env_var writes for an apostrophe. ${var//pat/repl} treats \
+    # as a glob escape on bash 3.2, so this is a literal-prefix loop.
+    q=$'\x27'
+    enc=$'\x27\\\x27\x27'
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        val="${line#*=}"
+        [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        case "$val" in
+            \'*\')
+                val="${val#"$q"}"
+                val="${val%"$q"}"
+                out=
+                while true; do
+                    rest="${val#*"${enc}"}"
+                    if [[ "$rest" == "$val" ]]; then
+                        val="${out}${val}"
+                        break
+                    fi
+                    out="${out}${val%"${enc}${rest}"}${q}"
+                    val=$rest
+                done
+                ;;
+            \"*\")
+                val="${val#\"}"
+                val="${val%\"}"
+                ;;
+        esac
+        printf -v "$key" '%s' "$val"
+        export "$key"
+    done < "$file"
+}
+
 load_env() {
     if [[ -f "$ENV_FILE" ]]; then
-        set -a
-        source "$ENV_FILE"
-        set +a
+        export_env_file "$ENV_FILE" || die "Environment file ($ENV_FILE) not readable."
     else
         die "Environment file ($ENV_FILE) not found."
     fi
     # HAS_GPU is intentionally not persisted to .env (provision sets it in the
     # running shell only). The .env.template ships an empty HAS_GPU= line, which
-    # the source above would happily clobber any detected value with. Re-detect
+    # the load above would happily clobber any detected value with. Re-detect
     # whenever it comes back empty so downstream gates (auto AI setup, backup
     # AI snapshots, llama updates) see the correct value.
     if [[ -z "${HAS_GPU:-}" ]]; then

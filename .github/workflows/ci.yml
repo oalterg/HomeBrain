@@ -42,7 +42,8 @@ jobs:
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
                             scripts/tests/test_offsite_progress.py \
-                            scripts/tests/test_mcp_homeassistant.py -q
+                            scripts/tests/test_mcp_homeassistant.py \
+                            scripts/tests/test_email_send_direct_toggle.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard
@@ -75,6 +76,8 @@ jobs:
           bash scripts/tests/test_offsite_inventory.sh
       - name: self-MCP token derivation
         run: bash scripts/tests/test_self_token.sh
+      - name: load_env does not expand PHC hashes
+        run: bash scripts/tests/test_load_env.sh
 
   compose:
     runs-on: ubuntu-latest
@@ -83,4 +86,8 @@ jobs:
       - name: docker compose config
         run: |
           cp config/.env.template .env
-          docker compose -f docker-compose.yml config > /dev/null
+          # Unquoted $argon2id in VAULT_ADMIN_TOKEN interpolates to empty.
+          # update_env_var writes single quotes; config must keep the PHC.
+          printf "%s\n" "VAULT_ADMIN_TOKEN='\$argon2id\$v=19\$m=65540\$t=3\$p=4\$c2FsdHNhbHRzYWx0c2FsdA\$aGFzaGhhc2hoYXNo'" >> .env
+          docker compose -f docker-compose.yml config > /tmp/compose.yml
+          grep -q 'argon2id' /tmp/compose.yml

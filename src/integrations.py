@@ -1258,17 +1258,16 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "unauthenticated"}), 401
         body = request.get_json(silent=True) or {}
         enabled = bool(body.get("enabled"))
-        # Delegate to the same env-update helper app.py already uses; we
-        # re-implement locally to avoid an import cycle.
-        env_file = os.path.join(INSTALL_DIR, ".env")
-        env = _read_env()
-        env["HOMEBRAIN_EMAIL_SEND_DIRECT"] = "true" if enabled else "false"
-        try:
-            with open(env_file, "w") as f:
-                for k, v in env.items():
-                    f.write(f"{k}={v}\n")
-        except OSError as e:
-            return jsonify({"error": str(e)}), 500
+        # One-key write through app.update_env_var so a PHC hash already
+        # quoted in .env is not round-tripped unquoted. A full-file dump
+        # via _read_env() (which strips quotes) is what made
+        # VAULT_ADMIN_TOKEN=$argon2id$… abort `source` under set -u and
+        # painted the AI agent as "not installed".
+        from app import update_env_var
+        if not update_env_var(
+                "HOMEBRAIN_EMAIL_SEND_DIRECT",
+                "true" if enabled else "false"):
+            return jsonify({"error": "could not update .env"}), 500
         # The toggle changes an env var that the email MCP server only
         # reads at spawn time, so bounce the daemon to re-spawn it. No
         # registry change needed — skip the full reconcile.
