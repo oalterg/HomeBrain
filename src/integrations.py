@@ -382,6 +382,9 @@ def _spec_nextcloud() -> dict | None:
             # NC MCP writes downloads here so the agent can send them with
             # the message tool's media= parameter.
             "HOMEBRAIN_NC_MEDIA_DIR": os.path.join(OPENCLAW_DIR, "workspace", "media", "nextcloud"),
+            # Telegram inbound files land here (not under the workspace).
+            # nc.files_upload reads from this allowlisted root.
+            "HOMEBRAIN_OC_MEDIA_INBOUND": os.path.join(OPENCLAW_DIR, "media", "inbound"),
             **_mcp_consent_env(),
         },
     }

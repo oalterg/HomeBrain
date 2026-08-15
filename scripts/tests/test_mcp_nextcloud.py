@@ -1,4 +1,6 @@
 """NC MCP: files_download writes a workspace file and returns a media path.
+files_upload is the inverse: a local inbound/workspace file is streamed
+to Nextcloud via WebDAV PUT. Bytes never enter the envelope either way.
 
 OpenClaw ≥2026.4 truncates live tool results at ~32–64k chars, strips
 `MEDIA:` from MCP tools (GHSA-jjgj-cpp9-cvpv), and does not relay
@@ -7,7 +9,8 @@ therefore never reaches the chat. The HA camera path already fixed this:
 write a file under the OpenClaw workspace and return `media`; the agent
 sends it with the message tool.
 
-`nc.files_download` is REVEAL-tier. `dispatch()` does not auto-confirm.
+`nc.files_download` is REVEAL-tier. `nc.files_upload` is ACT-tier.
+`dispatch()` does not auto-confirm.
 
 Run:  python3 -m pytest scripts/tests/test_mcp_nextcloud.py
 """
@@ -35,6 +38,8 @@ def _load_nc():
 JPEG = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body"
 PNG = b"\x89PNG\r\n\x1a\n" + b"fake"
 PDF = b"%PDF-1.4\n%fake"
+HEIC = b"\x00\x00\x00\x18ftypheic" + b"fake"
+DOCX = b"PK\x03\x04" + b"fake-docx"
 ACCOUNT = {
     "name": "home",
     "base_url": "http://nc.local",
@@ -72,6 +77,49 @@ def _download(mod, args):
     return out
 
 
+def _upload(mod, args):
+    out = mod.dispatch("nc.files_upload", dict(args))
+    if out.get("requires_confirmation"):
+        args = dict(args)
+        args["confirmation_token"] = out["action_id"]
+        out = mod.dispatch("nc.files_upload", args)
+    return out
+
+
+def _write_inbound(name, body):
+    d = os.environ["HOMEBRAIN_OC_MEDIA_INBOUND"]
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, name)
+    with open(path, "wb") as f:
+        f.write(body)
+    return path
+
+
+def _stub_upload_ok(mod, put_status=201, head_code=404, head_headers=None):
+    mkcols = []
+    puts = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        if method == "PUT":
+            pytest.fail("PUT must go through _http_put_file")
+        if method == "HEAD":
+            return head_code, b"", head_headers or {}
+        if method == "MKCOL":
+            mkcols.append(path)
+            return 201, b"", {}
+        pytest.fail(f"unexpected {method} {path}")
+
+    def fake_put(account, dav_path, local_path, mime, size, timeout=None):
+        puts.append({"dav": dav_path, "local": local_path,
+                     "mime": mime, "size": size})
+        return put_status, b"", {}
+
+    mod._http = fake_http
+    mod._http_put_file = fake_put
+    return mkcols, puts
+
+
 def _must_not_get(*a, **k):
     pytest.fail("GET must not run")
 
@@ -99,6 +147,10 @@ def _stub_head_then_file(mod, body, mime):
 def nc(monkeypatch, tmp_path):
     monkeypatch.setenv("HOMEBRAIN_INTEGRATIONS_KEY", "")
     monkeypatch.setenv("HOMEBRAIN_NC_MEDIA_DIR", str(tmp_path / "media"))
+    monkeypatch.setenv("HOMEBRAIN_OC_MEDIA_INBOUND", str(tmp_path / "inbound"))
+    monkeypatch.setenv("HOMEBRAIN_OPENCLAW_WORKSPACE", str(tmp_path / "workspace"))
+    (tmp_path / "inbound").mkdir()
+    (tmp_path / "workspace").mkdir()
     monkeypatch.setenv("HOMEBRAIN_AUDIT_DIR", str(tmp_path / "audit"))
     pending = str(tmp_path / "pending.json")
     monkeypatch.setenv("HOMEBRAIN_PENDING_ACTIONS", pending)
@@ -113,6 +165,7 @@ def nc(monkeypatch, tmp_path):
 
 def test_download_module_constants(nc):
     assert nc.MAX_DOWNLOAD_BYTES == 20_000_000
+    assert nc.MAX_UPLOAD_BYTES == nc.MAX_DOWNLOAD_BYTES
     assert nc.TEXT_INGEST_MAX == 20_000
 
 
@@ -403,3 +456,359 @@ def test_files_search_unquotes_dav_href(nc):
     paths = [e["path"] for e in out["results"]]
     assert "/Documents/Nextcloud flyer.pdf" in paths
     assert "/Documents/Nextcloud%20flyer.pdf" not in paths
+
+
+# --- files_upload ----------------------------------------------------------
+
+def test_upload_missing_local_path(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {"dest": "/Photos/From chat/x.jpg"})
+    assert out["ok"] is False
+    assert out["error"] == "local_path is required"
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_missing_dest(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {"local_path": "shot.jpg"})
+    assert out["ok"] is False
+    assert out["error"] == "dest is required"
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_dest_dotdot(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/../secret.jpg",
+    })
+    assert out["ok"] is False
+    assert "invalid" in out["error"]
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_path_outside_allowlist(nc, tmp_path):
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(JPEG)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": str(outside),
+        "dest": "/Photos/From chat/x.jpg",
+    })
+    assert out["ok"] is False
+    assert "allowed" in out["error"]
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_symlink_escape(nc, tmp_path):
+    secret = tmp_path / "secret.jpg"
+    secret.write_bytes(JPEG)
+    link = tmp_path / "inbound" / "kitchen.jpg"
+    link.symlink_to(secret)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert "allowed" in out["error"]
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_media_uri_with_slash(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/../kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert "invalid" in out["error"]
+
+
+def test_upload_rejects_encrypted_dest(nc):
+    _write_inbound("id.pdf", PDF)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/id.pdf",
+        "dest": "/Documents (Encrypted)/id.pdf",
+    })
+    assert out["ok"] is False
+    assert "encrypted" in out["error"]
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_instantupload_dest(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/InstantUpload/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert "auto-upload" in out["error"]
+
+
+def test_upload_rejects_empty_file(nc):
+    _write_inbound("empty.jpg", b"")
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/empty.jpg",
+        "dest": "/Photos/From chat/empty.jpg",
+    })
+    assert out["ok"] is False
+    assert "empty" in out["error"]
+
+
+def test_upload_rejects_oversize(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    nc.MAX_UPLOAD_BYTES = 10
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert "cap" in out["error"]
+
+
+def test_upload_rejects_disallowed_mime(nc):
+    _write_inbound("payload.bin", b"\x7fELF" + b"\x00" * 16)
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/payload.bin",
+        "dest": "/Documents/From chat/payload.bin",
+    })
+    assert out["ok"] is False
+    assert "not allowed" in out["error"]
+
+
+def test_upload_rejects_existing_without_overwrite(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc, head_code=200, head_headers={"Content-Type": "image/jpeg"})
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert "exists" in out["error"]
+    assert not out.get("requires_confirmation")
+
+
+def test_upload_rejects_dest_that_is_a_folder(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc, head_code=200,
+                    head_headers={"Content-Type": "httpd/unix-directory"})
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat",
+    })
+    assert out["ok"] is False
+    assert "folder" in out["error"]
+
+
+def test_upload_requires_consent_then_succeeds(nc):
+    local = _write_inbound("kitchen.jpg", JPEG)
+    puts = _stub_upload_ok(nc)[1]
+    args = {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    }
+    first = nc.dispatch("nc.files_upload", args)
+    assert first.get("requires_confirmation") is True
+    assert first.get("action_id")
+    assert puts == []
+    second = nc.dispatch("nc.files_upload", {
+        **args, "confirmation_token": first["action_id"],
+    })
+    assert second["ok"] is True
+    assert second["nc_path"] == "/Photos/From chat/kitchen.jpg"
+    assert second["mime_type"] == "image/jpeg"
+    assert second["size"] == len(JPEG)
+    assert puts and puts[0]["local"] == local
+    dumped = json.dumps(second)
+    assert JPEG not in dumped.encode()
+    assert "base64" not in dumped
+    assert "app-secret" not in dumped
+    assert "content" not in second
+
+
+def test_upload_consent_payload_has_no_bytes(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc)
+    first = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    store = json.loads(open(os.environ["HOMEBRAIN_PENDING_ACTIONS"]).read())
+    dumped = json.dumps(store)
+    assert JPEG not in dumped.encode()
+    rec = store[first["action_id"]]
+    assert rec["payload"]["dest"] == "/Photos/From chat/kitchen.jpg"
+    assert "content" not in rec["payload"]
+
+
+def test_upload_appends_filename_when_dest_is_folder(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc)
+    out = _upload(nc, {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/",
+    })
+    assert out["ok"] is True
+    assert out["nc_path"] == "/Photos/From chat/kitchen.jpg"
+    assert out["filename"] == "kitchen.jpg"
+
+
+def test_upload_workspace_relative_path(nc, tmp_path):
+    shot = tmp_path / "workspace" / "shot.jpg"
+    shot.write_bytes(JPEG)
+    _stub_upload_ok(nc)
+    out = _upload(nc, {
+        "local_path": "shot.jpg",
+        "dest": "/Photos/From chat/shot.jpg",
+    })
+    assert out["ok"] is True
+    assert out["nc_path"] == "/Photos/From chat/shot.jpg"
+
+
+def test_upload_relative_inbound_path_resolves_global_store(nc):
+    """OpenClaw may inject media/inbound/<name> while the file lives in
+    the global inbound store, not the workspace."""
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc)
+    out = _upload(nc, {
+        "local_path": "media/inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is True
+    assert out["nc_path"] == "/Photos/From chat/kitchen.jpg"
+
+
+def test_upload_pdf_and_heic_and_docx(nc):
+    _stub_upload_ok(nc)
+    for name, body, mime, dest in (
+        ("note.pdf", PDF, "application/pdf", "/Documents/From chat/note.pdf"),
+        ("img.heic", HEIC, "image/heic", "/Photos/From chat/img.heic"),
+        ("doc.docx", DOCX,
+         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+         "/Documents/From chat/doc.docx"),
+    ):
+        _write_inbound(name, body)
+        out = _upload(nc, {
+            "local_path": f"media://inbound/{name}",
+            "dest": dest,
+        })
+        assert out["ok"] is True, out
+        assert out["mime_type"] == mime
+        assert body not in json.dumps(out).encode()
+
+
+def test_upload_overwrite_true_puts(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    puts = _stub_upload_ok(
+        nc, head_code=200, head_headers={"Content-Type": "image/jpeg"})[1]
+    out = _upload(nc, {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+        "overwrite": True,
+    })
+    assert out["ok"] is True
+    assert puts
+
+
+def test_upload_mkcol_parents(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    mkcols, _ = _stub_upload_ok(nc)
+    out = _upload(nc, {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is True
+    assert any(p.endswith("/Photos") for p in mkcols), mkcols
+    assert any("From%20chat" in p for p in mkcols), mkcols
+
+
+def test_upload_401_unavailable(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    nc._http = lambda *a, **k: (401, b"", {})
+    nc._http_put_file = lambda *a, **k: pytest.fail("must not PUT")
+    out = nc.dispatch("nc.files_upload", {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    assert out["ok"] is False
+    assert out.get("unavailable") is True
+    assert "app-secret" not in json.dumps(out)
+
+
+def test_upload_wire_result_is_text_only_no_bytes(nc):
+    _write_inbound("kitchen.jpg", JPEG)
+    _stub_upload_ok(nc)
+    envelope = _upload(nc, {
+        "local_path": "media://inbound/kitchen.jpg",
+        "dest": "/Photos/From chat/kitchen.jpg",
+    })
+    result = mcp_common.tool_call_result(envelope)
+    assert result["isError"] is False
+    assert len(result["content"]) == 1
+    text = result["content"][0]
+    assert text["type"] == "text"
+    assert "MEDIA:" not in text["text"]
+    parsed = json.loads(text["text"])
+    assert parsed["ok"] is True
+    assert parsed["nc_path"]
+    assert JPEG not in text["text"].encode()
+    assert "base64" not in text["text"]
+
+
+def test_upload_quotes_dest_and_streams_put(nc, monkeypatch):
+    local = _write_inbound("my photo.jpg", JPEG)
+    captured = []
+
+    def fake_urlopen(req, timeout=None):
+        captured.append({
+            "method": req.get_method(),
+            "url": req.full_url,
+            "auth": req.get_header("Authorization"),
+            "ctype": req.get_header("Content-type"),
+            "clen": req.get_header("Content-length"),
+        })
+        method = req.get_method()
+        if method == "HEAD":
+            return FakeResp(404, {}, b"")
+        if method == "MKCOL":
+            return FakeResp(201, {}, b"")
+        if method == "PUT":
+            return FakeResp(201, {}, b"")
+        pytest.fail(method)
+
+    monkeypatch.setattr(nc.urllib.request, "urlopen", fake_urlopen)
+    out = _upload(nc, {
+        "local_path": local,
+        "dest": "/Photos/From chat/my photo.jpg",
+    })
+    assert out["ok"] is True
+    puts = [c for c in captured if c["method"] == "PUT"]
+    assert puts, captured
+    assert puts[0]["url"] == (
+        "http://nc.local/remote.php/dav/files/alice/"
+        "Photos/From%20chat/my%20photo.jpg"
+    )
+    assert puts[0]["auth"] and "Basic" in puts[0]["auth"]
+    assert puts[0]["clen"] == str(len(JPEG))
+    assert puts[0]["ctype"] == "image/jpeg"
+    dumped = json.dumps(out)
+    assert "app-secret" not in dumped
+    assert JPEG not in dumped.encode()
