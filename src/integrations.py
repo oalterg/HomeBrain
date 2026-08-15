@@ -444,6 +444,11 @@ def _spec_email() -> dict | None:
             "HOMEBRAIN_EMAIL_KEY": _email_fernet_key(),
             "HOMEBRAIN_EMAIL_SEND_DIRECT": send_direct,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            "HOMEBRAIN_OPENCLAW_WORKSPACE": os.path.join(OPENCLAW_DIR, "workspace"),
+            # Email MCP writes attachments here so the agent can send them
+            # with the message tool's media= parameter.
+            "HOMEBRAIN_EMAIL_MEDIA_DIR": os.path.join(
+                OPENCLAW_DIR, "workspace", "media", "email"),
             **_mcp_consent_env(),
         },
     }
