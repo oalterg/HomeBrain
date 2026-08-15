@@ -57,7 +57,8 @@
         "notifyUser": true
       },
       "heartbeat": {
-        "every": "1h"
+        "every": "1h",
+        "timeoutSeconds": 1800
       }
     },
     "list": [

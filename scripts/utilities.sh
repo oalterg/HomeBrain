@@ -1599,6 +1599,27 @@ patch_openclaw_config() {
         # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
+        # A heartbeat turn must be able to absorb ONE compaction, because it
+        # runs in the same session as the Telegram chat and is therefore just
+        # as likely to be the turn that trips the threshold.
+        #
+        # Left unset, resolveHeartbeatTimeoutOverrideSeconds falls back to the
+        # cadence capped at DEFAULT_HEARTBEAT_TIMEOUT_SECONDS, i.e. min(600,
+        # 3600) = 600 s — half the compaction ceiling directly above. Caught
+        # live on .58 2026-08-15 the moment compaction started succeeding
+        # instead of failing fast: the heartbeat spent its whole budget in a
+        # compaction, died on the lane deadline
+        # (CommandLaneTaskTimeoutError, 600000 + the 30 s
+        # EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = the 630000 in the log), and
+        # took the owner’s queued Telegram message down with it — that
+        # message had been waiting 182 s behind it on the same lane.
+        #
+        # 1800 s clears the 1200 s compaction ceiling with room for the
+        # heartbeat’s own prefill (~456 s at full depth) and reply, matches
+        # the provider HTTP timeout, and is half the 1h cadence so two
+        # heartbeats can never overlap. These three numbers are ordered and
+        # must stay that way: compaction < heartbeat <= provider.
+        .agents.defaults.heartbeat.timeoutSeconds = 1800 |
         # --- Compaction budget -------------------------------------------
         # Both numbers are sized against a local llama-server, which is one
         # to two orders of magnitude slower than the hosted providers the

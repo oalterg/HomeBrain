@@ -151,6 +151,28 @@ else
     bad "notifyUser is on" "got $got"
 fi
 
+echo "== the three timeouts stay ordered =="
+# compaction < heartbeat <= provider. Violating the left half is what broke
+# .58 once compaction started succeeding: the heartbeat runs in the same
+# session as the chat, so it is just as likely to be the turn that compacts,
+# and at its 600 s fallback budget it died on the lane deadline mid-compaction
+# and took the owner's queued Telegram message with it.
+heartbeat_timeout=$(jq -r '.agents.defaults.heartbeat.timeoutSeconds' "$cfg")
+if (( compaction_timeout < heartbeat_timeout )) && (( heartbeat_timeout <= provider_timeout )); then
+    ok "compaction ($compaction_timeout) < heartbeat ($heartbeat_timeout) <= provider ($provider_timeout)"
+else
+    bad "compaction < heartbeat <= provider" \
+        "compaction=$compaction_timeout heartbeat=$heartbeat_timeout provider=$provider_timeout"
+fi
+
+# The fallback this replaces is min(600, cadence) — never enough for one
+# compaction on a local model. Assert we are not silently back on it.
+if (( heartbeat_timeout > 600 )); then
+    ok "heartbeat budget is above the 600 s schema fallback"
+else
+    bad "heartbeat budget is above the 600 s schema fallback" "got $heartbeat_timeout"
+fi
+
 echo "== the reserve floor follows the context window =="
 cfg81920="$(run_patch 81920 "$QWEN27")"
 got=$(jq -r '.agents.defaults.compaction.reserveTokensFloor' "$cfg81920")
