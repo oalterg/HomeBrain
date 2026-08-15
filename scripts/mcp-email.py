@@ -10,7 +10,9 @@ HOMEBRAIN_EMAIL_KEY (a base64 Fernet key).
 Tier policy (see INTEGRATIONS_PLAN.md §3.4):
   * READ      : email.list_unread, email.search, email.list_accounts.
                 Subjects, senders, dates only — never bodies.
-  * REVEAL    : email.fetch — full body. Audited. Consent-gated.
+  * REVEAL    : email.fetch — full body. email.attachment — one file
+                onto this box as `media` for the message tool. Audited.
+                Consent-gated.
   * ACT       : email.draft (creates a draft, never sends), email.archive,
                 email.flag. Consent-gated. email.send_direct is OFF by
                 default (gated behind a settings-level toggle the dashboard
@@ -27,6 +29,7 @@ import json
 import os
 import smtplib
 import sys
+import time
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
@@ -41,6 +44,13 @@ ACCOUNTS_FILE = os.environ.get(
 )
 KEY_B64 = os.environ.get("HOMEBRAIN_EMAIL_KEY", "")
 SEND_DIRECT_ENABLED = os.environ.get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").lower() == "true"
+
+MAX_ATTACHMENT_BYTES = 20_000_000
+_SEND_FILE_HINT = (
+    "File saved on THIS HomeBrain at `media`. "
+    "Send it with the message tool (media=<that path>). "
+    "Do not paste the contents."
+)
 
 
 def _decrypt(blob: str) -> str:
@@ -263,6 +273,195 @@ def t_fetch(args: dict) -> dict:
             conn.logout()
         except Exception:
             pass
+
+
+def _is_keepable(part) -> bool:
+    if part.get_content_maintype() == "multipart":
+        return False
+    return (part.get_content_disposition() or "").lower() == "attachment"
+
+
+def _attachment_catalog(msg) -> list[tuple[object, str, bytes]]:
+    """Keepable parts as (part, filename, decoded bytes)."""
+    out = []
+    for part in msg.walk():
+        if not _is_keepable(part):
+            continue
+        try:
+            body = part.get_payload(decode=True) or b""
+        except Exception:
+            body = b""
+        name = part.get_filename() or "attachment"
+        out.append((part, name, body))
+    return out
+
+
+def _sniff_mime(head: bytes, declared: str, filename: str) -> str:
+    head = head or b""
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head.startswith(b"%PDF"):
+        return "application/pdf"
+    ctype = (declared or "").split(";", 1)[0].strip().lower()
+    if ctype and ctype not in ("application/octet-stream",):
+        return ctype
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    return {
+        "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+        "pdf": "application/pdf", "gif": "image/gif", "webp": "image/webp",
+        "txt": "text/plain", "csv": "text/csv",
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }.get(ext, "application/octet-stream")
+
+
+def _media_dir() -> str:
+    return os.environ.get(
+        "HOMEBRAIN_EMAIL_MEDIA_DIR",
+        os.path.expanduser("~/.openclaw/workspace/media/email"),
+    )
+
+
+def _agent_media_path(path: str) -> str:
+    ws = os.environ.get(
+        "HOMEBRAIN_OPENCLAW_WORKSPACE",
+        os.path.expanduser("~/.openclaw/workspace"),
+    )
+    try:
+        rel = os.path.relpath(path, ws)
+    except ValueError:
+        return path
+    if rel.startswith(".."):
+        return path
+    return rel
+
+
+def _safe_basename(name: str) -> str:
+    seg = (name or "").rstrip("/").rsplit("/", 1)[-1]
+    cleaned = "".join(c if (c.isalnum() or c in "._-") else "_" for c in seg)
+    return (cleaned[:120] or "attachment")
+
+
+def _prune_media(dest_dir: str, ttl: int = 86400) -> None:
+    try:
+        names = os.listdir(dest_dir)
+    except OSError:
+        return
+    cutoff = time.time() - ttl
+    for name in names:
+        fp = os.path.join(dest_dir, name)
+        try:
+            if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                os.remove(fp)
+        except OSError:
+            continue
+
+
+def t_attachment(args: dict) -> dict:
+    """Save one email attachment onto this box for the message tool."""
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
+    msg_id = (args.get("id") or "").strip()
+    filename = (args.get("filename") or "").strip() or None
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not msg_id:
+        return err("id is required")
+    summary = f"Email: fetch attachment from message {msg_id} on '{name}'"
+    if filename:
+        summary += f" ({filename})"
+    if not confirm:
+        action_id = Consent.issue("email", summary,
+                                  {"account": name, "id": msg_id,
+                                   "filename": filename},
+                                  chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "email", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    acc = _pick_account(redeemed["account"])
+    if not acc:
+        return err("account not found")
+    want = redeemed.get("filename") or filename
+    conn = _imap(acc)
+    if not conn:
+        return unavailable("could not connect to IMAP")
+    try:
+        conn.select("INBOX")
+        rc, data = conn.fetch(redeemed["id"].encode(), "(RFC822)")
+        if rc != "OK" or not data or not data[0]:
+            return err("message not found")
+        msg = email.message_from_bytes(data[0][1])
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+    parts = _attachment_catalog(msg)
+    catalog = [{"filename": n, "size": len(body)} for _, n, body in parts]
+    if not parts:
+        return err("no attachments")
+    chosen = None
+    if want:
+        needle = want.lower()
+        matches = [(p, n, b) for p, n, b in parts if needle in n.lower()]
+        if not matches:
+            return err("attachment not found", attachments=catalog)
+        chosen = matches[0]
+    elif len(parts) == 1:
+        chosen = parts[0]
+    else:
+        return ok(id=redeemed["id"], attachments=catalog,
+                  hint="Several attachments; call again with filename.")
+    _part, fname, body = chosen
+    if len(body) > MAX_ATTACHMENT_BYTES:
+        audit("email", "attachment.too_large", account=redeemed["account"],
+              id=redeemed["id"], filename=fname, bytes=len(body))
+        return err(
+            f"file is {len(body)} bytes (cap {MAX_ATTACHMENT_BYTES})",
+            filename=fname,
+        )
+    if not body:
+        return err("attachment is empty", filename=fname)
+    dest_dir = _media_dir()
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        try:
+            os.chmod(dest_dir, 0o700)
+        except OSError:
+            pass
+    except OSError:
+        return err("could not write file to the OpenClaw workspace")
+    dest = os.path.join(dest_dir, f"{int(time.time())}_{_safe_basename(fname)}")
+    try:
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, body)
+        finally:
+            os.close(fd)
+    except OSError:
+        return err("could not write file to the OpenClaw workspace")
+    mime = _sniff_mime(body[:64], _part.get_content_type(), fname)
+    try:
+        _prune_media(dest_dir)
+    except OSError:
+        pass
+    audit("email", "attachment", account=redeemed["account"],
+          id=redeemed["id"], filename=fname, bytes=len(body))
+    return ok(
+        account=redeemed["account"],
+        id=redeemed["id"],
+        path=dest,
+        media=_agent_media_path(dest),
+        filename=_safe_basename(fname),
+        mime_type=mime,
+        size=len(body),
+        hint=_SEND_FILE_HINT,
+    )
 
 
 def _save_draft(account: dict, to: str, subject: str, body: str) -> tuple[bool, str]:
@@ -488,6 +687,20 @@ TOOLS = [
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["id"]}},
+    {"name": "email.attachment",
+     "description": (
+         "Save one email attachment onto this box. Returns `media`; send "
+         "with the message tool (media=path). Several files: pass filename."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "id": {"type": "string"},
+                         "filename": {"type": "string",
+                                      "description": "Substring of the attachment name."},
+                         "account": {"type": "string"},
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["id"]}},
     {"name": "email.draft",
      "description": "Create a DRAFT (never sends).",
      "inputSchema": {"type": "object",
@@ -530,6 +743,7 @@ DISPATCH = {
     "email.list_unread": t_list_unread,
     "email.search": t_search,
     "email.fetch": t_fetch,
+    "email.attachment": t_attachment,
     "email.draft": t_draft,
     "email.send_direct": t_send_direct,
     "email.archive": t_archive,
@@ -545,4 +759,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-email", "0.2.0", TOOLS, dispatch)
+    serve("homebrain-email", "0.3.0", TOOLS, dispatch)
