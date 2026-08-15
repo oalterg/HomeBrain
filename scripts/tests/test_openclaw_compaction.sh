@@ -151,18 +151,72 @@ else
     bad "notifyUser is on" "got $got"
 fi
 
-echo "== the three timeouts stay ordered =="
+echo "== compaction mode is asserted, not left to drift =="
+# The bug this pins is not "which mode" but "nobody says": the seed shipped
+# safeguard, nothing re-applied it, and upgraded boxes silently ran default.
+got=$(jq -r '.agents.defaults.compaction.mode' "$cfg")
+if [[ "$got" == "default" || "$got" == "safeguard" ]]; then
+    ok "mode is explicitly asserted (got \"$got\")"
+else
+    bad "mode is explicitly asserted" "got \"$got\" — an unset mode is the drift this exists to stop"
+fi
+
+seed_mode=$(jq -r '.agents.defaults.compaction.mode' "$TEST_DIR/../../config/openclaw.json")
+if [[ "$seed_mode" == "$got" ]]; then
+    ok "seed template agrees with what the patch asserts (\"$seed_mode\")"
+else
+    bad "seed template agrees with what the patch asserts" \
+        "seed=\"$seed_mode\" patched=\"$got\" — fresh installs and upgraded boxes would diverge"
+fi
+
+echo "== a single generation still fits one model call =="
+# maxTokens is bounded from the top down: a full-depth prefill plus a
+# full-length generation must fit the provider HTTP timeout, or a slow call
+# becomes a failed turn. Glimmer is the worst case (slowest prefill x biggest
+# window): 131072/287.6 + 16384/16.0 = 1480 s against the 1800 s ceiling.
+max_tokens=$(jq -r '.models.providers.llamacpp.models[0].maxTokens' "$cfg")
+worst_call=$(python3 -c "print(int(131072/287.6 + $max_tokens/16.0))")
+if (( worst_call < provider_timeout )); then
+    ok "worst-case Glimmer call ${worst_call}s fits the ${provider_timeout}s provider timeout (maxTokens=$max_tokens)"
+else
+    bad "worst-case call fits the provider timeout" \
+        "maxTokens=$max_tokens implies ${worst_call}s vs provider=${provider_timeout}s"
+fi
+
+echo "== the timeouts stay ordered =="
 # compaction < heartbeat <= provider. Violating the left half is what broke
 # .58 once compaction started succeeding: the heartbeat runs in the same
 # session as the chat, so it is just as likely to be the turn that compacts,
 # and at its 600 s fallback budget it died on the lane deadline mid-compaction
 # and took the owner's queued Telegram message with it.
 heartbeat_timeout=$(jq -r '.agents.defaults.heartbeat.timeoutSeconds' "$cfg")
-if (( compaction_timeout < heartbeat_timeout )) && (( heartbeat_timeout <= provider_timeout )); then
-    ok "compaction ($compaction_timeout) < heartbeat ($heartbeat_timeout) <= provider ($provider_timeout)"
+if (( compaction_timeout < provider_timeout )) && (( provider_timeout < heartbeat_timeout )); then
+    ok "compaction ($compaction_timeout) < provider ($provider_timeout) < heartbeat ($heartbeat_timeout)"
 else
-    bad "compaction < heartbeat <= provider" \
-        "compaction=$compaction_timeout heartbeat=$heartbeat_timeout provider=$provider_timeout"
+    bad "compaction < provider < heartbeat" \
+        "compaction=$compaction_timeout provider=$provider_timeout heartbeat=$heartbeat_timeout"
+fi
+
+# A heartbeat turn that outlives its own cadence means two heartbeats overlap
+# on the same lane, which is how one slow poll starts blocking user messages.
+if (( heartbeat_timeout < 3600 )); then
+    ok "heartbeat budget ($heartbeat_timeout s) stays under the 1h cadence"
+else
+    bad "heartbeat budget stays under the 1h cadence" "got $heartbeat_timeout"
+fi
+
+# The Telegram ingress handler wraps the WHOLE turn, so it must be the
+# outermost budget. It has no openclaw.json path -- it is an env var in the
+# systemd drop-in -- which is exactly why it was missed and why a 300 s
+# default silently aborted turns (and their compactions) mid-flight.
+ingress_ms=$(grep -oE 'OPENCLAW_TELEGRAM_SPOOLED_HANDLER_TIMEOUT_MS=[0-9]+' "$UTILITIES" | head -1 | cut -d= -f2)
+if [[ -z "$ingress_ms" ]]; then
+    bad "ingress timeout is set in the gateway drop-in" "no OPENCLAW_TELEGRAM_SPOOLED_HANDLER_TIMEOUT_MS found in utilities.sh"
+elif (( ingress_ms / 1000 > heartbeat_timeout )); then
+    ok "telegram ingress ($((ingress_ms / 1000)) s) is the outermost budget"
+else
+    bad "telegram ingress is the outermost budget" \
+        "ingress=$((ingress_ms / 1000))s heartbeat=${heartbeat_timeout}s"
 fi
 
 # The fallback this replaces is min(600, cadence) — never enough for one

@@ -927,17 +927,18 @@ So the model was already running at xhigh by template default. Shipping
 pins that against an upstream default change and makes the intent visible in the
 unit file; it is not a behaviour change on its own.
 
-### Single-generation cap (`max_tokens` 12288)
+### Single-generation cap (`max_tokens` 16384)
 
-Shipped 12288 here against 8192 on Glimmer, and the asymmetry is deliberate.
-The OpenClaw-side ceiling counts **reasoning tokens as well as answer tokens**,
-so it has to clear whatever the model spends thinking:
+**Raised to a flat 16384 on all three models (2026-08-15)** to leave room for
+multi-hour agentic turns; the per-model 8192/12288 split below is history. The
+OpenClaw-side ceiling counts **reasoning tokens as well as answer tokens**, so
+it has to clear whatever the model spends thinking:
 
-| model | think backstop | cap | basis |
+| model | think backstop | cap (was) | basis |
 |---|---|---:|---|
-| Muse Glimmer 30B | none | 8192 | measured: max 7302 over n=3860 generations at xhigh |
-| Qwen3.8-27B | none (`--reasoning-preserve` only) | 12288 | unmeasured; xhigh with no server-side think cap |
-| Qwen3.6-35B-A3B | `--reasoning-budget 8192` | 12288 | 8192 think + ~4096 for the answer |
+| Muse Glimmer 30B | none | 16384 (8192) | measured: max 7302 over n=3860 generations at xhigh |
+| Qwen3.8-27B | none (`--reasoning-preserve` only) | 16384 (12288) | unmeasured; xhigh with no server-side think cap |
+| Qwen3.6-35B-A3B | `--reasoning-budget 8192` | 16384 (12288) | 8192 think + the rest for the answer |
 
 The 35B is the sharp case: with a flat 8192 cap, a turn that spends its full
 reasoning budget hits the ceiling at the instant thinking closes and has **zero
@@ -947,11 +948,19 @@ turn the budget exists to contain.
 Truncation is not graceful degradation. A step cut mid-tool-call emits malformed
 JSON and fails the turn outright rather than shortening it, so these are sized
 above the observed tail, never at it. The cap stays coupled to
-`timeoutSeconds` (1800) in `patch_openclaw_config`: at the 27B's ~270 t/s
-deep-fill PP and 17 t/s TG, a full 81920-token prefill plus a full 12288-token
-completion is ~1020 s, 57% of that ceiling. **Past ~24k tokens a single
-generation would outlive the HTTP timeout** and convert a slow turn into a
-failed one. Re-measure both before raising either.
+`timeoutSeconds` (1800) in `patch_openclaw_config` — worst case is a full-depth
+prefill plus a full-length completion, and it must fit that ceiling:
+
+| model | prefill | generation | total | of 1800 s |
+|---|---:|---:|---:|---:|
+| Muse Glimmer 30B | 456 s | 1024 s | 1480 s | 82% |
+| Qwen3.6-35B-A3B | 303 s | 964 s | 1267 s | 70% |
+| Qwen3.8-27B | 187 s | 964 s | 1151 s | 64% |
+
+**Past ~24k tokens a single Glimmer generation would outlive the HTTP timeout**
+and convert a slow call into a failed turn. Re-measure both before raising
+either. 16384 is 2.2x the largest generation ever observed here, so it is
+headroom, not a response to measured truncation.
 
 ### Harness note
 
