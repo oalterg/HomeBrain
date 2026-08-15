@@ -1466,7 +1466,25 @@ patch_openclaw_config() {
         jq_browser_patch='| .browser.executablePath = $browser_path'
     fi
 
+    # Per-generation token ceiling, resolved from the catalog the same way
+    # every other per-model value is (profiles[<platform tag>] first, then the
+    # model's top-level key). Unlike contextWindow — which is read back from
+    # the generated llama-server unit so it reflects what is actually running —
+    # this has no runtime source to parse, so the catalog is authoritative.
+    # An unknown model (hand-edited AI_MODEL_ID, catalog not yet synced) falls
+    # back to 8192, which is the measured default-model value.
+    local models_file="${SCRIPT_DIR}/../config/platform_models.json"
+    local max_tokens=""
+    if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+        max_tokens=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            '(.models[] | select(.id == $id)
+              | ((.profiles[$tag] // {}).max_tokens // .max_tokens)) // empty' \
+            "$models_file" 2>/dev/null || echo "")
+    fi
+    [[ "$max_tokens" =~ ^[0-9]+$ ]] || max_tokens=8192
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
+        --argjson max_tokens "$max_tokens" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -1500,6 +1518,28 @@ patch_openclaw_config() {
         .models.providers.llamacpp.models[0].id = $id |
         .models.providers.llamacpp.models[0].name = $id |
         .models.providers.llamacpp.models[0].contextWindow = $ctx |
+        # Ceiling on ONE generation, per model, from platform_models.json.
+        # Left unset until 2026-08-15, which meant no ceiling at all: a single
+        # call could run until it hit the context window. Measured on the
+        # 16 GB box over 3 days (n=3860 generations, Muse Glimmer at xhigh):
+        # p50=341, p95=2746, p99=5587, max=7302 tokens. At the live rate of
+        # ~16 t/s that 7302-token tail is 7.6 minutes of silence for ONE call,
+        # in a turn that makes many, and the box reads as "the agent never
+        # replied" while it is simply still generating.
+        #
+        # Why this is per model rather than one number: the cap counts
+        # reasoning tokens too, so it has to clear whatever the model spends
+        # thinking before it answers. Glimmer ships 8192, above every
+        # generation observed in those 3 days. Both Qwen entries ship 12288 --
+        # the 35B-A3B because its --reasoning-budget is itself 8192, so a flat
+        # 8192 would leave zero tokens for the answer on exactly the
+        # runaway-think turn that budget exists to contain; the 27B because it
+        # runs at reasoning_effort xhigh with no server-side think cap at all.
+        #
+        # Truncation is not a soft failure here: a step cut mid-tool-call
+        # emits malformed JSON, which fails the turn outright instead of
+        # shortening it. Size this above the tail, never at it.
+        .models.providers.llamacpp.models[0].maxTokens = $max_tokens |
         # llama.cpp puts Glimmer/Qwen thoughts in delta.reasoning_content
         # (deepseek-shaped). The openai-completions provider default is
         # thinkingFormat=openai, which does not surface that field even when
@@ -1525,11 +1565,17 @@ patch_openclaw_config() {
         # for — the schema rejects 0, so it must not survive.
         #
         # Raised 900 -> 1800 on 2026-08-14, when the 27B slot moved to an
-        # 81920-token window. Worst case on the 16 GB box is now a full-depth
-        # prompt prefilling at ~270 t/s (~303 s) followed by a maxTokens 8192
-        # completion at ~17 t/s (~479 s) — ~782 s, already 87% of the old
-        # ceiling. The llama-server --timeout default is 3600, so 1800
-        # stays the binding limit and the server will not cut us off first.
+        # 81920-token window. Worst case on the 16 GB box is a full-depth
+        # prompt prefilling at ~270 t/s (~303 s) followed by a full maxTokens
+        # completion at ~17 t/s; at the 12288 the 27B now carries that is
+        # ~717 s, so ~1020 s all in — 57% of this ceiling.
+        #
+        # The two numbers stay coupled: raising max_tokens in
+        # platform_models.json beyond ~24k would let one generation outlive
+        # this timeout, converting a slow turn into a failed one. Re-measure
+        # both before moving either. The llama-server --timeout default is
+        # 3600, so 1800 stays the binding limit and the server will not cut
+        # us off first.
         .models.providers.llamacpp.timeoutSeconds = 1800 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
         .agents.defaults.models = {("llamacpp/" + $id): {}} |

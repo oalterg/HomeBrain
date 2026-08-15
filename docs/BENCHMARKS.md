@@ -911,6 +911,48 @@ throughput**; switch to the 40960 MTP config if that preference ever inverts.
   `mmproj-*.gguf` this entry never loads, so vision costs nothing today — and
   enabling it would *add* 1–2 GB, spending context rather than saving it.
 
+### Reasoning effort — the kwarg name differs from Muse Glimmer
+
+**This template reads `reasoning_effort`, not `reasoning_strength`.** Glimmer's
+variable is `reasoning_strength` (`low`/`medium`/`high`/`xhigh`); Qwen3.8's is
+`reasoning_effort` and its levels are `xhigh`/`medium`/`low` — no `high`.
+Copying Glimmer's kwarg across would not error: `--chat-template-kwargs` puts
+unknown keys into the Jinja context, the template never reads them, and the
+setting is **silently inert**. Verified against the published
+`tokenizer_config.json`, whose template resolves
+`reasoning_effort|default('xhigh')`.
+
+So the model was already running at xhigh by template default. Shipping
+`--chat-template-kwargs '{"reasoning_effort": "xhigh"}'` explicitly (2026-08-15)
+pins that against an upstream default change and makes the intent visible in the
+unit file; it is not a behaviour change on its own.
+
+### Single-generation cap (`max_tokens` 12288)
+
+Shipped 12288 here against 8192 on Glimmer, and the asymmetry is deliberate.
+The OpenClaw-side ceiling counts **reasoning tokens as well as answer tokens**,
+so it has to clear whatever the model spends thinking:
+
+| model | think backstop | cap | basis |
+|---|---|---:|---|
+| Muse Glimmer 30B | none | 8192 | measured: max 7302 over n=3860 generations at xhigh |
+| Qwen3.8-27B | none (`--reasoning-preserve` only) | 12288 | unmeasured; xhigh with no server-side think cap |
+| Qwen3.6-35B-A3B | `--reasoning-budget 8192` | 12288 | 8192 think + ~4096 for the answer |
+
+The 35B is the sharp case: with a flat 8192 cap, a turn that spends its full
+reasoning budget hits the ceiling at the instant thinking closes and has **zero
+tokens left for the answer or tool call** — precisely on the runaway-`<think>`
+turn the budget exists to contain.
+
+Truncation is not graceful degradation. A step cut mid-tool-call emits malformed
+JSON and fails the turn outright rather than shortening it, so these are sized
+above the observed tail, never at it. The cap stays coupled to
+`timeoutSeconds` (1800) in `patch_openclaw_config`: at the 27B's ~270 t/s
+deep-fill PP and 17 t/s TG, a full 81920-token prefill plus a full 12288-token
+completion is ~1020 s, 57% of that ceiling. **Past ~24k tokens a single
+generation would outlive the HTTP timeout** and convert a slow turn into a
+failed one. Re-measure both before raising either.
+
 ### Harness note
 
 Early passes produced scattered 0 t/s "failures" that did not reproduce
