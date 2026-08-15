@@ -1711,9 +1711,10 @@ patch_openclaw_config() {
         # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
-        # A heartbeat turn must be able to absorb ONE compaction, because it
-        # runs in the same session as the Telegram chat and is therefore just
-        # as likely to be the turn that trips the threshold.
+        # A heartbeat turn must be able to absorb ONE compaction. Its session
+        # is isolated from the Telegram chat (see isolatedSession below), but
+        # it still accumulates a history of its own and so still trips the
+        # threshold on its own schedule.
         #
         # Left unset, resolveHeartbeatTimeoutOverrideSeconds falls back to the
         # cadence capped at DEFAULT_HEARTBEAT_TIMEOUT_SECONDS, i.e. min(600,
@@ -1746,6 +1747,44 @@ patch_openclaw_config() {
         # deadline that contained it rather than removing it. Before changing
         # any of these, walk the whole list.
         .agents.defaults.heartbeat.timeoutSeconds = 3000 |
+        # Run heartbeats in their own session (<main>:heartbeat) rather than
+        # the owner’s chat session.
+        #
+        # Sharing one session turned every hourly heartbeat into a ~150 s
+        # window in which an owner message was silently swallowed.
+        # messages.queue.mode defaults to "steer", so a message arriving while
+        # a run is active is injected into THAT run instead of starting its
+        # own turn. When the active run was a heartbeat, the answer inherited
+        # the heartbeat’s delivery target — and heartbeat.target is unset,
+        # which resolves to "none" — so the reply was written to the
+        # transcript, where it is visible in the dashboard, and never sent to
+        # Telegram. Seen live on .58 2026-08-15: an owner question arrived 53 s
+        # into a heartbeat, the gateway logged "visible channel turn dispatched
+        # with no queued reply payloads", the agent answered at 20:01:54, and
+        # nothing ever reached the phone.
+        #
+        # The window was that wide because the heartbeat is the only turn that
+        # busts the prompt cache: it runs with senderIsOwner=false, which
+        # triggers an extra owner-only tools.deny (gateway, nodes). A different
+        # tool list is a different prompt prefix, so the entire 53-73k context
+        # re-prefilled every hour — cacheRead=0, ~147 s at ~360 t/s — while the
+        # owner’s own back-to-back turns hit the cache in under a second.
+        # Isolating the session fixes that too: the heartbeat now prefills its
+        # own small history instead of the whole chat, and stops evicting the
+        # chat’s KV cache on the way through.
+        #
+        # heartbeat.target is deliberately left UNSET, which resolves to
+        # DEFAULT_HEARTBEAT_TARGET = "none". That looks like a bug — no
+        # heartbeat reply has ever been delivered on .58, 0 of 67 — but it is
+        # correct here: the agent pings the user with the `message` tool
+        # (action=send, channel=telegram) when a heartbeat finds something
+        # worth interrupting for, which is a deliberate per-finding decision.
+        # Setting a target instead delivers the heartbeat’s FINAL TEXT, which
+        # is a full status summary every single hour. Tried live 2026-08-15 and
+        # reverted: the two routes are not redundant, they are additive, and
+        # the ackMaxChars/HEARTBEAT_OK suppression does not help because a real
+        # summary is neither. Leave it unset.
+        .agents.defaults.heartbeat.isolatedSession = true |
         # Mirror of the model catalog reasoning level; see the derivation
         # above. Empty means this model pins no level, in which case the key
         # is removed so OpenClaw falls back to its own default instead of
