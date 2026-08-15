@@ -1,9 +1,13 @@
 # Pangolin remote-access configuration
 
-HomeBrain reaches the internet through a [Pangolin](https://github.com/fosrl/pangolin)
-tunnel: a `newt` client container on the box dials out to your Pangolin server, and you
-map public hostnames ("resources") to local "targets" in the Pangolin dashboard. The **box
-side is automatic** (`provision.sh`); the **Pangolin server side is manual**.
+Pangolin is the **optional browser tunnel**: public HTTPS for the dashboard, Nextcloud,
+Home Assistant, and Vault. It is the remote path for **HomeCloud** (no GPU, no agent).
+On a GPU **HomeBrain** box the daily remote path is Telegram; Pangolin is only needed if
+you want those web UIs from outside the LAN.
+
+A `newt` client container on the box dials out to your [Pangolin](https://github.com/fosrl/pangolin)
+server. You map public hostnames ("resources") to local "targets" in the Pangolin dashboard.
+The **box side is automatic** (`provision.sh`); the **Pangolin server side is manual**.
 
 ## Box side (automatic)
 

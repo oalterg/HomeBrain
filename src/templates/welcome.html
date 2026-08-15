@@ -12,7 +12,11 @@
     <div class="page-narrow">
         <div class="brand">Home<span>{{ platform.product_suffix }}</span></div>
         <p class="tagline">Private Cloud Setup</p>
-        <p class="muted">Choose how you want to reach your {{ platform.product_name }}.</p>
+        {% if has_gpu %}
+        <p class="muted">The dashboard stays on your home network. After setup, pair Telegram — that is how you reach the agent from your phone. A public tunnel is optional.</p>
+        {% else %}
+        <p class="muted">Choose how you want to reach your {{ platform.product_name }}. There is no agent on this box, so a Pangolin tunnel is how you open the browser from outside.</p>
+        {% endif %}
 
         <div class="panel">
             <h3>Access mode</h3>
@@ -21,12 +25,21 @@
                 <label class="mode-option selected" id="opt-local" onclick="selectMode('local')">
                     <input type="radio" name="mode" value="local" checked>
                     <div class="mode-title">Local network</div>
+                    {% if has_gpu %}
+                    <div class="mode-desc">Dashboard and apps on this network. Telegram is how you use the agent from outside.</div>
+                    {% else %}
                     <div class="mode-desc">Reachable on your home network only. No internet account required.</div>
+                    {% endif %}
                 </label>
                 <label class="mode-option" id="opt-remote" onclick="selectMode('remote')">
                     <input type="radio" name="mode" value="remote">
+                    {% if has_gpu %}
+                    <div class="mode-title">Public tunnel</div>
+                    <div class="mode-desc">Optional. HTTPS for the browser through Pangolin. Not required for the agent.</div>
+                    {% else %}
                     <div class="mode-title">Remote access</div>
                     <div class="mode-desc">Reachable from anywhere through a Pangolin tunnel. Requires Pangolin credentials.</div>
+                    {% endif %}
                 </label>
             </div>
 
@@ -37,7 +50,8 @@
                 <label for="pan-id">Device ID</label>
                 <input type="text" id="pan-id" placeholder="newt-xxxxxxxx" autocomplete="off">
                 <label for="pan-secret">Device secret</label>
-                <input type="password" id="pan-secret" placeholder="Secret key" autocomplete="off">
+                <input type="password" id="pan-secret" autocomplete="off"
+                       placeholder="{% if config.NEWT_SECRET %}Leave blank to use the factory secret{% else %}Secret key{% endif %}">
                 <label for="pan-domain">Main domain</label>
                 <input type="text" id="pan-domain" placeholder="myserver.homebrain.com" autocomplete="off">
             </div>
@@ -49,9 +63,12 @@
             <ul>
                 <li><strong>Device ID</strong> — {{ config.NEWT_ID }}</li>
                 <li><strong>Main domain</strong> — {{ config.PANGOLIN_DOMAIN }}</li>
-                <li><strong>Status</strong> — <span class="status-badge status-running">Online and ready</span></li>
             </ul>
-            <p class="hint">Tunnel credentials are pre-provisioned. Select Remote access to use them.</p>
+            {% if has_gpu %}
+            <p class="hint">This image also has Pangolin credentials. The agent does not need them. Select Public tunnel only if you want the browser from outside.</p>
+            {% else %}
+            <p class="hint">Tunnel credentials are on this box. Remote access is selected — initialize to use them. Leave the secret blank unless you are replacing it.</p>
+            {% endif %}
         </div>
         {% endif %}
 
@@ -110,6 +127,8 @@
 
     <script>
         var selectedMode = 'local';
+        var factoryId = {{ config.get("NEWT_ID") | tojson }};
+        var factoryHasSecret = {% if config.NEWT_SECRET %}true{% else %}false{% endif %};
 
         function selectMode(mode) {
             selectedMode = mode;
@@ -230,8 +249,14 @@
                 var id     = document.getElementById('pan-id').value.trim();
                 var secret = document.getElementById('pan-secret').value.trim();
                 var domain = document.getElementById('pan-domain').value.trim();
-                if (!id || !secret || !domain) {
-                    msg.textContent = 'Fill in the device ID, secret, and main domain for remote access.';
+                var canUseFactorySecret = factoryHasSecret && id === factoryId;
+                if (!id || !domain) {
+                    msg.textContent = 'Fill in the device ID and main domain for the public tunnel.';
+                    msg.style.color = 'var(--danger)';
+                    return;
+                }
+                if (!secret && !canUseFactorySecret) {
+                    msg.textContent = 'Fill in the device secret, or use the factory-provisioned device ID.';
                     msg.style.color = 'var(--danger)';
                     return;
                 }
@@ -275,8 +300,9 @@
                 });
         }
 
-        // Factory-provisioned devices default to Remote access.
-        {% if config.NEWT_ID %}
+        // HomeCloud: factory tunnel creds are the remote path — select them.
+        // HomeBrain: leave local selected; Telegram is the remote path.
+        {% if config.NEWT_ID and not has_gpu %}
         selectMode('remote');
         {% endif %}
     </script>

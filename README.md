@@ -76,25 +76,25 @@ HomeCloud reference: Raspberry Pi 5 (8 GB) with an SSD, Raspberry Pi OS Trixie 6
 # Ubuntu 24.04+ / Raspberry Pi OS 64-bit
 curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | sudo bash
 sudo /opt/homebrain/scripts/provision.sh
-sudo reboot
 ```
 
-`provision.sh` prints a **factory password**. Record it — it is not recoverable, and it is what opens the setup wizard.
+`provision.sh` prepares the host and starts the manager. The setup wizard is available as soon as it finishes. On AMD GPU hardware a reboot is recommended so kernel parameters take effect; it is not required to open the wizard.
 
-After reboot, open `http://<server-ip>`, log in, and choose local network or a Pangolin tunnel. The box deploys itself and shows a generated master password and recovery phrase **once**. On the LAN the dashboard is HTTP; remote access is HTTPS through the tunnel.
+If no factory password was supplied, `provision.sh` generates one and prints it once. Record it — it opens the wizard. It is stored in `factory_config.txt` (mode 600); the script will not print it again. `--factory-pass` sets it instead of generating one.
 
-Passing tunnel credentials up front does not skip the wizard — it arrives pre-filled:
+Open `http://<server-ip>`, log in, and initialize. Local network is the default. On a GPU box, pair Telegram after setup — that is how you reach the agent from a phone. A public tunnel is optional. The wizard shows the generated master password and recovery phrase **once**. (Restoring from backup reuses the old master password instead of generating one.)
+
+On the LAN the dashboard is HTTP. Nextcloud and Vault also speak HTTPS on local ports.
+
+**HomeCloud** (no GPU) has no agent, so a [Pangolin](docs/PANGOLIN.md) tunnel is how you reach the browser from outside. Passing credentials at provision time does not skip the wizard; they are stored on the box and the HomeCloud wizard defaults to using them:
 
 ```bash
 sudo /opt/homebrain/scripts/provision.sh \
   --newt-id "<ID>" --newt-secret "<SECRET>" --domain "<TUNNEL_DOMAIN>" \
   --endpoint "<PANGOLIN_ENDPOINT>" --factory-pass "<PASSWORD>"
-
-# force local-network mode
-sudo /opt/homebrain/scripts/provision.sh --local --factory-pass "<PASSWORD>"
 ```
 
-`--factory-pass` sets the wizard login. The master password (dashboard, Nextcloud, Home Assistant) is always generated during deployment and never passed in.
+On an already-set-up box the same command repoints the live tunnel without wiping data.
 
 Pick the AI model later, under **Settings → Personal AI Assistant**.
 
@@ -109,6 +109,7 @@ Pick the AI model later, under **Settings → Personal AI Assistant**.
 | [ROADMAP.md](docs/ROADMAP.md) | Shipped features and what's next |
 | [PRODUCT_REVIEW_2026-08.md](docs/plans/PRODUCT_REVIEW_2026-08.md) | Why the glue is the product, and the findings we will act on |
 | [TESTING.md](docs/TESTING.md) | E2E verification checklist (including the shared test-box lock) |
+| [PANGOLIN.md](docs/PANGOLIN.md) | Optional browser tunnel (HomeCloud, or GPU box web UIs from outside) |
 | [AGENTS.md](AGENTS.md) | Behavioral rules for AI coding agents |
 
 ## License
