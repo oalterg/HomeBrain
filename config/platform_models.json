@@ -7,7 +7,7 @@
       "url": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf",
       "min_size_bytes": 26000000000,
       "context_window": 81920,
-      "max_tokens": 12288,
+      "max_tokens": 16384,
       "min_healthy_vram_mb": 15000,
       "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(2[0-9]|3[0-9]).ffn_.*exps=CPU\" -fa 1 --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --reasoning-budget 8192 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"preserve_thinking\": true}'",
       "profiles": {
@@ -31,7 +31,7 @@
       "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-IQ4_XS.gguf",
       "min_size_bytes": 15000000000,
       "context_window": 81920,
-      "max_tokens": 12288,
+      "max_tokens": 16384,
       "min_healthy_vram_mb": 15700,
       "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
       "benchmark": {
@@ -48,7 +48,7 @@
       "url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
       "min_size_bytes": 15000000000,
       "context_window": 131072,
-      "max_tokens": 8192,
+      "max_tokens": 16384,
       "min_healthy_vram_mb": 15500,
       "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
       "benchmark": {

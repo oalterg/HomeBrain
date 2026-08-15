@@ -1420,6 +1420,70 @@ resolve_llama_ctx_size() {
     grep -oP -- '-ctx-size\s+\K[0-9]+' "$service_file" 2>/dev/null || true
 }
 
+# Write the HomeBrain systemd drop-in for the OpenClaw gateway.
+#
+# This exists for settings that have NO openclaw.json path. The Telegram
+# isolated-ingress handler timeout is one: it is read only from
+# OPENCLAW_TELEGRAM_SPOOLED_HANDLER_TIMEOUT_MS (or a programmatic opts field
+# the CLI never sets), and its built-in default is
+# ISOLATED_INGRESS_ADOPTION_STALL_MS = 5 * 60000, i.e. 300 s.
+#
+# 300 s is shorter than a real agent turn on a local model, and when it fires
+# it does not just drop the update -- it aborts the in-flight turn. Observed
+# on .58 2026-08-15 to the same millisecond:
+#
+#   15:41:20.728  context-engine compaction failed
+#   15:41:20.735  Telegram isolated polling spool handler timed out behind
+#                 update 617891637 after 300.3s; marking the update failed
+#   15:41:20.753  [compaction-diag] outcome=failed detail=This_operation_was_aborted
+#
+# So the owner's question was answered by nothing at all, twice, while the
+# agent was still working on it. A single compaction here is 150-500 s; the
+# turn that message belonged to ran ~52 minutes end to end.
+#
+# `openclaw daemon install --force` regenerates the unit on every deploy, but
+# drop-ins are separate files and survive that, which is why this is a drop-in
+# and not an edit to the generated unit.
+#
+# NOTE: a hand-made `99-test-mitigations.conf` exists on .58 from 2026-05-24.
+# It sorts after this file, so it wins on any key it also sets (it does not
+# set this one). It is not tracked here; see the session notes.
+write_openclaw_gateway_dropin() {
+    # Defaulted rather than bare: refresh_openclaw runs this after a load_env
+    # that is allowed to fail, and a bare ${HOMEBRAIN_HOME} would abort the
+    # whole refresh under `set -u`.
+    local hb_home="${HOMEBRAIN_HOME:-/home/homebrain}"
+    local hb_user="${HOMEBRAIN_USER:-homebrain}"
+    local dropin_dir="${hb_home}/.config/systemd/user/openclaw-gateway.service.d"
+    local dropin="${dropin_dir}/10-homebrain-timeouts.conf"
+
+    mkdir -p "$dropin_dir" || {
+        log_warn "Could not create $dropin_dir — gateway drop-in not written."
+        return 0
+    }
+
+    cat > "$dropin" <<'DROPIN'
+# Managed by HomeBrain (scripts/utilities.sh:write_openclaw_gateway_dropin).
+# Edits are overwritten on every deploy.
+[Service]
+# Telegram isolated-ingress handler budget. Default is 300 s, which aborts any
+# agent turn that outlives it -- including the compaction inside it. Sized for
+# multi-hour agentic turns instead: this must be the OUTERMOST budget, larger
+# than any per-turn or per-call timeout in openclaw.json.
+Environment=OPENCLAW_TELEGRAM_SPOOLED_HANDLER_TIMEOUT_MS=14400000
+DROPIN
+
+    chown -R "${hb_user}:${hb_user}" "${hb_home}/.config/systemd" 2>/dev/null || true
+    log_info "Wrote gateway drop-in: $dropin"
+}
+
+# Absolute path of the drop-in above, so callers can diff it without
+# duplicating the path and letting the two drift.
+openclaw_gateway_dropin_path() {
+    printf '%s/.config/systemd/user/openclaw-gateway.service.d/10-homebrain-timeouts.conf' \
+        "${HOMEBRAIN_HOME:-/home/homebrain}"
+}
+
 # Patch openclaw.json model references to match the selected AI model
 patch_openclaw_config() {
     local config_file="$1"
@@ -1544,18 +1608,29 @@ patch_openclaw_config() {
         # in a turn that makes many, and the box reads as "the agent never
         # replied" while it is simply still generating.
         #
-        # Why this is per model rather than one number: the cap counts
-        # reasoning tokens too, so it has to clear whatever the model spends
-        # thinking before it answers. Glimmer ships 8192, above every
-        # generation observed in those 3 days. Both Qwen entries ship 12288 --
-        # the 35B-A3B because its --reasoning-budget is itself 8192, so a flat
-        # 8192 would leave zero tokens for the answer on exactly the
-        # runaway-think turn that budget exists to contain; the 27B because it
-        # runs at reasoning_effort xhigh with no server-side think cap at all.
+        # The cap counts reasoning tokens too, so it has to clear whatever the
+        # model spends thinking before it answers. It was per model (Glimmer
+        # 8192, both Qwen entries 12288) and is now a flat 16384 everywhere.
         #
         # Truncation is not a soft failure here: a step cut mid-tool-call
         # emits malformed JSON, which fails the turn outright instead of
-        # shortening it. Size this above the tail, never at it.
+        # shortening it. So the cap is sized from the top down -- from what a
+        # single call is allowed to cost -- not from the observed tail.
+        # Worst case is a full-depth prefill plus a full-length generation,
+        # and it has to fit the provider timeout above:
+        #
+        #   Glimmer   131072/287.6 = 456 s + 16384/16.0 = 1024 s -> 1480 s
+        #   27B        81920/438.0 = 187 s + 16384/17.0 =  964 s -> 1151 s
+        #   35B-A3B    81920/270.0 = 303 s + 16384/17.0 =  964 s -> 1267 s
+        #
+        # all inside the 1800 s provider ceiling, the worst at 82% of it.
+        # That is the real constraint: ~24k is where a Glimmer generation
+        # starts to outlive the HTTP timeout, converting a slow call into a
+        # failed turn. Do not raise this without raising that first.
+        #
+        # 16384 is 2.2x the largest generation ever measured here (max=7302
+        # over n=3860 at xhigh; p99=5587), so it is headroom for long agentic
+        # turns rather than a response to observed truncation.
         .models.providers.llamacpp.models[0].maxTokens = $max_tokens |
         # llama.cpp puts Glimmer/Qwen thoughts in delta.reasoning_content
         # (deepseek-shaped). The openai-completions provider default is
@@ -1614,12 +1689,43 @@ patch_openclaw_config() {
         # took the owner’s queued Telegram message down with it — that
         # message had been waiting 182 s behind it on the same lane.
         #
-        # 1800 s clears the 1200 s compaction ceiling with room for the
-        # heartbeat’s own prefill (~456 s at full depth) and reply, matches
-        # the provider HTTP timeout, and is half the 1h cadence so two
-        # heartbeats can never overlap. These three numbers are ordered and
-        # must stay that way: compaction < heartbeat <= provider.
-        .agents.defaults.heartbeat.timeoutSeconds = 1800 |
+        # 3000 s clears the 1200 s compaction ceiling AND a full-length model
+        # call (1800 s) in the same turn, while staying under the 3600 s
+        # cadence so two heartbeats can never overlap. It was 1800 briefly,
+        # which exactly equalled the per-call provider timeout — a heartbeat
+        # that compacted and then made one slow call had no margin at all.
+        #
+        # The whole ordered set, innermost to outermost. Every one of these
+        # bounds an agent turn somewhere, and the shortest always wins:
+        #
+        #   compaction        1200 s   one compaction pass
+        #   provider          1800 s   ONE model call (HTTP)
+        #   heartbeat         3000 s   one heartbeat turn
+        #   telegram ingress 14400 s   one inbound update, i.e. a whole turn
+        #                              (env var; see write_openclaw_gateway_dropin)
+        #   agent run          48 h    schema default, deliberately untouched
+        #
+        # Twice now a fix here relocated the failure to the next-shortest
+        # deadline that contained it rather than removing it. Before changing
+        # any of these, walk the whole list.
+        .agents.defaults.heartbeat.timeoutSeconds = 3000 |
+        # Compaction strategy. Asserted because leaving it unset produced an
+        # undeclared split: the seed template shipped "safeguard" from #2
+        # onward, nothing ever re-applied it, and an upgraded box (.58) ended
+        # up with no compaction block at all — i.e. running "default" while a
+        # fresh install ran "safeguard". Whichever is right, boxes disagreeing
+        # silently is not.
+        #
+        # "default" keeps the OpenClaw runtime auto-compaction that every
+        # measurement in this file was taken against. "safeguard" is a
+        # different pipeline: it disables that and substitutes its own, adding
+        # structured summaries, recentTurnsPreserve, and identifierPolicy
+        # (which is worth real money here — these transcripts are full of HA
+        # entity ids and Nextcloud paths a loose summary would round off),
+        # at up to 2x compaction wall time when its quality guard regenerates.
+        # Revisit once the budgets below have a week of clean data; enable it
+        # with qualityGuard.enabled=false to get the structure at 1x cost.
+        .agents.defaults.compaction.mode = "default" |
         # --- Compaction budget -------------------------------------------
         # Both numbers are sized against a local llama-server, which is one
         # to two orders of magnitude slower than the hosted providers the
@@ -1943,6 +2049,9 @@ setup_openclaw() {
     # then exec's whatever path the previous unit pointed at — which silently
     # breaks after an OpenClaw upgrade or a path move.
     run_as_admin openclaw daemon install --force 2>/dev/null || true
+    # After `daemon install --force` (it rewrites the unit) and before the
+    # daemon-reload below, so the new environment is in effect on start.
+    write_openclaw_gateway_dropin
     # The previous (sabotaged or version-mismatched) unit may have crash-
     # looped its way to systemd's "Start request repeated too quickly"
     # rate-limit cap before we got here. `--force` rewrites the unit file
@@ -2697,6 +2806,19 @@ case "${1:-}" in
         fi
         cp "$CFG" "${CFG}.preupdate"
         remove_whatsapp_plugins
+        # The drop-in carries settings with no openclaw.json path. Unlike the
+        # config — which OpenClaw hot-reloads, `[reload] config hot reload
+        # applied` — a systemd Environment= change needs daemon-reload plus a
+        # real restart, so track whether it moved and fold that into the
+        # restart decision below.
+        DROPIN=$(openclaw_gateway_dropin_path)
+        DROPIN_BEFORE=$(cat "$DROPIN" 2>/dev/null || true)
+        write_openclaw_gateway_dropin
+        DROPIN_CHANGED=false
+        if [[ "$(cat "$DROPIN" 2>/dev/null || true)" != "$DROPIN_BEFORE" ]]; then
+            DROPIN_CHANGED=true
+            run_as_admin systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
         if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "$(resolve_llama_ctx_size)"; then
             # patch_openclaw_config rewrites the file as whoever runs this
             # (root, from update.sh). Restore the gateway user's ownership —
@@ -2705,8 +2827,8 @@ case "${1:-}" in
             # that actually changed the file (the WhatsApp one-shot migration).
             chown "${HOMEBRAIN_USER:-homebrain}:${HOMEBRAIN_USER:-homebrain}" "$CFG" 2>/dev/null || true
             chmod 600 "$CFG" 2>/dev/null || true
-            if ! cmp -s "${CFG}.preupdate" "$CFG"; then
-                log_info "openclaw plugins/config changed — restarting daemon to apply."
+            if ! cmp -s "${CFG}.preupdate" "$CFG" || [[ "$DROPIN_CHANGED" == "true" ]]; then
+                log_info "openclaw plugins/config/drop-in changed — restarting daemon to apply."
                 run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
                     || log_warn "openclaw-gateway restart failed — check logs."
             else
