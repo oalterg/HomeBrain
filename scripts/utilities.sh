@@ -1942,11 +1942,36 @@ run_as_admin() {
 # they stop loading (and stop tripping doctor warnings) on upgraded boxes.
 # Best-effort and idempotent: uninstalling an absent plugin just fails
 # quietly. Linked-device credentials under ~/.openclaw are left alone.
+#
+# `--force` is load-bearing and its absence made this function a NO-OP on every
+# box since it was written. `openclaw plugins uninstall` prompts for
+# confirmation, and without a TTY it refuses:
+#
+#   Uninstall plugin "whatsapp"? [y/N] Error: plugins uninstall requires
+#   confirmation input. Re-run in an interactive TTY or pass --force.
+#
+# It then **exits 0**, so neither the `|| true` nor a stricter exit-code check
+# would ever have caught it. Found on .58 2026-08-15, where the never-removed
+# channel plugin was still being loaded by the gateway on every start and
+# failing with `ERR_INTERNAL_ASSERTION: Cannot require() ES Module`.
+#
+# The plugin ID is `whatsapp` (`@openclaw/whatsapp` is the npm package name).
+# Both resolve for uninstall, but the ID is what names the directory, which is
+# what the verification below inspects.
+#
+# Verify by asking the filesystem rather than trusting the exit status — same
+# lesson as the `nofail` mount check.
 remove_whatsapp_plugins() {
     command -v openclaw >/dev/null 2>&1 || return 0
-    local pid
-    for pid in homebrain-whatsapp-login @openclaw/whatsapp; do
-        run_as_admin openclaw plugins uninstall "$pid" >/dev/null 2>&1 || true
+    local pid ext_root="${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw/extensions"
+    for pid in homebrain-whatsapp-login whatsapp; do
+        [[ -d "${ext_root}/${pid}" ]] || continue
+        run_as_admin openclaw plugins uninstall "$pid" --force >/dev/null 2>&1 || true
+        if [[ -d "${ext_root}/${pid}" ]]; then
+            log_warn "WhatsApp plugin '${pid}' survived uninstall; the gateway will keep trying to load ${ext_root}/${pid}."
+        else
+            log_info "Removed retired WhatsApp plugin: ${pid}"
+        fi
     done
 }
 

@@ -80,6 +80,8 @@ jobs:
         run: bash scripts/tests/test_load_env.sh
       - name: openclaw compaction budget (jq program + reserve ladder)
         run: bash scripts/tests/test_openclaw_compaction.sh
+      - name: retired WhatsApp plugins are actually uninstalled
+        run: bash scripts/tests/test_whatsapp_removal.sh
 
   compose:
     runs-on: ubuntu-latest
