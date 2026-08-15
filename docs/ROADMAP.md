@@ -42,9 +42,11 @@ Track planned features and shipped releases against that. For questions or contr
 
 Current action list: [`PRODUCT_REVIEW_2026-08.md`](plans/PRODUCT_REVIEW_2026-08.md) —
 value-add vs the stack, and the findings we will act on (disclosed credentials,
-inbound agent content, container hardening). Bare-metal no-drive restore
-walked 2026-08-12. A cloud dead-man's switch is a non-goal: it would phone
-home. ARGB lighting is not on that list.
+inbound agent content, container hardening). Inbound content threat model
+(distill only, plan later):
+[`INBOUND_AGENT_CONTENT.md`](plans/INBOUND_AGENT_CONTENT.md). Bare-metal
+no-drive restore walked 2026-08-12. A cloud dead-man's switch is a non-goal:
+it would phone home. ARGB lighting is not on that list.
 
 Earlier plans, kept for the reasoning:
 

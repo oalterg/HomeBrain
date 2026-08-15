@@ -50,6 +50,7 @@
         "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL": {}
       },
       "workspace": "/home/homebrain/.openclaw/workspace",
+      "thinkingDefault": "xhigh",
       "compaction": {
         "mode": "default",
         "reserveTokensFloor": 35000,
