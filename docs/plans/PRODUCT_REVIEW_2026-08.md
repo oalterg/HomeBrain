@@ -208,6 +208,8 @@ that widens what the agent will read as privilege escalation. Email-to-agent
 is the scariest surface on the box; body fetch should stay default-off.
 Household members (#157) getting Nextcloud without the house keys is the
 right split — there is still one agent, and it is the owner.
+Distilled 2026-08-15:
+[`INBOUND_AGENT_CONTENT.md`](INBOUND_AGENT_CONTENT.md). Plan later.
 
 **B2. Dashboard is still gunicorn as root on `0.0.0.0:80`.**
 Vault and Nextcloud got Caddy; the service that holds the master password did
@@ -294,9 +296,10 @@ Done:
   modest `mem_limit` on compose services that can take them. Start with
   `newt`, `redis`, `caddy`; treat Nextcloud/HA/Vault as a second pass
   because they are the ones that will surprise you.
-- **B1.** Audit email MCP defaults and the browser tool. Any path that
-  widens what the agent will read needs an explicit product decision, not
-  a silent enable.
+- **B1.** Audit distilled in
+  [`INBOUND_AGENT_CONTENT.md`](INBOUND_AGENT_CONTENT.md). Remaining work is
+  product decisions (body fetch, browser default, untrusted text vs `exec`),
+  not a silent enable.
 - **B2.** Remains deferred until a LAN-only user is real. The README
   sentence in Phase 0 is the stopgap.
 

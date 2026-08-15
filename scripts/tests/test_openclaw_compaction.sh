@@ -151,6 +151,49 @@ else
     bad "notifyUser is on" "got $got"
 fi
 
+echo "== thinking level mirrors the model's own reasoning knob =="
+# The two layers are separate transports -- llama-server takes the level as a
+# chat-template kwarg, OpenClaw sends thinkingDefault as `reasoning_effort` --
+# and when they disagree the dashboard reports a level the model is not running.
+# Whatever the catalog pins for this model is what OpenClaw must claim.
+catalog_level=$(jq -r --arg id "$GLIMMER" \
+    '(.models[] | select(.id == $id) | .extra_flags) // ""' \
+    "$TEST_DIR/../../config/platform_models.json" \
+    | grep -oE '"reasoning_(strength|effort)"[[:space:]]*:[[:space:]]*"[a-z]+"' \
+    | grep -oE '"[a-z]+"$' | tr -d '"')
+got=$(jq -r '.agents.defaults.thinkingDefault' "$cfg")
+if [[ -n "$catalog_level" && "$got" == "$catalog_level" ]]; then
+    ok "thinkingDefault \"$got\" matches the catalog kwarg for $GLIMMER"
+else
+    bad "thinkingDefault matches the catalog kwarg" \
+        "catalog=\"$catalog_level\" config=\"$got\""
+fi
+
+# A value outside the schema enum fails config validation and stops the
+# gateway loading, so the derivation must never emit one.
+case "$got" in
+    off|minimal|low|medium|high|xhigh|adaptive|max|ultra)
+        ok "thinkingDefault \"$got\" is inside the schema enum" ;;
+    *)  bad "thinkingDefault is inside the schema enum" "got \"$got\"" ;;
+esac
+
+# The 35B-A3B caps thinking with --reasoning-budget and pins no level kwarg.
+# It must clear the key rather than inherit the previous model's, or switching
+# models leaves OpenClaw claiming a level nothing set.
+cfg35="$TEST_DIR/../../config/platform_models.json"
+if jq -e '.models[] | select(.id == "Qwen3.6-35B-A3B-UD-Q5_K_XL")' "$cfg35" >/dev/null 2>&1; then
+    cfgnb="$TMP_ROOT/nolevel.json"
+    write_fixture "$cfgnb"
+    jq '.agents.defaults.thinkingDefault = "xhigh"' "$cfgnb" > "$cfgnb.t" && mv "$cfgnb.t" "$cfgnb"
+    patch_openclaw_config "$cfgnb" "Qwen3.6-35B-A3B-UD-Q5_K_XL" 81920 >/dev/null 2>&1
+    leftover=$(jq -r '.agents.defaults.thinkingDefault // "<removed>"' "$cfgnb")
+    if [[ "$leftover" == "<removed>" ]]; then
+        ok "a model pinning no level clears thinkingDefault instead of inheriting"
+    else
+        bad "a model pinning no level clears thinkingDefault" "stale value survived: \"$leftover\""
+    fi
+fi
+
 echo "== compaction mode is asserted, not left to drift =="
 # The bug this pins is not "which mode" but "nobody says": the seed shipped
 # safeguard, nothing re-applied it, and upgraded boxes silently ran default.

@@ -1564,8 +1564,45 @@ patch_openclaw_config() {
     fi
     [[ "$max_tokens" =~ ^[0-9]+$ ]] || max_tokens=8192
 
+    # OpenClaw's own thinking level, mirrored from the model's server-side
+    # reasoning knob so the two layers cannot disagree.
+    #
+    # They are genuinely separate: llama-server takes the level as a chat
+    # template kwarg (--chat-template-kwargs), while OpenClaw sends its
+    # thinkingDefault as the OpenAI-style `reasoning_effort` request field.
+    # Measured on .58 2026-08-15 against Glimmer: that request field is INERT
+    # here -- reasoning_effort low/medium/xhigh all returned byte-identical
+    # completions (244 tokens, 691 reasoning chars), while moving the template
+    # kwarg reasoning_strength low->xhigh moved it 91 -> 244 tokens. So this
+    # assignment is display correctness today, not behaviour: left unset,
+    # OpenClaw reports its schema default and the dashboard says
+    # "thinking=medium" for a model actually running xhigh, which is exactly
+    # the kind of two-layer disagreement that wastes an afternoon.
+    #
+    # Derived rather than hardcoded because the kwarg NAME is per model
+    # (Glimmer reads reasoning_strength, the Qwen 27B reads reasoning_effort --
+    # see #176) and the level travels with it. Models that pin no level at all
+    # (the 35B-A3B caps thinking with --reasoning-budget instead) yield empty,
+    # and the key is then deleted so OpenClaw applies its own default rather
+    # than inheriting a stale value from a previously selected model.
+    local think_level=""
+    if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+        think_level=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            '(.models[] | select(.id == $id)
+              | ((.profiles[$tag] // {}).extra_flags // .extra_flags)) // empty' \
+            "$models_file" 2>/dev/null \
+            | grep -oE '"reasoning_(strength|effort)"[[:space:]]*:[[:space:]]*"[a-z]+"' \
+            | grep -oE '"[a-z]+"$' | tr -d '"' || echo "")
+    fi
+    # Anything outside the schema enum would fail config validation and stop
+    # the gateway loading, so an unrecognised value is dropped, not passed on.
+    case "$think_level" in
+        off|minimal|low|medium|high|xhigh) ;;
+        *) think_level="" ;;
+    esac
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
-        --argjson max_tokens "$max_tokens" \
+        --argjson max_tokens "$max_tokens" --arg think "$think_level" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -1709,6 +1746,12 @@ patch_openclaw_config() {
         # deadline that contained it rather than removing it. Before changing
         # any of these, walk the whole list.
         .agents.defaults.heartbeat.timeoutSeconds = 3000 |
+        # Mirror of the model catalog reasoning level; see the derivation
+        # above. Empty means this model pins no level, in which case the key
+        # is removed so OpenClaw falls back to its own default instead of
+        # keeping whatever the previously selected model set.
+        (if $think == "" then del(.agents.defaults.thinkingDefault)
+         else .agents.defaults.thinkingDefault = $think end) |
         # Compaction strategy. Asserted because leaving it unset produced an
         # undeclared split: the seed template shipped "safeguard" from #2
         # onward, nothing ever re-applied it, and an upgraded box (.58) ended
