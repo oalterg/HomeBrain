@@ -368,3 +368,38 @@ def test_download_wire_result_is_text_only_no_media_directive(nc):
     assert parsed["ok"] is True
     assert parsed["media"]
     assert JPEG not in text["text"].encode()
+
+
+# --- DAV href unquote ------------------------------------------------------
+
+_PROPFIND_ENCODED = (
+    '<?xml version="1.0"?>'
+    '<d:multistatus xmlns:d="DAV:">'
+    '<d:response><d:href>/remote.php/dav/files/alice/Documents</d:href>'
+    '<d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype>'
+    '<d:getcontentlength/><d:getlastmodified/></d:prop></d:propstat></d:response>'
+    '<d:response><d:href>/remote.php/dav/files/alice/Documents/Nextcloud%20flyer.pdf</d:href>'
+    '<d:propstat><d:prop><d:resourcetype/><d:getcontentlength>1083339</d:getcontentlength>'
+    '<d:getlastmodified/></d:prop></d:propstat></d:response>'
+    '</d:multistatus>'
+).encode()
+
+
+def test_files_list_unquotes_dav_href(nc):
+    nc._http = lambda *a, **k: (207, _PROPFIND_ENCODED, {})
+    out = nc.dispatch("nc.files_list", {"path": "/Documents"})
+    assert out["ok"] is True
+    paths = [e["path"] for e in out["entries"]]
+    assert "/Documents/Nextcloud flyer.pdf" in paths
+    assert "/Documents/Nextcloud%20flyer.pdf" not in paths
+    names = [e["name"] for e in out["entries"]]
+    assert "Nextcloud flyer.pdf" in names
+
+
+def test_files_search_unquotes_dav_href(nc):
+    nc._http = lambda *a, **k: (207, _PROPFIND_ENCODED, {})
+    out = nc.dispatch("nc.files_search", {"query": "flyer"})
+    assert out["ok"] is True
+    paths = [e["path"] for e in out["results"]]
+    assert "/Documents/Nextcloud flyer.pdf" in paths
+    assert "/Documents/Nextcloud%20flyer.pdf" not in paths

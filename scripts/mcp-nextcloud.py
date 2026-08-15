@@ -44,7 +44,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
@@ -399,7 +399,7 @@ def t_files_list(args: dict) -> dict:
         return err("could not parse PROPFIND response")
     entries = []
     for resp in root.findall(f"{DAV_NS}response"):
-        href = (resp.findtext(f"{DAV_NS}href") or "").rstrip("/")
+        href = unquote((resp.findtext(f"{DAV_NS}href") or "").rstrip("/"))
         if not href or href.endswith(f"{prefix}{path.rstrip('/')}"):
             continue  # skip the directory itself
         propstat = resp.find(f"{DAV_NS}propstat/{DAV_NS}prop")
@@ -452,7 +452,7 @@ def t_files_search(args: dict) -> dict:
     prefix = _dav_files_prefix(account)
     matches = []
     for r in root.findall(f"{DAV_NS}response"):
-        href = (r.findtext(f"{DAV_NS}href") or "").rstrip("/")
+        href = unquote((r.findtext(f"{DAV_NS}href") or "").rstrip("/"))
         prop = r.find(f"{DAV_NS}propstat/{DAV_NS}prop")
         if prop is None:
             continue
