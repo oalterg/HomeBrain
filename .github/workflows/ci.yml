@@ -78,6 +78,8 @@ jobs:
         run: bash scripts/tests/test_self_token.sh
       - name: load_env does not expand PHC hashes
         run: bash scripts/tests/test_load_env.sh
+      - name: openclaw compaction budget (jq program + reserve ladder)
+        run: bash scripts/tests/test_openclaw_compaction.sh
 
   compose:
     runs-on: ubuntu-latest

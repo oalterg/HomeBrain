@@ -51,10 +51,14 @@
       },
       "workspace": "/home/homebrain/.openclaw/workspace",
       "compaction": {
-        "mode": "safeguard"
+        "mode": "safeguard",
+        "reserveTokensFloor": 35000,
+        "timeoutSeconds": 1200,
+        "notifyUser": true
       },
       "heartbeat": {
-        "every": "1h"
+        "every": "1h",
+        "timeoutSeconds": 1800
       }
     },
     "list": [

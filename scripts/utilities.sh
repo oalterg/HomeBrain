@@ -1403,6 +1403,23 @@ wait_for_whisper_health() {
 
 # --- Helper: Setup OpenClaw AI Agent (system service) ---
 
+# Echo the context window llama-server is ACTUALLY running with, read back
+# from the generated unit rather than the catalog, so openclaw.json can never
+# claim a window the server will refuse. Empty when the unit is not there yet.
+#
+# This is a function and not four inline lines because it has two callers and
+# the second one used to be missing: `refresh_openclaw` passed an unset
+# OC_CTX_SIZE (it is a local of setup_openclaw), so patch_openclaw_config fell
+# through to its 131072 default. On a box running one of the 81920 Qwen slots
+# that silently told OpenClaw it had 60% more context than llama-server would
+# accept — and a contextWindow above the real one is unrecoverable by design:
+# compaction is budgeted against a ceiling the server rejects first.
+resolve_llama_ctx_size() {
+    local service_file="/etc/systemd/system/llama-server.service"
+    [[ -f "$service_file" ]] || return 0
+    grep -oP -- '-ctx-size\s+\K[0-9]+' "$service_file" 2>/dev/null || true
+}
+
 # Patch openclaw.json model references to match the selected AI model
 patch_openclaw_config() {
     local config_file="$1"
@@ -1582,6 +1599,73 @@ patch_openclaw_config() {
         # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
+        # A heartbeat turn must be able to absorb ONE compaction, because it
+        # runs in the same session as the Telegram chat and is therefore just
+        # as likely to be the turn that trips the threshold.
+        #
+        # Left unset, resolveHeartbeatTimeoutOverrideSeconds falls back to the
+        # cadence capped at DEFAULT_HEARTBEAT_TIMEOUT_SECONDS, i.e. min(600,
+        # 3600) = 600 s — half the compaction ceiling directly above. Caught
+        # live on .58 2026-08-15 the moment compaction started succeeding
+        # instead of failing fast: the heartbeat spent its whole budget in a
+        # compaction, died on the lane deadline
+        # (CommandLaneTaskTimeoutError, 600000 + the 30 s
+        # EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS = the 630000 in the log), and
+        # took the owner’s queued Telegram message down with it — that
+        # message had been waiting 182 s behind it on the same lane.
+        #
+        # 1800 s clears the 1200 s compaction ceiling with room for the
+        # heartbeat’s own prefill (~456 s at full depth) and reply, matches
+        # the provider HTTP timeout, and is half the 1h cadence so two
+        # heartbeats can never overlap. These three numbers are ordered and
+        # must stay that way: compaction < heartbeat <= provider.
+        .agents.defaults.heartbeat.timeoutSeconds = 1800 |
+        # --- Compaction budget -------------------------------------------
+        # Both numbers are sized against a local llama-server, which is one
+        # to two orders of magnitude slower than the hosted providers the
+        # OpenClaw schema defaults were chosen for. Left at the defaults, a
+        # long Telegram chat ends in "Auto-compaction could not recover this
+        # turn" and the session is stuck until the owner types /new.
+        #
+        # reserveTokensFloor is the headroom kept free when OpenClaw decides
+        # whether the next turn still fits: preflight compaction fires at
+        # contextWindow - floor - 4000 (the memory-flush soft threshold), and
+        # the pre-dispatch precheck rejects a prompt above
+        # contextWindow - floor. At the schema default of 20000 against a
+        # 131072 window that is a 107072 trigger and a 111072 ceiling, only
+        # ~15% apart — narrow enough that one tool-heavy turn jumps the gap
+        # and overflows before compaction ever gets a chance. Measured on
+        # .58 2026-08-15: a turn estimated at 122552 tokens cleared the
+        # trigger and hit the ceiling in the same step (overflowTokens=11480,
+        # toolResultReducibleChars=0, so truncation had nothing to give
+        # back). The ladder below is OpenClaw’s own
+        # computeContextAwareReserveTokensFloor — 35000 above a 100k window,
+        # 20000 below — i.e. exactly what its failure message tells the owner
+        # to set. Do not flatten it to 35000: at the 81920 the Qwen slots run
+        # that would compact at 52% of the window, throwing away history on a
+        # box where every compaction costs minutes.
+        .agents.defaults.compaction.reserveTokensFloor =
+            (if $ctx >= 100000 then 35000 else 20000 end) |
+        # timeoutSeconds bounds ONE compaction pass, and the 180 s schema
+        # default is unreachable here, which is what actually breaks the
+        # turn: the overflow handler calls compact, the safety timeout fires
+        # at 180043 ms, and "auto-compaction failed: Compaction timed out"
+        # becomes the user-facing "could not recover". Compaction re-prefills
+        # the entire transcript before it emits a token, and Muse Glimmer
+        # prefills at 287 t/s at depth (BENCHMARKS 2026-08-10), so a full
+        # 131072-token window is ~456 s of prefill on its own, plus up to
+        # maxTokens of summary at ~16 t/s. .58’s journal agrees: the
+        # compactions that completed ran 95-503 s, and both that failed on
+        # 2026-08-15 died at 180043 ms. 1200 s clears the worst case and
+        # stays under the provider timeoutSeconds of 1800 set above, which
+        # has to remain the binding limit. It also feeds the session
+        # write-lock max-hold fallback (resolveSessionLockMaxHoldFromTimeout),
+        # which is the other thing that warned during long compactions.
+        .agents.defaults.compaction.timeoutSeconds = 1200 |
+        # A pass that legitimately takes 5-15 minutes is indistinguishable
+        # from the hang it used to be unless the box says so. This posts
+        # "🧹 Compacting context..." / "🧹 Compaction complete" to the chat.
+        .agents.defaults.compaction.notifyUser = true |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
@@ -1843,12 +1927,8 @@ setup_openclaw() {
         cp "$config_src" "$config_dest"
         log_info "Seeded openclaw.json from template (first install)."
     fi
-    # Parse ctx_size from the generated systemd service file
-    local OC_CTX_SIZE=""
-    local SERVICE_FILE="/etc/systemd/system/llama-server.service"
-    if [[ -f "$SERVICE_FILE" ]]; then
-        OC_CTX_SIZE=$(grep -oP -- '-ctx-size\s+\K[0-9]+' "$SERVICE_FILE" 2>/dev/null || echo "")
-    fi
+    local OC_CTX_SIZE
+    OC_CTX_SIZE=$(resolve_llama_ctx_size)
     patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
@@ -2617,7 +2697,7 @@ case "${1:-}" in
         fi
         cp "$CFG" "${CFG}.preupdate"
         remove_whatsapp_plugins
-        if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "${OC_CTX_SIZE:-}"; then
+        if patch_openclaw_config "$CFG" "${AI_MODEL_ID:-}" "$(resolve_llama_ctx_size)"; then
             # patch_openclaw_config rewrites the file as whoever runs this
             # (root, from update.sh). Restore the gateway user's ownership —
             # a root-owned 600 config is unreadable to the homebrain-run
