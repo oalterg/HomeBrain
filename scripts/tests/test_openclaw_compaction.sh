@@ -228,10 +228,11 @@ fi
 
 echo "== the timeouts stay ordered =="
 # compaction < heartbeat <= provider. Violating the left half is what broke
-# .58 once compaction started succeeding: the heartbeat runs in the same
-# session as the chat, so it is just as likely to be the turn that compacts,
-# and at its 600 s fallback budget it died on the lane deadline mid-compaction
-# and took the owner's queued Telegram message with it.
+# .58 once compaction started succeeding: back then the heartbeat shared the
+# chat session, so it was just as likely to be the turn that compacts, and at
+# its 600 s fallback budget it died on the lane deadline mid-compaction and
+# took the owner's queued Telegram message with it. The session is isolated
+# now (see below), but a heartbeat still compacts its own history.
 heartbeat_timeout=$(jq -r '.agents.defaults.heartbeat.timeoutSeconds' "$cfg")
 if (( compaction_timeout < provider_timeout )) && (( provider_timeout < heartbeat_timeout )); then
     ok "compaction ($compaction_timeout) < provider ($provider_timeout) < heartbeat ($heartbeat_timeout)"
@@ -268,6 +269,34 @@ if (( heartbeat_timeout > 600 )); then
     ok "heartbeat budget is above the 600 s schema fallback"
 else
     bad "heartbeat budget is above the 600 s schema fallback" "got $heartbeat_timeout"
+fi
+
+echo "== the heartbeat cannot swallow an owner message =="
+# Left unset, heartbeat.session resolves to the agent main session -- the same
+# one the Telegram chat uses. messages.queue.mode defaults to "steer", so an
+# owner message landing mid-heartbeat is injected into the heartbeat run and
+# inherits its delivery target, which is "none" while heartbeat.target is
+# unset. The answer reaches the transcript and never reaches Telegram. Caught
+# live on .58 2026-08-15.
+isolated=$(jq -r '.agents.defaults.heartbeat.isolatedSession' "$cfg")
+if [[ "$isolated" == "true" ]]; then
+    ok "heartbeats run in their own session (isolatedSession=true)"
+else
+    bad "heartbeats run in their own session" "isolatedSession=$isolated"
+fi
+
+# heartbeat.target must stay unset. "0 of 67 heartbeat replies were ever
+# delivered" reads like a bug and invites setting a target -- it is not. The
+# agent pings the user with the `message` tool per finding; a target instead
+# delivers the heartbeat's final text, i.e. a full status summary every hour.
+# Tried live on .58 2026-08-15 and reverted. The two routes are additive, and
+# HEARTBEAT_OK/ackMaxChars suppression does not catch a real summary.
+hb_target=$(jq -r '.agents.defaults.heartbeat.target // "unset"' "$cfg")
+if [[ "$hb_target" == "unset" || "$hb_target" == "none" ]]; then
+    ok "heartbeat delivery target stays off; the message tool is the alert route (target=$hb_target)"
+else
+    bad "heartbeat delivery target stays off" \
+        "target=$hb_target would push an hourly status summary to the channel"
 fi
 
 echo "== the reserve floor follows the context window =="
