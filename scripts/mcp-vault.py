@@ -378,30 +378,27 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "vault.search",
      "description": (
-         "List or search HomeBrain Vault items. Omit `query` to list every "
-         "item in the vault; pass `query` to filter by free-text. Returns "
-         "metadata only (name, username, URI) — no secrets. Always reflects "
-         "the latest server state, including items added via the web vault."
+         "List vault items (name, username, URI — no secrets). "
+         "Omit query to list all."
      ),
      "inputSchema": {
          "type": "object",
          "properties": {
              "query": {"type": "string",
-                       "description": "Optional free-text filter. Omit to list all items."},
+                       "description": "Free-text filter; omit to list all."},
          },
      }},
     {"name": "vault.reveal",
      "description": (
-         "Reveal the password for a single vault item by ID. Audited and "
-         "consent-gated. Use sparingly and only when the user has explicitly "
-         "asked for the secret."
+         "Reveal one item's password by id. "
+         "Only when the user asked for the secret."
      ),
      "inputSchema": {
          "type": "object",
          "properties": {
              "item_id": {"type": "string", "description": "Vault item UUID"},
              "reason": {"type": "string",
-                        "description": "Why the agent needs this — written to the audit log"},
+                        "description": "Why this reveal is needed (audit log)."},
              "confirmation_token": {"type": "string"},
          },
          "required": ["item_id", "reason"],
@@ -410,10 +407,7 @@ TOOLS = [
      "description": "List vault folders (id + name).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "vault.create_login",
-     "description": (
-         "Create a new login entry in the vault. Consent-gated — the runtime "
-         "prompts the user for approval automatically."
-     ),
+     "description": "Create a login.",
      "inputSchema": {
          "type": "object",
          "properties": {
@@ -428,10 +422,8 @@ TOOLS = [
      }},
     {"name": "vault.update_login",
      "description": (
-         "Edit an existing login entry. Supply item_id plus only the fields to "
-         "change — omitted fields keep their current values, so changing a "
-         "username does not require revealing the password. Use this instead "
-         "of vault.create_login when the entry already exists. Consent-gated."
+         "Patch a login by item_id. Send only fields to change — do not "
+         "reveal the password to edit other fields."
      ),
      "inputSchema": {
          "type": "object",

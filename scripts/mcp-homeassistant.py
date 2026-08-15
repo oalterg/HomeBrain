@@ -32,11 +32,12 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    MCP_CONTENT, MCP_MEDIA_PATH, Consent, audit, consent_required,
-    decrypt_secret, err, mcp_image, ok, serve, unavailable,
+    Consent, audit, consent_required, decrypt_secret, err, ok, serve,
+    unavailable,
 )
 
 HA_ACCOUNTS_FILE = os.environ.get("HA_ACCOUNTS_FILE", "")
@@ -59,6 +60,7 @@ SERVICE_DOMAIN_ALLOWLIST = {
     "button", "notify", "humidifier", "water_heater", "lawn_mower",
     "remote", "siren", "valve",
     "number", "select", "text", "counter", "timer", "calendar",
+    "todo", "tts",
 }
 SERVICE_NAME_DENYLIST = {"delete", "remove", "clear_skipped_update", "purge"}
 
@@ -74,16 +76,43 @@ RAW_NUCLEAR_DENYLIST = {
 # Camera stills. The agent must not HTTP-fetch these itself — ha.state used
 # to leak `access_token` / `entity_picture?token=` and the model would then
 # try `/api/camera_proxy` with that token (or the LLAT it does not have).
+#
+# OpenClaw ≥2026.4 treats MCP tools as untrusted for local MEDIA: delivery
+# (GHSA-jjgj-cpp9-cvpv) and truncates live tool results at ~32–64k chars.
+# Embedding the JPEG as MCP image content therefore (a) looks like an error
+# after truncation, (b) is never sendPhoto'd, and (c) burns a long qwen turn
+# sanitising base64. Return a workspace path; the agent sends it with the
+# message tool. camera.snapshot is the other trap: its filename is on the
+# HA instance, so a remote house's camera dumps the JPEG on that other box.
 CAMERA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+CAMERA_IMAGE_TIMEOUT = 45
 _CAMERA_PROXY = {
     "camera": "/api/camera_proxy/",
     "image": "/api/image_proxy/",
 }
+_CAMERA_FILE_SERVICES = {"snapshot", "record"}
 _ATTR_ALWAYS_REDACT = {"access_token"}
 _PICTURE_REDACT_MARKERS = ("token=", "camera_proxy", "image_proxy")
 _CAMERA_IMAGE_HINT = (
-    "Use ha.camera_image to fetch a still. Do not HTTP-fetch camera URLs "
-    "or use tokens from entity attributes — the MCP server holds the HA token."
+    "Use ha.camera_image to fetch a still onto this HomeBrain, then send "
+    "it with the message tool (media=<path>). camera.snapshot writes a file "
+    "on the Home Assistant instance — including a different house — and "
+    "will not reach the chat."
+)
+_CAMERA_SNAPSHOT_HINT = (
+    "camera.snapshot writes a JPEG on that Home Assistant instance's disk, "
+    "not this box. Call ha.camera_image with the same account and entity_id, "
+    "then send the returned path with the message tool's media parameter."
+)
+_SEND_STILL_HINT = (
+    "Still saved on THIS HomeBrain (not the remote HA) at `media`. "
+    "Send it with the message tool (media=<that path>). "
+    "Do not call camera.snapshot. Do not HTTP-fetch Home Assistant."
+)
+_CAMERA_HTTP_HINT = (
+    "Retry ha.camera_image once if this looks transient. "
+    "Do not call camera.snapshot, do not HTTP-fetch Home Assistant, "
+    "and do not try to decrypt credentials."
 )
 
 
@@ -173,7 +202,7 @@ def _http(account: dict, method: str, path: str, body: Any = None,
 
 
 def _http_bytes(account: dict, path: str,
-                timeout: int = 20) -> tuple[int, bytes, str]:
+                timeout: int = CAMERA_IMAGE_TIMEOUT) -> tuple[int, bytes, str]:
     """GET a binary body. Returns (status, body, content_type_or_error)."""
     base = (account.get("base_url") or "").rstrip("/")
     tok = _decrypt(account.get("token") or "")
@@ -181,6 +210,7 @@ def _http_bytes(account: dict, path: str,
         return 0, b"", "account missing base_url or token"
     req = urllib.request.Request(f"{base}{path}", method="GET")
     req.add_header("Authorization", f"Bearer {tok}")
+    req.add_header("Accept", "image/jpeg, image/png, */*")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip()
@@ -228,6 +258,23 @@ def _write_still(entity_id: str, body: bytes, mime: str) -> str | None:
         return None
 
 
+def _agent_media_path(path: str) -> str:
+    """Workspace-relative path when the still landed under the OpenClaw
+    workspace, otherwise the absolute path. The message tool resolves
+    either; relative is what qwen should pass as `media`."""
+    ws = os.environ.get(
+        "HOMEBRAIN_OPENCLAW_WORKSPACE",
+        os.path.expanduser("~/.openclaw/workspace"),
+    )
+    try:
+        rel = os.path.relpath(path, ws)
+    except ValueError:
+        return path
+    if rel.startswith(".."):
+        return path
+    return rel
+
+
 def _sniff_mime(body: bytes, declared: str) -> str | None:
     mime = (declared or "").lower()
     if mime.startswith("image/"):
@@ -237,6 +284,65 @@ def _sniff_mime(body: bytes, declared: str) -> str | None:
     if body.startswith(b"\x89PNG"):
         return "image/png"
     return None
+
+
+def _extract_still(body: bytes, declared: str) -> tuple[bytes, str] | tuple[None, None]:
+    """Accept a direct image or the first JPEG frame of an MJPEG stream."""
+    mime = _sniff_mime(body, declared)
+    if mime:
+        return body, mime
+    soi = body.find(b"\xff\xd8\xff")
+    if soi < 0:
+        return None, None
+    eoi = body.find(b"\xff\xd9", soi + 3)
+    frame = body[soi:eoi + 2] if eoi > soi else body[soi:]
+    if _sniff_mime(frame, ""):
+        return frame, "image/jpeg"
+    return None, None
+
+
+def _refuse_camera_file_service(domain: str, service: str) -> dict | None:
+    if domain == "camera" and service in _CAMERA_FILE_SERVICES:
+        return err("use ha.camera_image instead of camera.snapshot",
+                   hint=_CAMERA_SNAPSHOT_HINT)
+    return None
+
+
+def _ha_err_snippet(body: bytes) -> str:
+    """Short HA error for the model. Drop HTML and anything that looks like
+    a credential — those sent qwen hunting for the LLAT last time."""
+    text = (body or b"").decode("utf-8", "replace").strip()
+    if not text or text.startswith("<"):
+        return ""
+    try:
+        obj = json.loads(text)
+        msg = obj.get("message") if isinstance(obj, dict) else None
+        text = msg if isinstance(msg, str) else text
+    except json.JSONDecodeError:
+        pass
+    low = text.lower()
+    if any(s in low for s in ("token", "bearer", "authorization", "gaaaaa")):
+        return ""
+    return " ".join(text.split())[:120]
+
+
+def _camera_http_err(code: int, body: bytes) -> dict:
+    """Map HA/proxy 400/500 so the agent retries this tool, not snapshot."""
+    snippet = _ha_err_snippet(body)
+    detail = f": {snippet}" if snippet else ""
+    if code == 400:
+        return err(
+            f"this camera refused a still (HTTP 400){detail}",
+            hint=_CAMERA_HTTP_HINT,
+        )
+    if code >= 500:
+        return unavailable(
+            f"Home Assistant camera backend failed (HTTP {code}){detail}. "
+            + _CAMERA_HTTP_HINT
+        )
+    return unavailable(
+        f"camera proxy failed (HTTP {code}){detail}. " + _CAMERA_HTTP_HINT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -314,19 +420,52 @@ def t_state(args: dict) -> dict:
     return ok(**payload)
 
 
+_AREA_TEMPLATE = (
+    "{% set ns = namespace(items=[]) %}"
+    "{% for a in areas() %}"
+    "{% set ns.items = ns.items + [{'id': a, 'name': area_name(a) or a}] %}"
+    "{% endfor %}"
+    "{{ ns.items | tojson }}"
+)
+CALENDAR_MAX_DAYS = 14
+CALENDAR_MAX_CALENDARS = 15
+CALENDAR_MAX_EVENTS = 40
+
+
+def _as_list(body: Any) -> list | None:
+    """`_http` json-decodes when the body happens to be JSON, so a template
+    that ends in `| tojson` arrives as a list, not a string."""
+    if isinstance(body, list):
+        return body
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, list) else None
+    return None
+
+
 def t_area_list(args: dict) -> dict:
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
     code, body = _http(account, "POST", "/api/template",
-                       {"template": "{{ areas() | list | tojson }}"})
-    if code != 200 or not isinstance(body, str):
+                       {"template": _AREA_TEMPLATE})
+    if code != 200:
         return unavailable(f"HA template eval failed: {body}")
-    try:
-        ids = json.loads(body)
-    except json.JSONDecodeError:
+    raw = _as_list(body)
+    if raw is None:
         return err("could not parse areas response")
-    return ok(account=account["name"], areas=ids, total=len(ids))
+    areas = []
+    for item in raw:
+        if isinstance(item, str):
+            areas.append({"id": item, "name": item})
+        elif isinstance(item, dict):
+            aid = item.get("id") or item.get("area_id") or ""
+            if aid:
+                areas.append({"id": aid, "name": item.get("name") or aid})
+    return ok(account=account["name"], areas=areas, total=len(areas))
 
 
 def t_call_service(args: dict) -> dict:
@@ -342,10 +481,15 @@ def t_call_service(args: dict) -> dict:
 
     if not domain or not service:
         return err("domain and service are required")
+    refused = _refuse_camera_file_service(domain, service)
+    if refused is not None:
+        return refused
     if domain not in SERVICE_DOMAIN_ALLOWLIST:
+        extra = (_CAMERA_SNAPSHOT_HINT if domain == "camera"
+                 else "Allowed domains: " + ", ".join(sorted(SERVICE_DOMAIN_ALLOWLIST)))
         return err(
             f"domain '{domain}' is not in the allowlist",
-            hint="Allowed domains: " + ", ".join(sorted(SERVICE_DOMAIN_ALLOWLIST)),
+            hint=extra,
         )
     if service in SERVICE_NAME_DENYLIST:
         return err(f"service '{service}' is denied for safety")
@@ -394,11 +538,15 @@ def t_list_services(args: dict) -> dict:
     if ebody is not None:
         return ebody
     only_domain = (args.get("domain") or "").strip().lower()
+    if not only_domain:
+        return err(
+            "domain is required",
+            hint="e.g. domain=light. Unfiltered list_services dumps the whole registry.",
+        )
     code, body = _http(account, "GET", "/api/services")
     if code != 200 or not isinstance(body, list):
         return unavailable(f"HA services unreachable: {body}")
-    if only_domain:
-        body = [d for d in body if d.get("domain") == only_domain]
+    body = [d for d in body if d.get("domain") == only_domain]
     return ok(account=account["name"], domains=body, total=len(body))
 
 
@@ -445,6 +593,87 @@ def t_history(args: dict) -> dict:
               changes=entries, total=len(changes), trimmed=trimmed)
 
 
+def _cal_time(val: Any) -> str:
+    if isinstance(val, dict):
+        return val.get("dateTime") or val.get("date") or ""
+    return val if isinstance(val, str) else ""
+
+
+def _trim_event(ev: dict) -> dict:
+    desc = ev.get("description") or ""
+    if isinstance(desc, str) and len(desc) > 200:
+        desc = desc[:200] + "…"
+    out = {
+        "summary": ev.get("summary") or "",
+        "start": _cal_time(ev.get("start")),
+        "end": _cal_time(ev.get("end")),
+    }
+    loc = ev.get("location") or ""
+    if loc:
+        out["location"] = loc
+    if desc:
+        out["description"] = desc
+    return out
+
+
+def _fetch_calendar_events(account: dict, entity_id: str,
+                           start: datetime, end: datetime) -> tuple[int, list]:
+    path = (
+        f"/api/calendars/{quote(entity_id, safe='.')}"
+        f"?start={quote(start.isoformat())}"
+        f"&end={quote(end.isoformat())}"
+    )
+    code, body = _http(account, "GET", path, timeout=15)
+    if code != 200 or not isinstance(body, list):
+        return code, []
+    return code, [_trim_event(e) for e in body[:CALENDAR_MAX_EVENTS]
+                  if isinstance(e, dict)]
+
+
+def t_calendar_events(args: dict) -> dict:
+    """Upcoming events. Rolling window from now — avoids UTC-midnight
+    'today' being wrong for a house that isn't in UTC."""
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    eid = (args.get("entity_id") or "").strip()
+    if eid and not eid.startswith("calendar."):
+        return err("entity_id must be a calendar.* entity")
+    days = min(max(int(args.get("days", 1) or 1), 1), CALENDAR_MAX_DAYS)
+    start = datetime.now(timezone.utc)
+    end = start + timedelta(days=days)
+
+    if eid:
+        cals = [{"entity_id": eid, "name": eid}]
+    else:
+        code, listing = _http(account, "GET", "/api/calendars")
+        if code != 200 or not isinstance(listing, list):
+            return unavailable(f"HA calendars unreachable: {listing}")
+        cals = []
+        for c in listing[:CALENDAR_MAX_CALENDARS]:
+            if not isinstance(c, dict):
+                continue
+            cid = c.get("entity_id") or ""
+            if cid.startswith("calendar."):
+                cals.append({"entity_id": cid, "name": c.get("name") or cid})
+        if not cals:
+            return ok(account=account["name"], days=days, calendars=[], total=0)
+
+    out = []
+    total = 0
+    for cal in cals:
+        code, events = _fetch_calendar_events(account, cal["entity_id"], start, end)
+        if eid and code == 404:
+            return err("entity not found")
+        if eid and code != 200:
+            return unavailable(f"HA calendar unreachable: HTTP {code}")
+        if code != 200:
+            continue
+        total += len(events)
+        out.append({**cal, "events": events, "total": len(events)})
+    return ok(account=account["name"], days=days, calendars=out, total=total)
+
+
 def t_call_service_raw(args: dict) -> dict:
     account, ebody = _account_or_err(args)
     if ebody is not None:
@@ -458,6 +687,9 @@ def t_call_service_raw(args: dict) -> dict:
 
     if not domain or not service:
         return err("domain and service are required")
+    refused = _refuse_camera_file_service(domain, service)
+    if refused is not None:
+        return refused
     if (domain, service) in RAW_NUCLEAR_DENYLIST:
         return err(f"{domain}.{service} is permanently denied",
                    hint="restart/stop/reload_core_config cannot be invoked "
@@ -519,125 +751,119 @@ def t_camera_image(args: dict) -> dict:
             hint="Pass a camera.* (or image.*) entity_id. "
                  "Use ha.entity_search to find cameras.",
         )
-    code, body, ctype = _http_bytes(account, f"{prefix}{eid}", timeout=20)
+    code, body, ctype = _http_bytes(account, f"{prefix}{eid}",
+                                    timeout=CAMERA_IMAGE_TIMEOUT)
     if code == 404:
         return err("entity not found")
     if code == 401:
-        return unavailable("Home Assistant rejected the stored token")
-    if code != 200:
-        err_txt = body.decode("utf-8", "replace")[:200] if body else ctype
-        return unavailable(f"camera proxy failed ({code}): {err_txt}")
-    if len(body) > CAMERA_IMAGE_MAX_BYTES:
-        audit("homeassistant", "camera_image.too_large",
-              account=account["name"], entity_id=eid, bytes=len(body))
-        return err(
-            f"still is {len(body)} bytes (cap {CAMERA_IMAGE_MAX_BYTES})",
+        return unavailable(
+            "Home Assistant rejected the stored credential; "
+            "reconnect the account in the dashboard"
         )
-    mime = _sniff_mime(body, ctype)
-    if not mime:
+    if code != 200:
+        return _camera_http_err(code, body)
+    still, mime = _extract_still(body, ctype)
+    if not still or not mime:
         return err(f"HA did not return an image (content-type {ctype!r})")
-    path = _write_still(eid, body, mime)
+    if len(still) > CAMERA_IMAGE_MAX_BYTES:
+        audit("homeassistant", "camera_image.too_large",
+              account=account["name"], entity_id=eid, bytes=len(still))
+        return err(
+            f"still is {len(still)} bytes (cap {CAMERA_IMAGE_MAX_BYTES})",
+        )
+    path = _write_still(eid, still, mime)
+    if not path:
+        return err("could not write still to the OpenClaw workspace")
+    media = _agent_media_path(path)
     audit("homeassistant", "camera_image.ok",
-          account=account["name"], entity_id=eid, bytes=len(body),
+          account=account["name"], entity_id=eid, bytes=len(still),
           path=path)
-    envelope = ok(
+    # Path only — never attach the JPEG. OpenClaw truncates MCP results
+    # well below a camera still, strips local MEDIA: from MCP tools, and
+    # does not relay ImageContent to Telegram. The message tool can.
+    return ok(
         account=account["name"],
         entity_id=eid,
         mime_type=mime,
-        size=len(body),
+        size=len(still),
         path=path,
-        hint=("Still is attached. Deliver the image to the user. "
-              "Do not fetch /api/camera_proxy or use HA tokens."),
+        media=media,
+        hint=_SEND_STILL_HINT,
     )
-    envelope[MCP_CONTENT] = [mcp_image(body, mime)]
-    if path:
-        envelope[MCP_MEDIA_PATH] = path
-    return envelope
 
 
 _ACCOUNT_PROP = {
     "type": "string",
-    "description": ("Configured account name to act on. Omit when only one "
-                    "account is configured; required when multiple are. Use "
-                    "ha.list_accounts to enumerate."),
+    "description": "HA account name. Required if several are configured.",
 }
 
 TOOLS = [
     {"name": "ha.list_accounts",
-     "description": "List configured Home Assistant accounts (name + base_url).",
+     "description": "List HA accounts (name, url).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "ha.health",
-     "description": "Check that a Home Assistant instance is reachable.",
+     "description": "Ping a HA instance.",
      "inputSchema": {"type": "object",
                      "properties": {"account": _ACCOUNT_PROP}}},
     {"name": "ha.entity_search",
-     "description": ("Search HA entities by free-text query (matches entity_id "
-                     "and friendly_name). Returns metadata only — entity_id, "
-                     "friendly name, current state."),
+     "description": "Search entities by id or friendly name. Returns id, name, state.",
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
                      "required": ["query"]}},
     {"name": "ha.state",
-     "description": ("Fetch current state and attributes for one entity_id. "
-                     "Camera access tokens and proxy URLs are stripped — use "
-                     "ha.camera_image for a still, never HTTP-fetch HA."),
+     "description": "Current state and attributes for one entity_id. Cameras: ha.camera_image.",
      "inputSchema": {"type": "object",
                      "properties": {"entity_id": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
                      "required": ["entity_id"]}},
     {"name": "ha.area_list",
-     "description": "List all configured Home Assistant areas (rooms).",
+     "description": "List HA areas (id and name).",
      "inputSchema": {"type": "object",
                      "properties": {"account": _ACCOUNT_PROP}}},
     {"name": "ha.list_services",
-     "description": (
-         "List Home Assistant service definitions, including each field's "
-         "expected type, selector, and example value. Call this before "
-         "ha.call_service / ha.call_service_raw when you're not sure what "
-         "parameters a service accepts (HA returns 400 for unknown fields, "
-         "and brightness in particular has multiple variants: `brightness` "
-         "0-255, `brightness_pct` 0-100, `brightness_step_pct`)."
-     ),
+     "description": "Describe one domain's services and fields. domain is required.",
      "inputSchema": {
          "type": "object",
          "properties": {
              "account": _ACCOUNT_PROP,
              "domain": {"type": "string",
-                        "description": "Filter to one domain (e.g. 'light')."},
+                        "description": "e.g. light"},
          },
+         "required": ["domain"],
      }},
     {"name": "ha.template",
-     "description": ("Render a Jinja2 template against HA state — read-only. "
-                     "Useful for composite queries (counts, filters, conditions)."),
+     "description": "Read-only Jinja2 against HA state (counts, filters).",
      "inputSchema": {"type": "object",
                      "properties": {"template": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
                      "required": ["template"]}},
     {"name": "ha.history",
-     "description": (
-         "Fetch state-change history for one entity. Returns timestamped "
-         "state transitions (e.g. on→off, 21.3→22.1°C). Use this to answer "
-         "questions like 'was the door open last night?' or 'what was the "
-         "temperature at 3 am?'. Read-only."
-     ),
+     "description": "State-change history for one entity. hours default 24, max 168.",
      "inputSchema": {
          "type": "object",
          "properties": {
              "entity_id": {"type": "string"},
              "hours": {"type": "integer",
-                       "description": "Lookback window in hours (default 24, max 168)."},
+                       "description": "Lookback hours (default 24, max 168)."},
              "account": _ACCOUNT_PROP,
          },
          "required": ["entity_id"],
      }},
+    {"name": "ha.calendar_events",
+     "description": "Upcoming events. entity_id optional (all calendars). days default 1, max 14.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "entity_id": {"type": "string",
+                           "description": "calendar.family — omit for every calendar"},
+             "days": {"type": "integer",
+                      "description": "Forward window from now (default 1, max 14)."},
+             "account": _ACCOUNT_PROP,
+         },
+     }},
     {"name": "ha.call_service",
-     "description": (
-         "Invoke a Home Assistant service. Allowlisted domains only — "
-         "for custom integrations or domains not in the allowlist, fall "
-         "back to ha.call_service_raw. Use ha.list_services first if "
-         "you're unsure which fields a service accepts."
-     ),
+     "description": "Call an allowlisted HA service. Other domains: ha.call_service_raw.",
      "inputSchema": {
          "type": "object",
          "properties": {
@@ -645,7 +871,7 @@ TOOLS = [
              "domain": {"type": "string"},
              "service": {"type": "string"},
              "target": {"type": "object",
-                        "description": "e.g. {entity_id: 'light.kitchen'}"},
+                        "description": "{entity_id: light.kitchen}"},
              "service_data": {"type": "object"},
              "confirmation_token": {"type": "string"},
          },
@@ -653,10 +879,8 @@ TOOLS = [
      }},
     {"name": "ha.call_service_raw",
      "description": (
-         "Allowlist-free version of ha.call_service. Use when "
-         "ha.call_service refuses your domain or for custom integrations. "
-         "A small nuclear list (homeassistant.restart/stop, "
-         "reload_core_config) is permanently blocked."
+         "Call any HA service except restart/stop/reload_core_config "
+         "and camera.snapshot (use ha.camera_image)."
      ),
      "inputSchema": {
          "type": "object",
@@ -665,7 +889,7 @@ TOOLS = [
              "domain": {"type": "string"},
              "service": {"type": "string"},
              "target": {"type": "object",
-                        "description": "e.g. {entity_id: 'light.kitchen'}"},
+                        "description": "{entity_id: light.kitchen}"},
              "service_data": {"type": "object"},
              "confirmation_token": {"type": "string"},
          },
@@ -673,23 +897,19 @@ TOOLS = [
      }},
     {"name": "ha.camera_image",
      "description": (
-         "Fetch a still image from a Home Assistant camera (camera.*) or "
-         "image (image.*) entity. The MCP server authenticates to HA — do "
-         "NOT curl /api/camera_proxy, do NOT use entity_picture URLs or "
-         "access_token attributes, do NOT pass an API token. The still is "
-         "attached to the tool result for delivery to the user."
+         "Save a camera or image still on this HomeBrain. Returns `media` — "
+         "send with the message tool (media=path). Not camera.snapshot."
      ),
      "inputSchema": {
          "type": "object",
          "properties": {
              "entity_id": {"type": "string",
-                           "description": "e.g. camera.front_door"},
+                           "description": "camera.front_door"},
              "account": _ACCOUNT_PROP,
          },
          "required": ["entity_id"],
      }},
 ]
-
 
 DISPATCH = {
     "ha.list_accounts": t_list_accounts,
@@ -700,6 +920,7 @@ DISPATCH = {
     "ha.list_services": t_list_services,
     "ha.template": t_template,
     "ha.history": t_history,
+    "ha.calendar_events": t_calendar_events,
     "ha.call_service": t_call_service,
     "ha.call_service_raw": t_call_service_raw,
     "ha.camera_image": t_camera_image,
@@ -714,4 +935,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-homeassistant", "0.5.0", TOOLS, dispatch)
+    serve("homebrain-homeassistant", "0.6.0", TOOLS, dispatch)

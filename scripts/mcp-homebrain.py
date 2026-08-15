@@ -152,7 +152,7 @@ def t_integrations_status(_args: dict) -> dict:
 
 TOOLS = [
     {"name": "homebrain.service_status",
-     "description": "Snapshot of HomeBrain service health (Nextcloud, HA, Vault, tunnel, etc.).",
+     "description": "HomeBrain service health (Nextcloud, HA, Vault, tunnel).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.gpu_stats",
      "description": "Current GPU utilisation, VRAM use, and temperature.",
@@ -163,11 +163,11 @@ TOOLS = [
                      "properties": {"service": {"type": "string"}},
                      "required": ["service"]}},
     {"name": "homebrain.backup_now",
-     "description": "ACT-tier: trigger a full backup. Requires consent token.",
+     "description": "Trigger a full backup.",
      "inputSchema": {"type": "object",
                      "properties": {"confirmation_token": {"type": "string"}}}},
     {"name": "homebrain.service_restart",
-     "description": "ACT-tier: restart a Docker service. Requires consent token.",
+     "description": "Restart a Docker service.",
      "inputSchema": {"type": "object",
                      "properties": {"name": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
@@ -176,7 +176,7 @@ TOOLS = [
      "description": "Local version info and pending-update flag.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.integrations_status",
-     "description": "Aggregate connection status of all OpenClaw integrations.",
+     "description": "Connection status of all OpenClaw integrations.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
 
