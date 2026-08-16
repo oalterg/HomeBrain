@@ -1,6 +1,6 @@
 # HomeBrain
 
-**Your private cloud and agent. Nothing leaves the box.**
+**Your private local cloud, agent wired into everything.**
 
 Nextcloud, Home Assistant, Vaultwarden, and a local AI agent are four products. HomeBrain is the appliance that makes them one: a single password, a backup that restores the whole box, updates that will not brick you, and — on a GPU — an agent that operates it so you never need a shell.
 
@@ -9,7 +9,7 @@ No subscriptions. No cloud accounts. No one else's servers.
 A browser wizard configures it. You own the whole thing.
 
 <p align="center">
-  <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, and system resources" width="860">
+  <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, a self-test, and system resources" width="860">
 </p>
 
 <p align="center"><sub>Solarized Light, with a dark theme a click away. The dashboard loads nothing from the internet — no CDN, no web fonts, no analytics — so it renders identically on a box with the WAN unplugged.</sub></p>
@@ -29,11 +29,33 @@ Without a GPU you still get the private cloud and smart-home hub (**HomeCloud**)
 
 ## The agent's reach
 
-Each integration is one row: connect it, test it, revoke it. The agent talks to every service from there.
+Each integration is one row: connect it, test it, revoke it. The agent talks to every service from there. More than one account per service is fine — two homes, two Nextcloud users, several mailboxes.
 
 <p align="center">
-  <img src="res/agent.png" alt="Agent integrations: Home Assistant, Nextcloud, Vault and Email, each with a connection state and per-account rows" width="860">
+  <img src="res/agent.png" alt="Agent integrations — Home Assistant, Nextcloud, Vault and Email, each with a connection state and per-account rows — above the messaging channel that carries the agent" width="860">
 </p>
+
+<p align="center"><sub>Below the integrations sits the other half: the messenger the agent answers on. Pairing is a code, not a port.</sub></p>
+
+---
+
+## The model is a setting
+
+<p align="center">
+  <img src="res/assistant.png" alt="The Personal AI Assistant settings: a model dropdown, and the downloaded models with their sizes, one marked in use" width="860">
+</p>
+
+<p align="center"><sub>Download a model, switch to it, delete the ones you are not using. The previous model stays on disk, so switching back is instant. Weights are fetched once, from the dashboard — never at inference time.</sub></p>
+
+---
+
+## Where the backup goes
+
+<p align="center">
+  <img src="res/backup.png" alt="The Backup and Storage tab: schedule and retention, the backup drive and disk usage, and an off-site copy mid-upload" width="860">
+</p>
+
+<p align="center"><sub>A schedule, a drive, and somewhere off-site — the whole backup story is one tab. Archives are encrypted with your master password before they leave the box, so the target never sees your data. WebDAV, SFTP or S3 — or a second HomeBrain, which hands out a dedicated <code>replica</code> account for exactly this.</sub></p>
 
 ---
 
@@ -95,6 +117,12 @@ sudo /opt/homebrain/scripts/provision.sh \
 ```
 
 On an already-set-up box the same command repoints the live tunnel without wiping data.
+
+<p align="center">
+  <img src="res/tunnel.png" alt="Tunnel settings: endpoint, device ID and main domain, with a preview of the manager, Nextcloud and Home Assistant subdomains" width="860">
+</p>
+
+<p align="center"><sub>One domain in, three subdomains out — no port forwarding and no inbound firewall rule. The same screen moves the box to a Cloudflare Tunnel, or reverts every field to what the device shipped with.</sub></p>
 
 Pick the AI model later, under **Settings → Personal AI Assistant**.
 
