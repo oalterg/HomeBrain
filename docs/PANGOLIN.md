@@ -11,11 +11,22 @@ The **box side is automatic** (`provision.sh`); the **Pangolin server side is ma
 
 ## Box side (automatic)
 
-`provision.sh` (remote mode) writes the tunnel credentials and brings `newt` up:
+`provision.sh` (remote mode) writes the tunnel credentials and brings `newt` up.
+Passing credentials does not skip the wizard; they are stored on the box and remote
+mode is pre-selected.
+
+First boot:
 
 ```bash
-# Repoint to a new tunnel / domain, keeping all data. Endpoint + factory
-# password are inherited from the existing config when omitted.
+sudo /opt/homebrain/scripts/provision.sh \
+  --newt-id "<ID>" --newt-secret "<SECRET>" --domain "<TUNNEL_DOMAIN>" \
+  --endpoint "<PANGOLIN_ENDPOINT>" --factory-pass "<PASSWORD>"
+```
+
+Repoint an already-set-up box to a new tunnel / domain, keeping all data. Endpoint
+and factory password are inherited from the existing config when omitted:
+
+```bash
 sudo /opt/homebrain/scripts/provision.sh \
   --newt-id <ID> --newt-secret <SECRET> --domain <DOMAIN>
 ```
