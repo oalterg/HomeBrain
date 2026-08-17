@@ -1,7 +1,9 @@
 # HA watchers — ping, wake, and agent-written automations
 
-**Status:** plan only. Do not implement from memory of chat; this file is the
-handoff.
+**Status:** P1–P5 in tree (2026-08-17). Wake CLI is `openclaw agent
+--session-key ha-watch --channel … --to … --deliver` (docs; confirm on
+the box that it does not steal the main Telegram session). Photo ping
+uses `openclaw message send --media` (no llama).
 **Date:** 2026-08-16
 **Essence:** HomeBrain holds an outbound Home Assistant websocket per MCP
 account. On a watched `state_changed`, it **pings** Telegram with no LLM

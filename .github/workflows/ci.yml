@@ -44,6 +44,8 @@ jobs:
                             scripts/tests/test_photo_pairing.py \
                             scripts/tests/test_offsite_progress.py \
                             scripts/tests/test_mcp_homeassistant.py \
+                            scripts/tests/test_mcp_homebrain.py \
+                            scripts/tests/test_ha_watch.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh

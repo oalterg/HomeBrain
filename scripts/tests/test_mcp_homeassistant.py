@@ -355,3 +355,80 @@ def test_calendar_events_rejects_non_calendar_entity(ha):
     out = ha.dispatch("ha.calendar_events", {"entity_id": "light.kitchen"})
     assert out["ok"] is False
     assert "calendar.*" in out["error"]
+
+
+def test_automation_list_filters_states(ha):
+    ha._http = lambda *a, **k: (200, [
+        {"entity_id": "light.kitchen", "state": "on", "attributes": {}},
+        {"entity_id": "automation.porch", "state": "on",
+         "attributes": {"id": "hb_porch", "friendly_name": "[HomeBrain] Porch"}},
+    ])
+    out = ha.dispatch("ha.automation_list", {})
+    assert out["ok"] is True
+    assert out["total"] == 1
+    assert out["automations"][0]["id"] == "hb_porch"
+
+
+def test_automation_upsert_stamps_alias_and_needs_consent(ha, monkeypatch, tmp_path):
+    pending = str(tmp_path / "pending.json")
+    monkeypatch.setenv("HOMEBRAIN_PENDING_ACTIONS", pending)
+    monkeypatch.setattr(mcp_common.Consent, "PATH", pending)
+    seen = {}
+
+    def fake(account, method, path, body=None, timeout=8):
+        seen["method"] = method
+        seen["path"] = path
+        seen["body"] = body
+        return 200, {}
+
+    ha._http = fake
+    config = {
+        "alias": "Porch light on person",
+        "trigger": [{"platform": "state",
+                     "entity_id": "binary_sensor.front_person", "to": "on"}],
+        "action": [{"service": "light.turn_on",
+                    "target": {"entity_id": "light.porch"}}],
+    }
+    first = ha.dispatch("ha.automation_upsert", {"config": config})
+    assert first.get("requires_confirmation")
+    assert "[HomeBrain]" in first["summary"]
+    out = ha.dispatch("ha.automation_upsert", {
+        "config": config, "confirmation_token": first["action_id"],
+    })
+    assert out["ok"] is True
+    assert out["alias"].startswith("[HomeBrain]")
+    assert seen["method"] == "POST"
+    assert "/api/config/automation/config/" in seen["path"]
+    assert seen["body"]["alias"].startswith("[HomeBrain]")
+
+
+def test_automation_delete_requires_matching_alias(ha, monkeypatch, tmp_path):
+    pending = str(tmp_path / "pending.json")
+    monkeypatch.setenv("HOMEBRAIN_PENDING_ACTIONS", pending)
+    monkeypatch.setattr(mcp_common.Consent, "PATH", pending)
+
+    def fake(account, method, path, body=None, timeout=8):
+        if method == "GET":
+            return 200, {"alias": "[HomeBrain] Porch light on person", "id": "hb_porch"}
+        return 200, {}
+
+    ha._http = fake
+    out = ha.dispatch("ha.automation_delete", {"id": "hb_porch"})
+    assert out["ok"] is False
+    assert "alias" in out["error"]
+    out = ha.dispatch("ha.automation_delete", {
+        "id": "hb_porch", "alias": "wrong",
+    })
+    assert out["ok"] is False
+    assert "match" in out["error"]
+    first = ha.dispatch("ha.automation_delete", {
+        "id": "hb_porch", "alias": "[HomeBrain] Porch light on person",
+    })
+    assert first.get("requires_confirmation")
+    out = ha.dispatch("ha.automation_delete", {
+        "id": "hb_porch",
+        "alias": "[HomeBrain] Porch light on person",
+        "confirmation_token": first["action_id"],
+    })
+    assert out["ok"] is True
+    assert out["deleted"] == "hb_porch"

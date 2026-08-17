@@ -792,6 +792,158 @@ def t_camera_image(args: dict) -> dict:
     )
 
 
+HB_ALIAS_PREFIX = "[HomeBrain]"
+
+
+def _stamp_alias(alias: str) -> str:
+    alias = (alias or "").strip() or "HomeBrain automation"
+    if alias.startswith(HB_ALIAS_PREFIX):
+        return alias
+    return f"{HB_ALIAS_PREFIX} {alias}"
+
+
+def _automation_id(raw: str, alias: str) -> str:
+    given = (raw or "").strip()
+    if given:
+        return given
+    slug = "".join(c.lower() if c.isalnum() else "_" for c in alias)
+    slug = "_".join(p for p in slug.split("_") if p)[:40] or "auto"
+    return f"hb_{slug}"
+
+
+def t_automation_list(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    code, body = _http(account, "GET", "/api/states")
+    if code != 200 or not isinstance(body, list):
+        return unavailable(f"HA states unreachable: {body}")
+    out = []
+    for s in body:
+        if not isinstance(s, dict):
+            continue
+        eid = s.get("entity_id") or ""
+        if not eid.startswith("automation."):
+            continue
+        attrs = s.get("attributes") or {}
+        out.append({
+            "entity_id": eid,
+            "id": attrs.get("id") or "",
+            "name": attrs.get("friendly_name") or eid,
+            "state": s.get("state"),
+        })
+    return ok(account=account["name"], automations=out, total=len(out))
+
+
+def t_automation_get(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    aid = str(args.get("id") or "").strip()
+    if not aid:
+        return err("id is required")
+    code, body = _http(
+        account, "GET", f"/api/config/automation/config/{quote(aid, safe='')}")
+    if code == 404:
+        return err("automation not found")
+    if code != 200:
+        return unavailable(f"HA automation config unreachable: HTTP {code}")
+    return ok(account=account["name"], id=aid, config=body)
+
+
+def t_automation_upsert(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    config = args.get("config")
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            return err("config must be a JSON object")
+    if not isinstance(config, dict):
+        return err("config is required (JSON object)")
+    config = dict(config)
+    alias = _stamp_alias(str(config.get("alias") or args.get("alias") or ""))
+    config["alias"] = alias
+    aid = _automation_id(str(args.get("id") or config.get("id") or ""), alias)
+    config["id"] = aid
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    summary = (f"Home Assistant ({account['name']}): upsert automation "
+               f"{aid}: {json.dumps(config, sort_keys=True)[:1500]}")
+    payload = {"account": account["name"], "id": aid, "config": config}
+    if not confirm:
+        action_id = Consent.issue("homeassistant", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account"))
+    if redeem_account is None:
+        return err("account from confirmation is no longer configured")
+    aid = redeemed["id"]
+    config = redeemed["config"]
+    code, resp = _http(
+        redeem_account, "POST",
+        f"/api/config/automation/config/{quote(aid, safe='')}",
+        config, timeout=15)
+    if code not in (200, 201):
+        audit("homeassistant", "automation_upsert.fail",
+              account=redeem_account["name"], id=aid, code=code)
+        return err(f"HA automation upsert failed (code {code}): {resp}")
+    audit("homeassistant", "automation_upsert.ok",
+          account=redeem_account["name"], id=aid)
+    return ok(account=redeem_account["name"], id=aid, alias=config.get("alias"))
+
+
+def t_automation_delete(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    aid = str(args.get("id") or "").strip()
+    if not aid:
+        return err("id is required")
+    given_alias = str(args.get("alias") or "").strip()
+    code, body = _http(
+        account, "GET", f"/api/config/automation/config/{quote(aid, safe='')}")
+    if code == 404:
+        return err("automation not found")
+    if code != 200 or not isinstance(body, dict):
+        return unavailable(f"HA automation config unreachable: HTTP {code}")
+    stored_alias = str(body.get("alias") or "").strip()
+    if stored_alias:
+        if not given_alias:
+            return err("alias is required to delete this automation",
+                       hint=f"Stored alias: {stored_alias}")
+        if given_alias != stored_alias:
+            return err("alias does not match")
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    summary = (f"Home Assistant ({account['name']}): delete automation "
+               f"{aid}" + (f" ({stored_alias})" if stored_alias else ""))
+    payload = {"account": account["name"], "id": aid, "alias": stored_alias}
+    if not confirm:
+        action_id = Consent.issue("homeassistant", summary, payload, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account"))
+    if redeem_account is None:
+        return err("account from confirmation is no longer configured")
+    code, resp = _http(
+        redeem_account, "DELETE",
+        f"/api/config/automation/config/{quote(redeemed['id'], safe='')}")
+    if code == 404:
+        return err("automation not found")
+    if code not in (200, 201):
+        return err(f"HA automation delete failed (code {code}): {resp}")
+    audit("homeassistant", "automation_delete.ok",
+          account=redeem_account["name"], id=redeemed["id"])
+    return ok(account=redeem_account["name"], deleted=redeemed["id"])
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": "HA account name. Required if several are configured.",
@@ -909,6 +1061,47 @@ TOOLS = [
          },
          "required": ["entity_id"],
      }},
+    {"name": "ha.automation_list",
+     "description": "List UI automations (id, name, state). No consent.",
+     "inputSchema": {"type": "object",
+                     "properties": {"account": _ACCOUNT_PROP}}},
+    {"name": "ha.automation_get",
+     "description": "Read one UI automation config by id. No consent.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "id": {"type": "string"},
+             "account": _ACCOUNT_PROP,
+         },
+         "required": ["id"],
+     }},
+    {"name": "ha.automation_upsert",
+     "description": "Create or replace a UI automation. Consent; summary is the body.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "id": {"type": "string",
+                    "description": "Stable id we generate if omitted."},
+             "config": {"type": "object",
+                        "description": "Trigger/action body. Alias is stamped."},
+             "confirmation_token": {"type": "string"},
+         },
+         "required": ["config"],
+     }},
+    {"name": "ha.automation_delete",
+     "description": "Delete a UI automation. Consent. Id and alias must match.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "id": {"type": "string"},
+             "alias": {"type": "string",
+                       "description": "Required when the automation has an alias."},
+             "confirmation_token": {"type": "string"},
+         },
+         "required": ["id"],
+     }},
 ]
 
 DISPATCH = {
@@ -924,6 +1117,10 @@ DISPATCH = {
     "ha.call_service": t_call_service,
     "ha.call_service_raw": t_call_service_raw,
     "ha.camera_image": t_camera_image,
+    "ha.automation_list": t_automation_list,
+    "ha.automation_get": t_automation_get,
+    "ha.automation_upsert": t_automation_upsert,
+    "ha.automation_delete": t_automation_delete,
 }
 
 

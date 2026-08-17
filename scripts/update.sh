@@ -277,7 +277,8 @@ install_python_venv_deps
 # It ensures the active systemd units match the repository versions exactly.
 UNITS_CHANGED=false
 for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer \
-            homebrain-offsite.service homebrain-offsite.timer; do
+            homebrain-offsite.service homebrain-offsite.timer \
+            homebrain-ha-watch.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
 
@@ -306,6 +307,8 @@ fi
 systemctl enable --now homebrain-health.timer 2>/dev/null || true
 # Same for the off-site resume timer on boxes provisioned before it existed.
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
+# HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.
+systemctl enable --now homebrain-ha-watch.service 2>/dev/null || true
 # Passwordless sudo for the agent. Only ensure_homebrain_user installs this,
 # and update.sh never calls it — it runs `docker compose up` directly rather
 # than deploy.sh. Without this an updated box gets the openclaw side of the

@@ -1,0 +1,22 @@
+[Unit]
+Description=HomeBrain HA watchers (Telegram ping on state_changed)
+After=network-online.target
+# HomeCloud / no-OpenClaw boxes: unit stays installed, does not start.
+ConditionPathExists=/home/homebrain/.openclaw/openclaw.json
+
+[Service]
+Type=simple
+# Root, same as healthcheck: Fernet key lives in /opt/homebrain/.env (mode
+# 0600). Ping/wake then `sudo -u homebrain openclaw …`.
+User=root
+Environment=HOMEBRAIN_HOME=/home/homebrain
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/homebrain/venv/bin/python3 /opt/homebrain/scripts/ha_watch.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

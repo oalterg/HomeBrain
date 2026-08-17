@@ -255,6 +255,14 @@ systemctl enable --now homebrain-health.timer 2>/dev/null \
     && log_info "Health check timer enabled." \
     || log_warn "Failed to enable health check timer."
 
+# HA watchers: Telegram ping on Home Assistant state_changed. Condition in
+# the unit skips start until OpenClaw exists (GPU boxes).
+cp "${SCRIPT_DIR}/../config/homebrain-ha-watch.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
+    && log_info "HA watcher service enabled." \
+    || log_warn "HA watcher service not started (OpenClaw not present yet is OK)."
+
 # Rotate /var/log/homebrain. Without this it grows for the life of the box.
 cp "${SCRIPT_DIR}/../config/logrotate-homebrain" /etc/logrotate.d/homebrain
 chmod 644 /etc/logrotate.d/homebrain
