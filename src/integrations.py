@@ -343,6 +343,8 @@ def _spec_self() -> dict:
             "HOMEBRAIN_BASE_URL": "http://127.0.0.1:80",
             "HOMEBRAIN_SELF_TOKEN_FILE": SELF_TOKEN_FILE,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+            "HA_ACCOUNTS_FILE": HA_ACCOUNTS_FILE,
+            "HOMEBRAIN_INTEGRATIONS_KEY": _email_fernet_key(),
             **_mcp_consent_env(),
         },
     }

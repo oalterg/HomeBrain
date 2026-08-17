@@ -279,13 +279,18 @@ if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     for f in ha.token nextcloud.token homebrain.token vault.session \
              ha_accounts.json nc_accounts.json email_accounts.json \
-             pending_actions.json; do
+             ha_watchers.json ha_watch_pings.json pending_actions.json; do
         [[ -f "${TMP_DIR}/openclaw_integrations/${f}" ]] || continue
         cp -a "${TMP_DIR}/openclaw_integrations/${f}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
         chmod 600 "${HOMEBRAIN_HOME}/.openclaw/${f}"
         chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
     done
     log_info "Integration credentials restored."
+    # Watcher last-state is not in the archive (by design: restore must
+    # seed quietly, not replay every entity as a fresh on). Drop it and
+    # bounce the daemon so it re-seeds from HA.
+    rm -f /var/lib/homebrain/ha_watch_state.json
+    systemctl try-restart homebrain-ha-watch.service 2>/dev/null || true
     # homebrain.token above came from the SOURCE box, where it was derived from
     # that box's MASTER_PASSWORD. This box keeps its own master password (only
     # the nonce is portable, see the instance-secret merge earlier), so the

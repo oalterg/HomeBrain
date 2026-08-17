@@ -2187,6 +2187,10 @@ setup_openclaw() {
             ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
             log_info "OpenClaw is running. Access at http://${ip}:${oc_port}"
             log_info "=== OpenClaw setup complete ==="
+            # Watcher unit is ConditionPathExists on openclaw.json; start now
+            # so we do not wait for the next reboot.
+            systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
+                || log_warn "homebrain-ha-watch.service did not start."
             return 0
         fi
         sleep 2

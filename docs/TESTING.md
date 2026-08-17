@@ -223,7 +223,7 @@ default Vault bootstrap.
 - [ ] `/home/homebrain/.openclaw/homebrain.token` exists, mode 0600.
 - [ ] `curl -H "Authorization: Bearer $(cat ~/.openclaw/homebrain.token)" \
       http://127.0.0.1/api/integrations/self/status` returns 200.
-- [ ] `connTest('self')` returns 7 tools.
+- [ ] `connTest('self')` returns 10 tools.
 
 ### Home Assistant
 
@@ -280,6 +280,28 @@ Telegram is the only supported channel and is bundled in core.
       time returns "invalid or expired".
 - [ ] `backup.sh` archive contains `openclaw_integrations/` and
       `mcp_audit/` trees; `restore.sh` repopulates them with mode 0600.
+
+### HA watchers (GPU only)
+
+Plan: [`plans/HA_WATCHERS.md`](plans/HA_WATCHERS.md). Take `$LOCK` before
+writes. Unit tests cover fire/cooldown/seed; this is the box check.
+
+- [ ] `systemctl is-active homebrain-ha-watch` → `active` (OpenClaw present)
+- [ ] `homebrain.watcher_set` an `input_boolean` on local HA (`to: on`,
+      `wake: false`) → flipping it in HA sends one Telegram text ping.
+      Flip again within 120s → silence. Cold start / daemon restart →
+      silence.
+- [ ] Same watcher on a remote HA account → ping still arrives.
+- [ ] Watcher with `camera_entity_id`: still arrives as a photo while
+      llama-server is stopped. One still, not two.
+- [ ] `wake: true`: a follow-up clerk turn may message; it must not
+      append to the main Telegram session (`openclaw sessions` shows
+      session key `ha-watch`, not the DM). No duplicate still. No
+      self-fired siren.
+- [ ] Restore from backup containing `ha_watchers.json` → daemon seeds
+      and stays quiet.
+- [ ] Full sentence: watcher ping + `ha.automation_upsert` porch light
+      on that account. Light still works if this GPU is down.
 
 ---
 

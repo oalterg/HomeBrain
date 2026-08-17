@@ -333,11 +333,13 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
     if compgen -G "${OPENCLAW_DIR}/*.token" > /dev/null \
         || compgen -G "${OPENCLAW_DIR}/*_accounts.json" > /dev/null \
         || [[ -f "${OPENCLAW_DIR}/pending_actions.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/ha_watchers.json" ]] \
+        || [[ -f "${OPENCLAW_DIR}/ha_watch_pings.json" ]] \
         || [[ -f "${OPENCLAW_DIR}/vault.session" ]]; then
         mkdir -p "${STAGING_DIR}/openclaw_integrations"
         for f in ha.token nextcloud.token homebrain.token vault.session \
                  ha_accounts.json nc_accounts.json email_accounts.json \
-                 pending_actions.json; do
+                 ha_watchers.json ha_watch_pings.json pending_actions.json; do
             [[ -f "${OPENCLAW_DIR}/${f}" ]] && cp -a "${OPENCLAW_DIR}/${f}" "${STAGING_DIR}/openclaw_integrations/"
         done
         log_info "OpenClaw integration credentials backed up."
