@@ -1076,7 +1076,7 @@ TOOLS = [
          "required": ["id"],
      }},
     {"name": "ha.automation_upsert",
-     "description": "Create or replace a UI automation. Consent; summary is the body.",
+     "description": "Create or replace a UI automation.",
      "inputSchema": {
          "type": "object",
          "properties": {

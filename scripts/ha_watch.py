@@ -45,6 +45,8 @@ MEDIA_DIR = os.environ.get(
 DEFAULT_COOLDOWN_S = 120
 PING_LOG_MAX = 50
 UNREAL = frozenset({"unavailable", "unknown", "", None})
+# Clerk may send these; they are not knobs. Daemon always stores defaults.
+CLERK_IGNORED_KEYS = frozenset({"cooldown_s", "enabled"})
 WATCHER_KEYS = frozenset({
     "id", "enabled", "ha_account", "entity_id", "to", "cooldown_s",
     "message", "camera_entity_id", "wake",
@@ -96,6 +98,12 @@ def ws_url(base_url: str) -> str:
     return ""
 
 
+def ws_hold_open(ws: Any) -> None:
+    """After handshake, block on recv. Quiet HA is not a dead peer;
+    ping_interval / ping_timeout detect that."""
+    ws.settimeout(None)
+
+
 def is_real_state(value: Any) -> bool:
     if value is None:
         return False
@@ -134,48 +142,85 @@ def parse_state_changed(msg: dict) -> tuple[str, Any, Any] | None:
     return eid, old_s, new_s
 
 
+def slug_id(*parts: str) -> str:
+    chunks: list[str] = []
+    for part in parts:
+        piece: list[str] = []
+        for c in (part or "").lower():
+            if c.isalnum():
+                piece.append(c)
+            elif piece and piece[-1] != "-":
+                piece.append("-")
+        s = "".join(piece).strip("-")
+        if s:
+            chunks.append(s)
+    return "-".join(chunks)
+
+
+def make_watcher_id(account: str, entity_id: str) -> str:
+    return slug_id(account, entity_id)
+
+
+def existing_pair(watchers: list[dict], account: str,
+                  entity_id: str) -> dict | None:
+    for w in watchers:
+        if w.get("ha_account") == account and w.get("entity_id") == entity_id:
+            return w
+    return None
+
+
+def assign_id(watcher: dict, existing: list[dict] | None = None) -> dict:
+    """Same account+entity reuses that id. Else keep id or generate."""
+    out = dict(watcher)
+    found = existing_pair(
+        existing if existing is not None else load_watchers(),
+        out["ha_account"], out["entity_id"])
+    if found:
+        out["id"] = found["id"]
+    elif not out.get("id"):
+        out["id"] = make_watcher_id(out["ha_account"], out["entity_id"])
+    return out
+
+
+def clerk_watcher(w: dict) -> dict:
+    """What the model sees: no cooldown/enabled knobs."""
+    return {k: v for k, v in w.items() if k not in CLERK_IGNORED_KEYS}
+
+
 def normalize_watcher(raw: dict) -> tuple[dict | None, str]:
     """Return (watcher, "") or (None, error). Drops nothing silently:
-    extra keys are refused so a model cannot sneak `siren:` onto the file."""
+    extra keys are refused so a model cannot sneak `siren:` onto the file.
+    cooldown_s and enabled from the clerk are ignored (defaults always)."""
     if not isinstance(raw, dict):
         return None, "watcher must be an object"
+    raw = {k: v for k, v in raw.items() if k not in CLERK_IGNORED_KEYS}
     extra = set(raw) - WATCHER_KEYS
     if extra:
         return None, f"unknown fields: {', '.join(sorted(extra))}"
-    wid = str(raw.get("id") or "").strip()
     account = str(raw.get("ha_account") or "").strip()
     eid = str(raw.get("entity_id") or "").strip()
-    if not wid:
-        return None, "id is required"
-    if any(c for c in wid if not (c.isalnum() or c in "-_")):
-        return None, "id must be alphanumeric, dash, or underscore"
+    wid = str(raw.get("id") or "").strip()
     if not account:
         return None, "ha_account is required"
     if not eid or "." not in eid:
         return None, "entity_id is required (e.g. binary_sensor.front)"
-    cooldown = raw.get("cooldown_s", DEFAULT_COOLDOWN_S)
-    try:
-        cooldown_s = int(cooldown)
-    except (TypeError, ValueError):
-        return None, "cooldown_s must be an integer"
-    if cooldown_s < 0:
-        return None, "cooldown_s must be >= 0"
+    if not wid:
+        wid = make_watcher_id(account, eid)
+    if any(c for c in wid if not (c.isalnum() or c in "-_")):
+        return None, "id must be alphanumeric, dash, or underscore"
     cam = str(raw.get("camera_entity_id") or "").strip()
     if cam and "." not in cam:
         return None, "camera_entity_id must look like camera.front"
     wake = raw.get("wake", False)
     if not isinstance(wake, bool):
         return None, "wake must be a boolean"
-    enabled = raw.get("enabled", True)
-    if not isinstance(enabled, bool):
-        return None, "enabled must be a boolean"
     return {
         "id": wid,
-        "enabled": enabled,
+        "enabled": True,
         "ha_account": account,
         "entity_id": eid,
         "to": str(raw.get("to") or "on"),
-        "cooldown_s": cooldown_s,
+        "cooldown_s": DEFAULT_COOLDOWN_S,
         "message": str(raw.get("message") or "").strip(),
         "camera_entity_id": cam,
         "wake": wake,
@@ -519,6 +564,17 @@ def save_runtime_state(state: dict, path: str | None = None) -> None:
     atomic_write_json(path or STATE_FILE, state)
 
 
+def prune_runtime_state(watchers: list[dict] | None = None,
+                        path: str | None = None) -> None:
+    """Drop last_state/last_fired for ids that are no longer watchers."""
+    keep = {w["id"] for w in (watchers if watchers is not None
+                              else load_watchers())}
+    state = load_runtime_state(path)
+    pruned = {k: v for k, v in state.items() if k in keep}
+    if pruned != state:
+        save_runtime_state(pruned, path)
+
+
 def decide_event(watcher: dict, old: Any, new: Any, rec: dict | None,
                  now: float) -> str:
     """'seed' | 'ignore' | 'cooldown' | 'fire'."""
@@ -683,6 +739,7 @@ class AccountWorker:
                             if w["ha_account"] == self.account["name"]]
                 _seed_account(self.account, watchers, state)
             log(f"[INFO] {self.account['name']} subscribed")
+            ws_hold_open(ws)
             while not self.stop.is_set():
                 raw = ws.recv()
                 if not raw:
@@ -725,6 +782,7 @@ def _accounts_with_watchers(key: str) -> dict[str, dict]:
 
 
 def reconcile(key: str) -> None:
+    prune_runtime_state()
     desired = _accounts_with_watchers(key)
     with _workers_lock:
         for name in list(_workers):

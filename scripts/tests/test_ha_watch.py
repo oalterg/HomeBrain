@@ -120,6 +120,18 @@ def test_ws_url():
         "wss://ha.example.com/api/websocket"
 
 
+def test_ws_hold_open_clears_recv_timeout():
+    class Fake:
+        timeout = 30
+
+        def settimeout(self, value):
+            self.timeout = value
+
+    ws = Fake()
+    ha_watch.ws_hold_open(ws)
+    assert ws.timeout is None
+
+
 def test_normalize_refuses_siren_field():
     raw = dict(WATCHER, siren="turn_on")
     w, err = ha_watch.normalize_watcher(raw)
@@ -139,6 +151,70 @@ def test_normalize_defaults():
     assert w["enabled"] is True
     assert w["cooldown_s"] == 120
     assert w["camera_entity_id"] == ""
+
+
+def test_normalize_generates_id():
+    w, err = ha_watch.normalize_watcher({
+        "ha_account": "Berlin",
+        "entity_id": "input_boolean.homebrain_e2e_watch",
+    })
+    assert err == ""
+    assert w["id"] == "berlin-input-boolean-homebrain-e2e-watch"
+
+
+def test_normalize_ignores_clerk_cooldown_and_enabled():
+    w, err = ha_watch.normalize_watcher({
+        "id": "washer",
+        "ha_account": "home",
+        "entity_id": "binary_sensor.washer_done",
+        "cooldown_s": 60,
+        "enabled": False,
+    })
+    assert err == ""
+    assert w["cooldown_s"] == 120
+    assert w["enabled"] is True
+
+
+def test_assign_id_same_pair_replaces(tmp_path, monkeypatch):
+    path = str(tmp_path / "ha_watchers.json")
+    monkeypatch.setattr(ha_watch, "WATCHERS_FILE", path)
+    a, _ = ha_watch.normalize_watcher({
+        "id": "e2e-watch", "ha_account": "Berlin",
+        "entity_id": "input_boolean.homebrain_e2e_watch",
+    })
+    ha_watch.save_watchers([a])
+    b, _ = ha_watch.normalize_watcher({
+        "ha_account": "Berlin",
+        "entity_id": "input_boolean.homebrain_e2e_watch",
+        "message": "again",
+    })
+    out = ha_watch.assign_id(b)
+    assert out["id"] == "e2e-watch"
+    assert out["message"] == "again"
+
+
+def test_clerk_watcher_hides_knobs():
+    w, _ = ha_watch.normalize_watcher({
+        "id": "washer", "ha_account": "home",
+        "entity_id": "binary_sensor.washer_done",
+    })
+    pub = ha_watch.clerk_watcher(w)
+    assert "cooldown_s" not in pub
+    assert "enabled" not in pub
+    assert pub["id"] == "washer"
+
+
+def test_prune_runtime_state(tmp_path, monkeypatch):
+    state_path = str(tmp_path / "state.json")
+    monkeypatch.setattr(ha_watch, "STATE_FILE", state_path)
+    ha_watch.save_runtime_state({
+        "keep-me": {"last_state": "off", "last_fired": 1},
+        "gone": {"last_state": "on", "last_fired": 2},
+    })
+    ha_watch.prune_runtime_state([{"id": "keep-me"}])
+    assert ha_watch.load_runtime_state() == {
+        "keep-me": {"last_state": "off", "last_fired": 1},
+    }
 
 
 def test_normalize_bad_id():
