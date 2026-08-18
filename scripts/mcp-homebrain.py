@@ -171,7 +171,7 @@ def t_watcher_list(_args: dict) -> dict:
     watchers = ha_watch.load_watchers()
     pings = ha_watch.load_ping_log()
     return ok(
-        watchers=watchers,
+        watchers=[ha_watch.clerk_watcher(w) for w in watchers],
         total=len(watchers),
         recent_pings=pings,
         hint=("recent_pings are Telegram messages already sent to the owner. "
@@ -185,6 +185,7 @@ def t_watcher_set(args: dict) -> dict:
     watcher, nerr = ha_watch.normalize_watcher(raw)
     if nerr:
         return err(nerr)
+    watcher = ha_watch.assign_id(watcher)
     accounts = _ha_accounts()
     account = ha_watch.pick_account(accounts, watcher["ha_account"])
     if account is None:
@@ -210,11 +211,13 @@ def t_watcher_set(args: dict) -> dict:
     watcher, nerr = ha_watch.normalize_watcher(redeemed)
     if nerr:
         return err(nerr)
+    watcher = ha_watch.assign_id(watcher)
     existing = [w for w in ha_watch.load_watchers() if w["id"] != watcher["id"]]
     existing.append(watcher)
     ha_watch.save_watchers(existing)
+    ha_watch.prune_runtime_state(existing)
     audit("homebrain", "watcher_set", id=watcher["id"])
-    return ok(watcher=watcher, replaced=True)
+    return ok(watcher=ha_watch.clerk_watcher(watcher), replaced=True)
 
 
 def t_watcher_delete(args: dict) -> dict:
@@ -236,6 +239,7 @@ def t_watcher_delete(args: dict) -> dict:
         return err("confirmation_token invalid or expired")
     remaining = [w for w in ha_watch.load_watchers() if w["id"] != wid]
     ha_watch.save_watchers(remaining)
+    ha_watch.prune_runtime_state(remaining)
     audit("homebrain", "watcher_delete", id=wid)
     return ok(deleted=wid)
 
@@ -269,14 +273,14 @@ TOOLS = [
      "description": "Connection status of all OpenClaw integrations.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.watcher_list",
-     "description": "List HA watchers and recent Telegram pings already sent to the owner.",
+     "description": "List watchers and recent Telegram pings.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.watcher_set",
-     "description": "Create or replace an HA watcher. Consent; summary is the watcher.",
+     "description": "Telegram ping when an HA entity changes.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "id": {"type": "string",
-                                "description": "Stable id; same id replaces."},
+                                "description": "Optional. Same account+entity replaces."},
                          "ha_account": {"type": "string",
                                         "description": "Name from ha.list_accounts."},
                          "entity_id": {"type": "string",
@@ -288,14 +292,11 @@ TOOLS = [
                          "camera_entity_id": {"type": "string",
                                               "description": "Optional still on ping."},
                          "wake": {"type": "boolean",
-                                  "description": "Also wake the agent as clerk."},
-                         "enabled": {"type": "boolean"},
-                         "cooldown_s": {"type": "integer",
-                                        "description": "Default 120. Ping+wake together."},
+                                  "description": "Only if the owner asked to wake you. Default false."},
                          "confirmation_token": {"type": "string"}},
-                     "required": ["id", "ha_account", "entity_id"]}},
+                     "required": ["ha_account", "entity_id"]}},
     {"name": "homebrain.watcher_delete",
-     "description": "Delete an HA watcher. Consent; summary is the watcher.",
+     "description": "Delete a watcher.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "id": {"type": "string"},
