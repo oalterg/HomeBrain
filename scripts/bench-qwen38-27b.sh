@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Qwen3.8-27B IQ4_XS sweep on the RX 9060 XT (16 GB) box.
+# Qwen3.8-27B UD-IQ4_XS sweep on the RX 9060 XT (16 GB) box.
 #
 # Arch is `qwen35` — the same Gated-DeltaNet hybrid as Qwen3.6-27B (64 layers,
 # 16 full-attention + 48 DeltaNet), so the DeltaNet-safe constraints carry over:
 # no -ot (partial expert offload defeats the fused kernel), -ngl 99, and
 # -fa + --cache-type-k/v are mandatory on AMD Vulkan.
 #
-# The file is 14,978 MiB against 16,304 MiB usable, so the only levers left are
+# The Dynamic V3 file is 13,592 MiB against 16,304 MiB usable (the IQ4_XS it
+# replaced was 14,978 MiB). The only levers left are
 # ctx, KV quant, and the micro-batch that sizes the compute buffer.
 #
 # Usage: bench-qwen38-27b.sh <phase> [args...]
@@ -20,7 +21,7 @@ LIBDIR="$(dirname "$BIN")"
 MD="$HOME/models"
 BD="$HOME/bench-upgrade"
 PORT=8099
-MODEL="$MD/Qwen3.8-27B-IQ4_XS.gguf"
+MODEL="$MD/Qwen3.8-27B-UD-IQ4_XS.gguf"
 VP=/sys/class/drm/card1/device/mem_info_vram_used
 TOTAL=16304
 RESULTS="$BD/qwen38-27b.jsonl"

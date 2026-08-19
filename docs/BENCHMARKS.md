@@ -786,6 +786,12 @@ measured — the Q3-vs-Q4 quality claim is the model card's, not ours. Whisper w
 
 ## 2026-08-14 — Qwen3.8-27B IQ4_XS (supersedes the Qwen3.6-27B entry)
 
+Catalog file as of 2026-08-19 is **UD-IQ4_XS** (Unsloth Dynamic V3,
+14,252,845,984 bytes / 13,592 MiB). Unsloth withdrew the IQ4_XS GGUF the
+measurements below were taken on (that URL now 404s). Flags and ctx 81920
+are unchanged; the new file is ~1.4 GB smaller, so VRAM headroom should
+improve by about that much. TG/PP were not re-measured.
+
 `unsloth/Qwen3.8-27B-GGUF` at IQ4_XS — 15,705,861,088 bytes (14,978 MiB) against
 16,304 MiB usable, on the pinned **b10361**. Arch is `qwen35`, the same
 Gated-DeltaNet hybrid as the Qwen3.6-27B it replaces, so the DeltaNet rules carry

@@ -107,7 +107,7 @@ run_patch() {   # run_patch <ctx-arg> <model-id> ; echoes the patched file path
 }
 
 GLIMMER="Muse-Glimmer-30B-UD-Q4_K_XL"
-QWEN27="Qwen3.8-27B-IQ4_XS"
+QWEN27="Qwen3.8-27B-UD-IQ4_XS"
 
 echo "== the jq program runs at all =="
 cfg="$(run_patch 131072 "$GLIMMER")"
