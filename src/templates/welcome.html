@@ -199,7 +199,15 @@
                     if (list.error) throw new Error(list.error);
                     var sel = document.getElementById('os-archive');
                     sel.innerHTML = '';
-                    (list || []).forEach(function (a) {
+                    var archives = list || [];
+                    var usable = archives.filter(function (a) {
+                        return (a.name || '').indexOf('_system_') === -1;
+                    });
+                    // A remote that only holds pre-update snapshots is the
+                    // 413-era trap — still better to offer them than an empty
+                    // list, so the owner can at least get settings back.
+                    if (!usable.length) usable = archives;
+                    usable.forEach(function (a) {
                         var o = document.createElement('option');
                         o.value = a.name;
                         o.textContent = a.name + '  —  ' + a.type + ', ' + a.size;

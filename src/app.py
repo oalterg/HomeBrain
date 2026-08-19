@@ -1868,6 +1868,12 @@ def backup_config():
 def backup_offsite():
     if request.method == "GET":
         env = get_env_config()
+        try:
+            keep = int(env.get("OFFSITE_KEEP", "3"))
+            if not 1 <= keep <= 8:
+                keep = 3
+        except (TypeError, ValueError):
+            keep = 3
         return jsonify(
             {
                 "enabled": env.get("OFFSITE_ENABLED", "false") == "true",
@@ -1876,10 +1882,11 @@ def backup_offsite():
                 "user": env.get("OFFSITE_USER", ""),
                 "has_pass": bool(env.get("OFFSITE_PASS", "")),
                 "path": env.get("OFFSITE_PATH", ""),
+                "keep": keep,
             }
         )
 
-    data = request.json
+    data = request.json or {}
     enabled = bool(data.get("enabled"))
     remote_type = data.get("type", "")
     host = data.get("host", "").strip()
@@ -1892,6 +1899,17 @@ def backup_offsite():
             return jsonify({"error": "Invalid remote type"}), 400
         if not host:
             return jsonify({"error": "Host is required"}), 400
+
+    # Omitted on the wizard's credential save — only rewrite when the
+    # dashboard actually sent a value, or listing archives would reset it.
+    if "keep" in data:
+        try:
+            keep_n = int(data.get("keep"))
+            if not 1 <= keep_n <= 8:
+                raise ValueError("keep")
+        except (TypeError, ValueError):
+            return jsonify({"error": "Off-site copies to keep must be between 1 and 8"}), 400
+        update_env_var("OFFSITE_KEEP", str(keep_n))
 
     update_env_var("OFFSITE_ENABLED", "true" if enabled else "false")
     update_env_var("OFFSITE_TYPE", remote_type)
