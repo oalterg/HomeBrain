@@ -119,19 +119,20 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
 ## Check that your files are actually off-site
 
-An off-site copy that only holds *system snapshots* will restore your settings,
-your Home Assistant config and your vault — but not your Nextcloud files. On the
-Backup page, the ☁️ entries are what you would be restoring from. If every one
-of them says "System snapshot" and none says "Full System", your files are not
-protected against losing the box.
+Pre-update *system snapshots* stay on the backup drive. They restore settings,
+Home Assistant, and the vault — not your Nextcloud files — so they are not
+copied off-site. On the Backup page, the ☁️ entries are what you would be
+restoring from after losing the box; they should say "Full System". Leftover
+system snapshots from older versions are removed on the next off-site copy
+once a full archive is present locally.
 
-The usual cause was a too-old rclone: versions before 1.64 cannot split a large
-upload into chunks, so a multi-gigabyte archive is sent as a single request and
-the receiving server rejects it with *413 Request Entity Too Large*, while the
-small system snapshots go through fine. HomeBrain now installs a current rclone
-before every off-site copy. If your remote is missing full archives from before
-that fix, they upload on the next copy — allow plenty of time, since a full
-archive can take many hours.
+The usual cause of a remote that only held snapshots was a too-old rclone:
+versions before 1.64 cannot split a large upload into chunks, so a
+multi-gigabyte archive is sent as a single request and the receiving server
+rejects it with *413 Request Entity Too Large*, while the small snapshots went
+through. HomeBrain now installs a current rclone before every off-site copy.
+If your remote is missing full archives from before that fix, they upload on
+the next copy — allow plenty of time, since a full archive can take many hours.
 
 An upload interrupted by a restart is picked up again within the hour, and
 after a reboot, by the off-site resume timer. Archives already at the remote are

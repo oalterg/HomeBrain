@@ -124,6 +124,17 @@ else
     bad "leftover partials from a dead run are swept (retention cannot see them, so nothing else will)"
 fi
 
+echo "== offsite_keep clamps to 1–8 and defaults to 3 =="
+(
+    unset OFFSITE_KEEP
+    [ "$(offsite_keep)" = "3" ]
+) && ok "unset OFFSITE_KEEP defaults to 3" || bad "unset OFFSITE_KEEP defaults to 3"
+[ "$(OFFSITE_KEEP=1 offsite_keep)" = "1" ] && ok "OFFSITE_KEEP=1" || bad "OFFSITE_KEEP=1"
+[ "$(OFFSITE_KEEP=8 offsite_keep)" = "8" ] && ok "OFFSITE_KEEP=8" || bad "OFFSITE_KEEP=8"
+[ "$(OFFSITE_KEEP=0 offsite_keep)" = "3" ] && ok "OFFSITE_KEEP=0 falls back to 3" || bad "OFFSITE_KEEP=0 falls back to 3"
+[ "$(OFFSITE_KEEP=9 offsite_keep)" = "3" ] && ok "OFFSITE_KEEP=9 falls back to 3" || bad "OFFSITE_KEEP=9 falls back to 3"
+[ "$(OFFSITE_KEEP=foo offsite_keep)" = "3" ] && ok "junk OFFSITE_KEEP falls back to 3" || bad "junk OFFSITE_KEEP falls back to 3"
+
 # ── Off-site copy semantics (needs rclone) ──────────────────────────────────
 
 if ! command -v rclone >/dev/null 2>&1; then
@@ -161,35 +172,37 @@ else
     bad "remote still holds the archive after the local drive emptied"
 fi
 
-echo "== off-site keeps only the newest full backup =="
-# Local retention keeps the last 2 full archives around (backup.sh: Keep: 2).
-# Off-site only ever wants the latest: disaster recovery restores the newest
-# anyway, and a superseded multi-GB archive should not keep costing upload
-# bandwidth on a home uplink until an age window happens to catch up with it.
+echo "== off-site keeps the newest OFFSITE_KEEP full backups =="
+# Local retention keeps more than off-site (backup.sh: BACKUP_RETENTION).
+# Off-site keep-N is smaller because a superseded multi-GB archive should
+# not keep costing upload bandwidth on a home uplink. Default is 3; this
+# case pins keep=2 so the prune is observable with three archives.
 sleep 1; archive 2026-07-02
 sleep 1; archive 2026-07-03
-offsite_sync >/dev/null 2>&1
-if [ -f "$REMOTE/homebrain_backup_2026-07-03.tar.gz.gpg" ]; then
-    ok "newest full archive kept"
+OFFSITE_KEEP=2 offsite_sync >/dev/null 2>&1
+if [ -f "$REMOTE/homebrain_backup_2026-07-03.tar.gz.gpg" ] \
+    && [ -f "$REMOTE/homebrain_backup_2026-07-02.tar.gz.gpg" ]; then
+    ok "newest OFFSITE_KEEP full archives kept"
 else
-    bad "newest full archive kept (missing)"
+    bad "newest OFFSITE_KEEP full archives kept (missing 02 or 03)"
 fi
-if [ ! -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ] && [ ! -f "$REMOTE/homebrain_backup_2026-07-02.tar.gz.gpg" ]; then
-    ok "superseded full archives pruned"
+if [ ! -f "$REMOTE/homebrain_backup_2026-07-01.tar.gz.gpg" ]; then
+    ok "archives older than OFFSITE_KEEP pruned"
 else
-    bad "superseded full archives pruned (an older one is still on the remote)"
+    bad "archives older than OFFSITE_KEEP pruned (01 is still on the remote)"
 fi
 
 echo "== a superseded archive still sitting locally is never re-uploaded =="
-# The bug this guards: with local retention keeping 2 and off-site keeping 1,
-# a naive blanket copy would re-upload the second-newest every hourly resume
-# tick (dest missing it, source still has it) only to prune it straight back
-# out — paying upload cost for a file that is deleted the instant it lands.
+# The bug this guards: with local retention keeping extra copies and
+# off-site keeping N, a naive blanket copy would re-upload everything
+# older than N every hourly resume tick (dest missing it, source still
+# has it) only to prune it straight back out — paying upload cost for a
+# file that is deleted the instant it lands.
 rm -f "$REMOTE"/homebrain_backup_2026-07-0[12].tar.gz.gpg 2>/dev/null
 : > "$TMP/copy-log"
 rclone_orig=$(command -v rclone)
 rclone() { echo "$*" >> "$TMP/copy-log"; command "$rclone_orig" "$@"; }
-offsite_sync >/dev/null 2>&1
+OFFSITE_KEEP=1 offsite_sync >/dev/null 2>&1
 unset -f rclone
 if grep -q 'homebrain_backup_2026-07-02.tar.gz.gpg' "$TMP/copy-log"; then
     bad "superseded archive left on the local drive is not re-uploaded (it was)"
@@ -197,34 +210,40 @@ else
     ok "superseded archive left on the local drive is not re-uploaded"
 fi
 
-echo "== system snapshots keep their own age-based window =="
+echo "== system snapshots stay local =="
+# Pre-update snapshots are a local rollback point. They do not contain the
+# user's files, so copying them off-site was a restore-wizard footgun and
+# contradicted update.sh's --skip-offsite.
 archive_system 2026-07-01
 offsite_sync >/dev/null 2>&1
-touch -d '200 days ago' "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" 2>/dev/null \
-    || touch -A -2000000 "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" 2>/dev/null
-sleep 1; archive_system 2026-07-02
-OFFSITE_KEEP_DAYS=90 offsite_sync >/dev/null 2>&1
 if [ ! -f "$REMOTE/homebrain_backup_system_2026-07-01.tar.gz.gpg" ]; then
-    ok "system snapshot older than OFFSITE_KEEP_DAYS pruned"
+    ok "system snapshot is not copied off-site"
 else
-    bad "system snapshot older than OFFSITE_KEEP_DAYS pruned (still present)"
-fi
-if [ -f "$REMOTE/homebrain_backup_system_2026-07-02.tar.gz.gpg" ]; then
-    ok "system snapshot inside the window kept"
-else
-    bad "system snapshot inside the window kept (was deleted)"
+    bad "system snapshot is not copied off-site (it landed on the remote)"
 fi
 if [ -f "$REMOTE/homebrain_backup_2026-07-03.tar.gz.gpg" ]; then
-    ok "full-backup retention unaffected by the system snapshot pass"
+    ok "full-backup retention unaffected by skipping system snapshots"
 else
-    bad "full-backup retention unaffected by the system snapshot pass (newest full archive disappeared)"
+    bad "full-backup retention unaffected by skipping system snapshots (newest full archive disappeared)"
+fi
+
+echo "== leftover remote system snapshots are removed once a full exists =="
+# Older versions mirrored snapshots. A full archive already contains
+# everything they do, so they can go — but only when a local full is
+# present. Plant one as if an older mirror had put it there.
+echo "sys-leftover" > "$REMOTE/homebrain_backup_system_old.tar.gz.gpg"
+offsite_sync >/dev/null 2>&1
+if [ ! -f "$REMOTE/homebrain_backup_system_old.tar.gz.gpg" ]; then
+    ok "leftover remote system snapshot removed when a local full exists"
+else
+    bad "leftover remote system snapshot removed when a local full exists (still present)"
 fi
 
 echo "== retention ignores files HomeBrain did not put there =="
 echo "someone elses data" > "$REMOTE/not-ours.txt"
 touch -d '200 days ago' "$REMOTE/not-ours.txt" 2>/dev/null \
     || touch -A -2000000 "$REMOTE/not-ours.txt" 2>/dev/null
-OFFSITE_KEEP_DAYS=90 offsite_sync >/dev/null 2>&1
+offsite_sync >/dev/null 2>&1
 if [ -f "$REMOTE/not-ours.txt" ]; then
     ok "unrelated remote file untouched by retention"
 else
@@ -339,7 +358,7 @@ else
     bad "legacy archive copied off-site (missing on remote)"
 fi
 sleep 1; echo "payload-2026-07-10" > "$TMP/local/homebrain_backup_2026-07-10.tar.gz.gpg"
-offsite_sync >/dev/null 2>&1
+OFFSITE_KEEP=1 offsite_sync >/dev/null 2>&1
 if [ ! -f "$REMOTE/nextcloud_backup_2026-06-01.tar.gz.gpg" ]; then
     ok "superseded legacy archive pruned (not left to grow forever)"
 else
@@ -350,9 +369,11 @@ echo "== a dead local drive never triggers a remote prune =="
 # The copy-not-sync rule exists so a local failure cannot propagate into a
 # remote deletion. Retention must not sneak that back in: with no local full
 # archive the newest remote one is the only copy of the user's data left, and
-# the older ones beside it are the only redundancy.
+# the older ones beside it are the only redundancy. Leftover system snapshots
+# stay too — they may be the only copy of vault/config left anywhere.
 cp "$TMP/local/homebrain_backup_2026-07-10.tar.gz.gpg" \
    "$REMOTE/homebrain_backup_2026-07-09.tar.gz.gpg"
+echo "sys-stranded" > "$REMOTE/homebrain_backup_system_stranded.tar.gz.gpg"
 before=$(find "$REMOTE" -name 'homebrain_backup_*.tar.gz.gpg' | wc -l | tr -d ' ')
 rm -f "$TMP"/local/*.tar.gz.gpg          # the drive dies
 offsite_sync >/dev/null 2>&1
@@ -361,6 +382,11 @@ if [ "$before" = "$after" ] && [ "$after" -gt 1 ]; then
     ok "no local full archive means no remote prune (kept $after)"
 else
     bad "no local full archive means no remote prune (went $before -> $after)"
+fi
+if [ -f "$REMOTE/homebrain_backup_system_stranded.tar.gz.gpg" ]; then
+    ok "no local full archive means leftover system snapshots stay"
+else
+    bad "no local full archive means leftover system snapshots stay (deleted the only copy)"
 fi
 
 echo "== the mirror publishes a run-file readers can poll without interfering =="
@@ -392,8 +418,8 @@ echo "== a long upload reports progress instead of going silent for hours =="
 # NOTICE, so a plain `rclone copy` of an 80 GiB archive prints nothing at all
 # between "Mirroring backups off-site..." and "Off-site mirror complete" —
 # hours in which a slow link and a wedged one look identical, and nothing says
-# WHICH archive is moving. Both copies must carry the flags, not just the
-# full-archive one: a stalled system-snapshot pass is exactly as invisible.
+# WHICH archive is moving. System snapshots are not copied; the full-archive
+# copy is the one that must not go silent.
 rm -f "$TMP"/local/*.tar.gz.gpg "$REMOTE"/*.tar.gz.gpg
 echo "payload-progress" > "$TMP/local/homebrain_backup_2026-07-20.tar.gz.gpg"
 archive_system 2026-07-20
@@ -405,10 +431,15 @@ unset -f rclone
 copies=$(grep -c '^copy ' "$TMP/copy-log" || true)
 staty=$(grep '^copy ' "$TMP/copy-log" \
     | grep -c -- '--stats [0-9]\+m --stats-one-line --stats-log-level NOTICE' || true)
-if [ "${copies:-0}" -ge 2 ] && [ "${copies:-0}" = "${staty:-0}" ]; then
-    ok "every rclone copy asks for periodic progress ($staty/$copies)"
+if [ "${copies:-0}" -eq 1 ] && [ "${staty:-0}" -eq 1 ]; then
+    ok "the full-archive copy asks for periodic progress"
 else
-    bad "every rclone copy asks for periodic progress (only ${staty:-0} of ${copies:-0} carry --stats)"
+    bad "the full-archive copy asks for periodic progress (copies=${copies:-0} stats=${staty:-0})"
+fi
+if grep '^copy ' "$TMP/copy-log" | grep -q 'homebrain_backup_system_'; then
+    bad "system snapshots are not among the copy includes (one was)"
+else
+    ok "system snapshots are not among the copy includes"
 fi
 
 echo "== an archive still being written is invisible to the mirror =="

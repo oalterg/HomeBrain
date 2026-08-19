@@ -2194,6 +2194,7 @@ async function loadOffsiteConfig() {
         document.getElementById('os-pass').value = '';
         document.getElementById('os-pass').placeholder = d.has_pass ? '(unchanged)' : '';
         document.getElementById('os-path').value = d.path || '';
+        document.getElementById('os-keep').value = d.keep || 3;
         updateOffsiteUI();
     } catch (e) { /* silent */ }
 }
@@ -2245,12 +2246,12 @@ async function loadOffsiteStatus() {
             const i = d.inventory;
             inv.style.display = i ? '' : 'none';
             if (i) {
-                // Only the newest full is kept off-site (it costs hours to send);
-                // snapshots keep their own 90-day window. Naming both stops the
-                // count from reading as "9 of my backups went missing".
+                // Full archives are what off-site keeps (the last N). System
+                // snapshots are local-only; leftover remote ones from older
+                // versions still get counted until the next mirror removes them.
                 const parts = [];
                 if (i.fulls) parts.push(`${i.fulls} full backup${i.fulls === 1 ? '' : 's'}`);
-                if (i.snapshots) parts.push(`${i.snapshots} system snapshot${i.snapshots === 1 ? '' : 's'}`);
+                if (i.snapshots) parts.push(`${i.snapshots} leftover system snapshot${i.snapshots === 1 ? '' : 's'}`);
                 inv.innerText = parts.length
                     ? `☁️ Stored off-site: ${parts.join(' · ')} · ${hbBytes(i.bytes)}`
                     : '☁️ Nothing stored off-site yet.';
@@ -2289,6 +2290,7 @@ async function saveOffsiteConfig(e) {
         user: document.getElementById('os-user').value,
         pass: document.getElementById('os-pass').value,
         path: document.getElementById('os-path').value,
+        keep: document.getElementById('os-keep').value,
     };
     status.style.color = '';
     status.innerText = 'Saving...';
@@ -2401,8 +2403,8 @@ async function loadBackups() {
                 const rlist = await rres.json();
                 if (Array.isArray(rlist)) {
                     const offsiteNames = new Set(rlist.map(b => b.name));
-                    list.forEach(b => { b.offsite = offsiteNames.has(b.name); });
-                    offsiteOnly = rlist.filter(b => !localNames.has(b.name))
+                    list.forEach(b => { b.offsite = offsiteNames.has(b.name) && !b.name.includes('_system_'); });
+                    offsiteOnly = rlist.filter(b => !localNames.has(b.name) && !b.name.includes('_system_'))
                         .map(b => ({ ...b, remote: true, offsite: true }));
                 }
             }
