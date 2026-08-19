@@ -952,6 +952,27 @@ setup_llama_server() {
     local MODEL_URL="${AI_MODEL_URL:-}"
     local MODELS_FILE="${SCRIPT_DIR}/../config/platform_models.json"
 
+    # Unsloth withdrew Qwen3.8-27B-IQ4_XS.gguf on 2026-08-19 (404) and replaced
+    # it with Dynamic V3 UD-IQ4_XS at the same bit-width. Rewrite .env onto the
+    # new catalog id so the next download does not chase a dead URL.
+    if [[ "${AI_MODEL_ID:-}" == "Qwen3.8-27B-IQ4_XS" ]] && [[ -f "$MODELS_FILE" ]]; then
+        local _new_id="Qwen3.8-27B-UD-IQ4_XS"
+        local _nf _nu _nm
+        _nf=$(jq -r --arg id "$_new_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
+        _nu=$(jq -r --arg id "$_new_id" '.models[] | select(.id == $id) | .url // empty' "$MODELS_FILE" 2>/dev/null)
+        _nm=$(jq -r --arg id "$_new_id" '.models[] | select(.id == $id) | .min_size_bytes // empty' "$MODELS_FILE" 2>/dev/null)
+        if [[ -n "$_nf" && -n "$_nu" ]]; then
+            log_info "Qwen3.8-27B-IQ4_XS was withdrawn; remapping to $_new_id (Unsloth Dynamic V3)."
+            update_env_var "AI_MODEL_ID" "$_new_id"
+            update_env_var "AI_MODEL_FILENAME" "$_nf"
+            update_env_var "AI_MODEL_URL" "$_nu"
+            update_env_var "AI_MODEL_MIN_SIZE" "${_nm:-14000000000}"
+            export AI_MODEL_ID="$_new_id" AI_MODEL_FILENAME="$_nf" AI_MODEL_URL="$_nu" AI_MODEL_MIN_SIZE="${_nm:-14000000000}"
+            MODEL_NAME="$_nf"
+            MODEL_URL="$_nu"
+        fi
+    fi
+
     # Self-heal: when the dashboard's "Start AI" path fires without first POSTing
     # /api/ai/model (e.g. binary present but service was 'disabled' after a system
     # upgrade), .env is missing AI_MODEL_FILENAME/URL. Rather than dying, look up
