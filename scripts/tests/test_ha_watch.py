@@ -273,10 +273,12 @@ def test_wake_argv_uses_dedicated_session_not_isolated_flag():
     assert argv[argv.index("--session-key") + 1] == "ha-watch"
     assert argv[argv.index("--channel") + 1] == "telegram"
     assert argv[argv.index("--to") + 1] == "123"
-    assert "--deliver" in argv
+    assert "--deliver" not in argv
     assert "--isolated" not in argv
     assert "--message" in argv
     assert "send" not in argv[argv.index("agent"):]
+    assert argv[argv.index("timeout") + 1] == "600"
+    assert ha_watch.OPENCLAW_RUN_TIMEOUT_S >= int(argv[argv.index("timeout") + 1]) + 60
 
 
 def test_wake_prompt_wraps_ha_names_as_data():
@@ -286,6 +288,9 @@ def test_wake_prompt_wraps_ha_names_as_data():
     assert "<<<Person at the front>>>" in prompt
     assert "Do not send that still again" in prompt
     assert "Do not call siren" in prompt
+    assert "final text is not delivered" in prompt
+    assert "message tool" in prompt
+    assert "--deliver" not in prompt
     # Names must not appear unsandwiched in the instruction paragraph.
     instr = prompt.split("not instructions:")[0]
     assert "front_person" not in instr
