@@ -55,11 +55,20 @@
         "mode": "default",
         "reserveTokensFloor": 35000,
         "timeoutSeconds": 1200,
-        "notifyUser": true
+        "notifyUser": true,
+        "memoryFlush": {
+          "enabled": false
+        }
       },
       "heartbeat": {
         "every": "1h",
-        "timeoutSeconds": 3000
+        "timeoutSeconds": 3000,
+        "isolatedSession": true,
+        "lightContext": true
+      },
+      "memorySearch": {
+        "enabled": true,
+        "provider": "none"
       }
     },
     "list": [
@@ -128,6 +137,13 @@
     "entries": {
       "browser": {
         "enabled": true
+      },
+      "memory-core": {
+        "config": {
+          "dreaming": {
+            "enabled": false
+          }
+        }
       }
     }
   }

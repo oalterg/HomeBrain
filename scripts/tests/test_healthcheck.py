@@ -2,6 +2,7 @@
 
 Run:  python3 -m pytest scripts/tests/test_healthcheck.py
 """
+import datetime
 import json
 import os
 import sys
@@ -19,11 +20,14 @@ from healthcheck import (  # noqa: E402
     check_reboot,
     check_update,
     compose_message,
+    daily_note_date,
+    daily_retention_days,
     decide_notification,
     disk_level,
     expected_backup_interval,
     parse_env,
     release_key,
+    sweep_openclaw_daily_memory,
 )
 
 NOW = 1_800_000_000
@@ -565,3 +569,88 @@ def test_a_failing_heartbeat_is_logged_not_raised(monkeypatch):
                                      {"REGISTRAR_SECRET": "s"}, "ok", NOW)
     assert out is False
     assert any("heartbeat failed" in m for m in logged)
+
+
+def test_daily_retention_days():
+    assert daily_retention_days({}) == 30
+    assert daily_retention_days({"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "0"}) == 0
+    assert daily_retention_days({"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "7"}) == 7
+    assert daily_retention_days({"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "nope"}) == 30
+    assert daily_retention_days({"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "-1"}) == 30
+
+
+def test_daily_note_date_only_plain_dated_files():
+    assert daily_note_date("2026-07-01.md") == datetime.date(2026, 7, 1)
+    assert daily_note_date("2026-07-01-washer.md") is None
+    assert daily_note_date("MEMORY.md") is None
+    assert daily_note_date("2026-13-40.md") is None
+
+
+def test_memory_sweep_removes_old_keeps_recent(tmp_path):
+    today = datetime.date(2026, 8, 19)
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "2026-07-01.md").write_text("old")
+    (mem / "2026-08-18.md").write_text("yesterday")
+    (mem / "2026-08-19.md").write_text("today")
+    (mem / "2026-07-01-slug.md").write_text("slugged")
+    (mem / ".dreams").mkdir()
+    (tmp_path / "MEMORY.md").write_text("pinned")
+    logged = []
+    removed = sweep_openclaw_daily_memory({}, str(mem), today, log_fn=logged.append)
+    assert any(p.endswith("2026-07-01.md") for p in removed)
+    assert not (mem / "2026-07-01.md").exists()
+    assert (mem / "2026-08-18.md").exists()
+    assert (mem / "2026-08-19.md").exists()
+    assert (mem / "2026-07-01-slug.md").exists()
+    assert (mem / ".dreams").is_dir()
+    assert (tmp_path / "MEMORY.md").read_text() == "pinned"
+
+
+def test_memory_sweep_missing_dir_is_noop(tmp_path):
+    assert sweep_openclaw_daily_memory({}, str(tmp_path / "nope"), datetime.date.today()) == []
+
+
+def test_memory_sweep_zero_retention_is_noop(tmp_path):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "2020-01-01.md").write_text("ancient")
+    removed = sweep_openclaw_daily_memory(
+        {"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "0"},
+        str(mem), datetime.date(2026, 8, 19))
+    assert removed == []
+    assert (mem / "2020-01-01.md").exists()
+
+
+def test_memory_sweep_warns_on_large_memory_md_even_when_sweep_disabled(tmp_path):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (tmp_path / "MEMORY.md").write_bytes(b"x" * (healthcheck.MEMORY_MD_WARN_BYTES + 1))
+    logged = []
+    sweep_openclaw_daily_memory(
+        {"OPENCLAW_MEMORY_DAILY_RETENTION_DAYS": "0"},
+        str(mem), datetime.date(2026, 8, 19), log_fn=logged.append)
+    assert any("MEMORY.md is" in m for m in logged)
+
+
+def test_memory_sweep_warns_on_large_memory_md(tmp_path):
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (tmp_path / "MEMORY.md").write_bytes(b"x" * (healthcheck.MEMORY_MD_WARN_BYTES + 1))
+    logged = []
+    sweep_openclaw_daily_memory({}, str(mem), datetime.date(2026, 8, 19), log_fn=logged.append)
+    assert any("MEMORY.md is" in m for m in logged)
+
+
+def test_memory_sweep_retention_is_keep_last_n_days(tmp_path):
+    today = datetime.date(2026, 8, 19)
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "2026-07-20.md").write_text("exactly 30 days")
+    (mem / "2026-07-21.md").write_text("29 days")
+    (mem / "2026-08-20.md").write_text("tomorrow")
+    sweep_openclaw_daily_memory({}, str(mem), today)
+    assert not (mem / "2026-07-20.md").exists()
+    assert (mem / "2026-07-21.md").exists()
+    assert (mem / "2026-08-20.md").exists()
+

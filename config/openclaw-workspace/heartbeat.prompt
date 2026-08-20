@@ -1,0 +1,7 @@
+Follow HEARTBEAT.md. It is the only state that survives from the previous heartbeat; this session has no chat history.
+
+Do Current work. When that work finishes, blocks, or changes, rewrite HEARTBEAT.md in full — keep the checklist, update Current work. Headings-only or empty skips the next heartbeat.
+
+Write durable facts to memory/YYYY-MM-DD.md, not MEMORY.md. Do not dump transcripts. Recurring work belongs in Current work or an HA watcher, not inferred from old chats.
+
+If nothing needs the owner, reply HEARTBEAT_OK and do not use the message tool. If Current work says to ping, or you are blocked on the owner, use the message tool once (channel=telegram). Do not send a status summary.

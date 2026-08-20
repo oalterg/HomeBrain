@@ -83,6 +83,8 @@ jobs:
         run: bash scripts/tests/test_load_env.sh
       - name: openclaw compaction budget (jq program + reserve ladder)
         run: bash scripts/tests/test_openclaw_compaction.sh
+      - name: openclaw workspace memory seed
+        run: bash scripts/tests/test_openclaw_workspace_seed.sh
       - name: retired WhatsApp plugins are actually uninstalled
         run: bash scripts/tests/test_whatsapp_removal.sh
 
