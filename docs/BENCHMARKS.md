@@ -789,8 +789,8 @@ measured — the Q3-vs-Q4 quality claim is the model card's, not ours. Whisper w
 Catalog file as of 2026-08-20 is **UD-IQ4_XS** (Unsloth Dynamic V3,
 14,252,845,984 bytes / 13,592 MiB). Unsloth withdrew the IQ4_XS GGUF the
 measurements below were taken on (that URL now 404s). Re-measured 2026-08-20:
-the smaller file lifts the shipped ctx **81920 → 131072** at full speed.
-See the 2026-08-20 section. The tables below are the IQ4_XS numbers.
+q4_0 reaches **131072**; shipped is **q8_0 @ 81920**. See the 2026-08-20
+sections. The tables below are the IQ4_XS numbers.
 
 `unsloth/Qwen3.8-27B-GGUF` at IQ4_XS — 15,705,861,088 bytes (14,978 MiB) against
 16,304 MiB usable, on the pinned **b10361**. Arch is `qwen35`, the same
@@ -1148,8 +1148,28 @@ Eviction at 131072: 116,552-token fill @ 213.3 t/s, VRAM **byte-stable
 15765**, TG 18.83 → 18.63 (−1.1%) **PASS**. Shallow TG at 81920 is
 18.84 vs the IQ4_XS 17.14 — extra headroom, not a different kernel.
 
-**Shipped: ctx 131072**, same flags, `min_healthy_vram_mb` 15000.
-MTP at 131072 was not re-run: it costs ~684 MiB and would consume the
-541 MiB headroom. Worst-case OpenClaw turn (full-depth prefill + 16384
-generation) is 131072/213.3 + 16384/18.8 ≈ 1485 s, 82% of the 1800 s
-provider ceiling — same tightness as Glimmer.
+**q4_0 pick: ctx 131072**, `min_healthy_vram_mb` 15000. MTP at 131072 was
+not re-run: it costs ~684 MiB and would consume the 541 MiB headroom.
+Worst-case OpenClaw turn at this ctx is 131072/213.3 + 16384/18.8 ≈ 1485 s.
+Superseded the same evening by q8_0 @ 81920 (below).
+
+## 2026-08-20 — Qwen3.8-27B UD-IQ4_XS q8_0 KV @ 81920
+
+Same file, same flags otherwise, KV q8_0. Fit:
+
+| ctx | idle VRAM | headroom | TG | PP@2k | verdict |
+|---:|---:|---:|---:|---:|---|
+| 57344 | 15219 | 1085 | 18.82 | 456.5 | fits |
+| 73728 | 15795 | 509 | 18.82 | 462.7 | fits |
+| **81920** | **16083** | **221** | **18.82** | **461.7** | **PASS** |
+| 98304 | 16053 | 251 | 12.09 | 63.4 | spill |
+
+Idle matches the q4 ladder + 16 KiB/token to the MiB. 221 MiB is under
+the Glimmer ~250 MiB knee; eviction still held: 72,849-token fill @
+266.3 t/s, VRAM **byte-stable 16085**, TG 18.81 → 18.76 (−0.3%).
+
+**Shipped: ctx 81920, q8_0 KV**, `min_healthy_vram_mb` 15500. Same 18.8 t/s
+as q4 @ 131072 — KV quality, not speed. q4 @ 131072 remains the
+max-context alternative (half the KV bits, 60% more window). Worst-case
+OpenClaw turn is 81920/266.3 + 16384/18.8 ≈ 1179 s (66% of the 1800 s
+ceiling).
