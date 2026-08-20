@@ -111,6 +111,7 @@
                     </div>` : ''}
 
                     <button type="button" onclick="downloadHandoverSheet()">Download as .txt</button>
+                    <p id="sheet-err" class="hint" style="color:var(--danger);"></p>
 
                     <p class="small muted">This password grants full administrative access to your Dashboard,
                         Nextcloud, and Home Assistant.</p>
@@ -191,7 +192,17 @@
         let handoverCreds = null;
 
         function downloadHandoverSheet() {
-            if (handoverCreds) downloadCredsSheet(handoverCreds);
+            if (!handoverCreds) return;
+            // The builder is a separate request now. If it did not arrive, this
+            // click would do nothing at all, and the owner's next click is "I
+            // have saved my password" -> cleanup_credentials -> the only copy of
+            // this password and phrase is deleted. Say so instead.
+            if (typeof downloadCredsSheet !== 'function') {
+                document.getElementById('sheet-err').textContent =
+                    'Download unavailable — copy the password and phrase above before continuing.';
+                return;
+            }
+            downloadCredsSheet(handoverCreds);
         }
 
         function toggleLoginBtn() {

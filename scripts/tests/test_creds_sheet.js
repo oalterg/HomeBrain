@@ -61,11 +61,20 @@ check('password-only drops the how-to-recover paragraph', pwOnly.indexOf('Forgot
 check('both carries the password', both.indexOf('Master password:  ' + PW) !== -1);
 check('both carries the phrase', both.indexOf('Recovery phrase:  ' + PHRASE) !== -1);
 check('phraseUnchanged states the phrase still works',
-      changed.indexOf('Recovery phrase:  unchanged --') !== -1);
+      changed.indexOf('Recovery phrase:  unchanged -- this change did not affect it.') !== -1);
+// An owner who regenerated their phrase has a live phrase on a LATER sheet, so
+// pointing them at "the sheet from setup" would aim them at a retired secret.
+check('phraseUnchanged names no particular sheet', changed.indexOf('setup') === -1);
 check('phraseUnchanged never prints a phrase', changed.indexOf(PHRASE) === -1);
 check('phraseUnchanged drops the how-to-recover paragraph', changed.indexOf('Forgot your') === -1);
 check('timestamp is hand-formatted, not locale-formatted',
       both.indexOf('Generated: 2026-08-20 09:05') !== -1);
+
+// A sheet whose two adjacent lines disagree about the phrase is the one thing it
+// must never be, so the options are mutually exclusive rather than additive.
+var conflicted = sheet({ password: PW, phrase: PHRASE, phraseUnchanged: true });
+check('a real phrase wins over the unchanged note',
+      conflicted.indexOf(PHRASE) !== -1 && conflicted.indexOf('unchanged --') === -1);
 
 // --- 5-6: the file is printable anywhere --------------------------------
 var all = [both, phraseOnly, pwOnly, changed];
@@ -74,8 +83,12 @@ check('every newline is CRLF', all.every(function (t) { return !/[^\r]\n/.test(t
 
 // --- 7: filename --------------------------------------------------------
 var fname = credsSheetFilename(DATE);
-check('filename has minute resolution', fname === 'homebrain-recovery-2026-08-20T09-05.txt');
-check('filename shape', /^homebrain-recovery-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}\.txt$/.test(fname));
+check('filename has second resolution', fname === 'homebrain-recovery-2026-08-20T09-05-00.txt');
+check('filename shape', /^homebrain-recovery-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.txt$/.test(fname));
+// The repeat that actually happens is a second click after the first save went
+// unnoticed -- both land in the same minute.
+check('two clicks in one minute get different names',
+      credsSheetFilename(new Date(2026, 7, 20, 9, 5, 1)) !== fname);
 check('filename leaks no secret', fname.indexOf(PW) === -1 && fname.indexOf('homebrain.local') === -1);
 
 // --- 8: regression against the sheet that actually shipped ---------------
@@ -130,18 +143,20 @@ function comparable(text) {
 // fixes from RECOVERY_SHEET.md F5.1/F5.2, which are otherwise unverifiable:
 // the anchor must be in the document when clicked, and the object URL must NOT
 // be revoked in the same task as the click.
-var el = null, appended = [], clicked = 0, removed = 0, revoked = [], deferred = [], blob = null;
+// One ordered log, not a set of counters: counters would still pass if append
+// and click were swapped, which is precisely the defect being guarded against.
+var log = [], el = null, revoked = [], deferred = [], blob = null;
 var Blob = function (parts, opts) { this.parts = parts; this.type = opts && opts.type; };
 var URL = {
-    createObjectURL: function (b) { blob = b; return 'blob:test'; },
-    revokeObjectURL: function (u) { revoked.push(u); },
+    createObjectURL: function (b) { blob = b; log.push('create'); return 'blob:test'; },
+    revokeObjectURL: function (u) { revoked.push(u); log.push('revoke'); },
 };
 var document = {
     createElement: function () {
-        el = { click: function () { clicked++; }, remove: function () { removed++; } };
+        el = { click: function () { log.push('click'); }, remove: function () { log.push('remove'); } };
         return el;
     },
-    body: { appendChild: function (e) { appended.push(e); } },
+    body: { appendChild: function (e) { log.push(e === el ? 'append' : 'append-wrong'); } },
 };
 var setTimeout = function (fn) { deferred.push(fn); };
 
@@ -150,11 +165,12 @@ saveCredsSheet(both, fname);
 check('blob carries the sheet text', blob.parts[0] === both);
 check('blob declares its charset', blob.type === 'text/plain;charset=utf-8');
 check('anchor gets the filename', el.download === fname && el.href === 'blob:test');
-check('anchor is in the document before the click', appended[0] === el && clicked === 1);
-check('anchor is cleaned up', removed === 1);
+check('append, then click, then remove — in that order',
+      log.join(',') === 'create,append,click,remove');
 check('object URL is not revoked in the click task', revoked.length === 0 && deferred.length === 1);
 deferred[0]();
-check('object URL is revoked once deferred', revoked[0] === 'blob:test');
+check('object URL is revoked once deferred',
+      revoked[0] === 'blob:test' && log.join(',') === 'create,append,click,remove,revoke');
 
 console.log(failures ? '\n' + failures + ' FAILED' : '\nall passed');
 exit(failures ? 1 : 0);

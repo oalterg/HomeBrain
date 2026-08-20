@@ -21,14 +21,17 @@ function _hbSheetParts(date) {
         day: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
         hh: pad(date.getHours()),
         mm: pad(date.getMinutes()),
+        ss: pad(date.getSeconds()),
     };
 }
 
-// Minute resolution, not day: two sheets generated on one day would otherwise
-// collide into "…(1).txt" with nothing in the name to say which one is current.
+// Second resolution, not day: two sheets generated on one day would otherwise
+// collide into "…(1).txt" with nothing in the name to say which is current. The
+// repeat that actually happens is a second click on the same button after the
+// first save went unnoticed, so minutes are not fine enough.
 function credsSheetFilename(date) {
     const p = _hbSheetParts(date);
-    return `homebrain-recovery-${p.day}T${p.hh}-${p.mm}.txt`;
+    return `homebrain-recovery-${p.day}T${p.hh}-${p.mm}-${p.ss}.txt`;
 }
 
 /* Returns the sheet body. ASCII only and CRLF terminated on purpose: this file
@@ -46,12 +49,15 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
         '',
     ];
     if (password) lines.push(`Master password:  ${password}`);
+    // Mutually exclusive: a sheet that stated both would contradict itself about
+    // what the owner's phrase is, which is the one thing it must never do.
     if (phrase) lines.push(`Recovery phrase:  ${phrase}`);
-    // Set when the sheet was produced by a deliberate password change: the
-    // phrase survives rotation untouched, so the setup sheet is still the
-    // owner's way back in and must not be thrown away with this one.
-    if (phraseUnchanged) lines.push(
-        'Recovery phrase:  unchanged -- the sheet from setup is still valid.');
+    // Set when the sheet was produced by a deliberate password change. Rotation
+    // leaves the phrase untouched, so whichever sheet holds it is still good --
+    // deliberately not "the sheet from setup", because an owner who has since
+    // regenerated would be sent back to a phrase the box already retired.
+    else if (phraseUnchanged) lines.push(
+        'Recovery phrase:  unchanged -- this change did not affect it.');
     lines.push(
         '',
         'Keep this offline -- print it, or put it on a USB stick. Anyone holding',

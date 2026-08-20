@@ -2720,10 +2720,23 @@ function downloadRevealedPhrase() {
     if (phrase) downloadCredsSheet({ phrase });
 }
 
-// Rotation leaves the RECOVERY_* keys alone, so the phrase on the setup sheet
-// still works — say so rather than reprinting a phrase we no longer hold.
-function downloadChangedPassword() {
-    if (mpChanged) downloadCredsSheet({ password: mpChanged, phraseUnchanged: true });
+// Rotation leaves the RECOVERY_* keys alone, so the phrase the owner already has
+// still works — say so rather than reprinting a phrase we no longer hold. Ask
+// first, though: a box provisioned while the wordlist was unavailable has no
+// phrase at all, and promising one sends that owner hunting for something that
+// was never generated.
+async function downloadChangedPassword() {
+    if (!mpChanged) return;
+    let configured = false;
+    try {
+        const r = await fetch('/api/recovery/status', { credentials: 'include' });
+        configured = !!(await r.json()).configured;
+    } catch (e) { /* no promise is safer than a false one */ }
+    downloadCredsSheet({ password: mpChanged, phraseUnchanged: configured });
+    // The sheet is saved; stop holding the plaintext. The code this replaced
+    // cleared the inputs immediately, and a dashboard tab stays open for hours.
+    mpChanged = null;
+    document.getElementById('mp-sheet').style.display = 'none';
 }
 
 /* =====================================================================
@@ -2749,11 +2762,39 @@ async function suggestMasterPassword() {
     }
 }
 
-// Held so the sheet can be produced after the form is cleared. The password is
-// already in this page's memory — the user just typed it — so keeping it until
-// a reload costs nothing extra, and losing it would leave the owner with a
-// setup sheet that names a password the box no longer accepts.
+// Held between a confirmed rotation and the sheet being saved, then dropped.
 let mpChanged = null;
+
+// The rotation runs on a background thread, so `started` means launched, not
+// succeeded — and it can still abort before any .env write (a MariaDB failure
+// does exactly that). Revealing the sheet on the acknowledgement would hand the
+// owner a freshly dated sheet naming a password the box never accepted, which
+// is worse than no sheet at all. Fail closed: reveal only on an observed success.
+async function rotationSucceeded(msg) {
+    const deadline = Date.now() + 6 * 60 * 1000;
+    let sawRunning = false;
+    while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let d;
+        try {
+            const r = await fetch('/api/task_status', { credentials: 'include' });
+            if (!r.ok) continue;
+            d = await r.json();
+        } catch (e) { continue; }
+        if (d.status === 'running') { sawRunning = true; continue; }
+        if (d.status === 'success') return true;
+        if (d.status === 'error') { msg.textContent = d.message || 'Rotation failed — check the logs.'; return false; }
+        // The status file returns to idle ~10s after a terminal state, so idle
+        // after we have seen running means we missed the window. Say nothing
+        // rather than guess which way it went.
+        if (sawRunning) {
+            msg.textContent = 'Rotation finished — check the log to confirm, then change it again to get a sheet.';
+            return false;
+        }
+    }
+    msg.textContent = 'Rotation is taking longer than expected — check the log.';
+    return false;
+}
 
 async function changeMasterPassword() {
     const btn = document.getElementById('mp-submit');
@@ -2785,12 +2826,15 @@ async function changeMasterPassword() {
         const d = await r.json();
         if (d.status === 'started') {
             msg.textContent = d.message;
-            mpChanged = next;
-            sheet.style.display = 'block';
             for (const id of ['mp-current', 'mp-new', 'mp-confirm']) {
                 const el = document.getElementById(id);
                 el.value = '';
                 el.type = 'password';
+            }
+            if (await rotationSucceeded(msg)) {
+                mpChanged = next;
+                sheet.style.display = 'block';
+                msg.textContent = 'Rotation complete — save your updated sheet.';
             }
         } else {
             msg.textContent = d.error || 'Could not change the password';
@@ -2798,6 +2842,8 @@ async function changeMasterPassword() {
     } catch (e) {
         msg.textContent = 'Network error — try again';
     } finally {
+        // Stays disabled for the whole rotation on purpose: a second attempt
+        // would only earn a 409 from the busy-task guard.
         btn.disabled = false;
     }
 }

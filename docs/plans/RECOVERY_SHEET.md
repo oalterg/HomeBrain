@@ -191,9 +191,11 @@ a DOM shim. This is the single most important structural decision in the plan.
 
 ### 4.3 Filename
 
-`homebrain-recovery-YYYY-MM-DDTHH-MM.txt`. Minute resolution kills the F5.5
+`homebrain-recovery-YYYY-MM-DDTHH-MM-SS.txt`. Second resolution kills the F5.5
 collision without putting a secret or a hostname in a filename that will show up
-in screen shares.
+in screen shares. Seconds rather than minutes because the repeat that actually
+happens is a second click on the same button after the first save went
+unnoticed, and those land inside one minute.
 
 ### 4.4 Wiring
 
@@ -366,6 +368,57 @@ The recovery phrase on `.58` was deliberately **not** regenerated. It is a live
 production secret, the endpoint is untouched by this change, and burning it to
 re-prove server behaviour that `test_recovery.py` already covers would be a
 destructive act with no evidence value.
+
+### Review round (PR #203)
+
+A high-effort review of the PR returned 12 findings; one was already fixed and
+the other 11 held up. Four were behavioural and are worth recording because they
+are all the same shape — *a sheet that says something the box cannot back up*:
+
+1. **"the sheet from setup is still valid" is a false referent.** An owner who
+   has regenerated their phrase has the live one on a *later* sheet; the note
+   aimed them at a retired secret. Now: "unchanged -- this change did not affect
+   it", naming no sheet. The same false claim was in the card hint, so it was in
+   two places — the exact duplication this plan exists to remove.
+2. **The updated-sheet button appeared on `status: "started"`.** Rotation runs on
+   a background thread and can abort before any `.env` write, so the owner could
+   file a freshly dated sheet naming a password the box never accepted. Now
+   gated on an observed `success`, failing closed on `error`, on a missed status
+   window, and on timeout.
+3. **`phraseUnchanged` was hardcoded true.** A box provisioned while the wordlist
+   was unavailable has no phrase at all — §4.2 already worries about exactly that
+   owner — and the sheet promised them one. Now read from
+   `/api/recovery/status.configured` at download time.
+4. **The handover button became a silent no-op if the module 404s.** A regression
+   this plan introduced: the builder used to be inline and could not fail
+   independently of the page. The owner's next click is
+   `cleanup_credentials`, which deletes the only copy of both secrets. §8 named
+   this risk and nothing mitigated it. Now guarded with a visible error.
+
+The rest: the plaintext password is dropped after the sheet is saved rather than
+held for the tab's life; `phrase` and `phraseUnchanged` are mutually exclusive so
+a sheet can never contradict itself; filenames carry **seconds**, because the
+repeat that happens is two clicks inside one minute.
+
+Three were about the tests being weaker than they read:
+
+- The DOM-order guard compared two independent counters and would have passed
+  with `append` and `click` swapped — the very defect it documents. It is one
+  ordered event log now, and mutation-checked: reintroducing the swap fails it.
+- The wiring test's "no page grew its own copy back" assertion grepped rendered
+  HTML, which never contains `dashboard.js`'s body. It now reads the served
+  script.
+- `_client()` mutated `is_setup_complete` and friends process-wide without
+  restoring them, so every later pytest file ran against a monkeypatched app.
+  Save/restore, matching the neighbouring harnesses.
+
+**Re-verified in Safari after the fixes** (the earlier L4 run no longer applied):
+handover sheet unchanged in content and now second-stamped; a phrase-configured
+box prints the unchanged note; a box *without* a phrase correctly omits it; a
+**failed** rotation leaves `#mp-sheet` hidden, shows the error and writes no
+file; and with `/static/creds_sheet.js` forced to 404 the handover button shows
+"Download unavailable" instead of doing nothing. 27/27 JS, 36/36 pytest across
+this suite and its neighbours in one process.
 
 **Note for whoever picks this up:** the box now runs unmerged code. The next
 update from `main` will `rsync --delete` over it, which is expected and fine.
