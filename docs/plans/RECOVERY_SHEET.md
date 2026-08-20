@@ -312,7 +312,56 @@ regression diff unreadable.
 
 ## 10. Implementation status
 
-_(filled in as the work lands)_
+Landed on `refactor/recovery-sheet` (`7b6f112`). `src/static/creds_sheet.js`
+(97 lines) replaces both inline copies; `dashboard.js` −45/+18,
+`installing.html` −44/+6. All of §2's findings are addressed except F7 and F8,
+which §9 defers on purpose.
+
+**L1 + L2 — 25/25** (`osascript -l JavaScript scripts/tests/test_creds_sheet.js`).
+Mutation-checked, not merely green: renaming one word in the body ("Anyone" ->
+"Anybody") fails 3 assertions, and switching the join back to `\n` fails a 4th.
+
+**L3 — 3/3** (`scripts/tests/test_creds_sheet_wiring.py`), plus the neighbouring
+suites unaffected: `test_recovery` 9/9, `test_master_password` 11/11,
+`test_setup_credentials` 8/8.
+
+**L4 — all three surfaces, Safari 18.6, real files on disk.** The real app was
+run from this checkout with `INSTALL_CREDS_PATH` pointed at throwaway
+credentials, so the genuine handover page rendered and its genuine button fired.
+Downloads landed as `homebrain-recovery-2026-08-20T21-{16,17,18}.txt`:
+
+| Surface | Verified |
+|---|---|
+| Handover | password + phrase, 666 bytes, pure ASCII, every newline CRLF, no BOM |
+| Phrase reveal | phrase only (minted by the real `/api/recovery/regenerate`), no password line, recovery how-to present |
+| Master password | new password + `Recovery phrase:  unchanged`, no phrase, no how-to |
+
+Minute-resolution filenames confirmed distinct across the three runs — the F5.5
+collision is gone.
+
+**L5 — partial, and the gap is named.** The RPi4 test box
+(`homebraintest.local`, 192.168.178.51) was powered off for the whole session:
+ARP incomplete, ssh and http both refused. **A hardware provisioning run of the
+handover page has therefore not happened.** That is the one item from §7 still
+outstanding.
+
+`192.168.178.58` was verified instead, for the two dashboard surfaces. It is on
+`channel: beta, ref: main`, so the four runtime files were hand-deployed
+(rollback copy at `/opt/homebrain-rollback-credsheet/`) rather than merged;
+all three pre-existing files matched `HEAD~1` byte-for-byte first, so the box was
+a clean baseline. After a manager restart: `/static/creds_sheet.js` serves 200 as
+`text/javascript; charset=utf-8`, md5-identical to the checkout; the dashboard
+carries the tag ahead of `dashboard.js`; no page still holds an inline builder;
+both the phrase and master-password download buttons are present.
+`version.json` is untouched.
+
+The recovery phrase on `.58` was deliberately **not** regenerated. It is a live
+production secret, the endpoint is untouched by this change, and burning it to
+re-prove server behaviour that `test_recovery.py` already covers would be a
+destructive act with no evidence value.
+
+**Note for whoever picks this up:** the box now runs unmerged code. The next
+update from `main` will `rsync --delete` over it, which is expected and fine.
 
 ---
 
