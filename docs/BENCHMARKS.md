@@ -786,11 +786,11 @@ measured — the Q3-vs-Q4 quality claim is the model card's, not ours. Whisper w
 
 ## 2026-08-14 — Qwen3.8-27B IQ4_XS (supersedes the Qwen3.6-27B entry)
 
-Catalog file as of 2026-08-19 is **UD-IQ4_XS** (Unsloth Dynamic V3,
+Catalog file as of 2026-08-20 is **UD-IQ4_XS** (Unsloth Dynamic V3,
 14,252,845,984 bytes / 13,592 MiB). Unsloth withdrew the IQ4_XS GGUF the
-measurements below were taken on (that URL now 404s). Flags and ctx 81920
-are unchanged; the new file is ~1.4 GB smaller, so VRAM headroom should
-improve by about that much. TG/PP were not re-measured.
+measurements below were taken on (that URL now 404s). Re-measured 2026-08-20:
+the smaller file lifts the shipped ctx **81920 → 131072** at full speed.
+See the 2026-08-20 section. The tables below are the IQ4_XS numbers.
 
 `unsloth/Qwen3.8-27B-GGUF` at IQ4_XS — 15,705,861,088 bytes (14,978 MiB) against
 16,304 MiB usable, on the pinned **b10361**. Arch is `qwen35`, the same
@@ -1125,3 +1125,31 @@ specifically and was not tested; nothing here isolates escalation to the weights
 alone, and no claim is made that either quant is the better-preserved one. No repeat runs were attempted — the box was switched back to
 Glimmer as the catalog default before further testing. Prompt text, queries and
 fetched URLs are deliberately omitted.
+
+## 2026-08-20 — Qwen3.8-27B UD-IQ4_XS remeasure: ctx 81920 → 131072
+
+The Dynamic V3 file is 1,386 MiB smaller than the withdrawn IQ4_XS
+(13,592 vs 14,978 MiB). That saving is real VRAM, not just disk: at the
+old shipped ctx 81920, idle VRAM dropped 16109 → **14803** (headroom
+**1501 MiB**, up from 195). Fit ladder on the same flags (q4_0 KV,
+`-b 2048 -ub 1024`, `-t 6`, whisper `--no-gpu`, b10361):
+
+| ctx | idle VRAM | headroom | TG | PP@2k | IQ4_XS at this ctx |
+|---:|---:|---:|---:|---:|---|
+| 81920 | 14803 | **1501** | 18.84 | 420.1 | 16109 / 195 hr / 17.15 t/s |
+| 98304 | 15123 | 1181 | 18.84 | 462.0 | spilled, 12.60 t/s |
+| 114688 | 15443 | 861 | 18.83 | 462.2 | spilled, 11.41 t/s / PP 70.8 |
+| **131072** | **15763** | **541** | **18.83** | **461.7** | crashed on first request |
+
+VRAM steps by a flat **320 MiB per 16K tokens** (18 KiB/token q4_0 KV,
+to the byte). No pin-at-ceiling, no GTT spill.
+
+Eviction at 131072: 116,552-token fill @ 213.3 t/s, VRAM **byte-stable
+15765**, TG 18.83 → 18.63 (−1.1%) **PASS**. Shallow TG at 81920 is
+18.84 vs the IQ4_XS 17.14 — extra headroom, not a different kernel.
+
+**Shipped: ctx 131072**, same flags, `min_healthy_vram_mb` 15000.
+MTP at 131072 was not re-run: it costs ~684 MiB and would consume the
+541 MiB headroom. Worst-case OpenClaw turn (full-depth prefill + 16384
+generation) is 131072/213.3 + 16384/18.8 ≈ 1485 s, 82% of the 1800 s
+provider ceiling — same tightness as Glimmer.
