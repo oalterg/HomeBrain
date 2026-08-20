@@ -17,6 +17,7 @@
         <pre id="logs" class="install-log mt">Connecting to log stream…</pre>
     </div>
 
+    <script src="{{ url_for('static', filename='creds_sheet.js') }}?v={{ asset_v }}"></script>
     <script>
         const BRAND_SUFFIX = {{ platform.product_suffix | tojson }};
         const handoverReady = {{ handover_ready|default('false')|lower }};
@@ -109,7 +110,8 @@
                             administrative access; they do not unlock individual vault items.</p>
                     </div>` : ''}
 
-                    <button type="button" onclick="downloadCredsSheet()">Download as .txt</button>
+                    <button type="button" onclick="downloadHandoverSheet()">Download as .txt</button>
+                    <p id="sheet-err" class="hint" style="color:var(--danger);"></p>
 
                     <p class="small muted">This password grants full administrative access to your Dashboard,
                         Nextcloud, and Home Assistant.</p>
@@ -185,51 +187,22 @@
                 });
         }
 
-        // Saves what is on screen right now. Client-side by necessity: these
-        // secrets exist only in this response — the device keeps a one-way hash
-        // of the phrase and deletes install_creds.json on handover, so there is
-        // nothing for a server endpoint to serve. Twin of downloadCredsSheet()
-        // in static/dashboard.js; this page has no access to that file.
+        // Populated by showSuccess(). The sheet builder itself is shared with
+        // the dashboard and lives in static/creds_sheet.js.
         let handoverCreds = null;
 
-        function downloadCredsSheet() {
+        function downloadHandoverSheet() {
             if (!handoverCreds) return;
-            const lines = [
-                'HomeBrain — recovery sheet',
-                `Generated: ${new Date().toLocaleString()}`,
-                `Device:    ${location.hostname}`,
-                '',
-            ];
-            if (handoverCreds.password) lines.push(`Master password:  ${handoverCreds.password}`);
-            if (handoverCreds.phrase) lines.push(`Recovery phrase:  ${handoverCreds.phrase}`);
-            lines.push(
-                '',
-                'Keep this offline — print it, or put it on a USB stick. Anyone holding',
-                'it can reset administrative access to this device.',
-                '',
-            );
-            // Only promise the recovery flow when a phrase is actually on the
-            // sheet: setup falls back to a password-only handover when the
-            // wordlist is unavailable, and telling that user to "enter the
-            // phrase" sends them looking for something they were never given.
-            if (handoverCreds.phrase) lines.push(
-                'To use the recovery phrase: open the Dashboard, click "Forgot your',
-                'password?", enter the phrase and choose a new master password.',
-                '',
-            );
-            lines.push(
-                'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
-                'It does NOT unlock individual Vault items — those are encrypted with each',
-                "user's own password and cannot be recovered from here.",
-                '',
-            );
-            const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
-            const a = Object.assign(document.createElement('a'), {
-                href: url,
-                download: `homebrain-recovery-${new Date().toISOString().slice(0, 10)}.txt`,
-            });
-            a.click();
-            URL.revokeObjectURL(url);
+            // The builder is a separate request now. If it did not arrive, this
+            // click would do nothing at all, and the owner's next click is "I
+            // have saved my password" -> cleanup_credentials -> the only copy of
+            // this password and phrase is deleted. Say so instead.
+            if (typeof downloadCredsSheet !== 'function') {
+                document.getElementById('sheet-err').textContent =
+                    'Download unavailable — copy the password and phrase above before continuing.';
+                return;
+            }
+            downloadCredsSheet(handoverCreds);
         }
 
         function toggleLoginBtn() {

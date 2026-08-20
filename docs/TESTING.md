@@ -404,13 +404,48 @@ their password. Run on real hardware (it re-credentials live services).
       only the master password opens the box.
 
 **Credential download (.txt)**
+
+Sheet text and the DOM contract are covered off-hardware — run these first, they
+need no box (see `docs/plans/RECOVERY_SHEET.md` §6):
+
+```
+osascript -l JavaScript scripts/tests/test_creds_sheet.js 2>&1  # "all passed", 27 checks
+python3 scripts/tests/test_creds_sheet_wiring.py                # "all passed" (needs Flask)
+```
+
+The `2>&1` is not decoration: JXA writes `console.log` to **stderr**, so piping
+stdout alone shows an empty stream whether the suite passed, failed, or never
+ran. (Under `node` in CI it goes to stdout as usual.)
+
+`osascript` is not a stylistic choice — JavaScriptCore is the only JS runtime on
+the dev Mac, and it is the same engine Safari runs. Both suites also run in CI
+(the first under `node`), so a red build is the first signal, not this list.
+
+On hardware, what the tests above cannot reach — that a real browser honours the
+`download` attribute and writes the bytes to disk:
 - [ ] Fresh provision → the setup success page's **Download as .txt** saves a
       sheet containing the master password *and* the recovery phrase, with the
       "does NOT unlock individual Vault items" note.
 - [ ] Settings → Recovery Phrase → Regenerate → **Download as .txt** saves a
       sheet with the phrase only (no master password).
-- [ ] Filename is `homebrain-recovery-<YYYY-MM-DD>.txt`; the download works on
-      the LAN over the self-signed HTTPS origin.
+- [ ] Settings → Master Password → the **Download updated sheet** button appears
+      only *after* the rotation reports success, not when it is launched. Force a
+      failure (stop the DB container) and confirm no button appears — a sheet
+      naming a password the box never took is worse than no sheet.
+- [ ] That sheet carries the new password and `Recovery phrase:  unchanged` — and
+      no phrase. On a box with **no** phrase configured, that line is absent
+      rather than promising one.
+- [ ] With `/static/creds_sheet.js` blocked (devtools request blocking), the
+      handover page's download button shows a visible error instead of doing
+      nothing — the next click deletes the credentials for good.
+- [ ] Filename is `homebrain-recovery-<YYYY-MM-DD>T<HH>-<MM>-<SS>.txt`; two
+      downloads in the same day — including two clicks of the same button
+      seconds apart — do **not** collide into `…(1).txt`.
+- [ ] Open the saved file in a plain text editor: no mojibake (the body is ASCII
+      by contract) and the line breaks survive.
+- [ ] The download works on the LAN over the self-signed HTTPS origin, and on a
+      phone — iOS Safari is the weakest link for `<a download>` and setup is
+      phone-friendly by design.
 
 ---
 

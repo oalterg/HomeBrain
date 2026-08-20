@@ -959,6 +959,11 @@
                     session stays signed in; your next sign-in uses the new password.</p>
                 <button id="mp-submit" onclick="changeMasterPassword()">Change master password</button>
                 <p id="mp-msg" class="hint" style="min-height:1em;"></p>
+                <div id="mp-sheet" class="mt" style="display:none;">
+                    <button type="button" onclick="downloadChangedPassword()">Download updated sheet</button>
+                    <p class="hint">Replaces the master password on your saved sheet. This change does not
+                        touch your recovery phrase — keep whichever sheet holds it.</p>
+                </div>
             </section>
 
             <section class="section" id="recovery-card">
@@ -1044,6 +1049,7 @@
   // The only server-rendered value the dashboard script needs.
   window.HB = { productName: {{ platform.product_name | tojson }} };
 </script>
+<script src="{{ url_for('static', filename='creds_sheet.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='dashboard.js') }}?v={{ asset_v }}"></script>
 </body>
 </html>

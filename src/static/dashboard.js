@@ -2713,54 +2713,30 @@ async function regenerateRecovery() {
     }
 }
 
-// Saves the phrase that is on screen right now. Deliberately client-side: the
-// device stores only a one-way hash of the phrase, so there is nothing for a
-// server endpoint to serve — and echoing the plaintext back through an HTTP
-// round trip just to download it would put it in another request body.
-// The twin of this function lives in installing.html, which has its own inline
-// script and never loads this file.
-function downloadCredsSheet({ password, phrase }) {
-    const lines = [
-        'HomeBrain — recovery sheet',
-        `Generated: ${new Date().toLocaleString()}`,
-        `Device:    ${location.hostname}`,
-        '',
-    ];
-    if (password) lines.push(`Master password:  ${password}`);
-    if (phrase) lines.push(`Recovery phrase:  ${phrase}`);
-    lines.push(
-        '',
-        'Keep this offline — print it, or put it on a USB stick. Anyone holding',
-        'it can reset administrative access to this device.',
-        '',
-    );
-    // Only promise the recovery flow when a phrase is actually on the sheet:
-    // setup falls back to a password-only handover when the wordlist is
-    // unavailable, and telling that user to "enter the phrase" sends them
-    // looking for something they were never given.
-    if (phrase) lines.push(
-        'To use the recovery phrase: open the Dashboard, click "Forgot your',
-        'password?", enter the phrase and choose a new master password.',
-        '',
-    );
-    lines.push(
-        'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
-        'It does NOT unlock individual Vault items — those are encrypted with each',
-        "user's own password and cannot be recovered from here.",
-        '',
-    );
-    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
-    const a = Object.assign(document.createElement('a'), {
-        href: url,
-        download: `homebrain-recovery-${new Date().toISOString().slice(0, 10)}.txt`,
-    });
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
+// The sheet builder itself lives in static/creds_sheet.js, shared with the
+// setup handover page.
 function downloadRevealedPhrase() {
     const phrase = document.getElementById('recovery-phrase-box').textContent.trim();
     if (phrase) downloadCredsSheet({ phrase });
+}
+
+// Rotation leaves the RECOVERY_* keys alone, so the phrase the owner already has
+// still works — say so rather than reprinting a phrase we no longer hold. Ask
+// first, though: a box provisioned while the wordlist was unavailable has no
+// phrase at all, and promising one sends that owner hunting for something that
+// was never generated.
+async function downloadChangedPassword() {
+    if (!mpChanged) return;
+    let configured = false;
+    try {
+        const r = await fetch('/api/recovery/status', { credentials: 'include' });
+        configured = !!(await r.json()).configured;
+    } catch (e) { /* no promise is safer than a false one */ }
+    downloadCredsSheet({ password: mpChanged, phraseUnchanged: configured });
+    // The sheet is saved; stop holding the plaintext. The code this replaced
+    // cleared the inputs immediately, and a dashboard tab stays open for hours.
+    mpChanged = null;
+    document.getElementById('mp-sheet').style.display = 'none';
 }
 
 /* =====================================================================
@@ -2786,9 +2762,44 @@ async function suggestMasterPassword() {
     }
 }
 
+// Held between a confirmed rotation and the sheet being saved, then dropped.
+let mpChanged = null;
+
+// The rotation runs on a background thread, so `started` means launched, not
+// succeeded — and it can still abort before any .env write (a MariaDB failure
+// does exactly that). Revealing the sheet on the acknowledgement would hand the
+// owner a freshly dated sheet naming a password the box never accepted, which
+// is worse than no sheet at all. Fail closed: reveal only on an observed success.
+async function rotationSucceeded(msg) {
+    const deadline = Date.now() + 6 * 60 * 1000;
+    let sawRunning = false;
+    while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let d;
+        try {
+            const r = await fetch('/api/task_status', { credentials: 'include' });
+            if (!r.ok) continue;
+            d = await r.json();
+        } catch (e) { continue; }
+        if (d.status === 'running') { sawRunning = true; continue; }
+        if (d.status === 'success') return true;
+        if (d.status === 'error') { msg.textContent = d.message || 'Rotation failed — check the logs.'; return false; }
+        // The status file returns to idle ~10s after a terminal state, so idle
+        // after we have seen running means we missed the window. Say nothing
+        // rather than guess which way it went.
+        if (sawRunning) {
+            msg.textContent = 'Rotation finished — check the log to confirm, then change it again to get a sheet.';
+            return false;
+        }
+    }
+    msg.textContent = 'Rotation is taking longer than expected — check the log.';
+    return false;
+}
+
 async function changeMasterPassword() {
     const btn = document.getElementById('mp-submit');
     const msg = document.getElementById('mp-msg');
+    const sheet = document.getElementById('mp-sheet');
     const current = document.getElementById('mp-current').value;
     const next = document.getElementById('mp-new').value;
     const confirm = document.getElementById('mp-confirm').value;
@@ -2804,6 +2815,7 @@ async function changeMasterPassword() {
 
     btn.disabled = true;
     msg.textContent = 'Rotating…';
+    sheet.style.display = 'none';
     try {
         const r = await fetch('/api/system/master-password', {
             method: 'POST',
@@ -2819,12 +2831,19 @@ async function changeMasterPassword() {
                 el.value = '';
                 el.type = 'password';
             }
+            if (await rotationSucceeded(msg)) {
+                mpChanged = next;
+                sheet.style.display = 'block';
+                msg.textContent = 'Rotation complete — save your updated sheet.';
+            }
         } else {
             msg.textContent = d.error || 'Could not change the password';
         }
     } catch (e) {
         msg.textContent = 'Network error — try again';
     } finally {
+        // Stays disabled for the whole rotation on purpose: a second attempt
+        // would only earn a 409 from the busy-task guard.
         btn.disabled = false;
     }
 }
