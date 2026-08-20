@@ -2713,54 +2713,17 @@ async function regenerateRecovery() {
     }
 }
 
-// Saves the phrase that is on screen right now. Deliberately client-side: the
-// device stores only a one-way hash of the phrase, so there is nothing for a
-// server endpoint to serve — and echoing the plaintext back through an HTTP
-// round trip just to download it would put it in another request body.
-// The twin of this function lives in installing.html, which has its own inline
-// script and never loads this file.
-function downloadCredsSheet({ password, phrase }) {
-    const lines = [
-        'HomeBrain — recovery sheet',
-        `Generated: ${new Date().toLocaleString()}`,
-        `Device:    ${location.hostname}`,
-        '',
-    ];
-    if (password) lines.push(`Master password:  ${password}`);
-    if (phrase) lines.push(`Recovery phrase:  ${phrase}`);
-    lines.push(
-        '',
-        'Keep this offline — print it, or put it on a USB stick. Anyone holding',
-        'it can reset administrative access to this device.',
-        '',
-    );
-    // Only promise the recovery flow when a phrase is actually on the sheet:
-    // setup falls back to a password-only handover when the wordlist is
-    // unavailable, and telling that user to "enter the phrase" sends them
-    // looking for something they were never given.
-    if (phrase) lines.push(
-        'To use the recovery phrase: open the Dashboard, click "Forgot your',
-        'password?", enter the phrase and choose a new master password.',
-        '',
-    );
-    lines.push(
-        'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
-        'It does NOT unlock individual Vault items — those are encrypted with each',
-        "user's own password and cannot be recovered from here.",
-        '',
-    );
-    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/plain' }));
-    const a = Object.assign(document.createElement('a'), {
-        href: url,
-        download: `homebrain-recovery-${new Date().toISOString().slice(0, 10)}.txt`,
-    });
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
+// The sheet builder itself lives in static/creds_sheet.js, shared with the
+// setup handover page.
 function downloadRevealedPhrase() {
     const phrase = document.getElementById('recovery-phrase-box').textContent.trim();
     if (phrase) downloadCredsSheet({ phrase });
+}
+
+// Rotation leaves the RECOVERY_* keys alone, so the phrase on the setup sheet
+// still works — say so rather than reprinting a phrase we no longer hold.
+function downloadChangedPassword() {
+    if (mpChanged) downloadCredsSheet({ password: mpChanged, phraseUnchanged: true });
 }
 
 /* =====================================================================
@@ -2786,9 +2749,16 @@ async function suggestMasterPassword() {
     }
 }
 
+// Held so the sheet can be produced after the form is cleared. The password is
+// already in this page's memory — the user just typed it — so keeping it until
+// a reload costs nothing extra, and losing it would leave the owner with a
+// setup sheet that names a password the box no longer accepts.
+let mpChanged = null;
+
 async function changeMasterPassword() {
     const btn = document.getElementById('mp-submit');
     const msg = document.getElementById('mp-msg');
+    const sheet = document.getElementById('mp-sheet');
     const current = document.getElementById('mp-current').value;
     const next = document.getElementById('mp-new').value;
     const confirm = document.getElementById('mp-confirm').value;
@@ -2804,6 +2774,7 @@ async function changeMasterPassword() {
 
     btn.disabled = true;
     msg.textContent = 'Rotating…';
+    sheet.style.display = 'none';
     try {
         const r = await fetch('/api/system/master-password', {
             method: 'POST',
@@ -2814,6 +2785,8 @@ async function changeMasterPassword() {
         const d = await r.json();
         if (d.status === 'started') {
             msg.textContent = d.message;
+            mpChanged = next;
+            sheet.style.display = 'block';
             for (const id of ['mp-current', 'mp-new', 'mp-confirm']) {
                 const el = document.getElementById(id);
                 el.value = '';

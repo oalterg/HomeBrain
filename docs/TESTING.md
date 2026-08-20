@@ -404,13 +404,35 @@ their password. Run on real hardware (it re-credentials live services).
       only the master password opens the box.
 
 **Credential download (.txt)**
+
+Sheet text and the DOM contract are covered off-hardware — run these first, they
+need no box (see `docs/plans/RECOVERY_SHEET.md` §6):
+
+```
+osascript -l JavaScript scripts/tests/test_creds_sheet.js  # "all passed", 25 checks
+python3 scripts/tests/test_creds_sheet_wiring.py           # "all passed" (needs Flask)
+```
+
+`osascript` is not a stylistic choice — JavaScriptCore is the only JS runtime on
+the dev Mac, and it is the same engine Safari runs.
+
+On hardware, what the tests above cannot reach — that a real browser honours the
+`download` attribute and writes the bytes to disk:
 - [ ] Fresh provision → the setup success page's **Download as .txt** saves a
       sheet containing the master password *and* the recovery phrase, with the
       "does NOT unlock individual Vault items" note.
 - [ ] Settings → Recovery Phrase → Regenerate → **Download as .txt** saves a
       sheet with the phrase only (no master password).
-- [ ] Filename is `homebrain-recovery-<YYYY-MM-DD>.txt`; the download works on
-      the LAN over the self-signed HTTPS origin.
+- [ ] Settings → Master Password → after a successful change, **Download updated
+      sheet** saves a sheet with the new password and the line
+      `Recovery phrase:  unchanged` — and no phrase.
+- [ ] Filename is `homebrain-recovery-<YYYY-MM-DD>T<HH>-<MM>.txt`; two downloads
+      in the same day do **not** collide into `…(1).txt`.
+- [ ] Open the saved file in a plain text editor: no mojibake (the body is ASCII
+      by contract) and the line breaks survive.
+- [ ] The download works on the LAN over the self-signed HTTPS origin, and on a
+      phone — iOS Safari is the weakest link for `<a download>` and setup is
+      phone-friendly by design.
 
 ---
 
