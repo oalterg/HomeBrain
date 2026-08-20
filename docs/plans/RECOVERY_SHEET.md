@@ -227,8 +227,15 @@ self-contained and stays that way — it has no download and needs none.
 
 This is not a stylistic choice: there is no node, deno, or bun on the development
 Mac, and no Chrome or Firefox. JavaScriptCore via `osascript` is the JS runtime
-this repo actually has, and because `buildCredsSheet` is pure (§4.1) it runs there
-with no DOM shim.
+this repo actually has — and it is the engine Safari runs, which is the one that
+matters locally. Because `buildCredsSheet` is pure (§4.1) it runs there with no
+DOM shim.
+
+CI is Linux and has node but not `osascript`, so the two runtime-specific calls
+in the suite are abstracted and the same file runs under both. A regression guard
+that only fires on one developer's laptop is a guard that rots. Note that the CI
+pytest step is an explicit allow-list — a new Python test file is never collected
+until it is named there.
 
 Assertions:
 

@@ -414,7 +414,8 @@ python3 scripts/tests/test_creds_sheet_wiring.py           # "all passed" (needs
 ```
 
 `osascript` is not a stylistic choice — JavaScriptCore is the only JS runtime on
-the dev Mac, and it is the same engine Safari runs.
+the dev Mac, and it is the same engine Safari runs. Both suites also run in CI
+(the first under `node`), so a red build is the first signal, not this list.
 
 On hardware, what the tests above cannot reach — that a real browser honours the
 `download` attribute and writes the bytes to disk:
