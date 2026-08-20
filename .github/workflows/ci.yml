@@ -46,7 +46,10 @@ jobs:
                             scripts/tests/test_mcp_homeassistant.py \
                             scripts/tests/test_mcp_homebrain.py \
                             scripts/tests/test_ha_watch.py \
+                            scripts/tests/test_creds_sheet_wiring.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
+      - name: recovery sheet text + DOM contract
+        run: node scripts/tests/test_creds_sheet.js
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
       - name: update guard

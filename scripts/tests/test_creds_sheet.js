@@ -1,24 +1,33 @@
 /* Tests for src/static/creds_sheet.js.
  *
  *   osascript -l JavaScript scripts/tests/test_creds_sheet.js     (from repo root)
+ *   node scripts/tests/test_creds_sheet.js                        (same, in CI)
  *
  * JavaScriptCore via osascript is the only JS runtime on the development Mac —
- * no node, deno or bun — which is why buildCredsSheet() is pure and takes its
- * clock and hostname as arguments. See docs/plans/RECOVERY_SHEET.md §6.
+ * no node, deno or bun — and it is the engine Safari runs, so it is the one that
+ * matters locally. CI has node and not osascript, and a regression guard that
+ * only fires on one developer's laptop is a guard that rots, so the handful of
+ * runtime-specific calls below are abstracted rather than picking a side.
+ * buildCredsSheet() itself is pure and takes its clock and hostname as
+ * arguments, which is what lets it run anywhere at all.
+ * See docs/plans/RECOVERY_SHEET.md §6.
  */
 
-ObjC.import('Foundation');
-ObjC.import('stdlib');
+var IS_JXA = (typeof ObjC !== 'undefined');
+if (IS_JXA) { ObjC.import('Foundation'); ObjC.import('stdlib'); }
 
 var MODULE = 'src/static/creds_sheet.js';
 var failures = 0;
 
+function exit(code) { if (IS_JXA) { $.exit(code); } else { process.exit(code); } }
+
 function readFile(path) {
+    if (!IS_JXA) return require('fs').readFileSync(path, 'utf8');
     var s = $.NSString.stringWithContentsOfFileEncodingError(
         $(path), $.NSUTF8StringEncoding, null);
     if (!s) {
         console.log('FAIL  cannot read ' + path + ' — run from the repo root');
-        $.exit(1);
+        exit(1);
     }
     return ObjC.unwrap(s);
 }
@@ -148,4 +157,4 @@ deferred[0]();
 check('object URL is revoked once deferred', revoked[0] === 'blob:test');
 
 console.log(failures ? '\n' + failures + ' FAILED' : '\nall passed');
-$.exit(failures ? 1 : 0);
+exit(failures ? 1 : 0);
