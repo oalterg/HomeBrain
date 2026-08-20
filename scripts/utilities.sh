@@ -1689,7 +1689,7 @@ patch_openclaw_config() {
         # and it has to fit the provider timeout above:
         #
         #   Glimmer   131072/287.6 = 456 s + 16384/16.0 = 1024 s -> 1480 s
-        #   27B       131072/213.3 = 614 s + 16384/18.8 =  871 s -> 1485 s
+        #   27B        81920/266.3 = 308 s + 16384/18.8 =  871 s -> 1179 s
         #   35B-A3B    81920/270.0 = 303 s + 16384/17.0 =  964 s -> 1267 s
         #
         # all inside the 1800 s provider ceiling, the worst at 82% of it.
