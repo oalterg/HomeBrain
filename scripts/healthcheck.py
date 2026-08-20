@@ -21,6 +21,7 @@ Design constraints:
     fallback when no messenger channel is linked.
 """
 
+import datetime
 import glob
 import json
 import os
@@ -60,6 +61,9 @@ REPO_API_URL = "https://api.github.com/repos/oalterg/HomeBrain"
 DAY = 86400
 REMIND_SECS = {"crit": 1 * DAY, "warn": 7 * DAY, "info": 7 * DAY}
 UPDATE_CHECK_SECS = 1 * DAY
+DAILY_NOTE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})\.md$")
+MEMORY_MD_WARN_BYTES = 20000
+DEFAULT_DAILY_RETENTION_DAYS = 30
 
 LEVEL_RANK = {"ok": 0, "info": 1, "warn": 2, "crit": 3}
 
@@ -665,6 +669,62 @@ def atomic_write_json(path, data, mode=0o644):
     os.replace(tmp, path)
 
 
+def daily_retention_days(env):
+    raw = (env.get("OPENCLAW_MEMORY_DAILY_RETENTION_DAYS") or str(DEFAULT_DAILY_RETENTION_DAYS)).strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return DEFAULT_DAILY_RETENTION_DAYS
+    if n < 0:
+        return DEFAULT_DAILY_RETENTION_DAYS
+    return n
+
+
+def daily_note_date(name):
+    m = DAILY_NOTE_RE.match(name)
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def sweep_openclaw_daily_memory(env, memory_dir, today, log_fn=log):
+    """Delete memory/YYYY-MM-DD.md older than the retention window.
+
+    Returns the list of removed paths. Leaves MEMORY.md, slugged notes,
+    and memory/.dreams/ alone. retention 0 is a no-op.
+    """
+    retention = daily_retention_days(env)
+    removed = []
+    if retention != 0 and os.path.isdir(memory_dir):
+        for name in os.listdir(memory_dir):
+            d = daily_note_date(name)
+            if d is None:
+                continue
+            path = os.path.join(memory_dir, name)
+            if not os.path.isfile(path):
+                continue
+            if (today - d).days >= retention:
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    log_fn(f"[WARN] memory sweep: could not remove {path}: {e}")
+                    continue
+                removed.append(path)
+        if removed:
+            log_fn(f"[INFO] memory sweep: removed {len(removed)} daily notes older than {retention} days")
+    memory_md = os.path.join(os.path.dirname(memory_dir.rstrip(os.sep)), "MEMORY.md")
+    try:
+        size = os.path.getsize(memory_md)
+    except OSError:
+        size = None
+    if size is not None and size > MEMORY_MD_WARN_BYTES:
+        log_fn(f"[WARN] MEMORY.md is {size} bytes (bootstrap budget is {MEMORY_MD_WARN_BYTES}); move detail into memory/YYYY-MM-DD.md")
+    return removed
+
+
 def has_gpu(env):
     if env.get("HAS_GPU", "").lower() == "true":
         return True
@@ -688,6 +748,13 @@ def main():
     except OSError:
         env = {}
     BACKUP_DIR = env.get("BACKUP_MOUNTDIR", BACKUP_DIR)
+    gpu = has_gpu(env)
+    if gpu:
+        sweep_openclaw_daily_memory(
+            env,
+            os.path.join(OPENCLAW_DIR, "workspace", "memory"),
+            datetime.date.today(),
+        )
     try:
         with open(STATE_FILE) as f:
             state = json.load(f)
@@ -695,7 +762,6 @@ def main():
         state = {}
     state.setdefault("checks", {})
 
-    gpu = has_gpu(env)
     checks = [c for c in [
         check_backup(env, now),
         check_offsite(env, now),

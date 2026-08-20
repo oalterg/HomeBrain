@@ -299,6 +299,76 @@ else
         "target=$hb_target would push an hourly status summary to the channel"
 fi
 
+echo "== isolated heartbeats stay cheap and on-box =="
+# lightContext skips AGENTS.md/SOUL.md/MEMORY.md on the hourly turn. Continuity
+# is workspace HEARTBEAT.md (this OpenClaw pin). Combined with isolatedSession
+# that is the context cut; do not turn lightContext off without measuring.
+got=$(jq -r '.agents.defaults.heartbeat.lightContext' "$cfg")
+if [[ "$got" == "true" ]]; then
+    ok "heartbeat lightContext is on"
+else
+    bad "heartbeat lightContext is on" "got $got"
+fi
+
+prompt_file="$TEST_DIR/../../config/openclaw-workspace/heartbeat.prompt"
+expected_prompt=$(cat "$prompt_file")
+got=$(jq -r '.agents.defaults.heartbeat.prompt' "$cfg")
+if [[ "$got" == "$expected_prompt" ]]; then
+    ok "heartbeat prompt matches config/openclaw-workspace/heartbeat.prompt"
+else
+    bad "heartbeat prompt matches the template" \
+        "got $(printf '%s' "$got" | head -c 80)…"
+fi
+
+got=$(jq -r '.agents.defaults.memorySearch.provider' "$cfg")
+if [[ "$got" == "none" ]]; then
+    ok "memorySearch.provider is none (FTS-only; not Whisper, not OpenAI)"
+else
+    bad "memorySearch.provider is none" "got $got"
+fi
+
+got=$(jq -r '.agents.defaults.memorySearch.enabled' "$cfg")
+if [[ "$got" == "true" ]]; then
+    ok "memorySearch stays enabled"
+else
+    bad "memorySearch stays enabled" "got $got"
+fi
+
+got=$(jq -r '.plugins.entries["memory-core"].config.dreaming.enabled' "$cfg")
+if [[ "$got" == "false" ]]; then
+    ok "memory-core dreaming is off"
+else
+    bad "memory-core dreaming is off" "got $got"
+fi
+
+got=$(jq -r '.agents.defaults.compaction.memoryFlush.enabled' "$cfg")
+if [[ "$got" == "false" ]]; then
+    ok "pre-compaction memoryFlush is off"
+else
+    bad "pre-compaction memoryFlush is off" "got $got"
+fi
+
+echo "== seed template agrees with the patch on memory keys =="
+# Same drift this file exists to stop: seed shipped one compaction mode,
+# patch asserted another, boxes disagreed. Pin the new memory keys the
+# same way.
+seed="$TEST_DIR/../../config/openclaw.json"
+for key in \
+    '.agents.defaults.heartbeat.lightContext' \
+    '.agents.defaults.heartbeat.isolatedSession' \
+    '.agents.defaults.memorySearch.provider' \
+    '.agents.defaults.compaction.memoryFlush.enabled' \
+    '.plugins.entries["memory-core"].config.dreaming.enabled'
+do
+    from_seed=$(jq -r "$key" "$seed")
+    from_patch=$(jq -r "$key" "$cfg")
+    if [[ "$from_seed" == "$from_patch" && "$from_seed" != "null" ]]; then
+        ok "seed and patch agree on $key ($from_seed)"
+    else
+        bad "seed and patch agree on $key" "seed=$from_seed patched=$from_patch"
+    fi
+done
+
 echo "== the reserve floor follows the context window =="
 cfg81920="$(run_patch 81920 "$QWEN27")"
 got=$(jq -r '.agents.defaults.compaction.reserveTokensFloor' "$cfg81920")

@@ -1568,6 +1568,17 @@ patch_openclaw_config() {
         jq_browser_patch='| .browser.executablePath = $browser_path'
     fi
 
+    # Heartbeat prompt is a workspace-adjacent template so the jq program
+    # does not have to embed a multi-line string. Empty means leave the
+    # OpenClaw default (missing file only — the compaction test asserts
+    # the patched prompt matches this template).
+    local hb_prompt=""
+    local hb_prompt_file="${SCRIPT_DIR}/../config/openclaw-workspace/heartbeat.prompt"
+    if [[ -f "$hb_prompt_file" ]]; then
+        hb_prompt=$(cat "$hb_prompt_file")
+    fi
+    jq_extra_args+=(--arg hb_prompt "$hb_prompt")
+
     # Per-generation token ceiling, resolved from the catalog the same way
     # every other per-model value is (profiles[<platform tag>] first, then the
     # model's top-level key). Unlike contextWindow — which is read back from
@@ -1806,6 +1817,15 @@ patch_openclaw_config() {
         # the ackMaxChars/HEARTBEAT_OK suppression does not help because a real
         # summary is neither. Leave it unset.
         .agents.defaults.heartbeat.isolatedSession = true |
+        # Isolated heartbeats have no chat transcript. lightContext drops
+        # AGENTS.md / SOUL.md / MEMORY.md from the hourly prompt and keeps
+        # only workspace HEARTBEAT.md (OpenClaw 2026.7.1-2; later builds
+        # inject monitor scratch instead). Continuity is that file, seeded
+        # by seed_openclaw_workspace. Do not set lightContext without a
+        # non-empty HEARTBEAT.md — headings-only skips the run.
+        .agents.defaults.heartbeat.lightContext = true |
+        (if $hb_prompt == "" then .
+         else .agents.defaults.heartbeat.prompt = $hb_prompt end) |
         # Mirror of the model catalog reasoning level; see the derivation
         # above. Empty means this model pins no level, in which case the key
         # is removed so OpenClaw falls back to its own default instead of
@@ -1875,6 +1895,10 @@ patch_openclaw_config() {
         # from the hang it used to be unless the box says so. This posts
         # "🧹 Compacting context..." / "🧹 Compaction complete" to the chat.
         .agents.defaults.compaction.notifyUser = true |
+        # Pre-compaction memory flush is a silent extra 35B turn inside an
+        # already 95-503 s compaction. Disable it; AGENTS.md tells the model
+        # to write daily notes as it goes.
+        .agents.defaults.compaction.memoryFlush.enabled = false |
         .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
@@ -1974,10 +1998,97 @@ patch_openclaw_config() {
         .tools.media.audio.scope.default = "allow" |
         .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
         .tools.media.audio.models[0].timeoutSeconds = 30 |
-        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []}
+        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []} |
+        # memorySearch.provider defaults to openai. Our openai provider is
+        # local Whisper (dummy key, :8002). Explicit "none" is FTS-only —
+        # on-box, no embeddings, no Whisper-as-embedder. Path is
+        # agents.defaults.memorySearch on 2026.7.1-2, not top-level memory.search.
+        .agents.defaults.memorySearch.enabled = true |
+        .agents.defaults.memorySearch.provider = "none" |
+        # Dreaming is default-on and schedules a 03:00 35B consolidation
+        # sweep. Off until we measure MEMORY.md growth; plugin stays loaded
+        # so memory_search still works. config is a free-form record.
+        .plugins.entries["memory-core"].config.dreaming.enabled = false
         '"$jq_token_patch$jq_browser_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
+}
+
+# OpenClaw 2026.7.1-2 skips a heartbeat when HEARTBEAT.md exists but is
+# "effectively empty" (isHeartbeatContentEffectivelyEmpty): blank lines,
+# HTML comments, ATX headings (# + space or EOL — not #TODO), fence
+# markers, empty checklist stubs (- / * / + with optional [ ]). Missing
+# file still runs (cold). Match that so we only seed when the next hourly
+# turn would skip or start blank. Being more aggressive than OpenClaw
+# here would overwrite a #TODO line on the next update.
+heartbeat_checklist_is_empty() {
+    local text="$1"
+    local stripped
+    stripped=$(printf '%s\n' "$text" | sed -E \
+        -e '/^[[:space:]]*$/d' \
+        -e '/^[[:space:]]*<!--/d' \
+        -e '/^[[:space:]]*#+([[:space:]]|$)/d' \
+        -e '/^[[:space:]]*```[A-Za-z0-9_-]*[[:space:]]*$/d' \
+        -e '/^[[:space:]]*[-*+][[:space:]]*(\[[[:space:]xX]?\][[:space:]]*)?$/d')
+    [[ -z "$stripped" ]]
+}
+
+# Copy workspace templates if missing. Never overwrite a file the agent or
+# owner already filled. HEARTBEAT.md is the isolated-heartbeat working pad
+# on this OpenClaw pin (later builds use monitor scratch instead).
+#
+# AGENTS.md: OpenClaw writes the default operating file on first gateway
+# start. Pass 1 after that start so we append our block instead of replacing
+# the default with a memory-only stub. 0 (default) skips creating it.
+seed_openclaw_workspace() {
+    local allow_create_agents="${1:-0}"
+    local ws="${HOMEBRAIN_HOME}/.openclaw/workspace"
+    local src="${SCRIPT_DIR}/../config/openclaw-workspace"
+    local marker="## HomeBrain memory"
+    local owner="${HOMEBRAIN_USER:-}"
+
+    _own() {
+        if [[ -n "$owner" ]] && id "$owner" >/dev/null 2>&1; then
+            chown "$owner:$owner" "$1" 2>/dev/null || true
+        fi
+    }
+
+    if [[ ! -d "$src" ]]; then
+        log_warn "OpenClaw workspace templates missing at $src — skipping seed."
+        return 0
+    fi
+    mkdir -p "${ws}/memory"
+    _own "$ws" 2>/dev/null || true
+    _own "${ws}/memory"
+
+    if [[ ! -f "${src}/HEARTBEAT.md" ]]; then
+        log_warn "OpenClaw HEARTBEAT.md template missing at ${src}/HEARTBEAT.md — skipping."
+    elif [[ ! -f "${ws}/HEARTBEAT.md" ]] || heartbeat_checklist_is_empty "$(cat "${ws}/HEARTBEAT.md" 2>/dev/null || true)"; then
+        cp "${src}/HEARTBEAT.md" "${ws}/HEARTBEAT.md"
+        _own "${ws}/HEARTBEAT.md"
+        log_info "Seeded OpenClaw HEARTBEAT.md"
+    fi
+    if [[ ! -f "${src}/MEMORY.md" ]]; then
+        log_warn "OpenClaw MEMORY.md template missing at ${src}/MEMORY.md — skipping."
+    elif [[ ! -f "${ws}/MEMORY.md" ]]; then
+        cp "${src}/MEMORY.md" "${ws}/MEMORY.md"
+        _own "${ws}/MEMORY.md"
+        log_info "Seeded OpenClaw MEMORY.md"
+    fi
+    if [[ ! -f "${src}/AGENTS.md" ]]; then
+        log_warn "OpenClaw AGENTS.md template missing at ${src}/AGENTS.md — skipping."
+    elif [[ -f "${ws}/AGENTS.md" ]]; then
+        if ! grep -qF "$marker" "${ws}/AGENTS.md"; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            cat "${src}/AGENTS.md" >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain memory block to OpenClaw AGENTS.md"
+        fi
+    elif [[ "$allow_create_agents" == "1" ]]; then
+        cp "${src}/AGENTS.md" "${ws}/AGENTS.md"
+        _own "${ws}/AGENTS.md"
+        log_info "Seeded OpenClaw workspace AGENTS.md"
+    fi
 }
 
 # Run a command as the HomeBrain OS user with systemd user session environment.
@@ -2164,6 +2275,7 @@ setup_openclaw() {
     local OC_CTX_SIZE
     OC_CTX_SIZE=$(resolve_llama_ctx_size)
     patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
+    seed_openclaw_workspace
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
     log_info "Config written to $config_dest"
@@ -2208,6 +2320,9 @@ setup_openclaw() {
             ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
             log_info "OpenClaw is running. Access at http://${ip}:${oc_port}"
             log_info "=== OpenClaw setup complete ==="
+            # OpenClaw has now written default bootstrap files. Append the
+            # memory block (or write it if the default never appeared).
+            seed_openclaw_workspace 1
             # Watcher unit is ConditionPathExists on openclaw.json; start now
             # so we do not wait for the next reboot.
             systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
@@ -2959,6 +3074,7 @@ case "${1:-}" in
             # that actually changed the file (the WhatsApp one-shot migration).
             chown "${HOMEBRAIN_USER:-homebrain}:${HOMEBRAIN_USER:-homebrain}" "$CFG" 2>/dev/null || true
             chmod 600 "$CFG" 2>/dev/null || true
+            seed_openclaw_workspace 1
             if ! cmp -s "${CFG}.preupdate" "$CFG" || [[ "$DROPIN_CHANGED" == "true" ]]; then
                 log_info "openclaw plugins/config/drop-in changed — restarting daemon to apply."
                 run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \

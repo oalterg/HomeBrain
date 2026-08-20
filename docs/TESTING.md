@@ -111,6 +111,9 @@ No external tunnel; access via `homebrain.local`.
 - [ ] OpenClaw chat UI accessible from pre-authenticated dashboard link (no token prompt)
 - [ ] Telegram message → OpenClaw → llama-server → response delivered end-to-end
 - [ ] Gateway token is stable across a `homebrain-manager` restart
+- [ ] `~/.openclaw/workspace/HEARTBEAT.md` has a Current work section (not headings-only)
+- [ ] `jq -r '.agents.defaults.memorySearch.provider' ~/.openclaw/openclaw.json` is `none`
+- [ ] Hourly heartbeat does not send a status summary to Telegram (`heartbeat.target` unset)
 
 ### HomeBrain Vault (Vaultwarden)
 
