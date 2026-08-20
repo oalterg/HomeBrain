@@ -984,3 +984,144 @@ Unmeasured / caveats: one session, one prompt shape. TG figures are greedy
 aborted mid-fill once degradation was unambiguous rather than run to a verdict.
 Contexts between 81920 and 98304 (e.g. 90112) were not tested. Quantization
 *quality* was not measured. Whisper was `--no-gpu` throughout.
+
+## 2026-08-16 — Tool escalation under a broken `web_search`: Glimmer vs Qwen3.8-27B
+
+An unplanned A/B on the production box: the same multi-source web-research task
+was given to Muse Glimmer 30B **UD-Q4_K_XL** (2026-08-15) and to Qwen3.8-27B
+**IQ4_XS** (2026-08-16) — both the shipped catalog files, on the pinned b10361 —
+while `web_search` had **no provider configured at all** — no
+search key exists anywhere in `~/.openclaw/openclaw.json`, so every `web_search`
+call returns
+`{"status":"error","error":"web_search is disabled or no provider is available."}`.
+The `browser` plugin was enabled for both runs.
+
+Glimmer produced a correct, sourced answer. Qwen3.8-27B produced nothing and
+burned 11 minutes doing it. **The missing provider is not what separates them** —
+both models detected the failure and both pivoted to fetching. What differs is
+*what they fetched*.
+
+### The finding — SERP-scraping vs driving the browser
+
+**Qwen3.8-27B: all six `web_fetch` calls went to a search-engine result page.**
+Result sizes, one per call:
+
+```
+7057  https://html.duckduckgo.com/html/?q=<query 1>
+7046  https://html.duckduckgo.com/html/?q=<query 2>
+6008  https://html.duckduckgo.com/html/?q=<query 3>
+6029  https://html.duckduckgo.com/html/?q=<query 4>
+6005  https://html.duckduckgo.com/html/?q=<query 5>
+6086  https://html.duckduckgo.com/html/?q=<query 6>
+```
+
+It never fetched a content site, never followed a link, and never escalated to
+the `browser` tool that was available to it. It got ~6 KB of ad markup each time
+and said so in its own reasoning: *"DuckDuckGo's HTML search is being heavily
+polluted with ads, and the actual organic results aren't visible in the truncated
+output."* Having recognised the strategy was failing, it repeated it five more
+times.
+
+**Glimmer escalated on the first failure.** It opened a real browser over CDP,
+ran the search there, read *rendered* results, then fetched the specific articles
+it found:
+
+```
+649    browser: cdp transport, running
+358    browser → <search engine> results page
+8976   (rendered page content)
+31762  (rendered page content)
+1674   <trade publication — article page>
+2383   <trade publication — article page>
+1902   <manufacturer site>
+```
+
+Cadence differed too. Glimmer made **13 model calls with one tool call each**,
+14–40 s of thinking apiece, and answered in ~6.5 min. Qwen batched 3–4 parallel
+fetches per call and then, on its fourth call, emitted **zero** tool calls.
+
+| | Glimmer 30B UD-Q4_K_XL | Qwen3.8-27B IQ4_XS |
+|---|---|---|
+| `web_search` failures | 1 | 3 |
+| escalated to `browser` | yes, immediately | never |
+| real content pages fetched | 3 | 0 |
+| model calls | 13 | 4 |
+| outcome | sourced answer, ~6.5 min | no answer, ~16.5 min |
+
+### The runaway `<think>` loop — and why it contradicts a shipped assumption
+
+Ungrounded, Qwen3.8-27B fell back to reciting candidates from parametric memory
+and latched. The fourth model call produced an 18,731-char thinking block in
+which a single 6-token list item — `- **"<name>"?**` — repeats **1,116 times**:
+
+```
+prompt eval  53013 ms / 13322 tokens (251.29 t/s)
+eval        649145 ms /  8536 tokens ( 13.15 t/s)
+total       702159 ms / 21858 tokens
+```
+
+It then exited thinking, wrote one line announcing the next research step it
+intended to take — and **ended the turn with no tool call**. No error, no
+timeout, no crash: the turn completed normally and the session went idle, so from
+the chat side it looks like work still in progress. GPU load of 0 is the tell
+that it is not.
+
+This is the failure mode the **Sampler tuning** section above exists to prevent —
+*"the A3B MoE variants are documented to fall into infinite `<think>` loops on
+tool-call failures"* — and it names the trigger exactly: a tool-call failure.
+That section also records the decision that *"the 27B IQ4_XS entry (DeltaNet
+hybrid, dense Qwen3.6-27B) is left at `presence_penalty=0` per its own model
+card."* **That assumption is now falsified for the Qwen3.8-27B entry.** The
+dense-card guidance held right up until a tool failure left the model with
+nothing to condition on.
+
+The Qwen3.8-27B entry is the only model in the catalog with **both** no
+repetition penalty and no server-side think cap:
+
+| | 35B-A3B UD-Q5_K_XL | 3.8-27B IQ4_XS | Glimmer 30B UD-Q4_K_XL |
+|---|---|---|---|
+| `--presence-penalty` | 1.5 | **0.0** | *(unset → 0.0)* |
+| `--reasoning-budget` | 8192 | **absent** | absent |
+| `--top-k` | 20 | 20 | 64 |
+
+This also fills in the `Qwen3.8-27B ... unmeasured` row in the single-generation
+cap table above: a runaway turn on this entry is now measured at **8,536 decoded
+tokens**, under the 16384 `max_tokens` ceiling, so `max_tokens` did not and would
+not have contained it.
+
+### Do not "fix" this by copying Glimmer's `top-k`
+
+`top-k 20` is the Qwen card's value and is consistent across both Qwen entries;
+`64` is Glimmer's. The two are tuned to different logit distributions and are not
+interchangeable. More to the point, widening the sampling pool does not teach a
+model to escalate to the browser — the loop is a *symptom* of having no grounded
+facts, not the cause of the failed research. The likely effect of a wider pool
+here is to convert a visibly broken turn into a fluent, confident, hallucinated
+answer, which on a task whose premise was a hard numeric safety constraint is the
+worse failure.
+
+If the entry is retained, the defensible change is to align it to the **35B-A3B**
+precedent — `--presence-penalty 1.5` plus a `--reasoning-budget` — not to
+Glimmer's sampler. Note that at the **13.15 t/s** observed here even an 8192
+think cap is still ~10 min of wall clock; a meaningful bound on this model needs
+roughly 4096.
+
+### Incidental
+
+- Observed TG was **13.15 t/s** at a 56.5k-token depth against the **17.14 t/s**
+  benchmarked for this config — ~23% under, unexplained, worth a separate look.
+- `platform_models.json` doc drift: the Qwen3.8-27B benchmark note says *"that is
+  why its max_tokens is 12288"*, but the field is `16384` (and `openclaw.json`
+  agrees at 16384).
+
+Unmeasured / caveats: n=1 per model, and **the two prompts were not byte
+identical** — one carried an additional numeric constraint the other did not.
+Same task shape and same broken-`web_search` conditions, but this is a field
+observation, not a controlled eval. **Quantization**, sampler settings and
+context window also differed between the runs — IQ4_XS at 81920/q4_0 KV versus
+UD-Q4_K_XL at 131072/q8_0 KV — so tool-escalation behaviour is confounded with
+all three. Quantization damage is a live hypothesis for the degenerate loop
+specifically and was not tested; nothing here isolates escalation to the weights
+alone, and no claim is made that either quant is the better-preserved one. No repeat runs were attempted — the box was switched back to
+Glimmer as the catalog default before further testing. Prompt text, queries and
+fetched URLs are deliberately omitted.
