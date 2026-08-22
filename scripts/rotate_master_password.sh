@@ -117,6 +117,12 @@ case "$ha_rc" in
     *)  log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
         log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)." ;;
 esac
+# ha_set_password restarts HA; if that restart didn't come back, don't leave
+# it sitting stopped for the detached backup below (which also stops HA,
+# briefly, for its own snapshot).
+if ha_cid="$(get_ha_cid 2>/dev/null)"; then
+    docker start "$ha_cid" >/dev/null 2>&1 || true
+fi
 
 # --- 4. Canonical master + dashboard-login password ------------------------
 # After the service rotations, so MASTER_PASSWORD reflects the value the tokens
@@ -126,13 +132,14 @@ update_env_var "MASTER_PASSWORD" "$NEW_PASS"
 update_env_var "MANAGER_PASSWORD" "$NEW_PASS"
 log_info "MASTER_PASSWORD / MANAGER_PASSWORD updated."
 
-# Backups are encrypted with the master password AS IT WAS AT BACKUP TIME
-# (backup.sh: gpg stores the s2k salt per archive), so every existing archive
-# now needs the OLD password. That is survivable for a deliberate change — the
-# user still knows it — but this script is also the recovery-phrase path, whose
-# entire premise is that they have forgotten it. Record when the boundary moved
-# so the dashboard can mark which archives predate it, instead of leaving the
-# user to guess in a passphrase prompt.
+# Each archive is sealed against the master password AS IT WAS AT BACKUP TIME,
+# so a LEGACY (pre-HBK1) archive now needs the OLD password. That is survivable
+# for a deliberate change — the user still knows it — but this script is also
+# the recovery-phrase path, whose entire premise is that they have forgotten it.
+# Record when the boundary moved so the dashboard can mark which archives
+# predate it, instead of leaving the user to guess in a passphrase prompt.
+# Dual-wrapped HBK1 archives are exempt: the recovery phrase still opens them,
+# which is what BACKUP_UNLOCK.md set out to fix.
 mkdir -p /var/lib/homebrain
 EPOCH_FILE="/var/lib/homebrain/backup_epoch.json"
 printf '{"ts": %d, "rotated_at": "%s"}\n' \

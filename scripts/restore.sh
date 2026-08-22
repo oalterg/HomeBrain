@@ -107,18 +107,19 @@ fi
 
 # --- Encryption Detection ---
 # Encrypted archives (backup.sh with BACKUP_ENCRYPT, the default) end in
-# .tar.gz.gpg. The passphrase is the master password that was current when
-# the archive was MADE — normally the current one, so no input is needed.
-# For archives from before a password rotation (or from another box), the
-# dashboard passes RESTORE_PASSPHRASE_FILE (a root-only temp file, shredded
-# here after reading).
+# .tar.gz.gpg. HBK1 archives wrap the GPG passphrase so either the master
+# password or the recovery phrase opens them. Legacy files (no HBK1 header)
+# still need the master password that was current when they were made.
+# The dashboard may pass RESTORE_PASSPHRASE_FILE (a root-only temp file,
+# shredded here after reading).
 ENCRYPTED=false
 [[ "$BACKUP_FILE" == *.gpg ]] && ENCRYPTED=true
-RESTORE_PASS="${MASTER_PASSWORD:-}"
+SUPPLIED_PASS=""
 if [[ -n "${RESTORE_PASSPHRASE_FILE:-}" && -f "${RESTORE_PASSPHRASE_FILE}" ]]; then
-    RESTORE_PASS="$(cat "$RESTORE_PASSPHRASE_FILE")"
+    SUPPLIED_PASS="$(cat "$RESTORE_PASSPHRASE_FILE")"
     rm -f "$RESTORE_PASSPHRASE_FILE"
 fi
+RESTORE_PASS="${SUPPLIED_PASS:-${MASTER_PASSWORD:-}}"
 
 # --- Integrity Check ---
 # For encrypted archives extraction itself is the integrity check (gpg MDC +
@@ -131,7 +132,7 @@ fi
 
 # --- Restore Logic ---
 TMP_DIR=$(mktemp -d -p "${HOMEBRAIN_HOME}")
-trap 'rm -rf "$TMP_DIR"; log_info "Cleanup done."' EXIT
+trap 'rm -rf "$TMP_DIR" ${DEK_DIR:+"$DEK_DIR"}; log_info "Cleanup done."' EXIT
 if [ ! -d "$TMP_DIR" ]; then
     die "Failed to create temporary directory."
 fi
@@ -151,10 +152,51 @@ fi
 
 log_info "Extracting backup to temporary location $TMP_DIR..."
 if [[ "$ENCRYPTED" == "true" ]]; then
-    [[ -n "$RESTORE_PASS" ]] || die "Archive is encrypted but no passphrase is available (set MASTER_PASSWORD or provide one in the dashboard)."
-    gpg --batch --quiet --decrypt --passphrase-fd 3 "$BACKUP_FILE" 3<<<"$RESTORE_PASS" \
-        | tar -xz -C "$TMP_DIR" \
-        || die "Decryption failed — wrong passphrase or corrupt archive. If this backup predates a master-password change, enter the password that was current when it was made."
+    HB_PYTHON="$(backup_crypto_python)"
+    # No helper on this box at all (a checkout predating HBK1) is the one case
+    # where "assume legacy" is right. Anything else — an unreadable header, a
+    # python without `cryptography`, a header from a newer build — must fail
+    # here. Guessing legacy would hand the secret to gpg on an HBK1 body and
+    # report a wrong passphrase for a perfectly good phrase.
+    FMT="legacy"
+    if [[ -f "$BACKUP_CRYPTO" ]]; then
+        FMT="$("$HB_PYTHON" "$BACKUP_CRYPTO" inspect --archive "$BACKUP_FILE" --field format 2>/dev/null || true)"
+    fi
+    if [[ "$FMT" == "hbk1" ]]; then
+        DEK_DIR=$(mktemp -d)
+        chmod 700 "$DEK_DIR"
+        DEK_FILE="$DEK_DIR/dek"
+        opened=false
+        try_secret() {
+            local s="$1"
+            [[ -n "$s" ]] || return 1
+            printf '%s' "$s" > "$DEK_DIR/secret"
+            chmod 600 "$DEK_DIR/secret"
+            "$HB_PYTHON" "$BACKUP_CRYPTO" open --archive "$BACKUP_FILE" \
+                --secret-file "$DEK_DIR/secret" --dek-file "$DEK_FILE"
+        }
+        if try_secret "$SUPPLIED_PASS"; then
+            opened=true
+        elif [[ -n "${MASTER_PASSWORD:-}" && "$MASTER_PASSWORD" != "$SUPPLIED_PASS" ]] \
+                && try_secret "$MASTER_PASSWORD"; then
+            opened=true
+        fi
+        if [[ "$opened" != true ]]; then
+            die "Decryption failed — wrong passphrase or corrupt archive. Enter the master password from when this backup was made, or the recovery phrase."
+        fi
+        "$HB_PYTHON" "$BACKUP_CRYPTO" copy-body --archive "$BACKUP_FILE" \
+            | gpg --batch --quiet --decrypt --passphrase-fd 3 3< "$DEK_FILE" \
+            | tar -xz -C "$TMP_DIR" \
+            || die "Decryption failed — wrong passphrase or corrupt archive. Enter the master password from when this backup was made, or the recovery phrase."
+        rm -rf "$DEK_DIR"; DEK_DIR=""
+    elif [[ "$FMT" == "legacy" ]]; then
+        [[ -n "$RESTORE_PASS" ]] || die "Archive is encrypted but no passphrase is available (set MASTER_PASSWORD or provide one in the dashboard)."
+        gpg --batch --quiet --decrypt --passphrase-fd 3 "$BACKUP_FILE" 3<<<"$RESTORE_PASS" \
+            | tar -xz -C "$TMP_DIR" \
+            || die "Decryption failed — wrong passphrase or corrupt archive. If this backup predates a master-password change, enter the password that was current when it was made."
+    else
+        die "Could not read this archive's header (backup_crypto reported '${FMT:-nothing}'). The file may be truncated, or written by a newer HomeBrain. Nothing was changed."
+    fi
 else
     tar -xzf "$BACKUP_FILE" -C "$TMP_DIR"
 fi

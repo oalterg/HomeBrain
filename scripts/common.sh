@@ -14,6 +14,17 @@ export BACKUP_MOUNTDIR="/mnt/backup"
 # app.py; the two must name the same directory.
 export INTERNAL_BACKUP_DIR="${INTERNAL_BACKUP_DIR:-/var/backups/homebrain}"
 
+# HBK1 envelope helper (docs/plans/BACKUP_UNLOCK.md). Prefer the box venv so
+# `cryptography` is present; fall back to whatever python3 is on PATH (CI).
+backup_crypto_python() {
+    if [[ -x "${INSTALL_DIR}/venv/bin/python3" ]]; then
+        printf '%s\n' "${INSTALL_DIR}/venv/bin/python3"
+    else
+        printf '%s\n' "python3"
+    fi
+}
+BACKUP_CRYPTO="${INSTALL_DIR}/src/backup_crypto.py"
+
 # --- Canonical HomeBrain OS User ---
 export HOMEBRAIN_USER="homebrain"
 export HOMEBRAIN_HOME="/home/${HOMEBRAIN_USER}"
@@ -1059,12 +1070,12 @@ ha_record_account() {
 # filling the record in on a box provisioned before those keys existed.
 # Returns non-zero only when the account cannot be determined at all.
 #
-# The migration proves ownership rather than guessing at it: Home Assistant
-# either accepts the password HomeBrain has on record for that account, or it
-# does not. Accepting means HomeBrain's password is already the live one, which
-# is what "managed" means. A guess from the account's *name* would be wrong on
-# exactly the boxes that matter — `admin` is a perfectly ordinary name for a
-# user to pick themselves.
+# The migration proves ownership rather than guessing at it for accounts
+# HomeBrain did not create. HomeBrain onboards `admin`; that name is ours
+# (see utilities.sh) and the master password owns it — including after a
+# restore that replaced the auth store. Any other owner name is proved
+# below: Home Assistant either already accepts the password on record, or
+# it does not.
 ha_load_account_record() {
     local cid="$1" owner
     HA_ACCOUNT_USER="${HA_ADMIN_USER:-}"
@@ -1081,6 +1092,24 @@ ha_load_account_record() {
     # — the exact failure the restore's password sync exists to prevent.
     owner="$(ha_owner_username "$cid")"
     [[ -n "$owner" ]] || return 1
+    # HomeBrain onboards this account as `admin` (utilities.sh) and the master
+    # password owns it. A restore lays the archive's auth store on top of a
+    # freshly minted master, so a login probe with the new password always
+    # fails and used to file the box as self-managed — after which rotation
+    # also skipped HA, and the admin login stayed on the archive's password.
+    # Other owner names are still proved below: those predate HomeBrain.
+    if [[ "$owner" == "admin" ]]; then
+        if ! ha_wait_auth_api; then
+            log_warn "Home Assistant's auth API did not come up — not deciding who owns its password yet."
+            return 1
+        fi
+        HA_ACCOUNT_USER="admin"
+        HA_ACCOUNT_MANAGED="true"
+        if [[ "${HA_ADMIN_USER:-}" != "admin" || "${HA_PASSWORD_MANAGED:-}" != "true" ]]; then
+            ha_record_account "admin" "true"
+        fi
+        return 0
+    fi
     if [[ -n "$HA_ACCOUNT_USER" && -n "$HA_ACCOUNT_MANAGED" && "$HA_ACCOUNT_USER" == "$owner" ]]; then
         return 0
     fi
@@ -1135,7 +1164,7 @@ ha_set_password() {
     local cid="$1" user="$2" pw="$3"
     docker exec "$cid" hass --script auth -c /config \
         change_password "$user" "$pw" >/dev/null 2>&1 || return 1
-    docker restart "$cid" >/dev/null 2>&1 || return 1
+    docker restart "$cid" >/dev/null 2>&1 || docker start "$cid" >/dev/null 2>&1 || return 1
 
     ha_wait_auth_api
     ha_login_works "$pw" "$user"

@@ -37,13 +37,17 @@ class Harness:
     sed rejects) and faster than letting a rotation thread start.
     """
 
-    def __init__(self, with_recovery=True):
+    def __init__(self, with_recovery=True, backup_unlock=True):
         fd, self.env_path = tempfile.mkstemp(prefix="hb_test_env_")
         os.close(fd)
         lines = [f"MANAGER_PASSWORD='{CURRENT_PW}'", f"MASTER_PASSWORD='{CURRENT_PW}'"]
         if with_recovery:
-            for k, v in recovery.build_recovery_record(
-                    PHRASE, recovery.DEFAULT_PHRASE_WORDS, time.time()).items():
+            rec = recovery.build_recovery_record(
+                PHRASE, recovery.DEFAULT_PHRASE_WORDS, time.time())
+            if not backup_unlock:
+                rec = {k: v for k, v in rec.items()
+                       if k not in ("RECOVERY_BACKUP_KEY", "RECOVERY_BACKUP_SALT")}
+            for k, v in rec.items():
                 lines.append(f"{k}='{v}'")
         with open(self.env_path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -275,6 +279,60 @@ def test_launcher_hands_password_over_in_a_0600_file():
         os.unlink(path)
     finally:
         hb.threading.Thread, hb.subprocess.run = saved_thread, saved_run
+
+
+def test_recovery_status_reports_backup_unlock():
+    h = Harness()
+    h.login()
+    try:
+        d = h.client.get("/api/recovery/status").get_json()
+        assert d["configured"] is True
+        assert d["backup_unlock"] is True
+    finally:
+        h.close()
+    h = Harness(backup_unlock=False)
+    h.login()
+    try:
+        d = h.client.get("/api/recovery/status").get_json()
+        assert d["configured"] is True
+        assert d["backup_unlock"] is False
+    finally:
+        h.close()
+
+
+def test_enable_backup_unlock_rejects_the_wrong_phrase():
+    h = Harness(backup_unlock=False)
+    h.login()
+    try:
+        r = h.client.post("/api/recovery/enable-backup-unlock",
+                          json={"phrase": "wrong words that do not match"})
+        assert r.status_code == 401
+        assert h.env_writes == []
+    finally:
+        h.close()
+
+
+class _NoopThread:
+    def start(self):
+        pass
+
+
+def test_enable_backup_unlock_stores_wrap_keys():
+    h = Harness(backup_unlock=False)
+    h.login()
+    saved_thread = hb.threading.Thread
+    hb.threading.Thread = lambda *a, **kw: _NoopThread()
+    try:
+        r = h.client.post("/api/recovery/enable-backup-unlock",
+                          json={"phrase": PHRASE})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["backup_unlock"] is True
+        keys = {k for k, _ in h.env_writes}
+        assert "RECOVERY_BACKUP_KEY" in keys
+        assert "RECOVERY_BACKUP_SALT" in keys
+    finally:
+        hb.threading.Thread = saved_thread
+        h.close()
 
 
 def _run_standalone():

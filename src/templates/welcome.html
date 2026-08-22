@@ -81,9 +81,26 @@
 
             <div id="restore-fields" style="display:none;">
                 <hr>
-                <p class="small muted">Point this box at the off-site copy your old one was
-                    writing to. It will install first, then download and unpack the backup.</p>
+                <p class="small muted">Where is the backup? This box installs first, then
+                    unpacks the archive you pick.</p>
 
+                <label class="check">
+                    <input type="radio" name="rsrc" value="local" checked onchange="setRestoreSource('local')">
+                    <span>On the backup drive — plug the old box's drive into this one</span>
+                </label>
+                <label class="check">
+                    <input type="radio" name="rsrc" value="offsite" onchange="setRestoreSource('offsite')">
+                    <span>In the off-site copy the old box was writing to</span>
+                </label>
+
+                <div id="src-local">
+                    <p class="small muted">Attach the drive, then scan. It stays mounted as this
+                        box's backup drive afterwards.</p>
+                    <button type="button" onclick="loadLocalArchives()" id="btn-scan">Find my backup drive</button>
+                    <p id="local-msg" class="small" style="min-height:1.3em;"></p>
+                </div>
+
+                <div id="src-offsite" style="display:none;">
                 <label for="os-type">Off-site type</label>
                 <select id="os-type">
                     <option value="sftp">SFTP</option>
@@ -101,15 +118,19 @@
 
                 <button type="button" onclick="loadArchives()" id="btn-connect">Connect and list backups</button>
                 <p id="os-msg" class="small" style="min-height:1.3em;"></p>
+                </div>
 
                 <div id="archive-block" style="display:none;">
                     <label for="os-archive">Backup to restore</label>
                     <select id="os-archive"></select>
 
-                    <label for="os-master">Master password of that {{ platform.product_name }}</label>
+                    <label for="os-master">Master password or recovery phrase</label>
                     <input type="password" id="os-master" autocomplete="off">
-                    <p class="hint">The backup is encrypted with it, and the services inside carry it
-                        too. This box will come back up using that same password — not a new one.</p>
+                    <p class="hint" id="unlock-hint">Either secret opens a backup made after backup-unlock shipped.
+                        Older archives still need the master password that encrypted them. If you
+                        enter the master password, this box comes back on that password. If you
+                        enter the recovery phrase, this box gets a new master password — save it
+                        on the next screen. Your recovery phrase stays the same.</p>
                 </div>
             </div>
         </div>
@@ -159,6 +180,68 @@
             document.getElementById('btn').textContent = on ? 'Restore system' : 'Initialize system';
         }
 
+        var restoreSource = 'local';
+
+        function setRestoreSource(src) {
+            restoreSource = src;
+            document.getElementById('src-local').style.display = src === 'local' ? 'block' : 'none';
+            document.getElementById('src-offsite').style.display = src === 'offsite' ? 'block' : 'none';
+            // Each source repopulates the picker; never carry a stale choice across.
+            document.getElementById('os-archive').innerHTML = '';
+            document.getElementById('archive-block').style.display = 'none';
+        }
+
+        function fillArchives(list, msg) {
+            if (list && list.error) throw new Error(list.error);
+            var sel = document.getElementById('os-archive');
+            sel.innerHTML = '';
+            var archives = list || [];
+            var usable = archives.filter(function (a) {
+                return (a.name || '').indexOf('_system_') === -1;
+            });
+            // A source that only holds pre-update snapshots is the 413-era trap —
+            // still better to offer them than an empty list, so the owner can at
+            // least get settings back.
+            if (!usable.length) usable = archives;
+            usable.forEach(function (a) {
+                var o = document.createElement('option');
+                o.value = a.name;
+                o.textContent = a.name + '  —  ' + a.type + ', ' + a.size;
+                sel.appendChild(o);
+            });
+            if (!sel.options.length) {
+                msg.textContent = 'Nothing to restore was found there.';
+                msg.style.color = 'var(--danger)';
+                return false;
+            }
+            document.getElementById('archive-block').style.display = 'block';
+            msg.textContent = 'Found ' + sel.options.length + ' backup(s). Newest is selected.';
+            msg.style.color = 'var(--accent)';
+            return true;
+        }
+
+        // Mounts the attached backup drive if it is not mounted yet, then lists
+        // what is on it. Same archive list the dashboard shows.
+        function loadLocalArchives() {
+            var msg = document.getElementById('local-msg');
+            var btn = document.getElementById('btn-scan');
+            btn.disabled = true;
+            btn.textContent = 'Scanning…';
+            msg.style.color = '';
+            msg.textContent = 'Looking for a backup drive…';
+            fetch('/api/backups/local/scan', { method: 'POST' })
+                .then(function (r) { return r.json(); })
+                .then(function (list) { fillArchives(list, msg); })
+                .catch(function (e) {
+                    msg.textContent = e.message || 'Could not read a backup drive on this box.';
+                    msg.style.color = 'var(--danger)';
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                    btn.textContent = 'Find my backup drive';
+                });
+        }
+
         // Saves the off-site credentials the same way the settings page does,
         // then lists what is actually there. Reuses /api/backup/offsite and
         // /api/backups/offsite/list — a restore that invented its own path to
@@ -195,33 +278,7 @@
                     msg.textContent = 'Listing backups…';
                     return fetch('/api/backups/offsite/list').then(function (r) { return r.json(); });
                 })
-                .then(function (list) {
-                    if (list.error) throw new Error(list.error);
-                    var sel = document.getElementById('os-archive');
-                    sel.innerHTML = '';
-                    var archives = list || [];
-                    var usable = archives.filter(function (a) {
-                        return (a.name || '').indexOf('_system_') === -1;
-                    });
-                    // A remote that only holds pre-update snapshots is the
-                    // 413-era trap — still better to offer them than an empty
-                    // list, so the owner can at least get settings back.
-                    if (!usable.length) usable = archives;
-                    usable.forEach(function (a) {
-                        var o = document.createElement('option');
-                        o.value = a.name;
-                        o.textContent = a.name + '  —  ' + a.type + ', ' + a.size;
-                        sel.appendChild(o);
-                    });
-                    if (!sel.options.length) {
-                        msg.textContent = 'Connected, but there are no backups at that path.';
-                        msg.style.color = 'var(--danger)';
-                        return;
-                    }
-                    document.getElementById('archive-block').style.display = 'block';
-                    msg.textContent = 'Found ' + sel.options.length + ' backup(s). Newest is selected.';
-                    msg.style.color = 'var(--accent)';
-                })
+                .then(function (list) { fillArchives(list, msg); })
                 .catch(function (e) {
                     msg.textContent = e.message || 'Could not reach the off-site copy.';
                     msg.style.color = 'var(--danger)';
@@ -241,16 +298,19 @@
                 var sel = document.getElementById('os-archive');
                 var master = document.getElementById('os-master').value;
                 if (!sel.value) {
-                    msg.textContent = 'Connect to the off-site copy and choose a backup first.';
+                    msg.textContent = restoreSource === 'local'
+                        ? 'Scan for the backup drive and choose a backup first.'
+                        : 'Connect to the off-site copy and choose a backup first.';
                     msg.style.color = 'var(--danger)';
                     return;
                 }
                 if (!master) {
-                    msg.textContent = 'Enter the master password that HomeBrain was using.';
+                    msg.textContent = 'Enter the master password or recovery phrase for that backup.';
                     msg.style.color = 'var(--danger)';
                     return;
                 }
-                payload.restore = { archive: sel.value, master_password: master };
+                payload.restore = { archive: sel.value, master_password: master,
+                                    source: restoreSource };
             }
 
             if (selectedMode === 'remote') {

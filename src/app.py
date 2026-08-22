@@ -982,25 +982,50 @@ def start_setup():
     # exactly as a fresh install does and then runs the ordinary restore. One
     # install path, one restore implementation.
     #
-    # The supplied password becomes this box's master password rather than a
-    # generated one. It has to: the archive is encrypted with it, and the
-    # Nextcloud, Home Assistant and Vault databases inside carry it too. A box
-    # restored under a *new* password would come back with services that reject
-    # the password its owner was just shown. Restoring a HomeBrain restores its
-    # master password with it.
+    # The unlock secret is not always the box password. A recovery phrase
+    # decrypts a dual-wrapped archive but must not become MASTER_PASSWORD
+    # (spaces, and it is the wrong secret). See docs/plans/BACKUP_UNLOCK.md §3.7.
     restore_req = data.get("restore") or {}
     restore_archive = (restore_req.get("archive") or "").strip()
+    # Same two sources the dashboard restore takes. "local" is a drive attached
+    # to this box (the owner carried it over from the dead one); "offsite" is
+    # fetched by restore.sh itself.
+    restore_source = (restore_req.get("source") or "offsite").strip().lower()
+    restore_pass_env = ""
+    restore_target = restore_archive
+    restore_flag = " --from-offsite"
+    adopted_phrase = None
     if restore_archive:
         if "/" in restore_archive or restore_archive.startswith("."):
             return jsonify({"error": "Invalid archive name"}), 400
-        supplied = restore_req.get("master_password") or ""
-        if not recovery.NEW_PASSWORD_RE.match(supplied):
+        if restore_source not in ("local", "offsite"):
+            return jsonify({"error": "Invalid restore source"}), 400
+        if restore_source == "local":
+            restore_target = find_backup(restore_archive)
+            if not restore_target:
+                return jsonify({"error": (
+                    "That archive is not on any drive attached to this box.")}), 404
+            restore_flag = ""
+        supplied = (restore_req.get("master_password") or restore_req.get("unlock") or "").strip()
+        if not supplied:
+            return jsonify({"error": "Enter the master password or recovery phrase for this backup."}), 400
+        if recovery.looks_like_recovery_phrase(supplied):
+            adopted_phrase = recovery.normalize_phrase(supplied)
+        elif recovery.is_valid_new_password(supplied):
+            # Seed it before the generation step below, which only mints a
+            # password when .env does not already carry one.
+            update_env_var("MASTER_PASSWORD", supplied)
+        else:
             return jsonify({"error": (
-                "That does not look like a HomeBrain master password. Enter the "
-                "one that was in use when this backup was made.")}), 400
-        # Seed it before the generation step below, which only mints a password
-        # when .env does not already carry one.
-        update_env_var("MASTER_PASSWORD", supplied)
+                "That does not look like a HomeBrain master password or recovery phrase."
+            )}), 400
+        fd, pass_path = tempfile.mkstemp(prefix="hb_restore_", suffix=".tmp")
+        try:
+            os.write(fd, supplied.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.chmod(pass_path, 0o600)
+        restore_pass_env = f"RESTORE_PASSPHRASE_FILE={shlex.quote(pass_path)} "
         with open(RESTORING_MARKER, "w") as f:
             f.write(restore_archive)
 
@@ -1045,9 +1070,15 @@ def start_setup():
     #     in .env; the plaintext is shown once on the success page (carried in
     #     install_creds.json, wiped by cleanup_credentials) and never persisted.
     #     Best-effort: a failure here must not abort setup.
+    #     Wizard restore with a recovery phrase *adopts* that phrase instead of
+    #     minting a second one — the owner just typed it, and it still unwraps
+    #     their other archives.
     recovery_phrase = None
     try:
-        recovery_phrase = recovery.generate_phrase()
+        if adopted_phrase:
+            recovery_phrase = adopted_phrase
+        else:
+            recovery_phrase = recovery.generate_phrase()
         record = recovery.build_recovery_record(
             recovery_phrase, recovery.DEFAULT_PHRASE_WORDS, time.time())
         for k, v in record.items():
@@ -1061,6 +1092,7 @@ def start_setup():
         "username": "admin",
         "password": master_pass,
         "recovery_phrase": recovery_phrase,
+        "recovery_adopted": bool(adopted_phrase),
         "domain": env_config.get('PANGOLIN_DOMAIN'),
         "generated_at": time.time()
     }
@@ -1117,13 +1149,20 @@ def start_setup():
         # credentials while their data was still being written. The restore
         # flow waits for this marker instead, which only lands if restore.sh
         # also succeeded.
+        # The trailing rm is not optional: pass_path holds the typed secret in
+        # the clear, and restore.sh only shreds it if it gets far enough to read
+        # it. A deploy that fails, or an off-site fetch that cannot reach the
+        # remote, would otherwise leave the owner's recovery phrase in /tmp.
+        # rc round-trips restore's status so `check=True` still sees a failure.
         cmd = (
-            f"({cmd} && bash {SCRIPT_RESTORE} {shlex.quote(restore_archive)}"
-            f" --no-prompt --from-offsite"
+            f"({cmd} && {restore_pass_env}bash {SCRIPT_RESTORE} {shlex.quote(restore_target)}"
+            f" --no-prompt{restore_flag}"
             f" && echo '=== Restore Complete - Ready for Handover ===')"
             f" >> {LOG_FILES['setup']} 2>&1"
+            f"; rc=$?; rm -f {shlex.quote(pass_path)}; exit $rc"
         )
-        task_name = "Restore From Off-site"
+        task_name = ("Restore From Backup Drive" if restore_source == "local"
+                     else "Restore From Off-site")
     threading.Thread(
         target=run_background_task, args=(task_name, cmd, "setup")
     ).start()
@@ -2137,10 +2176,9 @@ def trigger_backup():
 def backup_epoch():
     """Epoch of the last master-password rotation, or 0.
 
-    Archives are encrypted with the master password as it was at backup time,
-    so anything older than this needs the PREVIOUS password. Written by
-    rotate_master_password.sh — which is also the recovery-phrase path, where
-    the user by definition no longer has that password.
+    Legacy (pre-HBK1) archives older than this need the previous master
+    password. Dual-wrapped HBK1 archives also open with the recovery phrase.
+    Written by rotate_master_password.sh.
     """
     try:
         with open("/var/lib/homebrain/backup_epoch.json") as f:
@@ -2149,10 +2187,99 @@ def backup_epoch():
         return 0
 
 
+def archive_unlock(path, encrypted, live_recovery_salt=""):
+    """How this file can be opened: plain | legacy | master | master_or_phrase.
+
+    A recovery wrap only counts if it belongs to the phrase the owner actually
+    holds. Regenerating rewraps local archives, but any archive whose master
+    wrap could not be opened at that moment (one sealed under a since-rotated
+    master password) keeps a wrap for the retired phrase. Its salt no longer
+    matches .env, so report it master-only and let the rotation-epoch rule flag
+    it — otherwise the dashboard promises a phrase unlock that cannot work.
+    """
+    if not encrypted:
+        return "plain"
+    try:
+        import backup_crypto
+        info = backup_crypto.inspect_archive(path)
+        unlock = info.get("unlock") or "legacy"
+        if (unlock == "master_or_phrase" and live_recovery_salt
+                and info.get("recovery_salt") != live_recovery_salt):
+            return "master"
+        return unlock
+    except Exception:
+        return "legacy"
+
+
+def _rewrap_local_archives(master_password, recovery_key, recovery_salt):
+    """Rewrite HBK1 recovery wraps after a phrase regenerate. Best-effort.
+
+    Each rewrap runs as a SUBPROCESS, not an in-process call. gunicorn serves
+    this app on gevent workers, where threading.Thread is a greenlet and plain
+    file I/O is not a yield point — rewrapping even four 64 MB archives
+    in-process pins the worker until gunicorn SIGKILLs it (measured on the RPi4
+    test box: WORKER TIMEOUT, request never answered). Waiting on a child does
+    yield, so the request that started this has long since returned.
+
+    Secrets cross the boundary in 0600 files, the same way
+    _launch_master_rotation hands over a password — never on argv.
+    """
+    if not (master_password and recovery_key and recovery_salt):
+        return
+    try:
+        import sys
+        import backup_crypto
+    except Exception as e:
+        logging.warning("backup_crypto unavailable; skip archive rewrap: %s", e)
+        return
+    # Header reads are a few hundred bytes each, so the legacy filter is safe
+    # to do here; only the whole-file rewrite goes out of process.
+    targets = []
+    for directory in backup_search_dirs():
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".tar.gz.gpg"):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                if backup_crypto.inspect_archive(path).get("format") == "hbk1":
+                    targets.append(path)
+            except Exception as e:
+                logging.warning("Could not inspect %s: %s", path, e)
+    if not targets:
+        return
+    tmpdir = tempfile.mkdtemp(prefix="hb_rewrap_")
+    try:
+        handoff = {}
+        for key, value in (("master", master_password),
+                           ("rk", recovery_key), ("rs", recovery_salt)):
+            handoff[key] = os.path.join(tmpdir, key)
+            fd = os.open(handoff[key], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, value.encode("utf-8"))
+            finally:
+                os.close(fd)
+        for path in targets:
+            r = subprocess.run(
+                [sys.executable, backup_crypto.__file__, "rewrap", "--archive", path,
+                 "--master-file", handoff["master"],
+                 "--recovery-key-file", handoff["rk"],
+                 "--recovery-salt-file", handoff["rs"]],
+                capture_output=True, text=True)
+            if r.returncode != 0:
+                logging.warning("Could not rewrap %s: %s", path, (r.stderr or "").strip())
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 @app.route("/api/backups/list")
 def list_backups():
     backups = []
     epoch = backup_epoch()
+    live_salt = get_env_config().get("RECOVERY_BACKUP_SALT", "")
     seen = set()
     for storage in backup_search_dirs():
         for f in os.listdir(storage):
@@ -2171,18 +2298,110 @@ def list_backups():
                     else:
                         btype = "Full System"
                     encrypted = f.endswith(".gpg")
+                    unlock = archive_unlock(path, encrypted, live_salt)
+                    stale = bool(
+                        encrypted and epoch
+                        and os.path.getmtime(path) < epoch
+                        and unlock in ("legacy", "master"))
                     backups.append({"name": f, "size": f"{size:.2f} MB",
                                     "type": btype,
                                     "encrypted": encrypted,
-                                    # Only meaningful for encrypted archives:
-                                    # a plaintext one opens regardless.
-                                    "needs_old_passphrase": bool(
-                                        encrypted and epoch
-                                        and os.path.getmtime(path) < epoch)})
+                                    "unlock": unlock,
+                                    "needs_old_passphrase": stale})
                 except:
                     pass
     backups.sort(key=lambda x: x["name"], reverse=True)
     return jsonify(backups)
+
+
+def _backup_drive_mounted():
+    """True only if something is really mounted at BACKUP_DIR.
+
+    `mount` exits 0 with the device absent when the fstab entry carries
+    `nofail` — which both drive-setup paths write — so the exit code proves
+    nothing and the question has to be asked separately.
+    """
+    return subprocess.run(["mountpoint", "-q", BACKUP_DIR]).returncode == 0
+
+
+def _candidate_backup_partitions():
+    """Attached data partitions that could be somebody's backup drive."""
+    try:
+        root_dev = subprocess.check_output(
+            ["findmnt", "-n", "-o", "SOURCE", "/"]).decode().strip()
+        root_disk = re.sub(r"p?\d+$", "", root_dev)
+        out = subprocess.check_output(
+            ["lsblk", "-J", "-o", "PATH,TYPE,FSTYPE,MOUNTPOINT,UUID"]).decode()
+    except Exception as e:
+        logging.warning("Could not enumerate drives: %s", e)
+        return []
+    found = []
+
+    def walk(nodes):
+        for n in nodes:
+            walk(n.get("children") or [])
+            path = n.get("path") or ""
+            if not path or path.startswith(root_disk) or "mmcblk" in path:
+                continue
+            if n.get("fstype") not in ("ext4", "ext3", "xfs"):
+                continue
+            if n.get("mountpoint"):        # already in use somewhere
+                continue
+            if not n.get("uuid"):
+                continue
+            found.append({"path": path, "fstype": n["fstype"], "uuid": n["uuid"]})
+
+    walk(json.loads(out).get("blockdevices") or [])
+    return found
+
+
+def _probe_for_archives(part):
+    """Mount `part` read-only for a moment; True if it holds HomeBrain archives."""
+    probe = tempfile.mkdtemp(prefix="hb_probe_")
+    try:
+        if subprocess.run(["mount", "-o", "ro", part["path"], probe]).returncode != 0:
+            return False
+        try:
+            return any(n.startswith("homebrain_backup") and ".tar.gz" in n
+                       for n in os.listdir(probe))
+        finally:
+            subprocess.run(["umount", probe])
+    except Exception as e:
+        logging.warning("Probe of %s failed: %s", part.get("path"), e)
+        return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+@app.route("/api/backups/local/scan", methods=["POST"])
+@limiter.limit("10 per minute")
+def scan_local_backups():
+    """Find archives on a drive attached to THIS box, mounting it if needed.
+
+    The dead-box story is "the machine is gone, I still have the drive". A
+    replacement box has a fresh fstab, so nothing is mounted at BACKUP_DIR and
+    backup_search_dirs() sees an empty world — which is why the setup wizard
+    could previously only restore from off-site. Probe each attached data
+    partition read-only, adopt the first one that actually carries archives,
+    then hand back the ordinary backup list.
+    """
+    if not _backup_drive_mounted():
+        for part in _candidate_backup_partitions():
+            if not _probe_for_archives(part):
+                continue
+            os.makedirs(BACKUP_DIR, exist_ok=True)
+            subprocess.run(["sed", "-i", f"\\|{BACKUP_DIR}|d", "/etc/fstab"])
+            with open("/etc/fstab", "a") as f:
+                f.write(f"UUID={part['uuid']} {BACKUP_DIR} {part['fstype']} "
+                        "defaults,nofail 0 2\n")
+            subprocess.run(["mount", "-a"])
+            if not _backup_drive_mounted():
+                logging.warning("fstab entry written for %s but it did not mount",
+                                part["path"])
+                continue
+            logging.info("Adopted %s as the backup drive", part["path"])
+            break
+    return list_backups()
 
 
 @app.route("/api/backups/offsite/list")
@@ -2222,8 +2441,10 @@ def list_offsite_backups():
             else:
                 btype = "Full System"
             encrypted = name.endswith(".gpg")
-            # ModTime is RFC3339; compare against the rotation epoch the same
-            # way the local list does.
+            # Reading the HBK1 header would need a ranged fetch, so off-site
+            # rows carry the conservative prompt (BACKUP_UNLOCK.md §3.8). The
+            # rotation epoch is still free to check, and dropping it would lose
+            # the only warning a pre-rotation legacy archive ever gets.
             stale = False
             if encrypted and epoch:
                 try:
@@ -2233,7 +2454,9 @@ def list_offsite_backups():
                 except Exception:
                     stale = False
             out.append({"name": name, "size": f"{size:.2f} MB", "type": btype,
-                        "encrypted": encrypted, "needs_old_passphrase": stale,
+                        "encrypted": encrypted,
+                        "unlock": "master_or_phrase" if encrypted else "plain",
+                        "needs_old_passphrase": stale,
                         "remote": True})
     except Exception as e:
         logging.warning(f"Could not parse off-site listing: {e}")
@@ -4352,10 +4575,55 @@ def recovery_status():
     env = get_env_config()
     return jsonify({
         "configured": _recovery_configured(),
+        "backup_unlock": bool(env.get("RECOVERY_BACKUP_KEY") and env.get("RECOVERY_BACKUP_SALT")),
         "created_at": env.get("RECOVERY_CREATED_AT"),
         "word_count": env.get("RECOVERY_WORD_COUNT"),
         "wordlist_ok": recovery.wordlist_ok(),
         "remote_allowed": env.get(RECOVERY_REMOTE_ENV, "false").lower() == "true",
+    })
+
+
+@app.route("/api/recovery/enable-backup-unlock", methods=["POST"])
+@limiter.limit("5 per hour")
+def recovery_enable_backup_unlock():
+    """Store a wrap key for an already-minted phrase. Session-gated.
+
+    Existing boxes only have the verifier hash; they cannot grow a wrap key
+    from it. The owner types the phrase once. Does not rotate the phrase.
+    """
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    if not _recovery_configured():
+        return jsonify({"error": "No recovery phrase is configured on this device."}), 404
+    env = get_env_config()
+    if env.get("RECOVERY_BACKUP_KEY") and env.get("RECOVERY_BACKUP_SALT"):
+        return jsonify({
+            "status": "ok",
+            "backup_unlock": True,
+            "backup_started": False,
+            "message": "Backup unlock is already enabled.",
+        })
+    phrase = (request.get_json(silent=True) or {}).get("phrase", "")
+    if not _verify_recovery_phrase(phrase):
+        time.sleep(2)
+        return jsonify({"error": "Recovery phrase did not match."}), 401
+    rec = recovery.backup_unlock_record(phrase)
+    for k, v in rec.items():
+        update_env_var(k, v)
+    backup_started = False
+    if current_task_status["status"] != "running":
+        cmd = f"bash {SCRIPT_BACKUP} --strategy full >> {LOG_FILES['backup']} 2>&1"
+        threading.Thread(
+            target=run_background_task,
+            args=("Full System Backup", cmd, "backup"),
+        ).start()
+        backup_started = True
+    return jsonify({
+        "status": "ok",
+        "backup_unlock": True,
+        "backup_started": backup_started,
+        "message": ("The next backup will open with this phrase. Archives already "
+                    "on the drive still need the master password that encrypted them."),
     })
 
 
@@ -4372,6 +4640,16 @@ def recovery_regenerate():
             update_env_var(k, v)
     except Exception as e:
         return jsonify({"error": f"Could not generate recovery phrase: {e}"}), 500
+    # Detached, and deliberately AFTER the point of no return: the rewrap
+    # rewrites every local archive, which is far too slow for a request, and a
+    # failure here must never cost the user the phrase we just minted — .env
+    # already holds its hash, so a 500 would leave them with a phrase nobody
+    # has ever seen. The next backup is the backstop (BACKUP_UNLOCK.md §8.4).
+    threading.Thread(target=_rewrap_local_archives, args=(
+        get_env_config().get("MASTER_PASSWORD", ""),
+        record["RECOVERY_BACKUP_KEY"],
+        record["RECOVERY_BACKUP_SALT"],
+    ), daemon=True).start()
     return jsonify({"status": "ok", "recovery_phrase": phrase})
 
 

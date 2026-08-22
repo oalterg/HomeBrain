@@ -54,11 +54,12 @@ STAGING_BASE="$BACKUP_MOUNTDIR"
 cleanup() {
     log_info "Cleaning up..."
     set_maintenance_mode "--off"
-    # Attempt to restart services if we crashed mid-backup
-    if ! is_stack_running; then
-        # Ensure HA is up if we stopped it
-        local ha_cid=$(get_ha_cid)
-        if [[ -n "$ha_cid" ]]; then docker start "$ha_cid" || true; fi
+    # HA is stopped only for its own snapshot. If we died in that window,
+    # bring it back even when Nextcloud is still up (is_stack_running is
+    # false whenever HA is down, but be explicit about the container we
+    # stopped rather than gating on the whole stack).
+    if [[ -n "${HA_CID:-}" ]]; then
+        docker start "$HA_CID" >/dev/null 2>&1 || true
     fi
     
     # Remove staging directory safely
@@ -69,6 +70,10 @@ cleanup() {
     # A partial archive from a run that died mid-write. On success it has
     # already been renamed to its published name, so this is a no-op then.
     if [[ -n "${ARCHIVE_TMP:-}" ]]; then rm -f "$ARCHIVE_TMP"; fi
+    # The envelope working dir holds the master password, the DEK and the
+    # recovery wrap key. A signal between sealing and verifying must not leave
+    # those three sitting in /tmp.
+    if [[ -n "${SEAL_DIR:-}" ]]; then rm -rf "$SEAL_DIR"; fi
 
     rm -f "$LOCK_FILE"  # Ensure lock release
     log_info "Backup cleanup complete."
@@ -101,6 +106,10 @@ fi
 # ARCHIVE_TMP below) — which is exactly what would let them sit on the drive
 # forever. Swept before the space check so the room comes back first.
 rm -f "$BACKUP_MOUNTDIR"/.homebrain_backup*.part
+# Same argument for a rewrap (phrase regenerate) killed mid-copy: .hbk1_*.tmp
+# is a full-size archive that no retention pattern matches, so it would sit on
+# the drive forever.
+rm -f "$BACKUP_MOUNTDIR"/.hbk1_*.tmp
 
 # 2. Check Service Health (Required to identify volumes)
 HA_CID=$(get_ha_cid)
@@ -162,10 +171,11 @@ if [[ "$STRATEGY" == "system" ]]; then SUFFIX="_system"; fi
 STAGING_DIR=$(mktemp -d -p "$STAGING_BASE" staging_XXXXXX)
 ARCHIVE_PATH="$BACKUP_MOUNTDIR/homebrain_backup${SUFFIX}_${DATE}.tar.gz"
 
-# Encryption: on unless explicitly disabled. The passphrase is the master
-# password AT BACKUP TIME — each archive is self-contained (gpg stores the
-# s2k salt in the header), so restoring after a master-password rotation just
-# needs the password that was current when the archive was made.
+# Encryption: on unless explicitly disabled. The body is GPG-symmetric with a
+# random DEK; an HBK1 header wraps that DEK under the master password and,
+# when RECOVERY_BACKUP_KEY is set, the recovery phrase. Restore accepts either
+# secret. Legacy .gpg files (no HBK1 header) still open with the master
+# password that encrypted them.
 ENCRYPT=false
 if [[ "${BACKUP_ENCRYPT:-true}" != "false" ]] && [[ -n "${MASTER_PASSWORD:-}" ]]; then
     ENCRYPT=true
@@ -238,12 +248,6 @@ fi
 
 set_maintenance_mode "--on"
 
-# STOP Home Assistant to ensure SQLite DB consistency
-if [[ -n "$HA_CID" ]]; then
-    log_info "Stopping Home Assistant..."
-    docker stop "$HA_CID"
-fi
-
 # 6. Database Dump (full + system)
 if [[ "$STRATEGY" != "data_only" && -n "$DB_CID" ]]; then
     log_info "Dumping Nextcloud Database..."
@@ -301,13 +305,23 @@ if [[ "$STRATEGY" != "data_only" && -n "$NC_CID" ]]; then
 fi
 
 # 9. Home Assistant Config (Helper Container - All Strategies)
+# Stop only for this copy. Holding HA down across the Nextcloud rsync (the old
+# order) left it stopped for minutes, and a rotation's detached backup made
+# that look like "change password and Home Assistant dies".
 if [[ -n "$HA_CID" ]]; then
+    log_info "Stopping Home Assistant for a consistent snapshot..."
+    docker stop "$HA_CID"
     log_info "Syncing Home Assistant Config..."
     # We use --volumes-from because HA uses a named volume, not a bind mount.
-    # Note: HA_CID is stopped, but we can still mount its volumes using the ID.
-    docker run --rm --volumes-from "$HA_CID" \
+    # The container is stopped; the volume is still mountable from its ID.
+    if ! docker run --rm --volumes-from "$HA_CID" \
         -v "$STAGING_DIR/ha_config":/backup \
-        alpine sh -c "cp -a /config/. /backup/" || die "HA Config backup failed."
+        alpine sh -c "cp -a /config/. /backup/"; then
+        docker start "$HA_CID" >/dev/null 2>&1 || true
+        die "HA Config backup failed."
+    fi
+    log_info "Restarting Home Assistant..."
+    docker start "$HA_CID" || log_warn "Failed to restart Home Assistant — start it from the dashboard if it stays down."
 fi
 
 # ── OpenClaw Config & Workspace ─────────────────────────────────────────────
@@ -441,12 +455,35 @@ fi
 
 # 11. Compress (+ encrypt)
 if [[ "$ENCRYPT" == "true" ]]; then
-    log_info "Compressing + encrypting archive (AES256, passphrase = master password)..."
+    log_info "Compressing + encrypting archive (AES256, HBK1 envelope)..."
+    SEAL_DIR=$(mktemp -d)
+    chmod 700 "$SEAL_DIR"
+    MASTER_FILE="$SEAL_DIR/master"
+    DEK_FILE="$SEAL_DIR/dek"
+    HEADER_FILE="$SEAL_DIR/header"
+    printf '%s' "$MASTER_PASSWORD" > "$MASTER_FILE"
+    chmod 600 "$MASTER_FILE"
+    SEAL_ARGS=(--master-file "$MASTER_FILE" --dek-file "$DEK_FILE" --header-file "$HEADER_FILE")
+    if [[ -n "${RECOVERY_BACKUP_KEY:-}" && -n "${RECOVERY_BACKUP_SALT:-}" ]]; then
+        printf '%s' "$RECOVERY_BACKUP_KEY" > "$SEAL_DIR/rk"
+        printf '%s' "$RECOVERY_BACKUP_SALT" > "$SEAL_DIR/rs"
+        chmod 600 "$SEAL_DIR/rk" "$SEAL_DIR/rs"
+        SEAL_ARGS+=(--recovery-key-file "$SEAL_DIR/rk" --recovery-salt-file "$SEAL_DIR/rs")
+    fi
+    HB_PYTHON="$(backup_crypto_python)"
+    "$HB_PYTHON" "$BACKUP_CRYPTO" seal "${SEAL_ARGS[@]}" \
+        || die "Archive envelope seal failed — not publishing an unwrapped file."
+    # Header first, then the GPG body streamed straight onto the end of it. The
+    # archive is written ONCE, on the backup drive. Staging the body in $TMPDIR
+    # and concatenating afterwards would put a second full-size copy on the OS
+    # disk — which the space check above never measures (it only looks at
+    # $BACKUP_MOUNTDIR) and which STAGING_BASE exists specifically to avoid.
+    cat "$HEADER_FILE" > "$ARCHIVE_TMP" || die "Could not start the encrypted archive."
     tar -C "$STAGING_DIR" -cz . | gpg --batch --yes --symmetric \
         --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
         --s2k-count 65011712 --compress-algo none \
-        --passphrase-fd 3 -o "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
-        || { rm -f "$ARCHIVE_TMP"; die "Compression/encryption failed."; }
+        --passphrase-fd 3 3< "$DEK_FILE" >> "$ARCHIVE_TMP" \
+        || die "Compression/encryption failed."
 else
     log_info "Compressing archive (unencrypted — BACKUP_ENCRYPT=false)..."
     tar -C "$STAGING_DIR" -czf "$ARCHIVE_TMP" . || die "Compression failed."
@@ -459,7 +496,11 @@ sync
 if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
     log_info "Verifying archive integrity..."
     if [[ "$ENCRYPT" == "true" ]]; then
-        gpg --batch --quiet --decrypt --passphrase-fd 3 "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
+        # Read back the file we are about to publish, not a temp copy of the
+        # body: catching truncated writes and bad sectors on the drive is the
+        # entire point of this step.
+        "$HB_PYTHON" "$BACKUP_CRYPTO" copy-body --archive "$ARCHIVE_TMP" \
+            | gpg --batch --quiet --decrypt --passphrase-fd 3 3< "$DEK_FILE" \
             | tar -tz > /dev/null \
             || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     else
@@ -468,6 +509,9 @@ if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
     fi
     log_info "Archive verified."
 fi
+# Shred the envelope secrets now rather than at exit: the off-site mirror below
+# can run for hours, and the DEK opens the archive it is uploading.
+if [[ -n "${SEAL_DIR:-}" ]]; then rm -rf "$SEAL_DIR"; SEAL_DIR=""; fi
 
 # Publish. Before this rename the archive exists under no name the mirror,
 # retention or the dashboard will match; after it, it is complete by

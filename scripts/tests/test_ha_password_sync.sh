@@ -138,9 +138,11 @@ echo "== a password HomeBrain never set is not HomeBrain's to change =="
 
 # Home Assistant lets its owner change their own password, and on a migrated
 # box the account predates HomeBrain entirely. Rotating it there would take
-# away the login they have been using.
-HA_ADMIN_USER=admin
+# away the login they have been using. HomeBrain's onboarded `admin` is not
+# that case — the master password owns it.
+HA_ADMIN_USER=oliaidanaberlin
 HA_PASSWORD_MANAGED=false
+OWNER=oliaidanaberlin
 CHANGED_USER=""
 ha_sync_admin_password "hunter2" >/dev/null 2>&1
 rc=$?
@@ -149,6 +151,9 @@ if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
 else
     bad "leaves a self-managed password alone (rc=$rc, aimed at '${CHANGED_USER:-nothing}')"
 fi
+OWNER=admin
+HA_ADMIN_USER=admin
+HA_PASSWORD_MANAGED=true
 
 # The migration decides ownership by *proof*, not by the account's name:
 # HA either already accepts the password on record, or it does not.
@@ -162,6 +167,7 @@ esac
 
 unrecorded
 LOGIN='{"errors":{"base":"invalid_auth"}}'
+OWNER=oliaidanaberlin
 ha_sync_admin_password "hunter2" >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
@@ -171,6 +177,26 @@ if [ "$rc" -eq 3 ] && [ -z "$CHANGED_USER" ]; then
     esac
 else
     bad "a box whose HA refuses the recorded password must not be rotated (rc=$rc)"
+fi
+OWNER=admin
+
+# Restore / rotation: HomeBrain's onboarded `admin` still owns the store, but
+# the recorded password is the new master and the store still has the old one.
+# That must not file the box as self-managed — the admin login follows the
+# master password.
+unrecorded
+LOGIN='{"type": "create_entry"}'
+OWNER=admin
+RECORDED=""; CHANGED_USER=""
+ha_sync_admin_password "hunter2" >/dev/null 2>&1
+rc=$?
+if [ "$CHANGED_USER" = "admin" ] && [ "$rc" -eq 0 ]; then
+    case "$RECORDED" in
+        *"HA_PASSWORD_MANAGED=true"*) ok "HomeBrain's admin account follows the master password even when the store still has the old one" ;;
+        *) bad "HomeBrain's admin account follows the master password (got '$RECORDED')" ;;
+    esac
+else
+    bad "HomeBrain's admin account follows the master password (rc=$rc, aimed at '${CHANGED_USER:-nothing}')"
 fi
 
 echo "== taking ownership is a separate, deliberate act =="
@@ -417,7 +443,7 @@ done
 for code_case in "3:self-managed" "2:unreadable owner" "1:refused"; do
     rc_want="${code_case%%:*}"; what="${code_case#*:}"
     case "$rc_want" in
-        3) HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=false ;;
+        3) HA_ADMIN_USER=oliaidanaberlin; HA_PASSWORD_MANAGED=false; OWNER=oliaidanaberlin ;;
         2) unrecorded; OWNER="" ;;
         1) HA_ADMIN_USER=admin; HA_PASSWORD_MANAGED=true; CLI_RC=1 ;;
     esac

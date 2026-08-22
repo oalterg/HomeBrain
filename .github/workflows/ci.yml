@@ -40,6 +40,7 @@ jobs:
                             scripts/tests/test_setup_credentials.py \
                             scripts/tests/test_welcome_wizard.py \
                             scripts/tests/test_backup_discovery.py \
+                            scripts/tests/test_backup_crypto.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
                             scripts/tests/test_offsite_progress.py \
@@ -52,6 +53,8 @@ jobs:
         run: node scripts/tests/test_creds_sheet.js
       - name: backup encryption round-trip (gpg)
         run: bash scripts/tests/test_backup_encryption.sh
+      - name: backup unlock envelope (HBK1 + legacy)
+        run: bash scripts/tests/test_backup_unlock.sh
       - name: update guard
         run: bash scripts/tests/test_update_guard.sh
       - name: platform detection (fixture sysfs trees)

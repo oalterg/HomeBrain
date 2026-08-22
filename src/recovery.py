@@ -157,7 +157,7 @@ def _params_str(n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_DKLEN):
     return f"scrypt$n={n}$r={r}$p={p}$dklen={dklen}"
 
 
-def _parse_params(params):
+def parse_params(params):
     if not params or not params.startswith("scrypt$"):
         raise RecoveryError(f"unsupported recovery KDF params: {params!r}")
     kv = {}
@@ -207,7 +207,7 @@ def verify_phrase(phrase, salt_b64, hash_b64, params):
     try:
         if not (salt_b64 and hash_b64 and params):
             return False
-        n, r, p, dklen = _parse_params(params)
+        n, r, p, dklen = parse_params(params)
         salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(hash_b64)
         actual = _scrypt(phrase, salt, n, r, p, dklen)
@@ -216,11 +216,63 @@ def verify_phrase(phrase, salt_b64, hash_b64, params):
         return False
 
 
+def looks_like_recovery_phrase(secret):
+    """True if ``secret`` looks like a recovery phrase rather than a password.
+
+    Wizard restore uses this as the discriminator: master passwords are a
+    single token (``NEW_PASSWORD_RE``, no spaces); recovery phrases are
+    space-joined words. Empty is neither — callers refuse that separately.
+    """
+    if not secret or not str(secret).strip():
+        return False
+    if is_valid_new_password(secret):
+        return False
+    return " " in normalize_phrase(secret)
+
+
+def derive_backup_key(phrase, salt=None, params=None):
+    """Wrap-key material for backup archives, derived from the phrase.
+
+    Domain-separated from the verifier hash: a *second* 16-byte salt, never
+    ``RECOVERY_SCRYPT_SALT``. Returns ``{salt, key}`` (both base64). The
+    plaintext phrase is not in the result.
+
+    ``params`` re-derives under the cost settings an existing archive was
+    sealed with, so bumping the defaults cannot orphan archives — the same
+    reason ``verify_phrase`` parses the params it stored.
+    """
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    elif isinstance(salt, str):
+        salt = base64.b64decode(salt)
+    n, r, p, dklen = parse_params(params) if params else (
+        SCRYPT_N, SCRYPT_R, SCRYPT_P, SCRYPT_DKLEN)
+    key = _scrypt(phrase, salt, n, r, p, dklen)
+    return {
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "key": base64.b64encode(key).decode("ascii"),
+    }
+
+
+def backup_unlock_record(phrase):
+    """The two .env keys that let backups be opened with the recovery phrase.
+
+    Used at mint time (folded into ``build_recovery_record``) and by the
+    enablement path for boxes that already have a verifier hash but no wrap
+    key — we cannot compute this from the hash.
+    """
+    b = derive_backup_key(phrase)
+    return {
+        "RECOVERY_BACKUP_SALT": b["salt"],
+        "RECOVERY_BACKUP_KEY": b["key"],
+    }
+
+
 def build_recovery_record(phrase, word_count, created_at):
     """Map a freshly-minted phrase to the RECOVERY_* keys persisted in .env.
     The plaintext phrase is intentionally NOT part of the record."""
     h = hash_phrase(phrase)
-    return {
+    rec = {
         "RECOVERY_SCRYPT_SALT": h["salt"],
         "RECOVERY_SCRYPT_HASH": h["hash"],
         "RECOVERY_PARAMS": h["params"],
@@ -228,3 +280,5 @@ def build_recovery_record(phrase, word_count, created_at):
         "RECOVERY_WORD_COUNT": str(word_count),
         "RECOVERY_CREATED_AT": str(int(created_at)),
     }
+    rec.update(backup_unlock_record(phrase))
+    return rec
