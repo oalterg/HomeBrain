@@ -618,7 +618,27 @@ Nine archives, zero over-promises. The five `master` rows are HBK1 files whose
 recovery wrap belongs to the phrase generation before the dead-box restore —
 exactly what §9.2's salt check exists to catch.
 
-### 8.8 Suites
+### 8.8 §6.7 — dead-box control, the master-password path
+
+The same wizard walk as §8.6, with the old master password typed instead of the
+phrase. Nuclear reset, drive detached and fstab stripped again, provision, then
+*Find my backup drive* (9 archives found on an unmounted drive) and restore
+with `source: "local"`.
+
+| assertion | result |
+|---|---|
+| handover password == the password typed | **True** |
+| `recovery_adopted` (must be false here) | **False** |
+| a *new* phrase minted (§3.7: the hash was never in the archive) | yes, 6 words |
+| `.env` `MASTER_PASSWORD` == the password typed | yes |
+| dashboard accepts that password | HTTP 200 |
+| Nextcloud data restored, six containers up | yes |
+
+So the two wizard branches now both hold on hardware: a phrase mints a new box
+password (§8.6), a master password is adopted unchanged (here). The task is
+also named correctly for its source — "Restore From Backup Drive".
+
+### 8.9 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -677,16 +697,23 @@ Everything in §1–§3 is fixed and merged (PR #205). What is left:
 
 ### Hardware E2E not yet walked
 
-The plan's §6 list has eight items. Items 2, 4, 5 and 6 are done (§8), and 1
-and 3 are partly covered. Genuinely untested on real hardware:
+The plan's §6 list has eight items. Items 2 and 4–7 are done (§8), and 1 and 3
+are partly covered. Genuinely untested on real hardware:
 
 - **x86.** Everything here was measured on the RPi4 (aarch64). The plan asks
   for both, and the production boxes are x86. Nothing in the change is
   architecture-specific, but the tmpfs sizing that made B1 fatal is
   platform-dependent and worth re-measuring.
-- **§6.7 — dead-box control with the master password.** Unit-tested
-  (`test_wizard_restore_with_master_password_seeds_it`); the hardware walk
-  covered only the phrase path.
+
+  None of the outstanding items need a *wipeable* x86 box, which is the point
+  worth remembering: the two wizard walks (§6.6, §6.7) are the only ones that
+  need a wipe, and both are done on the RPi. On a live box the restore path can
+  be proved without `restore.sh` ever running — `backup_crypto open` followed by
+  `copy-body | gpg | tar -tz` reads a real archive end to end and writes
+  nothing. A single ordinary backup with a `/tmp` watcher covers B1 and B2 at
+  production scale. Regenerate is the one action to avoid: it rotates the
+  phrase and invalidates the owner's printed sheet, so measure rewrap
+  throughput on a *copy* of an archive instead.
 - **§6.8 — `BACKUP_ENCRYPT=false`** still publishing a plaintext `.tar.gz`.
 - **The off-site half.** `OFFSITE_ENABLED=false` on the test box, so the
   wizard's off-site branch and M2's stale-flag behaviour were verified by unit
