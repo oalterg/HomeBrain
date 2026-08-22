@@ -638,7 +638,58 @@ So the two wizard branches now both hold on hardware: a phrase mints a new box
 password (§8.6), a master password is adopted unchanged (here). The task is
 also named correctly for its source — "Restore From Backup Drive".
 
-### 8.9 Suites
+### 8.9 x86 — berlin (.58), on the beta build, 2026-08-22
+
+Production box, Ubuntu x86_64, 30 GB RAM. Verified it was running merged `main`
+by sha256 of `backup_crypto.py`, `recovery.py`, `backup.sh`, `restore.sh` and
+`app.py` — all five match. (`git log` on that box is **not** a reliable signal:
+the beta channel rsyncs a `main` tarball over the checkout, so the git metadata
+still reads `#89`.)
+
+**The B1 number that matters.** `/tmp` there is **tmpfs, 15.1 GB**. The
+production full archives are **97.6 GB and 98.0 GB**.
+
+The pre-fix code staged the whole body in `$TMPDIR` before concatenating. On
+this box that is a 98 GB write into a 15.1 GB tmpfs — it cannot complete, and
+the space check would never have caught it because it only measures
+`/mnt/backup` (596 GB free). Nightly full backups would simply have started
+failing, after burning half the box's RAM. The RPi survived only because its
+archives are 64 MB.
+
+Measured with the fix, during a real `--strategy system` backup:
+
+| | |
+|---|---|
+| peak file in `/tmp` for the whole run | **1,087,504 B** — `/tmp/openclaw/openclaw-2026-08-22.log`, unrelated |
+| archive produced | `hbk1`, `unlock: master`, opens with the master password |
+
+Zero bytes of archive body in tmpfs, and the size-independence is structural:
+the body streams to `$ARCHIVE_TMP` on the backup drive, so `/tmp` holds only the
+few hundred bytes of seal material regardless of archive size.
+
+**Everything else on x86:**
+
+- All suites pass natively: `test_backup_crypto` 11/11, `test_recovery` 11/11,
+  `test_master_password` 14/14, `test_setup_credentials` 15/15,
+  `test_offsite_progress`, `test_backup_unlock.sh` 14/14.
+- **Restore path proved without `restore.sh` running.** On a real archive
+  written by merged code: DEK unwrapped with the master password, then
+  `copy-body | gpg | tar -tz` listed **2802 entries** through the full pipeline.
+  A wrong secret was rejected. Nothing was written.
+- **M2 verified live against a real remote** (`OFFSITE_ENABLED=true`). Off-site
+  rows carry `unlock: master_or_phrase` (conservative, per §3.8) *and*
+  `needs_old_passphrase: true` for archives older than the rotation epoch —
+  the flag that had been hardcoded to `false`. Unit tests could only ever
+  approximate this.
+- Local list is truthful too: the two new HBK1 snapshots read `master` (no
+  recovery wrap yet), the 08-12 legacy archive reads `needs_old=True`, the
+  post-rotation legacy archive reads `False`.
+
+**.58 still reports `backup_unlock: false`** — its phrase was minted before this
+shipped, so it needs the §3.9 enablement path. That requires the owner to type
+the real phrase and is theirs to run.
+
+### 8.10 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -697,29 +748,23 @@ Everything in §1–§3 is fixed and merged (PR #205). What is left:
 
 ### Hardware E2E not yet walked
 
-The plan's §6 list has eight items. Items 2 and 4–7 are done (§8), and 1 and 3
-are partly covered. Genuinely untested on real hardware:
+The plan's §6 list has eight items. Items 2 and 4–7 are done (§8), 1 and 3 are
+partly covered, and x86 is covered by §8.9. What is left:
 
-- **x86.** Everything here was measured on the RPi4 (aarch64). The plan asks
-  for both, and the production boxes are x86. Nothing in the change is
-  architecture-specific, but the tmpfs sizing that made B1 fatal is
-  platform-dependent and worth re-measuring.
-
-  None of the outstanding items need a *wipeable* x86 box, which is the point
-  worth remembering: the two wizard walks (§6.6, §6.7) are the only ones that
-  need a wipe, and both are done on the RPi. On a live box the restore path can
-  be proved without `restore.sh` ever running — `backup_crypto open` followed by
-  `copy-body | gpg | tar -tz` reads a real archive end to end and writes
-  nothing. A single ordinary backup with a `/tmp` watcher covers B1 and B2 at
-  production scale. Regenerate is the one action to avoid: it rotates the
-  phrase and invalidates the owner's printed sheet, so measure rewrap
-  throughput on a *copy* of an archive instead.
 - **§6.8 — `BACKUP_ENCRYPT=false`** still publishing a plaintext `.tar.gz`.
-- **The off-site half.** `OFFSITE_ENABLED=false` on the test box, so the
-  wizard's off-site branch and M2's stale-flag behaviour were verified by unit
-  test only, never against a live remote.
+  Belongs on the test box: `load_env` exports `.env` over anything set in the
+  environment first (the Compose precedence trap), so testing it means editing
+  a live `.env`, which is not something to do on a production box for a code
+  path this change never touched.
+- **§3.9 enablement on .58.** It reports `backup_unlock: false`, so its
+  archives are master-only until the owner types the real phrase once. The
+  path itself is proven (§8.7); this is an operational step, not a test gap.
 - **Restore with an empty passphrase** (falls back to `MASTER_PASSWORD`) on an
-  HBK1 archive — §6.1's second sentence.
+  HBK1 archive — §6.1's second sentence. Needs a real `restore.sh` run, so
+  test box only.
+- **Rewrap throughput at 98 GB.** Unmeasured, and deliberately so: the only
+  trigger is regenerate, which rotates the phrase the owner holds on paper.
+  Measure it on a *copy* of an archive if the number is ever wanted.
 
 ### Known imprecision in `unlock`, with the fix if it ever bites
 
