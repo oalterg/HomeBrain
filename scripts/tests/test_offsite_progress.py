@@ -18,8 +18,9 @@ Runnable two ways (needs Flask — install requirements.txt first):
 """
 import os
 import sys
+import json
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
@@ -98,6 +99,54 @@ def test_finds_a_line_past_the_64k_tail_window():
         _log(tmp, ("x" * 200_000) + "\n" + LINE + "\n")
         p = hb.offsite_progress(_stamp(LINE) - 60)
         assert p is not None and p["percent"] == 56, p
+
+
+# --- Off-site listing: which archives still need the old master password ----
+# The rotation epoch is the only signal available for a remote archive (reading
+# its HBK1 header would need a ranged fetch), and dropping it once left every
+# pre-rotation legacy archive off-site with no warning at all.
+
+class _Rclone:
+    """Stand in for `bash utilities.sh offsite_list`."""
+
+    def __init__(self, payload):
+        self.stdout, self.returncode, self.stderr = payload, 0, ""
+
+
+def _offsite(monkey_entries, epoch):
+    saved_run, saved_env, saved_epoch = hb.subprocess.run, hb.get_env_config, hb.backup_epoch
+    hb.subprocess.run = lambda *a, **kw: _Rclone(json.dumps(monkey_entries))
+    hb.get_env_config = lambda: {"OFFSITE_ENABLED": "true"}
+    hb.backup_epoch = lambda: epoch
+    try:
+        with hb.app.test_request_context():
+            return json.loads(hb.list_offsite_backups().get_data(as_text=True))
+    finally:
+        hb.subprocess.run, hb.get_env_config, hb.backup_epoch = saved_run, saved_env, saved_epoch
+
+
+def test_offsite_flags_archives_older_than_the_rotation():
+    rows = _offsite([
+        {"Name": "homebrain_backup_2026-08-01_03-00-00.tar.gz.gpg",
+         "Size": 1024, "ModTime": "2026-08-01T03:00:00Z"},
+        {"Name": "homebrain_backup_2026-08-20_03-00-00.tar.gz.gpg",
+         "Size": 1024, "ModTime": "2026-08-20T03:00:00Z"},
+    ], epoch=datetime(2026, 8, 10, tzinfo=timezone.utc).timestamp())
+    by_name = {r["name"]: r for r in rows}
+    old = by_name["homebrain_backup_2026-08-01_03-00-00.tar.gz.gpg"]
+    new = by_name["homebrain_backup_2026-08-20_03-00-00.tar.gz.gpg"]
+    assert old["needs_old_passphrase"] is True, old
+    assert new["needs_old_passphrase"] is False, new
+    # Header unreadable without fetching, so both keep the conservative prompt.
+    assert old["unlock"] == "master_or_phrase" and new["unlock"] == "master_or_phrase"
+
+
+def test_offsite_without_a_rotation_flags_nothing():
+    rows = _offsite([
+        {"Name": "homebrain_backup_2026-08-01_03-00-00.tar.gz.gpg",
+         "Size": 1024, "ModTime": "2026-08-01T03:00:00Z"},
+    ], epoch=0)
+    assert rows[0]["needs_old_passphrase"] is False, rows
 
 
 if __name__ == "__main__":

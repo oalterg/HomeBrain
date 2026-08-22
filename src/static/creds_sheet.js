@@ -72,8 +72,9 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     if (phrase) lines.push(
         'To use the recovery phrase: open the Dashboard, click "Forgot your',
         'password?", enter the phrase and choose a new master password.',
-        'If the box is gone: on a new HomeBrain, Restore system, and enter',
-        'this phrase (or the master password) to decrypt the backup drive.',
+        'If the box is gone: plug the backup drive into a new HomeBrain, tick',
+        '"Restore system", and enter this phrase (or the master password).',
+        'An off-site copy works the same way if you have one.',
         '',
     );
     lines.push(

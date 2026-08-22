@@ -296,6 +296,68 @@ def test_wizard_restore_rejects_empty_and_garbage_secrets():
         h.close()
 
 
+def _cmd(h):
+    """The shell command start_setup handed to the background task."""
+    _a, kw = h.threads[-1]
+    return kw["args"][1]       # run_background_task(task_name, command, log_type)
+
+
+def test_wizard_restore_from_the_backup_drive_does_not_fetch_offsite():
+    """The dead-box story is "I still have the drive". A local archive is
+    resolved to a path here; --from-offsite would send restore.sh to rclone."""
+    h = _fresh()
+    saved = hb.find_backup
+    hb.find_backup = lambda name: "/mnt/backup/" + name
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": PHRASE, "source": "local",
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        cmd = _cmd(h)
+        assert "--from-offsite" not in cmd, cmd
+        assert "/mnt/backup/" + ARCHIVE in cmd, cmd
+    finally:
+        hb.find_backup = saved
+        h.close()
+
+
+def test_wizard_restore_from_a_drive_that_does_not_have_it_is_refused():
+    h = _fresh()
+    saved = hb.find_backup
+    hb.find_backup = lambda name: None
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": PHRASE, "source": "local",
+        })
+        assert r.status_code == 404, r.status_code
+    finally:
+        hb.find_backup = saved
+        h.close()
+
+
+def test_wizard_restore_defaults_to_offsite():
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW,
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert "--from-offsite" in _cmd(h)
+    finally:
+        h.close()
+
+
+def test_wizard_restore_rejects_an_unknown_source():
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW, "source": "dropbox",
+        })
+        assert r.status_code == 400, r.status_code
+    finally:
+        h.close()
+
+
 def _run_standalone():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -70,25 +71,13 @@ def dek_to_passphrase(dek: bytes) -> str:
     return dek.hex()
 
 
-def passphrase_to_dek(text: str) -> bytes:
-    return bytes.fromhex(text.strip())
-
-
-def _master_wrap_key(password: str, salt: bytes) -> bytes:
+def _master_wrap_key(password: str, salt: bytes, params: str | None = None) -> bytes:
     # Do not normalize: master passwords are case-sensitive tokens.
-    return hashlib_scrypt_raw(password, salt)
-
-
-def hashlib_scrypt_raw(secret: str, salt: bytes) -> bytes:
-    import hashlib
+    n, r, p, dklen = recovery.parse_params(params) if params else (
+        recovery.SCRYPT_N, recovery.SCRYPT_R, recovery.SCRYPT_P, recovery.SCRYPT_DKLEN)
     return hashlib.scrypt(
-        secret.encode("utf-8"),
-        salt=salt,
-        n=recovery.SCRYPT_N,
-        r=recovery.SCRYPT_R,
-        p=recovery.SCRYPT_P,
-        dklen=recovery.SCRYPT_DKLEN,
-        maxmem=recovery.SCRYPT_MAXMEM,
+        password.encode("utf-8"), salt=salt,
+        n=n, r=r, p=p, dklen=dklen, maxmem=recovery.SCRYPT_MAXMEM,
     )
 
 
@@ -139,21 +128,22 @@ def read_header(path: str) -> tuple[dict | None, int]:
         magic = f.read(len(MAGIC))
         if magic != MAGIC:
             return None, 0
-        buf = b""
-        while True:
-            chunk = f.read(1)
-            if not chunk:
-                raise BackupCryptoError("truncated HBK1 header")
-            buf += chunk
-            if buf.endswith(b"\n\n"):
-                break
-            if len(buf) > HEADER_MAX:
-                raise BackupCryptoError("HBK1 header too large")
+        buf = f.read(HEADER_MAX)
+        end = buf.find(b"\n\n")
+        if end < 0:
+            raise BackupCryptoError(
+                "truncated HBK1 header" if len(buf) < HEADER_MAX
+                else "HBK1 header too large")
         try:
-            header = json.loads(buf[:-2].decode("ascii"))
+            header = json.loads(buf[:end].decode("ascii"))
         except (ValueError, UnicodeDecodeError) as exc:
             raise BackupCryptoError(f"invalid HBK1 header: {exc}") from exc
-        return header, f.tell()
+        # Fail closed on anything this build cannot read, rather than guessing
+        # at a layout a later version wrote.
+        if header.get("v") != 1 or header.get("alg") != ALG:
+            raise BackupCryptoError(
+                f"unsupported HBK1 header: v={header.get('v')!r} alg={header.get('alg')!r}")
+        return header, len(MAGIC) + end + 2
 
 
 def inspect_archive(path: str) -> dict:
@@ -178,22 +168,30 @@ def inspect_archive(path: str) -> dict:
         "offset": offset,
         "has_master": has_master,
         "has_recovery": has_recovery,
+        # Which phrase generation the recovery wrap belongs to. Callers compare
+        # it with the live RECOVERY_BACKUP_SALT: a wrap left over from a
+        # retired phrase is not one the owner can open.
+        "recovery_salt": (wraps.get("recovery") or {}).get("salt"),
         "unlock": unlock,
         "v": header.get("v"),
     }
 
 
 def unwrap_dek(header: dict, secret: str) -> bytes | None:
+    # Derive under the cost settings THIS archive was sealed with. Using the
+    # current module constants instead would make a future scrypt bump orphan
+    # every existing archive — under both secrets, not just the phrase.
+    kdf = header.get("kdf")
     wraps = header.get("wraps") or {}
     master = wraps.get("master")
     if master and master.get("salt"):
-        key = _master_wrap_key(secret, _unb64(master["salt"]))
+        key = _master_wrap_key(secret, _unb64(master["salt"]), kdf)
         dek = _aes_unwrap(key, master)
         if dek is not None:
             return dek
     rec = wraps.get("recovery")
     if rec and rec.get("salt"):
-        derived = recovery.derive_backup_key(secret, rec["salt"])
+        derived = recovery.derive_backup_key(secret, rec["salt"], kdf)
         dek = _aes_unwrap(_unb64(derived["key"]), rec)
         if dek is not None:
             return dek
@@ -251,10 +249,17 @@ def open_to_dek_file(archive: str, secret_file: str, dek_file: str) -> None:
 
 def rewrap_file(path: str, master_password: str,
                 recovery_key_b64: str, recovery_salt_b64: str) -> None:
-    """Replace wraps.recovery; leave the GPG body untouched."""
+    """Replace wraps.recovery; leave the GPG body untouched.
+
+    Timestamps and mode are carried over onto the replacement. Retention sorts
+    archives by mtime (backup.sh) and the off-site mirror compares size+mtime,
+    so a rewrite that stamps every archive with "now" would scramble which
+    backup is oldest and re-upload the whole drive.
+    """
     header, offset = read_header(path)
     if header is None:
         raise BackupCryptoError("not an HBK1 archive")
+    st = os.stat(path)
     dek = unwrap_dek(header, master_password)
     if dek is None:
         raise BackupCryptoError("master wrap did not open; cannot rewrap")
@@ -279,7 +284,8 @@ def rewrap_file(path: str, master_password: str,
                 os.write(fd, chunk)
         os.close(fd)
         fd = -1
-        os.chmod(tmp, 0o600)
+        os.chmod(tmp, st.st_mode & 0o777)
+        os.utime(tmp, (st.st_atime, st.st_mtime))
         os.replace(tmp, path)
         tmp = ""
     finally:
@@ -323,7 +329,15 @@ def _cmd_inspect(args):
 
 
 def _cmd_copy_body(args):
-    copy_body(args.archive, sys.stdout.buffer)
+    try:
+        copy_body(args.archive, sys.stdout.buffer)
+    except BrokenPipeError:
+        # gpg downstream rejected the body and closed the pipe. That is a
+        # normal failure here (corrupt archive, wrong DEK); the caller already
+        # reports it. Exit non-zero quietly instead of spraying a traceback
+        # into backup.log / restore.log.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        raise BackupCryptoError("archive body could not be piped (downstream closed)")
 
 
 def _cmd_rewrap(args):

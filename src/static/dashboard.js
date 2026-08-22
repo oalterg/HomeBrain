@@ -2451,13 +2451,18 @@ async function confirmRestore() {
         const stale = meta.needs_old_passphrase;
         const unlock = meta.unlock || '';
         let body, label;
-        if (unlock === 'master_or_phrase') {
+        // stale first: an off-site row is always reported as master_or_phrase
+        // (its header cannot be read without fetching it), so checking unlock
+        // first would swallow the pre-rotation warning entirely.
+        if (stale) {
+            body = 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.'
+                + (unlock === 'legacy' ? '' : ' If it was made after backup unlock was enabled, your recovery phrase opens it too.');
+            label = 'Previous master password';
+        } else if (unlock === 'master_or_phrase') {
             body = 'Leave this empty to use the current master password. You can also enter the recovery phrase, or a previous master password.';
             label = 'Passphrase (optional)';
-        } else if (stale || unlock === 'legacy') {
-            body = unlock === 'legacy'
-                ? 'This backup predates backup-unlock, so it needs the master password that was in use when it was made — the recovery phrase will not open it.'
-                : 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.';
+        } else if (unlock === 'legacy') {
+            body = 'This backup predates backup-unlock, so it needs the master password that was in use when it was made — the recovery phrase will not open it.';
             label = 'Previous master password';
         } else {
             body = 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.';

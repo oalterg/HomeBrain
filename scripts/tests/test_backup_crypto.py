@@ -8,6 +8,8 @@ Runnable two ways (needs cryptography):
 import os
 import sys
 import json
+import atexit
+import shutil
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
@@ -20,8 +22,22 @@ PHRASE = "wobble tundra deputy chrome amulet salsa"
 WRONG = "not-the-secret-at-all-nope"
 
 
+_SCRATCH = []
+
+
 def _tmp():
-    return tempfile.mkdtemp(prefix="hbk1_")
+    """Scratch dir, swept at exit — these hold fixture keys and full archives,
+    and leaving them behind makes a real 'no leftover secrets' check on a box
+    impossible to read."""
+    d = tempfile.mkdtemp(prefix="hbk1_")
+    _SCRATCH.append(d)
+    return d
+
+
+@atexit.register
+def _sweep_scratch():
+    for d in _SCRATCH:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _write(path, data: bytes):
@@ -174,6 +190,53 @@ def test_cli_open_writes_matching_dek(tmp_path=None):
                     "--dek-file", out_f]) == 0
     with open(out_f) as f:
         assert f.read().strip() == expected
+
+
+def test_open_survives_a_scrypt_cost_bump():
+    """An archive stays openable after the module defaults move.
+
+    The header records the params it was sealed with; deriving under whatever
+    the constants happen to be today would orphan every existing archive under
+    BOTH secrets. Mirrors test_recovery's bump test for the verifier.
+    """
+    d = _tmp()
+    archive, rec, _, _ = _seal_archive(d)
+    saved = recovery.SCRYPT_N
+    recovery.SCRYPT_N = saved * 2
+    try:
+        assert bc.open_archive(archive, MASTER)
+        assert bc.open_archive(archive, PHRASE)
+    finally:
+        recovery.SCRYPT_N = saved
+
+
+def test_rewrap_preserves_mtime_and_mode():
+    """Retention sorts by mtime and the off-site mirror compares size+mtime, so
+    a rewrap that restamps the file scrambles both."""
+    d = _tmp()
+    archive, rec, _, _ = _seal_archive(d)
+    os.chmod(archive, 0o640)
+    old = os.stat(archive)
+    os.utime(archive, (old.st_atime - 90000, old.st_mtime - 90000))
+    before = os.stat(archive)
+    new_rec = recovery.backup_unlock_record("alpha bravo charlie delta echo foxtrot")
+    bc.rewrap_file(archive, MASTER, new_rec["RECOVERY_BACKUP_KEY"],
+                   new_rec["RECOVERY_BACKUP_SALT"])
+    after = os.stat(archive)
+    assert int(after.st_mtime) == int(before.st_mtime)
+    assert after.st_mode & 0o777 == 0o640
+
+
+def test_unknown_header_version_is_refused():
+    d = _tmp()
+    path = os.path.join(d, "future.tar.gz.gpg")
+    _write(path, b'HBK1\n{"v":2,"alg":"gpg-aes256","wraps":{}}\n\n' + _fake_gpg_body())
+    assert bc.inspect_archive(path)["format"] == "error"
+    try:
+        bc.open_archive(path, MASTER)
+        assert False, "a v2 header was parsed as v1"
+    except bc.BackupCryptoError:
+        pass
 
 
 def _run_standalone():

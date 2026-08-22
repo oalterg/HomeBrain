@@ -32,11 +32,17 @@ Restore. That path is fully dashboard-driven.
 ## Procedure
 
 The setup wizard has a **Restore system** checkbox. That is the path for a
-replacement box: factory password → off-site details → pick the archive →
-the master password **or recovery phrase** → Restore. Dual-wrapped archives
-open with either. If you used the master password, the box comes back on
-that password. If you used the recovery phrase, the handover screen shows a
-**new** master password; the phrase is unchanged.
+replacement box, and it takes the backup from either place:
+
+- **The backup drive.** Plug the old box's drive into the new one and press
+  *Find my backup drive*. The wizard mounts it and lists what is on it.
+- **The off-site copy.** Enter the same details the old box was using, and it
+  lists the remote instead.
+
+Then: pick the archive → the master password **or recovery phrase** → Restore.
+Dual-wrapped archives open with either. If you used the master password, the
+box comes back on that password. If you used the recovery phrase, the handover
+screen shows a **new** master password; the phrase is unchanged.
 
 Walked 2026-08-12 on `homebraintest.local` (RPi4, no backup drive):
 

@@ -70,6 +70,10 @@ cleanup() {
     # A partial archive from a run that died mid-write. On success it has
     # already been renamed to its published name, so this is a no-op then.
     if [[ -n "${ARCHIVE_TMP:-}" ]]; then rm -f "$ARCHIVE_TMP"; fi
+    # The envelope working dir holds the master password, the DEK and the
+    # recovery wrap key. A signal between sealing and verifying must not leave
+    # those three sitting in /tmp.
+    if [[ -n "${SEAL_DIR:-}" ]]; then rm -rf "$SEAL_DIR"; fi
 
     rm -f "$LOCK_FILE"  # Ensure lock release
     log_info "Backup cleanup complete."
@@ -102,6 +106,10 @@ fi
 # ARCHIVE_TMP below) — which is exactly what would let them sit on the drive
 # forever. Swept before the space check so the room comes back first.
 rm -f "$BACKUP_MOUNTDIR"/.homebrain_backup*.part
+# Same argument for a rewrap (phrase regenerate) killed mid-copy: .hbk1_*.tmp
+# is a full-size archive that no retention pattern matches, so it would sit on
+# the drive forever.
+rm -f "$BACKUP_MOUNTDIR"/.hbk1_*.tmp
 
 # 2. Check Service Health (Required to identify volumes)
 HA_CID=$(get_ha_cid)
@@ -453,7 +461,6 @@ if [[ "$ENCRYPT" == "true" ]]; then
     MASTER_FILE="$SEAL_DIR/master"
     DEK_FILE="$SEAL_DIR/dek"
     HEADER_FILE="$SEAL_DIR/header"
-    BODY_FILE="$SEAL_DIR/body"
     printf '%s' "$MASTER_PASSWORD" > "$MASTER_FILE"
     chmod 600 "$MASTER_FILE"
     SEAL_ARGS=(--master-file "$MASTER_FILE" --dek-file "$DEK_FILE" --header-file "$HEADER_FILE")
@@ -464,17 +471,19 @@ if [[ "$ENCRYPT" == "true" ]]; then
         SEAL_ARGS+=(--recovery-key-file "$SEAL_DIR/rk" --recovery-salt-file "$SEAL_DIR/rs")
     fi
     HB_PYTHON="$(backup_crypto_python)"
-    if ! "$HB_PYTHON" "$BACKUP_CRYPTO" seal "${SEAL_ARGS[@]}"; then
-        rm -rf "$SEAL_DIR"
-        die "Archive envelope seal failed — not publishing an unwrapped file."
-    fi
+    "$HB_PYTHON" "$BACKUP_CRYPTO" seal "${SEAL_ARGS[@]}" \
+        || die "Archive envelope seal failed — not publishing an unwrapped file."
+    # Header first, then the GPG body streamed straight onto the end of it. The
+    # archive is written ONCE, on the backup drive. Staging the body in $TMPDIR
+    # and concatenating afterwards would put a second full-size copy on the OS
+    # disk — which the space check above never measures (it only looks at
+    # $BACKUP_MOUNTDIR) and which STAGING_BASE exists specifically to avoid.
+    cat "$HEADER_FILE" > "$ARCHIVE_TMP" || die "Could not start the encrypted archive."
     tar -C "$STAGING_DIR" -cz . | gpg --batch --yes --symmetric \
         --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
         --s2k-count 65011712 --compress-algo none \
-        --passphrase-fd 3 -o "$BODY_FILE" 3< "$DEK_FILE" \
-        || { rm -rf "$SEAL_DIR"; die "Compression/encryption failed."; }
-    cat "$HEADER_FILE" "$BODY_FILE" > "$ARCHIVE_TMP" \
-        || { rm -rf "$SEAL_DIR"; rm -f "$ARCHIVE_TMP"; die "Could not assemble encrypted archive."; }
+        --passphrase-fd 3 3< "$DEK_FILE" >> "$ARCHIVE_TMP" \
+        || die "Compression/encryption failed."
 else
     log_info "Compressing archive (unencrypted — BACKUP_ENCRYPT=false)..."
     tar -C "$STAGING_DIR" -czf "$ARCHIVE_TMP" . || die "Compression failed."
@@ -487,18 +496,22 @@ sync
 if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
     log_info "Verifying archive integrity..."
     if [[ "$ENCRYPT" == "true" ]]; then
-        gpg --batch --quiet --decrypt --passphrase-fd 3 "$BODY_FILE" 3< "$DEK_FILE" \
+        # Read back the file we are about to publish, not a temp copy of the
+        # body: catching truncated writes and bad sectors on the drive is the
+        # entire point of this step.
+        "$HB_PYTHON" "$BACKUP_CRYPTO" copy-body --archive "$ARCHIVE_TMP" \
+            | gpg --batch --quiet --decrypt --passphrase-fd 3 3< "$DEK_FILE" \
             | tar -tz > /dev/null \
-            || { rm -rf "$SEAL_DIR"; rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
-        rm -rf "$SEAL_DIR"
+            || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     else
         tar -tzf "$ARCHIVE_TMP" > /dev/null \
             || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     fi
     log_info "Archive verified."
-elif [[ "$ENCRYPT" == "true" ]]; then
-    rm -rf "$SEAL_DIR"
 fi
+# Shred the envelope secrets now rather than at exit: the off-site mirror below
+# can run for hours, and the DEK opens the archive it is uploading.
+if [[ -n "${SEAL_DIR:-}" ]]; then rm -rf "$SEAL_DIR"; SEAL_DIR=""; fi
 
 # Publish. Before this rename the archive exists under no name the mirror,
 # retention or the dashboard will match; after it, it is complete by

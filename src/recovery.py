@@ -157,7 +157,7 @@ def _params_str(n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=SCRYPT_DKLEN):
     return f"scrypt$n={n}$r={r}$p={p}$dklen={dklen}"
 
 
-def _parse_params(params):
+def parse_params(params):
     if not params or not params.startswith("scrypt$"):
         raise RecoveryError(f"unsupported recovery KDF params: {params!r}")
     kv = {}
@@ -207,7 +207,7 @@ def verify_phrase(phrase, salt_b64, hash_b64, params):
     try:
         if not (salt_b64 and hash_b64 and params):
             return False
-        n, r, p, dklen = _parse_params(params)
+        n, r, p, dklen = parse_params(params)
         salt = base64.b64decode(salt_b64)
         expected = base64.b64decode(hash_b64)
         actual = _scrypt(phrase, salt, n, r, p, dklen)
@@ -230,18 +230,24 @@ def looks_like_recovery_phrase(secret):
     return " " in normalize_phrase(secret)
 
 
-def derive_backup_key(phrase, salt=None):
+def derive_backup_key(phrase, salt=None, params=None):
     """Wrap-key material for backup archives, derived from the phrase.
 
     Domain-separated from the verifier hash: a *second* 16-byte salt, never
     ``RECOVERY_SCRYPT_SALT``. Returns ``{salt, key}`` (both base64). The
     plaintext phrase is not in the result.
+
+    ``params`` re-derives under the cost settings an existing archive was
+    sealed with, so bumping the defaults cannot orphan archives — the same
+    reason ``verify_phrase`` parses the params it stored.
     """
     if salt is None:
         salt = secrets.token_bytes(16)
     elif isinstance(salt, str):
         salt = base64.b64decode(salt)
-    key = _scrypt(phrase, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, SCRYPT_DKLEN)
+    n, r, p, dklen = parse_params(params) if params else (
+        SCRYPT_N, SCRYPT_R, SCRYPT_P, SCRYPT_DKLEN)
+    key = _scrypt(phrase, salt, n, r, p, dklen)
     return {
         "salt": base64.b64encode(salt).decode("ascii"),
         "key": base64.b64encode(key).decode("ascii"),

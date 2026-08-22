@@ -314,8 +314,8 @@ Design: [`plans/RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md). The recovery cor
 is unit-tested with no Docker/network/root required:
 
 ```bash
-python3 scripts/tests/test_recovery.py         # standalone; see the pass count
-python3 scripts/tests/test_master_password.py  # needs Flask
+python3 scripts/tests/test_recovery.py         # must end with "11/11 passed"
+python3 scripts/tests/test_master_password.py  # must end with "14/14 passed" (needs Flask)
 ```
 
 On real hardware:
@@ -455,7 +455,7 @@ On hardware, what the tests above cannot reach — that a real browser honours t
 Design: [`plans/BACKUP_UNLOCK.md`](plans/BACKUP_UNLOCK.md). Off-hardware first:
 
 ```
-python3 scripts/tests/test_backup_crypto.py
+python3 scripts/tests/test_backup_crypto.py    # must end with "11/11 passed"
 python3 scripts/tests/test_recovery.py
 python3 scripts/tests/test_setup_credentials.py
 python3 scripts/tests/test_master_password.py
@@ -473,6 +473,17 @@ node scripts/tests/test_creds_sheet.js
 - [ ] Dead box: wizard Restore system with **only** the recovery phrase → handover shows a **new** master password and the **same** phrase; Dashboard / Nextcloud / HA accept the new password; files are present.
 - [ ] Dead-box control: wizard with the **master** password → box comes back on that password.
 - [ ] `BACKUP_ENCRYPT=false` still publishes plaintext `.tar.gz`.
+- [ ] While a backup runs, nothing large appears under `/tmp`:
+      `find /tmp -type f -printf '%s %p\n' | sort -rn | head -1`. `/tmp` is
+      tmpfs on the RPi, so a body staged there is the archive in RAM.
+- [ ] Regenerate answers in well under a second. It rewraps archives in a
+      **subprocess** on purpose — gunicorn's gevent workers turn a thread into
+      a greenlet that never yields on file I/O, and the request dies with
+      `WORKER TIMEOUT`. Check `manager.log` for `Could not rewrap` afterwards:
+      an archive sealed under a since-rotated master password is skipped by
+      design and must then show as `needs previous password` in the list.
+- [ ] Archive mtimes are unchanged by a regenerate (retention sorts by mtime,
+      and the off-site mirror compares size+mtime).
 
 ---
 

@@ -250,7 +250,22 @@ are space-joined words. A secret with a space cannot be a master password.
 
 Always write `RESTORE_PASSPHRASE_FILE` with whatever was typed and pass it
 into the chained `restore.sh`, even on the master-password path (then file
-and `.env` match; restore tries the file first).
+and `.env` match; restore tries the file first). The file is removed after the
+chain regardless of outcome — a failed deploy or off-site fetch must not leave
+the typed phrase in `/tmp`.
+
+**Two sources, same as the dashboard restore.** `restore.source` is `local`
+or `offsite`, defaulting to `local` in the wizard because "I have the drive" is
+the common case. `offsite` chains `restore.sh --from-offsite`; `local` resolves
+the bare name through `find_backup` and passes the path.
+
+A replacement box has a fresh fstab, so nothing is mounted at `/mnt/backup` and
+`backup_search_dirs()` would see an empty world. `POST /api/backups/local/scan`
+closes that: it probes each attached ext4/ext3/xfs partition **read-only**,
+adopts the first one carrying `homebrain_backup*` into fstab (`nofail`, same
+entry the drive-setup paths write), re-checks with `mountpoint` — `mount -a`
+exits 0 with a `nofail` device absent — and then returns the ordinary backup
+list. The root disk is never a candidate.
 
 Wizard copy: label becomes “Master password **or** recovery phrase.” Drop
 the `NEW_PASSWORD_RE` hard-fail. Empty still refused.
