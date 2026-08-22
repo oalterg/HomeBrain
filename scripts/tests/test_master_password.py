@@ -183,6 +183,45 @@ def test_recovery_reset_still_pre_writes_and_clears_session():
         h.close()
 
 
+def test_recovery_reset_adopts_the_phrase_as_a_backup_key():
+    """The forgot-password path is the only moment a pre-existing box holds the
+    plaintext phrase, and the rotation it launches takes a full backup. If the
+    wrap keys are not written first, that backup is master-only and the phrase
+    the owner just used still will not open it — BACKUP_UNLOCK.md §1 exactly."""
+    h = Harness(backup_unlock=False)
+    try:
+        r = h.client.post("/api/recovery/reset",
+                          json={"phrase": PHRASE, "new_password": NEW_PW},
+                          headers={"Host": "192.168.178.58"})
+        assert r.status_code == 200, r.get_json()
+        written = {k for k, _ in h.env_writes}
+        assert "RECOVERY_BACKUP_KEY" in written, h.env_writes
+        assert "RECOVERY_BACKUP_SALT" in written, h.env_writes
+        # ...and before the rotation fires, because backup.sh reads .env at start.
+        keys_at = min(i for i, (k, _) in enumerate(h.env_writes)
+                      if k == "RECOVERY_BACKUP_KEY")
+        mgr_at = min(i for i, (k, _) in enumerate(h.env_writes)
+                     if k == "MANAGER_PASSWORD")
+        assert keys_at < mgr_at, h.env_writes
+    finally:
+        h.close()
+
+
+def test_recovery_reset_does_not_remint_an_existing_backup_key():
+    """Re-minting would move the salt and orphan the recovery wrap on archives
+    the current phrase can already open."""
+    h = Harness()          # already has the wrap keys
+    try:
+        r = h.client.post("/api/recovery/reset",
+                          json={"phrase": PHRASE, "new_password": NEW_PW},
+                          headers={"Host": "192.168.178.58"})
+        assert r.status_code == 200, r.get_json()
+        written = {k for k, _ in h.env_writes}
+        assert "RECOVERY_BACKUP_SALT" not in written, h.env_writes
+    finally:
+        h.close()
+
+
 def test_suggest_password_is_policy_valid_and_gated():
     h = Harness()
     try:
