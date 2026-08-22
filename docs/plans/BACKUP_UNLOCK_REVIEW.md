@@ -1,6 +1,7 @@
 # Backup unlock — implementation review
 
-**Status:** §1–§3 **fixed and verified on hardware** (2026-08-22). §4 partly fixed.
+**Status:** §1–§3 and the H2 product gap **fixed, verified on hardware, merged**
+(PR #205, 2026-08-22). §4 all fixed except L4, which is declined — see §10.
 **Reviewed:** [`BACKUP_UNLOCK.md`](BACKUP_UNLOCK.md) design + the implementation in `c47b99a`.
 **Verdict at review time:** the crypto core was sound and mergeable. The
 pipeline and lifecycle code around it was not — four blockers, two of them
@@ -229,7 +230,7 @@ should reflect that decision.
 
 ### H2 — `creds_sheet.js:75`: the printed sheet promises a restore path the wizard does not have
 
-> **FIXED (copy)** — the sheet now says the wizard opens the *off-site* backup, and the drive is restored from the Dashboard. §3.7 records the v1 scope limit. Widening the wizard to list local archives remains open.
+> **FIXED (both halves)** — the wizard now offers the backup drive as well as the off-site copy, and `POST /api/backups/local/scan` adopts a drive no fstab entry knows about yet, so the sheet's promise is true. Walked end to end on hardware, §8.7.
 
 The sheet now says:
 
@@ -559,7 +560,37 @@ their passphrase was wrong.
 - restored Nextcloud tree present; NC / HA / Vault / db all `healthy`
 - passphrase file shredded; **0** stray DEK directories
 
-### 8.6 Suites
+### 8.6 Dead box, drive in hand — the whole product story
+
+Nuclear reset (which preserves `/mnt/backup` by design), then the drive was
+unmounted and its fstab entry stripped, so the box looked like replacement
+hardware: no `.env`, no `.setup_complete`, no idea a backup drive existed.
+
+1. Provision → dashboard sits at the setup gate (401).
+2. Factory login, then *Find my backup drive*: probed, adopted `/dev/sda`,
+   wrote the `nofail` fstab entry, mounted, listed 8 archives with `unlock`
+   read from their headers.
+3. `POST /start_setup` with `source: "local"` and **only the recovery phrase**.
+4. Deploy + chained restore completed:
+   `=== Restore Complete From: /mnt/backup/homebrain_backup_2026-08-22_14-30-21.tar.gz.gpg ===`
+
+Handover and end state:
+
+| check | result |
+|---|---|
+| `recovery_adopted` | `True` |
+| phrase on the sheet == phrase typed | yes |
+| master password newly minted, ≠ phrase, no spaces | yes |
+| new password logs into the dashboard | HTTP 200 |
+| the phrase is *not* a login password | HTTP 401 |
+| adopted phrase verifies against the new box's hash | `True` |
+| `RECOVERY_BACKUP_KEY` / `_SALT` written | present |
+| Nextcloud data restored, six containers healthy | yes |
+
+The archive was opened with no `.env` on the box at all — the wrap salt comes
+out of the header, which is the entire point of §3.2.
+
+### 8.7 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -604,11 +635,48 @@ still `master_or_phrase`.
 
 ## 10. Still open
 
-- **H2 (product half).** The wizard remains off-site-only. The sheet no longer
-  overpromises, but "dead box + drive in hand" is still not a supported
-  recovery. Either widen the wizard or keep §1's framing aspirational.
-- **§4 nits.** L4 (no AAD on the wraps), L6 (`.hbk1_*.tmp` orphans unswept),
-  L8/L9/L10 remain. L1, L2, L3, L5, L7 are fixed.
-- **`test_backup_crypto.py` leaves its `hbk1_*` scratch dirs in `/tmp`.**
-  Fixture values only, but it makes "no leftover secrets" checks noisy on a box
-  where the suite has been run.
+Everything in §1–§3 is fixed and merged (PR #205). What is left:
+
+### Declined, with reasons
+
+- **L4 — no AAD on the AES-GCM wraps.** Now that `unwrap_dek` parses the
+  header's `kdf` (B3), tampering with that field only derives a wrong key and
+  fails the GCM tag. The attack it would close is a self-defeating DoS by
+  someone who already has write access to the archive and could simply delete
+  it. Adding AAD would also strand every archive written before the change.
+  Revisit only if the header ever grows a field that changes meaning rather
+  than cost.
+
+### Hardware E2E not yet walked
+
+The plan's §6 list has eight items. Items 2, 4 and 6 are done (§8), and 1 and 3
+are partly covered. Genuinely untested on real hardware:
+
+- **x86.** Everything here was measured on the RPi4 (aarch64). The plan asks
+  for both, and the production boxes are x86. Nothing in the change is
+  architecture-specific, but the tmpfs sizing that made B1 fatal is
+  platform-dependent and worth re-measuring.
+- **§6.5 — enablement on a box that predates this.**
+  `POST /api/recovery/enable-backup-unlock` has unit coverage
+  (`test_master_password.py`) but has never run against a real `.env` with a
+  phrase already minted, nor been shown to make the *next* backup dual-wrapped.
+  This is the upgrade path for every existing install.
+- **§6.7 — dead-box control with the master password.** Unit-tested
+  (`test_wizard_restore_with_master_password_seeds_it`); the hardware walk
+  covered only the phrase path.
+- **§6.8 — `BACKUP_ENCRYPT=false`** still publishing a plaintext `.tar.gz`.
+- **The off-site half.** `OFFSITE_ENABLED=false` on the test box, so the
+  wizard's off-site branch and M2's stale-flag behaviour were verified by unit
+  test only, never against a live remote.
+- **Restore with an empty passphrase** (falls back to `MASTER_PASSWORD`) on an
+  HBK1 archive — §6.1's second sentence.
+
+### Environment, not code
+
+- **Shadowed archives on the mountpoint.** homebraintest carries 367 MB of
+  archives on the *root disk* underneath `/mnt/backup`, dated 2026-08-01 to
+  -22 — written while the drive was not mounted, the `nofail` failure this
+  repo already knows about. Pre-existing and not touched here. Worth checking
+  whether berlin and miami have the same shadowing.
+- **Release.** Merged, not tagged or deployed. The upgrade path for a live box
+  is §6.5 above, which is the item most worth walking before a release.
