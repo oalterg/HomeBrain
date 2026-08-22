@@ -2691,9 +2691,12 @@ async function loadRecoveryStatus() {
             if (d.created_at) {
                 try { when = ' on ' + new Date(parseInt(d.created_at, 10) * 1000).toLocaleDateString(); } catch (e) {}
             }
+            // Say the gap out loud. Signalling it by omitting a sentence means
+            // an owner who never opens this card never learns their backups are
+            // not phrase-openable.
             const unlock = d.backup_unlock
                 ? ' Backups made from now on open with this phrase if the box is gone.'
-                : '';
+                : ' It cannot open your encrypted backups yet.';
             line.textContent = `A recovery phrase is configured${when}.${unlock}`;
             if (btn) btn.textContent = 'Regenerate recovery phrase';
             const enable = document.getElementById('recovery-enable-unlock');

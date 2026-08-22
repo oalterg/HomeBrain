@@ -4549,6 +4549,32 @@ def recovery_reset():
     if not recovery.is_valid_new_password(new_password):
         return jsonify({"error": f"Invalid new password. {recovery.NEW_PASSWORD_RULE}"}), 400
 
+    # 0. Adopt the phrase as a backup key if this box never had one.
+    #
+    #    A box provisioned before BACKUP_UNLOCK shipped stores the phrase only
+    #    as a scrypt hash, and a wrap key cannot be derived from a hash — so
+    #    enablement normally needs the owner to type the phrase in Settings.
+    #    This handler is the one place that already HAS the plaintext, and it is
+    #    also the exact moment BACKUP_UNLOCK.md §1 was written about: the owner
+    #    has just proved they forgot their password, and the rotation below
+    #    starts a full backup. Without this, that backup is sealed under the new
+    #    master password alone, so the phrase they just used still would not
+    #    open it — the nightmare window the whole feature exists to close.
+    #
+    #    Before _launch_master_rotation on purpose: backup.sh reads .env at
+    #    start, so the keys must be on disk before the rotation fires it.
+    #    Only when absent — re-minting would move the salt and orphan the
+    #    recovery wrap on archives the current phrase can already open.
+    #    Best-effort: a failure here must never block a password reset.
+    _env = get_env_config()
+    if not (_env.get("RECOVERY_BACKUP_KEY") and _env.get("RECOVERY_BACKUP_SALT")):
+        try:
+            for k, v in recovery.backup_unlock_record(phrase).items():
+                update_env_var(k, v)
+            logging.info("Recovery reset also enabled backup unlock for this box.")
+        except Exception as e:
+            logging.warning("Could not enable backup unlock during recovery reset: %s", e)
+
     # 1. Restore dashboard access immediately and independently. MANAGER_PASSWORD
     #    is login-only (no container consumes it), so this cannot desync anything
     #    and guarantees the user is back in even if the stack rotation below

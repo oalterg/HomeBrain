@@ -711,7 +711,25 @@ wipe-and-restore, not a no-op), data back, six containers up.
 
 That closes the plan's §6 list: **all eight items walked on hardware.**
 
-### 8.11 Suites
+### 8.11 N3 — a reset now closes the window it used to leave open
+
+Test box reduced to a pre-feature install again (phrase minted, wrap keys
+stripped), then the ordinary "Forgot your password?" flow:
+
+| step | result |
+|---|---|
+| `backup_unlock` before | **False** |
+| `POST /api/recovery/reset` with the phrase | 200, rotation started |
+| wrap keys written by the reset itself | both present |
+| the automatic post-rotation full backup | `unlock: master_or_phrase` |
+| opens with **the phrase the owner typed at reset** | **YES** |
+| opens with the new master password | YES |
+| login on the new password / `backup_unlock` after | 200 / **True** |
+
+Before the fix that archive would have been `master`-only, and the phrase just
+used to recover would not have opened it.
+
+### 8.12 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -752,6 +770,38 @@ reported `master`, so the existing rotation-epoch rule flags it. Verified: that
 archive now reads `unlock: master, needs_old_passphrase: true`, the other three
 still `master_or_phrase`.
 
+### N3 — the forgot-password path threw the phrase away
+
+`/api/recovery/reset` verified the plaintext phrase and then discarded it. It
+never called `backup_unlock_record`, so on any box provisioned before this
+shipped, a recovery reset left `backup_unlock` false.
+
+Read that next to §1 of the plan:
+
+> owner forgets the password, recovers, box dies before the automatic
+> post-rotation backup finishes. The drive only has archives sealed with the
+> forgotten password. Recovery cannot open them. Total loss, on us.
+
+`rotate_master_password.sh:204` fires a full backup at the end of every reset.
+Without the keys, **that backup is sealed under the new master password alone**
+— so the phrase the owner had just typed still would not open it. The exact
+window the feature was built to close stayed open, for precisely the people who
+had just proved they forget passwords.
+
+**Fix:** adopt the phrase as a backup key in `recovery_reset`, after the
+verification and *before* `_launch_master_rotation` (backup.sh reads `.env` at
+start, so the keys must be on disk before the rotation fires it). Only when
+absent — re-minting would move the salt and orphan the recovery wrap on archives
+the current phrase already opens. Best-effort: it must never block a reset.
+
+This makes enablement automatic for the highest-risk cohort, with no extra
+prompt. Everyone else: new provisions get the keys at setup, regenerate gets
+them as a side effect, and a box that never does either still needs the manual
+Settings step, because a wrap key cannot be derived from a scrypt hash.
+
+Verified on hardware (§8.11) and guarded by two tests, one of which was checked
+to fail with the fix removed.
+
 ---
 
 ## 10. Still open
@@ -776,6 +826,11 @@ partly covered, and x86 is covered by §8.9. What is left:
 All eight items of the plan's §6 list are walked (§8), on both architectures.
 What remains is not a test gap:
 
+- **A nudge outside Settings.** The enable form lives only in the Recovery
+  Phrase card; the status line now states the gap ("It cannot open your
+  encrypted backups yet") but nothing surfaces it on the Backup page, where the
+  consequence actually lives. Left as a product call about how loudly to
+  interrupt people.
 - **§3.9 enablement on .58** — an *operational* step, not a verification one.
   The box reports `backup_unlock: false` because its phrase predates this, so
   its archives stay master-only until the owner types that phrase once in
