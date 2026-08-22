@@ -689,7 +689,29 @@ few hundred bytes of seal material regardless of archive size.
 shipped, so it needs the §3.9 enablement path. That requires the owner to type
 the real phrase and is theirs to run.
 
-### 8.10 Suites
+### 8.10 §6.8 and §6.1 — the last two items
+
+**§6.8 — `BACKUP_ENCRYPT=false`.** Flipped in `.env` on the test box, one
+backup, then flipped back:
+
+| check | result |
+|---|---|
+| published name | `homebrain_backup_system_2026-08-22_20-08-19.tar.gz` — no `.gpg` |
+| first bytes | `1f8b` (gzip magic) |
+| `tar -tzf` | works |
+| HBK1 header | absent, correctly |
+| peak `/tmp` during the run | 11,016 B |
+
+**§6.1 second half — restore with an empty passphrase.** A fresh dual-wrapped
+archive (`unlock: master_or_phrase`), a marker file written *after* it, then
+`restore.sh` run with `RESTORE_PASSPHRASE_FILE` unset entirely — so
+`SUPPLIED_PASS` is empty and the HBK1 path must fall back to `MASTER_PASSWORD`
+from `.env`. Restore returned 0, the marker was gone afterwards (a real
+wipe-and-restore, not a no-op), data back, six containers up.
+
+That closes the plan's §6 list: **all eight items walked on hardware.**
+
+### 8.11 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -751,20 +773,25 @@ Everything in §1–§3 is fixed and merged (PR #205). What is left:
 The plan's §6 list has eight items. Items 2 and 4–7 are done (§8), 1 and 3 are
 partly covered, and x86 is covered by §8.9. What is left:
 
-- **§6.8 — `BACKUP_ENCRYPT=false`** still publishing a plaintext `.tar.gz`.
-  Belongs on the test box: `load_env` exports `.env` over anything set in the
-  environment first (the Compose precedence trap), so testing it means editing
-  a live `.env`, which is not something to do on a production box for a code
-  path this change never touched.
-- **§3.9 enablement on .58.** It reports `backup_unlock: false`, so its
-  archives are master-only until the owner types the real phrase once. The
-  path itself is proven (§8.7); this is an operational step, not a test gap.
-- **Restore with an empty passphrase** (falls back to `MASTER_PASSWORD`) on an
-  HBK1 archive — §6.1's second sentence. Needs a real `restore.sh` run, so
-  test box only.
-- **Rewrap throughput at 98 GB.** Unmeasured, and deliberately so: the only
-  trigger is regenerate, which rotates the phrase the owner holds on paper.
-  Measure it on a *copy* of an archive if the number is ever wanted.
+All eight items of the plan's §6 list are walked (§8), on both architectures.
+What remains is not a test gap:
+
+- **§3.9 enablement on .58** — an *operational* step, not a verification one.
+  The box reports `backup_unlock: false` because its phrase predates this, so
+  its archives stay master-only until the owner types that phrase once in
+  Settings → Recovery Phrase → **Enable backup unlock**. This is emphatically
+  *not* Regenerate: enabling stores a wrap key derived from the phrase they
+  already hold and rotates nothing, while Regenerate mints a new phrase and
+  voids the printed sheet. The path is proven end to end in §8.7.
+
+  One consequence worth planning for: enablement kicks off a full backup on
+  success (§3.9, deliberately — it is what closes the nightmare window), and on
+  berlin that is ~98 GB *plus* an off-site mirror, since the launcher does not
+  pass `--skip-offsite`. Start it when a multi-hour run and a large WAN upload
+  are acceptable.
+- **Rewrap throughput at 98 GB.** Unmeasured, deliberately: the only trigger is
+  regenerate, which rotates the phrase the owner holds on paper. Measure it on
+  a *copy* of an archive if the number is ever wanted.
 
 ### Known imprecision in `unlock`, with the fix if it ever bites
 
