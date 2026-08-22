@@ -590,7 +590,35 @@ Handover and end state:
 The archive was opened with no `.env` on the box at all — the wrap salt comes
 out of the header, which is the entire point of §3.2.
 
-### 8.7 Suites
+### 8.7 §6.5 — the enablement path every existing install will take
+
+Box put on merged `main` (`de2ef33`), then made indistinguishable from a
+pre-feature install: a phrase minted, then `RECOVERY_BACKUP_KEY` and
+`RECOVERY_BACKUP_SALT` stripped from `.env`.
+
+| step | result |
+|---|---|
+| `GET /api/recovery/status` | `configured: True`, `backup_unlock: False` |
+| `POST enable-backup-unlock`, wrong phrase | **401**, neither key written |
+| same, correct phrase | **200**, `backup_started: true` |
+| `.env` afterwards | both keys present; status `backup_unlock: True` |
+| the backup it triggered | `unlock: master_or_phrase`, opens with **phrase and master** |
+| leftover legacy archive | `unlock: legacy`, does **not** open with the phrase |
+
+And the list the owner actually sees, checked against ground truth (which
+secrets really open each file):
+
+```
+master_or_phrase  needs_old=False   …18-56-32   opens_with[phrase, master]
+master            needs_old=True    …14-30-21   opens_with[-, -]      (×5)
+legacy            needs_old=True    …22-50-24   opens_with[-, -]      (×3)
+```
+
+Nine archives, zero over-promises. The five `master` rows are HBK1 files whose
+recovery wrap belongs to the phrase generation before the dead-box restore —
+exactly what §9.2's salt check exists to catch.
+
+### 8.8 Suites
 
 Green on the box (`test_backup_crypto` 11/11, `test_recovery` 11/11,
 `test_master_password` 14/14, `test_setup_credentials` 11/11,
@@ -649,18 +677,13 @@ Everything in §1–§3 is fixed and merged (PR #205). What is left:
 
 ### Hardware E2E not yet walked
 
-The plan's §6 list has eight items. Items 2, 4 and 6 are done (§8), and 1 and 3
-are partly covered. Genuinely untested on real hardware:
+The plan's §6 list has eight items. Items 2, 4, 5 and 6 are done (§8), and 1
+and 3 are partly covered. Genuinely untested on real hardware:
 
 - **x86.** Everything here was measured on the RPi4 (aarch64). The plan asks
   for both, and the production boxes are x86. Nothing in the change is
   architecture-specific, but the tmpfs sizing that made B1 fatal is
   platform-dependent and worth re-measuring.
-- **§6.5 — enablement on a box that predates this.**
-  `POST /api/recovery/enable-backup-unlock` has unit coverage
-  (`test_master_password.py`) but has never run against a real `.env` with a
-  phrase already minted, nor been shown to make the *next* backup dual-wrapped.
-  This is the upgrade path for every existing install.
 - **§6.7 — dead-box control with the master password.** Unit-tested
   (`test_wizard_restore_with_master_password_seeds_it`); the hardware walk
   covered only the phrase path.
@@ -670,6 +693,28 @@ are partly covered. Genuinely untested on real hardware:
   test only, never against a live remote.
 - **Restore with an empty passphrase** (falls back to `MASTER_PASSWORD`) on an
   HBK1 archive — §6.1's second sentence.
+
+### Known imprecision in `unlock`, with the fix if it ever bites
+
+§9.2 reports a recovery wrap as unusable when its salt differs from the live
+`RECOVERY_BACKUP_SALT`. That is right whenever the wrap belongs to a *different*
+phrase (§8.7 shows five such archives reported correctly), but the salt also
+differs in one benign case: immediately after a dead-box restore that **adopted**
+the typed phrase, `build_recovery_record` mints a fresh salt while the archives
+on the drive still carry the old one — same phrase, different salt. Those rows
+read `master` when the owner's phrase would in fact open them.
+
+This errs safe: the prompt is merely too cautious, and typing the phrase still
+works, because `restore.sh` tries the supplied secret against both wraps
+regardless of what the list said. The opposite error — promising a phrase unlock
+that fails during a disaster — is what §9.2 was added to stop.
+
+The clean fix, if the cautious prompt ever annoys anyone: on the adopt and
+enable paths we *hold the plaintext phrase*, so local HBK1 archives can be
+rewrapped through their **recovery** wrap (unwrap with the header's own salt,
+re-wrap under the new one) without needing the master password at all. That
+converges every archive on the current salt and removes the ambiguity. It is a
+variant of `rewrap_file`, not new crypto.
 
 ### Environment, not code
 
