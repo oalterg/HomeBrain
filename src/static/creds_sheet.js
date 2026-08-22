@@ -61,7 +61,8 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     lines.push(
         '',
         'Keep this offline -- print it, or put it on a USB stick. Anyone holding',
-        'it can reset administrative access to this device.',
+        'it can reset administrative access to this device and open encrypted',
+        'backups made after backup-unlock was enabled.',
         '',
     );
     // Only promise the recovery flow when a phrase is actually on the sheet:
@@ -71,6 +72,8 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     if (phrase) lines.push(
         'To use the recovery phrase: open the Dashboard, click "Forgot your',
         'password?", enter the phrase and choose a new master password.',
+        'If the box is gone: on a new HomeBrain, Restore system, and enter',
+        'this phrase (or the master password) to decrypt the backup drive.',
         '',
     );
     lines.push(

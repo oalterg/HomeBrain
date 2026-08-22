@@ -19,11 +19,13 @@ Runnable two ways (needs Flask — install requirements.txt first):
 import os
 import re
 import sys
+import json
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
 import app as hb            # noqa: E402
+import recovery             # noqa: E402
 
 MASTER_PW = "napped-plausible-sizzling-breeching-onyx"
 
@@ -53,18 +55,22 @@ class Harness:
         os.close(fd)
         fd, self.creds = tempfile.mkstemp(prefix="hb_setup_creds_")
         os.close(fd)
+        fd, self.restoring = tempfile.mkstemp(prefix="hb_setup_restoring_")
+        os.close(fd)
 
         self.writes = []
         self.threads = []
         self._saved = {k: getattr(hb, k) for k in (
             "ENV_FILE", "update_env_var", "is_setup_complete",
-            "SETUP_STARTED_MARKER", "STAGING_CREDS_PATH", "get_factory_config")}
+            "SETUP_STARTED_MARKER", "STAGING_CREDS_PATH", "RESTORING_MARKER",
+            "get_factory_config")}
         self._saved_thread = hb.threading.Thread
         self._saved_limiter = hb.limiter.enabled
 
         hb.ENV_FILE = self.env_path
         hb.SETUP_STARTED_MARKER = self.marker
         hb.STAGING_CREDS_PATH = self.creds
+        hb.RESTORING_MARKER = self.restoring
         hb.update_env_var = lambda k, v: self.writes.append((k, v))
         hb.is_setup_complete = lambda: False
         hb.get_factory_config = lambda: {}
@@ -91,7 +97,7 @@ class Harness:
             setattr(hb, k, v)
         hb.threading.Thread = self._saved_thread
         hb.limiter.enabled = self._saved_limiter
-        for p in (self.env_path, self.marker, self.creds):
+        for p in (self.env_path, self.marker, self.creds, self.restoring):
             try:
                 os.unlink(p)
             except OSError:
@@ -231,6 +237,61 @@ def test_remote_setup_form_secret_overrides_factory():
         )
         assert r.status_code == 200, r.get_data(as_text=True)
         assert h.written("NEWT_SECRET") == "override-secret"
+    finally:
+        h.close()
+
+
+PHRASE = "wobble tundra deputy chrome amulet salsa"
+ARCHIVE = "homebrain_backup_2026-08-02.tar.gz.gpg"
+
+
+def test_wizard_restore_with_master_password_seeds_it():
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW,
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert h.written("MASTER_PASSWORD") == MASTER_PW
+        with open(h.creds) as f:
+            data = json.load(f)
+        assert data.get("recovery_adopted") is False
+        assert data["password"] == MASTER_PW
+    finally:
+        h.close()
+
+
+def test_wizard_restore_with_phrase_does_not_become_the_master_password():
+    h = Harness(["MYSQL_PASSWORD="])
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": PHRASE,
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert h.written("MASTER_PASSWORD") != PHRASE
+        assert h.written("MASTER_PASSWORD")
+        assert recovery.is_valid_new_password(h.written("MASTER_PASSWORD"))
+        assert h.written("RECOVERY_BACKUP_KEY")
+        with open(h.creds) as f:
+            data = json.load(f)
+        assert data["recovery_adopted"] is True
+        assert data["recovery_phrase"] == recovery.normalize_phrase(PHRASE)
+        assert data["password"] != PHRASE
+    finally:
+        h.close()
+
+
+def test_wizard_restore_rejects_empty_and_garbage_secrets():
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": "",
+        })
+        assert r.status_code == 400
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": "short!",
+        })
+        assert r.status_code == 400
     finally:
         h.close()
 

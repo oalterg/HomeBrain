@@ -56,8 +56,10 @@ var changed = sheet({ password: PW, phraseUnchanged: true });
 // --- 1-4: the conditional blocks ----------------------------------------
 check('phrase-only omits the password line', phraseOnly.indexOf('Master password:') === -1);
 check('phrase-only keeps the how-to-recover paragraph', phraseOnly.indexOf('Forgot your') !== -1);
+check('phrase-only describes dead-box restore', phraseOnly.indexOf('If the box is gone') !== -1);
 check('password-only omits the phrase line', pwOnly.indexOf('Recovery phrase:') === -1);
 check('password-only drops the how-to-recover paragraph', pwOnly.indexOf('Forgot your') === -1);
+check('password-only does not promise dead-box restore via phrase', pwOnly.indexOf('If the box is gone') === -1);
 check('both carries the password', both.indexOf('Master password:  ' + PW) !== -1);
 check('both carries the phrase', both.indexOf('Recovery phrase:  ' + PHRASE) !== -1);
 check('phraseUnchanged states the phrase still works',
@@ -107,12 +109,15 @@ function legacyBuild(handoverCreds) {
     lines.push(
         '',
         'Keep this offline — print it, or put it on a USB stick. Anyone holding',
-        'it can reset administrative access to this device.',
+        'it can reset administrative access to this device and open encrypted',
+        'backups made after backup-unlock was enabled.',
         '',
     );
     if (handoverCreds.phrase) lines.push(
         'To use the recovery phrase: open the Dashboard, click "Forgot your',
         'password?", enter the phrase and choose a new master password.',
+        'If the box is gone: on a new HomeBrain, Restore system, and enter',
+        'this phrase (or the master password) to decrypt the backup drive.',
         '',
     );
     lines.push(

@@ -89,7 +89,9 @@
                 <div class="success-box mt">
                     <h2>${restoreMode ? 'Restore complete' : 'Setup complete'}</h2>
                     <p>${restoreMode
-                        ? 'Your files, Home Assistant setup and vault are back. Your master password is unchanged — it is the one you just entered.'
+                        ? (data.recovery_adopted
+                            ? 'Your files, Home Assistant setup and vault are back. You unlocked this backup with your recovery phrase, so this box has a new master password — save it now. Your recovery phrase is unchanged.'
+                            : 'Your files, Home Assistant setup and vault are back. Your master password is unchanged — it is the one you just entered.')
                         : 'Your private cloud is ready. Save these credentials now.'}</p>
 
                     <div class="creds-block">
@@ -107,7 +109,7 @@
                         <div class="creds-secret">${data.recovery_phrase}</div>
                         <p class="hint">Write these words down and keep them safe. They are your only way back in
                             if you forget the master password, and they are shown only once. They reset
-                            administrative access; they do not unlock individual vault items.</p>
+                            administrative access and open your encrypted backups; they do not unlock individual vault items.</p>
                     </div>` : ''}
 
                     <button type="button" onclick="downloadHandoverSheet()">Download as .txt</button>

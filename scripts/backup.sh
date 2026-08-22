@@ -54,11 +54,12 @@ STAGING_BASE="$BACKUP_MOUNTDIR"
 cleanup() {
     log_info "Cleaning up..."
     set_maintenance_mode "--off"
-    # Attempt to restart services if we crashed mid-backup
-    if ! is_stack_running; then
-        # Ensure HA is up if we stopped it
-        local ha_cid=$(get_ha_cid)
-        if [[ -n "$ha_cid" ]]; then docker start "$ha_cid" || true; fi
+    # HA is stopped only for its own snapshot. If we died in that window,
+    # bring it back even when Nextcloud is still up (is_stack_running is
+    # false whenever HA is down, but be explicit about the container we
+    # stopped rather than gating on the whole stack).
+    if [[ -n "${HA_CID:-}" ]]; then
+        docker start "$HA_CID" >/dev/null 2>&1 || true
     fi
     
     # Remove staging directory safely
@@ -162,10 +163,11 @@ if [[ "$STRATEGY" == "system" ]]; then SUFFIX="_system"; fi
 STAGING_DIR=$(mktemp -d -p "$STAGING_BASE" staging_XXXXXX)
 ARCHIVE_PATH="$BACKUP_MOUNTDIR/homebrain_backup${SUFFIX}_${DATE}.tar.gz"
 
-# Encryption: on unless explicitly disabled. The passphrase is the master
-# password AT BACKUP TIME — each archive is self-contained (gpg stores the
-# s2k salt in the header), so restoring after a master-password rotation just
-# needs the password that was current when the archive was made.
+# Encryption: on unless explicitly disabled. The body is GPG-symmetric with a
+# random DEK; an HBK1 header wraps that DEK under the master password and,
+# when RECOVERY_BACKUP_KEY is set, the recovery phrase. Restore accepts either
+# secret. Legacy .gpg files (no HBK1 header) still open with the master
+# password that encrypted them.
 ENCRYPT=false
 if [[ "${BACKUP_ENCRYPT:-true}" != "false" ]] && [[ -n "${MASTER_PASSWORD:-}" ]]; then
     ENCRYPT=true
@@ -238,12 +240,6 @@ fi
 
 set_maintenance_mode "--on"
 
-# STOP Home Assistant to ensure SQLite DB consistency
-if [[ -n "$HA_CID" ]]; then
-    log_info "Stopping Home Assistant..."
-    docker stop "$HA_CID"
-fi
-
 # 6. Database Dump (full + system)
 if [[ "$STRATEGY" != "data_only" && -n "$DB_CID" ]]; then
     log_info "Dumping Nextcloud Database..."
@@ -301,13 +297,23 @@ if [[ "$STRATEGY" != "data_only" && -n "$NC_CID" ]]; then
 fi
 
 # 9. Home Assistant Config (Helper Container - All Strategies)
+# Stop only for this copy. Holding HA down across the Nextcloud rsync (the old
+# order) left it stopped for minutes, and a rotation's detached backup made
+# that look like "change password and Home Assistant dies".
 if [[ -n "$HA_CID" ]]; then
+    log_info "Stopping Home Assistant for a consistent snapshot..."
+    docker stop "$HA_CID"
     log_info "Syncing Home Assistant Config..."
     # We use --volumes-from because HA uses a named volume, not a bind mount.
-    # Note: HA_CID is stopped, but we can still mount its volumes using the ID.
-    docker run --rm --volumes-from "$HA_CID" \
+    # The container is stopped; the volume is still mountable from its ID.
+    if ! docker run --rm --volumes-from "$HA_CID" \
         -v "$STAGING_DIR/ha_config":/backup \
-        alpine sh -c "cp -a /config/. /backup/" || die "HA Config backup failed."
+        alpine sh -c "cp -a /config/. /backup/"; then
+        docker start "$HA_CID" >/dev/null 2>&1 || true
+        die "HA Config backup failed."
+    fi
+    log_info "Restarting Home Assistant..."
+    docker start "$HA_CID" || log_warn "Failed to restart Home Assistant — start it from the dashboard if it stays down."
 fi
 
 # ── OpenClaw Config & Workspace ─────────────────────────────────────────────
@@ -441,12 +447,34 @@ fi
 
 # 11. Compress (+ encrypt)
 if [[ "$ENCRYPT" == "true" ]]; then
-    log_info "Compressing + encrypting archive (AES256, passphrase = master password)..."
+    log_info "Compressing + encrypting archive (AES256, HBK1 envelope)..."
+    SEAL_DIR=$(mktemp -d)
+    chmod 700 "$SEAL_DIR"
+    MASTER_FILE="$SEAL_DIR/master"
+    DEK_FILE="$SEAL_DIR/dek"
+    HEADER_FILE="$SEAL_DIR/header"
+    BODY_FILE="$SEAL_DIR/body"
+    printf '%s' "$MASTER_PASSWORD" > "$MASTER_FILE"
+    chmod 600 "$MASTER_FILE"
+    SEAL_ARGS=(--master-file "$MASTER_FILE" --dek-file "$DEK_FILE" --header-file "$HEADER_FILE")
+    if [[ -n "${RECOVERY_BACKUP_KEY:-}" && -n "${RECOVERY_BACKUP_SALT:-}" ]]; then
+        printf '%s' "$RECOVERY_BACKUP_KEY" > "$SEAL_DIR/rk"
+        printf '%s' "$RECOVERY_BACKUP_SALT" > "$SEAL_DIR/rs"
+        chmod 600 "$SEAL_DIR/rk" "$SEAL_DIR/rs"
+        SEAL_ARGS+=(--recovery-key-file "$SEAL_DIR/rk" --recovery-salt-file "$SEAL_DIR/rs")
+    fi
+    HB_PYTHON="$(backup_crypto_python)"
+    if ! "$HB_PYTHON" "$BACKUP_CRYPTO" seal "${SEAL_ARGS[@]}"; then
+        rm -rf "$SEAL_DIR"
+        die "Archive envelope seal failed — not publishing an unwrapped file."
+    fi
     tar -C "$STAGING_DIR" -cz . | gpg --batch --yes --symmetric \
         --cipher-algo AES256 --s2k-mode 3 --s2k-digest-algo SHA512 \
         --s2k-count 65011712 --compress-algo none \
-        --passphrase-fd 3 -o "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
-        || { rm -f "$ARCHIVE_TMP"; die "Compression/encryption failed."; }
+        --passphrase-fd 3 -o "$BODY_FILE" 3< "$DEK_FILE" \
+        || { rm -rf "$SEAL_DIR"; die "Compression/encryption failed."; }
+    cat "$HEADER_FILE" "$BODY_FILE" > "$ARCHIVE_TMP" \
+        || { rm -rf "$SEAL_DIR"; rm -f "$ARCHIVE_TMP"; die "Could not assemble encrypted archive."; }
 else
     log_info "Compressing archive (unencrypted — BACKUP_ENCRYPT=false)..."
     tar -C "$STAGING_DIR" -czf "$ARCHIVE_TMP" . || die "Compression failed."
@@ -459,14 +487,17 @@ sync
 if [[ "${BACKUP_VERIFY:-true}" != "false" ]]; then
     log_info "Verifying archive integrity..."
     if [[ "$ENCRYPT" == "true" ]]; then
-        gpg --batch --quiet --decrypt --passphrase-fd 3 "$ARCHIVE_TMP" 3<<<"$MASTER_PASSWORD" \
+        gpg --batch --quiet --decrypt --passphrase-fd 3 "$BODY_FILE" 3< "$DEK_FILE" \
             | tar -tz > /dev/null \
-            || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
+            || { rm -rf "$SEAL_DIR"; rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
+        rm -rf "$SEAL_DIR"
     else
         tar -tzf "$ARCHIVE_TMP" > /dev/null \
             || { rm -f "$ARCHIVE_TMP"; die "Archive verification FAILED — bad archive deleted."; }
     fi
     log_info "Archive verified."
+elif [[ "$ENCRYPT" == "true" ]]; then
+    rm -rf "$SEAL_DIR"
 fi
 
 # Publish. Before this rename the archive exists under no name the mirror,

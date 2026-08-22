@@ -106,10 +106,13 @@
                     <label for="os-archive">Backup to restore</label>
                     <select id="os-archive"></select>
 
-                    <label for="os-master">Master password of that {{ platform.product_name }}</label>
+                    <label for="os-master">Master password or recovery phrase</label>
                     <input type="password" id="os-master" autocomplete="off">
-                    <p class="hint">The backup is encrypted with it, and the services inside carry it
-                        too. This box will come back up using that same password — not a new one.</p>
+                    <p class="hint">Either secret opens a backup made after backup-unlock shipped.
+                        Older archives still need the master password that encrypted them. If you
+                        enter the master password, this box comes back on that password. If you
+                        enter the recovery phrase, this box gets a new master password — save it
+                        on the next screen. Your recovery phrase stays the same.</p>
                 </div>
             </div>
         </div>
@@ -246,7 +249,7 @@
                     return;
                 }
                 if (!master) {
-                    msg.textContent = 'Enter the master password that HomeBrain was using.';
+                    msg.textContent = 'Enter the master password or recovery phrase for that backup.';
                     msg.style.color = 'var(--danger)';
                     return;
                 }

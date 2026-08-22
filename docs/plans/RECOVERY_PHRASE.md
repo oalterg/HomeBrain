@@ -301,9 +301,10 @@ real-hardware E2E required per AGENTS.md).
    label exposes.
 2. **Envelope encryption (the "purest" B-variant we deferred).** A real data-encryption
    key wrapped by *both* the password and the recovery phrase would make recovery
-   cryptographic rather than a verifier-reset. It's a large rearchitecture versus
-   today's plaintext `.env` and is not justified at home-box scale yet — revisit if we
-   ever move secrets out of `.env` into a KMS/keyring.
+   cryptographic rather than a verifier-reset. Doing that for all of `.env` is still
+   a KMS-sized rearchitecture and is still deferred. Doing it for **backup archives
+   only** is [`BACKUP_UNLOCK.md`](BACKUP_UNLOCK.md) — that is the dead-box story
+   (drive + recovery phrase) this plan never covered.
 3. **HA auth CLI fragility.** Step 4 of §3.5 is the version-sensitive one; pin and
    verify per HA image bump in `config/versions.json`.
 4. **Word count default.** 6 words (≈77 bits) is the proposed default; confirm whether

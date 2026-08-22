@@ -108,6 +108,26 @@ def test_new_password_policy():
     assert not recovery.is_valid_new_password("a" * 200)        # > 128
 
 
+def test_backup_unlock_key_is_not_the_verifier_hash():
+    phrase = recovery.generate_phrase(6)
+    rec = recovery.build_recovery_record(phrase, 6, 1_700_000_000)
+    assert rec["RECOVERY_BACKUP_KEY"]
+    assert rec["RECOVERY_BACKUP_SALT"]
+    assert rec["RECOVERY_BACKUP_SALT"] != rec["RECOVERY_SCRYPT_SALT"]
+    assert rec["RECOVERY_BACKUP_KEY"] != rec["RECOVERY_SCRYPT_HASH"]
+    again = recovery.derive_backup_key(phrase, rec["RECOVERY_BACKUP_SALT"])
+    assert again["key"] == rec["RECOVERY_BACKUP_KEY"]
+    other = recovery.derive_backup_key(phrase)
+    assert other["key"] != rec["RECOVERY_BACKUP_KEY"]
+
+
+def test_looks_like_recovery_phrase():
+    assert recovery.looks_like_recovery_phrase("wobble tundra deputy chrome amulet salsa")
+    assert not recovery.looks_like_recovery_phrase("correct-horse-battery-staple")
+    assert not recovery.looks_like_recovery_phrase("")
+    assert not recovery.looks_like_recovery_phrase("   ")
+
+
 def _run_standalone():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

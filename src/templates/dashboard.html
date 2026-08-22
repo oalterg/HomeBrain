@@ -954,9 +954,10 @@
                 <label for="mp-confirm">Confirm new password</label>
                 <input type="password" id="mp-confirm" autocomplete="new-password">
                 <p class="hint">{{ password_rule }}</p>
-                <p class="small muted">Your existing encrypted backups stay sealed with the <strong>old</strong>
-                    password — keep it until the fresh backup that starts automatically has finished. This
-                    session stays signed in; your next sign-in uses the new password.</p>
+                <p class="small muted">A fresh backup starts automatically under the new password.
+                    Dual-wrapped archives still open with your recovery phrase; older ones need the
+                    previous password. This session stays signed in; your next sign-in uses the new
+                    password.</p>
                 <button id="mp-submit" onclick="changeMasterPassword()">Change master password</button>
                 <p id="mp-msg" class="hint" style="min-height:1em;"></p>
                 <div id="mp-sheet" class="mt" style="display:none;">
@@ -968,12 +969,23 @@
 
             <section class="section" id="recovery-card">
                 <h3>Recovery Phrase</h3>
-                <p class="lede">A short sequence of words that resets your master password if you forget it — your
-                    only way back in without wiping the device. It is stored only as a one-way hash, so it can be
-                    shown once when generated and never again. Recovery restores admin access to the Dashboard,
-                    Nextcloud and Home Assistant; it does not unlock individual Vault items.</p>
+                <p class="lede">A short sequence of words that resets your master password if you forget it,
+                    and that opens your encrypted backups if the box is gone. It is stored only as a one-way
+                    hash, so it can be shown once when generated and never again. Recovery restores admin
+                    access to the Dashboard, Nextcloud and Home Assistant; it does not unlock individual
+                    Vault items.</p>
                 <p id="recovery-status-line" class="small muted">Checking…</p>
                 <button id="recovery-gen-btn" onclick="regenerateRecovery()">Generate recovery phrase</button>
+                <div id="recovery-enable-unlock" class="mt" style="display:none;">
+                    <p class="small">Enter your recovery phrase to let it unlock backups. The next backup
+                        will open with it; archives already on the drive still need the master password
+                        that encrypted them.</p>
+                    <div class="inline-row">
+                        <input type="password" id="recovery-enable-phrase" class="grow"
+                               placeholder="Recovery phrase" autocomplete="off">
+                        <button type="button" onclick="enableBackupUnlock()">Enable backup unlock</button>
+                    </div>
+                </div>
                 <div id="recovery-reveal" class="mt" style="display:none;">
                     <label>Your recovery phrase — write it down now</label>
                     <div id="recovery-phrase-box" class="creds-secret"></div>

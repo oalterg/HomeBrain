@@ -71,7 +71,7 @@ Dim the living room. Fetch the latest invoice from Nextcloud. Each integration i
   <img src="res/backup.png" alt="The Backup and Storage tab: schedule and retention, the backup drive and disk usage, and an off-site copy mid-upload" width="860">
 </p>
 
-<p align="center"><sub>A schedule, a drive, and somewhere off-site — the whole backup story is one tab. Archives are encrypted with your master password before they leave the box, so the target never sees your data. WebDAV, SFTP or S3 — or a second HomeBrain, which hands out a dedicated <code>replica</code> account for exactly this.</sub></p>
+<p align="center"><sub>A schedule, a drive, and somewhere off-site — the whole backup story is one tab. Archives are encrypted before they leave the box, so the target never sees your data. New archives open with your master password or your recovery phrase. WebDAV, SFTP or S3 — or a second HomeBrain, which hands out a dedicated <code>replica</code> account for exactly this.</sub></p>
 
 ---
 
@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/oalterg/HomeBrain/main/install | su
 sudo /opt/homebrain/scripts/provision.sh
 ```
 
-Open `http://<server-ip>`, log in, and initialize. Local network is the default. The wizard shows the generated master password and recovery phrase **once**. (Restoring from backup reuses the old master password instead of generating one.)
+Open `http://<server-ip>`, log in, and initialize. Local network is the default. The wizard shows the generated master password and recovery phrase **once**. (Restoring from backup: enter the old master password to keep it, or the recovery phrase to decrypt and set a new one.)
 
 `provision.sh` prepares the host and starts the manager. It prints a factory password once if you did not pass `--factory-pass`; that password opens the wizard and is stored in `factory_config.txt` (mode 600). On AMD GPU hardware a reboot is recommended so kernel parameters take effect; it is not required to open the wizard.
 

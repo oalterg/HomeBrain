@@ -314,8 +314,8 @@ Design: [`plans/RECOVERY_PHRASE.md`](plans/RECOVERY_PHRASE.md). The recovery cor
 is unit-tested with no Docker/network/root required:
 
 ```bash
-python3 scripts/tests/test_recovery.py         # must end with "9/9 passed"
-python3 scripts/tests/test_master_password.py  # must end with "9/9 passed" (needs Flask)
+python3 scripts/tests/test_recovery.py         # standalone; see the pass count
+python3 scripts/tests/test_master_password.py  # needs Flask
 ```
 
 On real hardware:
@@ -386,9 +386,10 @@ their password. Run on real hardware (it re-credentials live services).
       Assistant actually accepts. Regression guard: the change is only recorded
       after a real HA login succeeds, so `.env` can never advertise a password
       HA never took.
-- [ ] Backups → archives written **before** the change are flagged as needing the
-      old passphrase, and the automatic post-rotation full backup appears
-      unflagged once it finishes.
+- [ ] Backups → **legacy** archives written before the change are flagged as
+      needing the old passphrase. Dual-wrapped (HBK1) archives are **not**
+      flagged — they still open with the recovery phrase. The automatic
+      post-rotation full backup appears unflagged once it finishes.
 - [ ] **Abort safety:** stop the DB container, then attempt a change → it fails
       before any `.env` write and the **old** password still works everywhere.
 - [ ] Start a change while another task is running → 409, nothing launched.
@@ -446,6 +447,32 @@ On hardware, what the tests above cannot reach — that a real browser honours t
 - [ ] The download works on the LAN over the self-signed HTTPS origin, and on a
       phone — iOS Safari is the weakest link for `<a download>` and setup is
       phone-friendly by design.
+
+---
+
+## Backup unlock (recovery phrase opens archives)
+
+Design: [`plans/BACKUP_UNLOCK.md`](plans/BACKUP_UNLOCK.md). Off-hardware first:
+
+```
+python3 scripts/tests/test_backup_crypto.py
+python3 scripts/tests/test_recovery.py
+python3 scripts/tests/test_setup_credentials.py
+python3 scripts/tests/test_master_password.py
+bash scripts/tests/test_backup_unlock.sh
+node scripts/tests/test_creds_sheet.js
+```
+
+**On hardware (x86 and RPi)**
+
+- [ ] Fresh provision → first full backup: `python3 src/backup_crypto.py inspect --archive <file> --field unlock` prints `master_or_phrase`. Same-box restore with an empty passphrase still works.
+- [ ] Dashboard restore of that archive, passphrase = recovery phrase → data comes back.
+- [ ] Change master password → pre-change HBK1 archive is **not** flagged "needs previous password"; it opens with the phrase and with the old password; the automatic new backup opens with the new password and with the phrase.
+- [ ] Settings → regenerate phrase → local HBK1 archives open with the **new** phrase and fail the old one.
+- [ ] Box provisioned before this ships: Settings → Recovery Phrase shows "Enable backup unlock"; after typing the phrase, the next backup is dual-wrapped; a leftover legacy archive still needs the old master password.
+- [ ] Dead box: wizard Restore system with **only** the recovery phrase → handover shows a **new** master password and the **same** phrase; Dashboard / Nextcloud / HA accept the new password; files are present.
+- [ ] Dead-box control: wizard with the **master** password → box comes back on that password.
+- [ ] `BACKUP_ENCRYPT=false` still publishes plaintext `.tar.gz`.
 
 ---
 

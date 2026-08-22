@@ -14,14 +14,15 @@ Restore. That path is fully dashboard-driven.
 1. **The off-site details** — type (SFTP / WebDAV / S3), host or URL, username,
    password, and remote folder. Same values you entered when you set the
    off-site copy up.
-2. **The master password that was current when the backup was made.** This is
-   the one thing that cannot be recovered from anywhere. Archives are encrypted
-   with the master password as it stood at backup time; nothing on the new box,
-   and nothing at the off-site remote, can open an archive without it.
-   - If you changed your master password after that backup, you need the *old*
-     one. The dashboard marks such archives "needs previous password".
-   - If you reset your password with the recovery phrase, every archive from
-     before that reset needs the password you had before it.
+2. **The master password or the recovery phrase.** New archives (HBK1) open
+   with either secret. Type whichever you have.
+   - If you enter the **master password**, this box comes back on that
+     password — same as before.
+   - If you enter the **recovery phrase**, this box gets a **new** master
+     password (shown once on the handover screen). The phrase itself stays
+     the same.
+   - Archives made before backup-unlock still need the master password that
+     encrypted them. The recovery phrase cannot open those older files.
 3. **Somewhere to put it.** The archive is downloaded before it is unpacked, so
    the new box needs free space of roughly the archive's size. A full-system
    archive can be tens of gigabytes.
@@ -32,9 +33,10 @@ Restore. That path is fully dashboard-driven.
 
 The setup wizard has a **Restore system** checkbox. That is the path for a
 replacement box: factory password → off-site details → pick the archive →
-the master password that encrypted it → Restore. The wizard deploys a
-throwaway stack and then runs the ordinary restore into it. The box comes
-back using **that same master password**, not a new one.
+the master password **or recovery phrase** → Restore. Dual-wrapped archives
+open with either. If you used the master password, the box comes back on
+that password. If you used the recovery phrase, the handover screen shows a
+**new** master password; the phrase is unchanged.
 
 Walked 2026-08-12 on `homebraintest.local` (RPi4, no backup drive):
 
@@ -88,7 +90,8 @@ list marked with ☁️.
 Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
 - Confirm the warning. It wipes the throwaway data from step 1.
-- When prompted for a passphrase, enter **the old box's master password**.
+- When prompted for a passphrase, enter **the old box's master password or
+  its recovery phrase**.
 - The archive downloads first. On a slow connection this takes a long time and
   the dashboard will sit on the restore log — that is normal. If there is not
   enough free space the restore refuses up front rather than filling the disk.
@@ -110,7 +113,7 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
 | Message | Meaning |
 | --- | --- |
-| `Decryption failed — wrong passphrase or corrupt archive` | The passphrase is not the master password that was current when this archive was made. See point 2 above. |
+| `Decryption failed — wrong passphrase or corrupt archive` | The secret is not the master password or recovery phrase that can open this archive. Legacy (pre-unlock) archives still need the master password from backup time. |
 | `Not enough space to fetch …: needs N MB, M MB free` | The staging area is too small. Attach a drive, or free space, and retry. Nothing was downloaded. |
 | `Failed to mount backup drive` | The box expects a drive that is not attached. Either attach it or tick the no-drive option in step 2. |
 | `Could not fetch … from the off-site remote` | Credentials, host or folder are wrong, or the remote is unreachable. Use the connection test on the Off-site Copy form. |

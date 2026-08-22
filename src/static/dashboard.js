@@ -2447,13 +2447,26 @@ async function confirmRestore() {
         // Normally decrypts with the current master password. A passphrase is
         // only needed when the archive predates a password change — and we
         // know which archives those are, so don't make the user guess.
-        const stale = backupIndex[file].needs_old_passphrase;
+        const meta = backupIndex[file];
+        const stale = meta.needs_old_passphrase;
+        const unlock = meta.unlock || '';
+        let body, label;
+        if (unlock === 'master_or_phrase') {
+            body = 'Leave this empty to use the current master password. You can also enter the recovery phrase, or a previous master password.';
+            label = 'Passphrase (optional)';
+        } else if (stale || unlock === 'legacy') {
+            body = unlock === 'legacy'
+                ? 'This backup predates backup-unlock, so it needs the master password that was in use when it was made — the recovery phrase will not open it.'
+                : 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.';
+            label = 'Previous master password';
+        } else {
+            body = 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.';
+            label = 'Passphrase (optional)';
+        }
         const pw = await hbPrompt({
             title: 'Archive passphrase',
-            body: stale
-                ? 'This backup was made before your master password changed, so it needs the password that was in use back then — not your current one.'
-                : 'Leave this empty to use the current master password. Only enter a passphrase if this backup was made before a master-password change.',
-            label: stale ? 'Previous master password' : 'Passphrase (optional)',
+            body,
+            label,
             type: 'password',
             confirm: 'Restore',
             allowEmpty: true,
@@ -2664,6 +2677,8 @@ async function loadRecoveryStatus() {
         if (!d.wordlist_ok) {
             line.textContent = 'Recovery wordlist unavailable on this device — contact support.';
             if (btn) btn.disabled = true;
+            const enable = document.getElementById('recovery-enable-unlock');
+            if (enable) enable.style.display = 'none';
             return;
         }
         if (d.configured) {
@@ -2671,12 +2686,19 @@ async function loadRecoveryStatus() {
             if (d.created_at) {
                 try { when = ' on ' + new Date(parseInt(d.created_at, 10) * 1000).toLocaleDateString(); } catch (e) {}
             }
-            line.textContent = `A recovery phrase is configured${when}.`;
+            const unlock = d.backup_unlock
+                ? ' Backups made from now on open with this phrase if the box is gone.'
+                : '';
+            line.textContent = `A recovery phrase is configured${when}.${unlock}`;
             if (btn) btn.textContent = 'Regenerate recovery phrase';
+            const enable = document.getElementById('recovery-enable-unlock');
+            if (enable) enable.style.display = d.backup_unlock ? 'none' : 'block';
         } else {
             line.textContent = 'No recovery phrase is set. Generate one now so you can recover access if you forget your master password.';
             if (btn) btn.textContent = 'Generate recovery phrase';
             if (banner) banner.style.display = 'block';
+            const enable = document.getElementById('recovery-enable-unlock');
+            if (enable) enable.style.display = 'none';
         }
     } catch (e) { /* leave the placeholder text */ }
 }
@@ -2689,7 +2711,7 @@ async function regenerateRecovery() {
     const replacing = btn && /regenerate/i.test(btn.textContent || '');
     if (replacing && !await hbConfirm({
         title: 'Generate a new recovery phrase?',
-        body: 'Your previous phrase stops working immediately.',
+        body: 'Your previous phrase stops working immediately, including for backups made after it was generated.',
         confirm: 'Generate', danger: true,
     })) return;
 
@@ -2710,6 +2732,34 @@ async function regenerateRecovery() {
         msg.textContent = 'Network error — try again';
     } finally {
         btn.disabled = false;
+    }
+}
+
+async function enableBackupUnlock() {
+    const msg = document.getElementById('recovery-msg');
+    const input = document.getElementById('recovery-enable-phrase');
+    const phrase = (input && input.value || '').trim();
+    if (!phrase) {
+        if (msg) msg.textContent = 'Enter your recovery phrase.';
+        return;
+    }
+    if (msg) msg.textContent = 'Checking…';
+    try {
+        const r = await fetch('/api/recovery/enable-backup-unlock', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phrase }),
+        });
+        const d = await r.json();
+        if (r.ok && d.status === 'ok') {
+            if (input) input.value = '';
+            if (msg) msg.textContent = d.message || 'Backup unlock enabled.';
+            await loadRecoveryStatus();
+        } else {
+            if (msg) msg.textContent = d.error || 'Could not enable backup unlock.';
+        }
+    } catch (e) {
+        if (msg) msg.textContent = 'Network error — try again';
     }
 }
 

@@ -117,6 +117,12 @@ case "$ha_rc" in
     *)  log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
         log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)." ;;
 esac
+# ha_set_password restarts HA; if that restart didn't come back, don't leave
+# it sitting stopped for the detached backup below (which also stops HA,
+# briefly, for its own snapshot).
+if ha_cid="$(get_ha_cid 2>/dev/null)"; then
+    docker start "$ha_cid" >/dev/null 2>&1 || true
+fi
 
 # --- 4. Canonical master + dashboard-login password ------------------------
 # After the service rotations, so MASTER_PASSWORD reflects the value the tokens
