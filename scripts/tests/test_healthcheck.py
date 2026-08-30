@@ -5,6 +5,7 @@ Run:  python3 -m pytest scripts/tests/test_healthcheck.py
 import datetime
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -20,6 +21,7 @@ from healthcheck import (  # noqa: E402
     check_backup,
     check_offsite,
     check_reboot,
+    check_tunnel,
     check_update,
     compose_message,
     daily_note_date,
@@ -30,6 +32,7 @@ from healthcheck import (  # noqa: E402
     parse_env,
     release_key,
     sweep_openclaw_daily_memory,
+    tunnel_state_from_logs,
 )
 
 NOW = 1_800_000_000
@@ -91,6 +94,102 @@ def test_notify_on_escalation_only():
     # De-escalation crit -> warn: no new alert.
     prev = {"level": "crit", "last_notified": NOW - 3600}
     assert decide_notification(prev, "warn", NOW) is None
+
+
+ESTABLISHED = "INFO: Tunnel connection to server established successfully!"
+DNS_FAILURE = ('ERROR: Failed to connect: failed to get token: dial tcp: lookup '
+               'pangolin.example.com on 127.0.0.11:53: server misbehaving. Retrying in 3s...')
+
+
+def test_tunnel_state_reads_the_last_event_not_the_first():
+    """The incident in one assertion: newt connected at first boot, then lost
+    DNS after a reboot and retried for hours. Anything that lets the old
+    success win reports a dead tunnel as connected."""
+    assert tunnel_state_from_logs(f"{ESTABLISHED}\n{DNS_FAILURE}") == "down"
+    assert tunnel_state_from_logs(f"{DNS_FAILURE}\n{ESTABLISHED}") == "connected"
+
+
+def test_tunnel_state_edges():
+    assert tunnel_state_from_logs(ESTABLISHED) == "connected"
+    assert tunnel_state_from_logs(f"{ESTABLISHED}\nINFO: Exiting...") == "down"
+    # Nothing recognisable must not be reported as either state — an unknown
+    # tunnel is a skip, never a green light.
+    assert tunnel_state_from_logs("") == "unknown"
+    assert tunnel_state_from_logs(None) == "unknown"
+    assert tunnel_state_from_logs("INFO: Newt version 1.16.0") == "unknown"
+
+
+def _remote_env():
+    return {"NEWT_ID": "abc", "NEWT_SECRET": "s", "PANGOLIN_DOMAIN": "home.example.com"}
+
+
+def test_check_tunnel_skips_when_the_box_is_not_tunnelled(monkeypatch):
+    """A skip is not a pass: these boxes have no newt, and saying so would
+    be a permanent false alarm."""
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: "/usr/bin/docker")
+
+    # No credentials at all.
+    assert check_tunnel({}) is None
+    # Credentials present but the owner opted out — mirrors is_local_mode.
+    assert check_tunnel(dict(_remote_env(), DEPLOYMENT_MODE="local")) is None
+    # Cloudflare boxes tunnel through cloudflared; newt is not their path.
+    assert check_tunnel(dict(_remote_env(), CF_TOKEN_NC="t")) is None
+    # No docker on the box at all.
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: None)
+    assert check_tunnel(_remote_env()) is None
+
+
+def test_check_tunnel_is_crit_when_configured_but_disconnected(monkeypatch):
+    """crit, not warn: on a remote box the tunnel is the only way in, so this
+    reminds daily rather than weekly."""
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: "/usr/bin/docker")
+
+    def fake_run(argv, **kwargs):
+        if argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, "homebrain-newt-1\n", "")
+        return subprocess.CompletedProcess(argv, 0, f"{ESTABLISHED}\n{DNS_FAILURE}", "")
+
+    monkeypatch.setattr(healthcheck.subprocess, "run", fake_run)
+    out = check_tunnel(_remote_env())
+    assert out["level"] == "crit"
+    assert out["id"] == "tunnel"
+
+
+def test_check_tunnel_is_ok_when_connected(monkeypatch):
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: "/usr/bin/docker")
+
+    def fake_run(argv, **kwargs):
+        if argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, "homebrain-newt-1\n", "")
+        return subprocess.CompletedProcess(argv, 0, ESTABLISHED, "")
+
+    monkeypatch.setattr(healthcheck.subprocess, "run", fake_run)
+    assert check_tunnel(_remote_env())["level"] == "ok"
+
+
+def test_check_tunnel_is_crit_when_remote_but_no_container(monkeypatch):
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        healthcheck.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "", ""))
+    assert check_tunnel(_remote_env())["level"] == "crit"
+
+
+def test_check_tunnel_asks_for_a_recent_tail_only(monkeypatch):
+    """Guards the calling convention, not just the classifier: fed the whole
+    log, the first-boot success masks every later failure."""
+    seen = {}
+    monkeypatch.setattr(healthcheck.shutil, "which", lambda _: "/usr/bin/docker")
+
+    def fake_run(argv, **kwargs):
+        if argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, "homebrain-newt-1\n", "")
+        seen["logs_argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, ESTABLISHED, "")
+
+    monkeypatch.setattr(healthcheck.subprocess, "run", fake_run)
+    check_tunnel(_remote_env())
+    assert "--tail" in seen["logs_argv"]
 
 
 def test_notify_recovery_only_from_crit():

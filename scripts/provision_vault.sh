@@ -99,11 +99,9 @@ fi
 # --- 6. Domain + LAN IP for Caddy SANs (set by mode) ---
 # Always discover the LAN IP — Caddy needs it as a SAN so browsers reaching
 # the box by raw IP get a valid cert (mDNS isn't universal on every client OS
-# / corporate network).
-lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-if [[ -n "$lan_ip" ]]; then
-    update_env_var "VAULT_LAN_IP" "$lan_ip"
-fi
+# / corporate network). Shared with restore.sh and update.sh, which re-derive
+# it for a box that moved networks. See common.sh:refresh_vault_lan_ip.
+refresh_vault_lan_ip
 
 if [[ -z "${VAULT_DOMAIN:-}" ]]; then
     if is_local_mode; then
