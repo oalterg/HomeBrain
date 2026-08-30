@@ -871,6 +871,23 @@ def update_env_var(key, value):
         return False
 
 
+def sanitize_domain(value):
+    """Reduce a user-supplied domain field to a bare hostname.
+
+    Owners paste the tunnel domain as a URL ("https://home.example.com/").
+    Every public hostname is derived by prefixing labels onto this value
+    (nc.<domain>, vault.<domain>), so a scheme or path poisons them all:
+    Nextcloud rejects the tunnel host as untrusted, and Vaultwarden mounts its
+    routes under the path it parses out of DOMAIN, so the image healthcheck's
+    /alive probe 404s and the container reports unhealthy forever. Seen on a
+    production disaster-restore.
+    """
+    value = (value or "").strip()
+    value = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", value)
+    value = re.split(r"[/?#]", value, maxsplit=1)[0]
+    return value.split(":", 1)[0].rstrip(".")
+
+
 def is_setup_complete():
     return os.path.exists(f"{INSTALL_DIR}/.setup_complete")
 
@@ -1036,7 +1053,8 @@ def start_setup():
         newt_id       = data.get("pangolin_id")       or factory.get("NEWT_ID", "")
         newt_secret   = data.get("pangolin_secret")   or factory.get("NEWT_SECRET", "")
         pan_endpoint  = data.get("pangolin_endpoint") or factory.get("PANGOLIN_ENDPOINT", "")
-        pan_domain    = data.get("pangolin_domain")   or factory.get("PANGOLIN_DOMAIN", "")
+        pan_domain    = sanitize_domain(data.get("pangolin_domain")
+                                        or factory.get("PANGOLIN_DOMAIN", ""))
 
         update_env_var("NEWT_ID",           newt_id)
         update_env_var("NEWT_SECRET",       newt_secret)
@@ -2583,7 +2601,7 @@ def update_tunnel():
         update_env_var("NEWT_SECRET", factory.get("NEWT_SECRET", ""))
         
         # Revert Domain Logic
-        main_dom = factory.get("PANGOLIN_DOMAIN", "")
+        main_dom = sanitize_domain(factory.get("PANGOLIN_DOMAIN", ""))
         update_env_var("PANGOLIN_DOMAIN", main_dom)
         update_env_var("MANAGER_DOMAIN", main_dom)
         update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}" if main_dom else "")
@@ -2595,8 +2613,8 @@ def update_tunnel():
         update_env_var("NEWT_SECRET", data.get("secret"))
         
         # Consolidate Domain Logic
-        if data.get("main_domain"):
-            main_dom = data.get("main_domain")
+        main_dom = sanitize_domain(data.get("main_domain"))
+        if main_dom:
             update_env_var("PANGOLIN_DOMAIN", main_dom)
             update_env_var("MANAGER_DOMAIN", main_dom)
             update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
@@ -2618,7 +2636,7 @@ def update_tunnel_cloudflare():
     if current_task_status["status"] == "running":
         return jsonify({"error": "Task running"}), 409
 
-    domain = request.json.get("domain")
+    domain = sanitize_domain(request.json.get("domain"))
     service = request.json.get("service")  # 'nc' or 'ha'
     token = request.json.get("token")
 
@@ -2665,7 +2683,7 @@ def revert_tunnel_provider():
     # legacy NC_DOMAIN/HA_DOMAIN keys: provision.sh (remote mode) rewrites
     # factory_config without those keys, so reading them here would blank the
     # trusted domains on revert. Mirrors the /api/tunnel revert + start_setup map.
-    main_dom = factory.get("PANGOLIN_DOMAIN", "")
+    main_dom = sanitize_domain(factory.get("PANGOLIN_DOMAIN", ""))
     update_env_var("PANGOLIN_DOMAIN", main_dom)
     update_env_var("MANAGER_DOMAIN", main_dom)
     update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}" if main_dom else "")
