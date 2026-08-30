@@ -10,6 +10,10 @@ keeping archives in /var/backups/homebrain came back looking only at
 /mnt/backup and reported no backups at all — while the archives sat untouched
 one directory away. Observed on the test box: 8 archives on disk, 4 listed.
 
+These tests patch app module globals. They must restore them: leaving
+get_env_config as a stub (the previous helper did) made every later test that
+reads MASTER_PASSWORD or the recovery keys fail when pytest ran the suite.
+
 Runnable two ways (needs Flask — install requirements.txt first):
     python3 scripts/tests/test_backup_discovery.py
     pytest scripts/tests/test_backup_discovery.py
@@ -17,6 +21,7 @@ Runnable two ways (needs Flask — install requirements.txt first):
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
@@ -25,29 +30,39 @@ import app as hb            # noqa: E402
 ARCHIVE = "homebrain_backup_2026-08-02_18-01-21.tar.gz.gpg"
 
 
-def _dirs(tmp, configured):
-    """Point the app at a drive dir and an internal dir under tmp."""
-    drive = os.path.join(tmp, "mnt-backup")
-    internal = os.path.join(tmp, "var-backups")
-    os.makedirs(drive, exist_ok=True)
-    os.makedirs(internal, exist_ok=True)
-    hb.BACKUP_DIR = drive
-    hb.INTERNAL_BACKUP_DIR = internal
-    hb.get_env_config = lambda: {"BACKUP_MOUNTDIR": configured}
-    return drive, internal
+@contextmanager
+def _dirs(mount="none"):
+    """Point the app at a drive dir and an internal dir, then put it back.
+
+    mount: "none" (drive default), "drive", or "internal" — the configured
+    BACKUP_MOUNTDIR. The other location still exists so find_backup can see
+    archives a factory reset would otherwise hide.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        drive = os.path.join(tmp, "mnt-backup")
+        internal = os.path.join(tmp, "var-backups")
+        os.makedirs(drive)
+        os.makedirs(internal)
+        configured = {"none": None, "drive": drive, "internal": internal}[mount]
+        saved = hb.BACKUP_DIR, hb.INTERNAL_BACKUP_DIR, hb.get_env_config
+        hb.BACKUP_DIR = drive
+        hb.INTERNAL_BACKUP_DIR = internal
+        hb.get_env_config = lambda: {"BACKUP_MOUNTDIR": configured}
+        try:
+            yield drive, internal
+        finally:
+            hb.BACKUP_DIR, hb.INTERNAL_BACKUP_DIR, hb.get_env_config = saved
 
 
 def test_finds_an_archive_left_in_the_internal_dir():
     """The reset case: configured for the drive, archive kept internally."""
-    with tempfile.TemporaryDirectory() as tmp:
-        drive, internal = _dirs(tmp, configured=None)
+    with _dirs() as (_, internal):
         open(os.path.join(internal, ARCHIVE), "w").close()
         assert hb.find_backup(ARCHIVE) == os.path.join(internal, ARCHIVE)
 
 
 def test_finds_an_archive_on_the_drive():
-    with tempfile.TemporaryDirectory() as tmp:
-        drive, internal = _dirs(tmp, configured=None)
+    with _dirs() as (drive, _):
         open(os.path.join(drive, ARCHIVE), "w").close()
         assert hb.find_backup(ARCHIVE) == os.path.join(drive, ARCHIVE)
 
@@ -55,9 +70,7 @@ def test_finds_an_archive_on_the_drive():
 def test_configured_location_wins_over_the_other():
     """Two copies of one name must resolve to the location in use, so a
     restore reads the archive the owner is actually looking at."""
-    with tempfile.TemporaryDirectory() as tmp:
-        drive, internal = _dirs(tmp, configured=None)
-        hb.get_env_config = lambda: {"BACKUP_MOUNTDIR": internal}
+    with _dirs(mount="internal") as (drive, internal):
         for d in (drive, internal):
             with open(os.path.join(d, ARCHIVE), "w") as f:
                 f.write(d)
@@ -65,15 +78,12 @@ def test_configured_location_wins_over_the_other():
 
 
 def test_missing_archive_is_not_invented():
-    with tempfile.TemporaryDirectory() as tmp:
-        _dirs(tmp, configured=None)
+    with _dirs():
         assert hb.find_backup(ARCHIVE) is None
 
 
 def test_search_dirs_are_deduped_and_must_exist():
-    with tempfile.TemporaryDirectory() as tmp:
-        drive, internal = _dirs(tmp, configured=None)
-        hb.get_env_config = lambda: {"BACKUP_MOUNTDIR": drive}   # same as BACKUP_DIR
+    with _dirs(mount="drive") as (drive, internal):
         dirs = hb.backup_search_dirs()
         assert dirs.count(drive) == 1
         assert internal in dirs
