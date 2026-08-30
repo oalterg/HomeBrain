@@ -509,6 +509,12 @@ if [[ "$HAS_VAULT_DB" == "true" ]]; then
 fi
 
 # --- Restart ---
+# The archive's VAULT_LAN_IP belongs to whatever LAN the backup was taken on,
+# which on a bare-metal restore onto new hardware is usually not this one. Fix
+# it before caddy is created, so its TLS cert carries the address this box
+# actually answers on. See common.sh:refresh_vault_lan_ip.
+refresh_vault_lan_ip
+
 log_info "Restarting Docker Stack..."
 profiles=$(get_tunnel_profiles)
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."

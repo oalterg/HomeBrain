@@ -48,6 +48,7 @@ External HTTPS access via a Pangolin-managed subdomain.
 - [ ] Dashboard loads over the public HTTPS URL without certificate errors
 - [ ] Nextcloud accessible externally: login, upload a file, confirm it persists
 - [ ] Home Assistant accessible externally: dashboard loads, an entity state is visible
+- [ ] Reboot the box: `docker logs newt` reaches "established" on its own, with no `systemctl restart docker` (the tunnel used to stay down after every reboot because Docker had snapshotted a pre-DHCP nameserver)
 
 ### B — Local Network Only (mDNS)
 
