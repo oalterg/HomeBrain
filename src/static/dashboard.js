@@ -2175,8 +2175,12 @@ async function saveBackupConfig(e) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-    if (res.ok) hbToast('Backup schedule saved.');
-    else hbToast('Could not save the backup schedule.', 'error');
+    if (res.ok) {
+        hbToast('Backup schedule saved.');
+        fetchHealth();
+    } else {
+        hbToast('Could not save the backup schedule.', 'error');
+    }
 }
 
 async function runBackup() {

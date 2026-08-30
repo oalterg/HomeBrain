@@ -15,7 +15,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import healthcheck  # noqa: E402
 from healthcheck import (  # noqa: E402
     DAY,
+    backup_is_scheduled,
     backup_log_outcome,
+    check_backup,
     check_offsite,
     check_reboot,
     check_update,
@@ -640,6 +642,36 @@ def test_memory_sweep_warns_on_large_memory_md(tmp_path):
     logged = []
     sweep_openclaw_daily_memory({}, str(mem), datetime.date(2026, 8, 19), log_fn=logged.append)
     assert any("MEMORY.md is" in m for m in logged)
+
+
+def test_no_timer_or_cron_means_backups_are_not_set_up(tmp_path, monkeypatch):
+    monkeypatch.setattr(healthcheck, "BACKUP_CRON_FILE", str(tmp_path / "no-cron"))
+    monkeypatch.setattr(healthcheck, "BACKUP_TIMER_FILE", str(tmp_path / "no-timer"))
+    assert backup_is_scheduled() is False
+    out = check_backup({}, NOW)
+    assert out["level"] == "warn"
+    assert out["summary"] == "Automatic backups are not set up"
+
+
+def test_a_timer_file_means_backups_are_set_up(tmp_path, monkeypatch):
+    """Saving a schedule writes this timer and deletes the cron leftover."""
+    timer = tmp_path / "homebrain-backup.timer"
+    timer.write_text("")
+    monkeypatch.setattr(healthcheck, "BACKUP_CRON_FILE", str(tmp_path / "no-cron"))
+    monkeypatch.setattr(healthcheck, "BACKUP_TIMER_FILE", str(timer))
+    monkeypatch.setattr(healthcheck, "BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(healthcheck, "BACKUP_LOG", str(tmp_path / "no-log"))
+    assert backup_is_scheduled() is True
+    out = check_backup({"BACKUP_INTERNAL": "true"}, NOW)
+    assert "not set up" not in out["summary"]
+
+
+def test_a_legacy_cron_file_still_counts_as_scheduled(tmp_path, monkeypatch):
+    cron = tmp_path / "homebrain-backup"
+    cron.write_text("")
+    monkeypatch.setattr(healthcheck, "BACKUP_CRON_FILE", str(cron))
+    monkeypatch.setattr(healthcheck, "BACKUP_TIMER_FILE", str(tmp_path / "no-timer"))
+    assert backup_is_scheduled() is True
 
 
 def test_memory_sweep_retention_is_keep_last_n_days(tmp_path):

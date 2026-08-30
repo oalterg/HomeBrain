@@ -256,6 +256,7 @@ BACKUP_DIR = "/mnt/backup"
 # find archives here after a factory reset regenerates .env.
 INTERNAL_BACKUP_DIR = "/var/backups/homebrain"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
+BACKUP_TIMER_FILE = "/etc/systemd/system/homebrain-backup.timer"
 LEGACY_BACKUP_CRON_FILE = "/etc/cron.d/nextcloud-backup"
 PROVISION_SCRIPT = f"{INSTALL_DIR}/scripts/provision.sh"
 VERSION_FILE = f"{INSTALL_DIR}/version.json"
@@ -1410,6 +1411,13 @@ def health_status():
     # A stale report (timer dead > 2h) is itself a signal — surface it.
     if time.time() - data.get("ts", 0) > 2 * 3600:
         data["overall"] = "unknown"
+    # health.json is up to 30 minutes old. Saving a schedule writes the timer
+    # immediately, so this snapshot can keep warning "not set up" after it is.
+    if os.path.exists(BACKUP_CRON_FILE) or os.path.exists(BACKUP_TIMER_FILE):
+        data["checks"] = [
+            c for c in (data.get("checks") or [])
+            if not (c.get("id") == "backup" and "not set up" in c.get("summary", ""))
+        ]
     return jsonify(data)
 
 
