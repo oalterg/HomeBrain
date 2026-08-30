@@ -45,6 +45,7 @@ BACKUP_DIR = "/mnt/backup"
 NC_DATA_DEFAULT = "/home/homebrain/nextcloud-data"
 BACKUP_LOG = "/var/log/homebrain/backup.log"
 BACKUP_CRON_FILE = "/etc/cron.d/homebrain-backup"
+BACKUP_TIMER_FILE = "/etc/systemd/system/homebrain-backup.timer"
 OFFSITE_STATE = f"{STATE_DIR}/offsite.json"
 # PID of a mirror that is running right now, published by
 # common.sh:offsite_mirror. Deliberately NOT the mirror's lock file: probing
@@ -173,10 +174,13 @@ def check_files_drive(env):
             "summary": f"Files drive not connected ({path}) — Nextcloud cannot start"}
 
 
+def backup_is_scheduled():
+    """True once the owner has saved a schedule (cron leftover or systemd timer)."""
+    return os.path.exists(BACKUP_CRON_FILE) or os.path.exists(BACKUP_TIMER_FILE)
+
+
 def check_backup(env, now):
-    scheduled = os.path.exists(BACKUP_CRON_FILE) or \
-        os.path.exists("/etc/systemd/system/homebrain-backup.timer")
-    if not scheduled:
+    if not backup_is_scheduled():
         return {"id": "backup", "level": "warn",
                 "summary": "Automatic backups are not set up"}
     # Internal-storage mode (no drive): the directory lives on the root disk,

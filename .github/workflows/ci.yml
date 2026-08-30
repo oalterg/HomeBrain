@@ -48,6 +48,7 @@ jobs:
                             scripts/tests/test_mcp_homebrain.py \
                             scripts/tests/test_ha_watch.py \
                             scripts/tests/test_creds_sheet_wiring.py \
+                            scripts/tests/test_health_banner.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
       - name: recovery sheet text + DOM contract
         run: node scripts/tests/test_creds_sheet.js
