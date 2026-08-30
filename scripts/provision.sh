@@ -134,6 +134,16 @@ fi
 [[ -n "$PROV_REGISTRAR_URL"     ]] && _FC[REGISTRAR_URL]="$PROV_REGISTRAR_URL"
 [[ -n "$PROV_REGISTRAR_SECRET"  ]] && _FC[REGISTRAR_SECRET]="$PROV_REGISTRAR_SECRET"
 
+# Operators paste the tunnel domain as a URL ("https://home.example.com/").
+# Every public hostname is derived by prefixing labels onto this value
+# (nc.<domain>), so a scheme or path here poisons every trusted domain and
+# Vaultwarden's DOMAIN. Reduce to the bare hostname; mirrors app.py's
+# sanitize_domain. Applied after the merge so it also cleans a poisoned
+# value inherited from an existing factory_config.
+_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]#*://}"
+_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]%%[/?#]*}"
+_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]%%:*}"
+
 # Decide deployment mode from the EFFECTIVE (merged) config, not raw argc — this
 # lets `--domain ...` alone (endpoint/creds inherited from factory_config) still
 # resolve to remote.
