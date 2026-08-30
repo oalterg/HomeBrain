@@ -909,11 +909,52 @@ wait_for_apt_lock() {
     done
 }
 
+# Re-derive VAULT_LAN_IP from the current address.
+#
+# Caddy takes it as a TLS SAN ({$VAULT_LAN_IP} in config/Caddyfile) so a browser
+# reaching the box by raw IP gets a valid cert. It used to be written exactly
+# once, at vault provisioning time, and never revisited — so a box that changed
+# subnet (new router, or a bare-metal restore onto a different LAN) kept naming
+# an address it no longer held, and LAN HTTPS by IP failed the handshake.
+# Observed on a restored RPi5: .env said 192.168.1.105, the box was on
+# 192.168.178.112.
+#
+# Always returns 0. A box whose network is not up yet must not abort the restore
+# or update that called us.
+refresh_vault_lan_ip() {
+    local lan_ip
+    lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    [[ -n "$lan_ip" ]] || return 0
+    [[ "$lan_ip" == "${VAULT_LAN_IP:-}" ]] && return 0
+    update_env_var "VAULT_LAN_IP" "$lan_ip"
+    export VAULT_LAN_IP="$lan_ip"
+    log_info "LAN address for the Vault certificate is now ${lan_ip}."
+    return 0
+}
+
+# Remove the drop-in that delayed dockerd until an IPv4 default route existed.
+# It was the wrong fix for the tunnel-down-after-reboot bug: a route can exist
+# while /etc/resolv.conf still names a nameserver from a previous LAN, and the
+# 60s ExecStartPre delayed every boot with no cable. The tunnel container now
+# carries its own DNS upstreams (see the `dns:` block on newt in
+# docker-compose.yml), so the wait buys nothing. Dest is overridable so the
+# unit test can point at a temp dir instead of /etc.
+remove_docker_wait_dropin() {
+    local dest="${DOCKER_DROPIN_DIR:-/etc/systemd/system/docker.service.d}/homebrain-wait-default-route.conf"
+    [[ -f "$dest" ]] || return 0
+    rm -f "$dest"
+    if [[ "$dest" == /etc/systemd/system/* ]]; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    log_info "Removed the obsolete docker wait-for-default-route drop-in."
+}
+
 install_deps_enable_docker() {
     # Offline Fallback: If offline but docker exists, skip apt to prevent crash
     if ! check_internet; then
         if command -v docker >/dev/null; then
             log_warn "Offline mode detected. Skipping apt updates (Docker already installed)."
+            remove_docker_wait_dropin
             return
         else
             log_warn "No internet and Docker not found. Proceeding with apt (may fail)..."
@@ -949,6 +990,7 @@ install_deps_enable_docker() {
     fi
     
     apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    remove_docker_wait_dropin
     log_info "Starting docker service"
     systemctl enable --now docker
 }

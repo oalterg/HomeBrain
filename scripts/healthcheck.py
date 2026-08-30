@@ -125,6 +125,27 @@ def disk_level(percent):
     return "ok"
 
 
+def tunnel_state_from_logs(tail):
+    """Classify a Pangolin tunnel from newt's recent log lines.
+
+    "container running" is not "tunnel connected": a newt whose DNS cannot
+    resolve PANGOLIN_ENDPOINT retries forever in a perfectly healthy-looking
+    container, which is how a box sat with remote access down for four hours
+    while every status surface said the tunnel was up.
+
+    Last matching event wins, so callers MUST pass a recent tail (docker logs
+    --tail N). Fed the whole log, the successful connection from first boot
+    would outrank every failure that came after it.
+    """
+    state = "unknown"
+    for line in (tail or "").splitlines():
+        if "Tunnel connection to server established" in line:
+            state = "connected"
+        elif "Failed to connect" in line or "Exiting..." in line:
+            state = "down"
+    return state
+
+
 def decide_notification(prev, level, now):
     """Decide whether a check's current level warrants a push.
 
@@ -373,6 +394,49 @@ def check_containers():
         return {"id": "containers", "level": "warn",
                 "summary": f"Service unhealthy: {', '.join(unhealthy)}"}
     return {"id": "containers", "level": "ok", "summary": "Containers healthy"}
+
+
+def check_tunnel(env):
+    """Is remote access actually reachable, not merely configured?
+
+    crit, not warn: on a remote-mode box the tunnel is the owner's only way
+    in, so "tunnel down" is closer to a crash-loop than to a nudge, and crit
+    reminds daily instead of weekly. LAN access is unaffected either way.
+
+    Skips are deliberate and mirror common.sh:is_local_mode — a box can carry
+    factory Newt credentials and still run LAN-only, in which case no newt
+    container exists and its absence is correct, not a fault.
+    """
+    if not shutil.which("docker"):
+        return None
+    if not (env.get("NEWT_ID") and env.get("NEWT_SECRET") and env.get("PANGOLIN_DOMAIN")):
+        return None
+    if env.get("DEPLOYMENT_MODE", "remote") == "local":
+        return None
+    # Cloudflare boxes tunnel through cloudflared; newt is not their path.
+    if env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"):
+        return None
+    try:
+        ps = subprocess.run(
+            ["docker", "ps", "--filter", "name=newt", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=20)
+        if ps.returncode != 0:
+            return None
+        name = next((n for n in ps.stdout.split() if n), "")
+        if not name:
+            return {"id": "tunnel", "level": "crit",
+                    "summary": "Remote access is configured but the tunnel is not running"}
+        logs = subprocess.run(["docker", "logs", "--tail", "50", name],
+                              capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    state = tunnel_state_from_logs(logs.stdout + logs.stderr)
+    if state == "connected":
+        return {"id": "tunnel", "level": "ok", "summary": "Remote access tunnel connected"}
+    if state == "down":
+        return {"id": "tunnel", "level": "crit",
+                "summary": "Remote access tunnel is not connected — the box is reachable on the local network only"}
+    return None
 
 
 def release_key(tag):
@@ -775,6 +839,7 @@ def main():
         check_smart(),
         check_services(gpu),
         check_containers(),
+        check_tunnel(env),
         check_openclaw_gateway(gpu),
         check_update(state, now),
         check_reboot(),

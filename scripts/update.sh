@@ -309,6 +309,11 @@ systemctl enable --now homebrain-health.timer 2>/dev/null || true
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.
 systemctl enable --now homebrain-ha-watch.service 2>/dev/null || true
+# Drop the short-lived drop-in that delayed dockerd until a default route
+# existed. Superseded by the `dns:` upstreams on the newt container, which fix
+# the tunnel-after-reboot bug without delaying boot. Idempotent, no-op on a box
+# that never had it.
+remove_docker_wait_dropin || log_warn "Could not remove the docker wait-for-route drop-in."
 # Passwordless sudo for the agent. Only ensure_homebrain_user installs this,
 # and update.sh never calls it — it runs `docker compose up` directly rather
 # than deploy.sh. Without this an updated box gets the openclaw side of the
@@ -376,6 +381,10 @@ fi
 
 # 6. Docker Stack Update
 log_info "Updating Docker Stack..."
+# A box that changed subnet since it was provisioned still carries the old
+# VAULT_LAN_IP in .env, so Caddy's cert names an address it no longer answers
+# on. Re-derive before `up`, which then recreates caddy with the right SAN.
+refresh_vault_lan_ip
 cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
 # Pull latest images defined in compose
 docker compose --env-file "$ENV_FILE" $(get_compose_args) pull || { log_error "Docker pull failed"; exit 1; }

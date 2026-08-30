@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import time
 import base64
 import shutil
@@ -276,6 +277,20 @@ INSTALL_CREDS_PATH = f"{INSTALL_DIR}/install_creds.json"
 STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
 STATUS_FILE = os.path.join(tempfile.gettempdir(), "homebrain_task_status.json")
+
+# tunnel_state_from_logs lives with the health checker so the log strings newt
+# prints are matched in exactly one place. Import-safe: healthcheck.py is
+# constants and functions with its entry point behind __main__. Resolved
+# relative to this file so a dev checkout works like the installed tree, and
+# appended so nothing in scripts/ can shadow a stdlib or site-packages module.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+try:
+    from healthcheck import tunnel_state_from_logs
+except ImportError:
+    # Degrade to today's behaviour rather than taking the whole dashboard down
+    # over the tunnel badge.
+    def tunnel_state_from_logs(_tail):
+        return "unknown"
 
 LOG_FILES = {
     "setup": f"{LOG_DIR}/main_setup.log",
@@ -1469,6 +1484,25 @@ def system_status():
                 if svc == "newt" or svc.startswith("cloudflared"):
                     if status == "running":
                         tunnel_status = "running"
+
+        # A running newt is not a connected tunnel. When its DNS cannot resolve
+        # the Pangolin endpoint it retries forever in a container that Docker
+        # reports as perfectly healthy, so reporting "running" here told owners
+        # remote access worked while every public URL timed out. Only newt:
+        # cloudflared is on its way out and keeps the plain up/stopped answer.
+        if tunnel_status == "running":
+            try:
+                names = subprocess.check_output(
+                    ["docker", "ps", "--filter", "name=newt", "--format", "{{.Names}}"],
+                    timeout=10,
+                ).decode().split()
+                if names:
+                    logs = subprocess.run(["docker", "logs", "--tail", "50", names[0]],
+                                          capture_output=True, text=True, timeout=10)
+                    if tunnel_state_from_logs(logs.stdout + logs.stderr) == "down":
+                        tunnel_status = "unhealthy"
+            except Exception:
+                pass
 
         services["tunnel"] = tunnel_status
 
