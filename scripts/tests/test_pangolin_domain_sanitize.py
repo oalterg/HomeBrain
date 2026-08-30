@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
 import app as hb                                  # noqa: E402
-from test_setup_credentials import Harness, _fresh  # noqa: E402
+from test_setup_credentials import _fresh  # noqa: E402
 
 HOST = "home.example.com"
 
