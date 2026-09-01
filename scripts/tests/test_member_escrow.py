@@ -5,6 +5,8 @@ import json
 import base64
 import threading
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
 import member_escrow as me  # noqa: E402
@@ -129,3 +131,52 @@ def test_restore_rewrap_cli(tmp_path):
         assert False, "old wrap key still opened dest"
     except me.EscrowError:
         pass
+
+
+def test_seal_refuses_to_overwrite_an_unreadable_file(tmp_path):
+    """A truncated file plus one seal used to publish a file holding only the
+    new entry, silently destroying every other member's recovery."""
+    p = str(tmp_path / "escrow.json")
+    key = _key()
+    me.seal("alex", "alex-pw-one-two", key, path=p)
+    me.seal("sam", "sam-pw-three-four", key, path=p)
+
+    raw = open(p).read()
+    open(p, "w").write(raw[: len(raw) // 2])          # a partial write
+
+    with pytest.raises(me.EscrowError):
+        me.seal("robin", "robin-pw-five-six", key, path=p)
+
+    # and the damaged file is left exactly as it was, not replaced
+    assert open(p).read() == raw[: len(raw) // 2]
+
+
+def test_reads_still_degrade_quietly_on_a_damaged_file(tmp_path):
+    p = str(tmp_path / "escrow.json")
+    key = _key()
+    me.seal("alex", "alex-pw-one-two", key, path=p)
+    raw = open(p).read()
+    open(p, "w").write(raw[: len(raw) // 2])
+    assert me.sealed_uids(p) == set()
+    assert me.has_blob("alex", path=p) is False
+
+
+def _seal_batch(path, key, n):
+    import member_escrow as m
+    for i in range(10):
+        m.seal(f"w{n}u{i}", "pw-x", key, path=path)
+
+
+def test_concurrent_seals_across_processes_lose_nothing(tmp_path):
+    """The manager runs `gunicorn --workers 3`. A threading.Lock does not
+    reach across processes; without the flock this loses entries."""
+    import multiprocessing as mp
+    p = str(tmp_path / "escrow.json")
+    key = _key()
+    ctx = mp.get_context("fork")
+    procs = [ctx.Process(target=_seal_batch, args=(p, key, n)) for n in range(4)]
+    for q in procs:
+        q.start()
+    for q in procs:
+        q.join()
+    assert len(me.sealed_uids(p)) == 40

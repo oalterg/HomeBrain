@@ -1610,6 +1610,12 @@ let _household = { members: [], unmatched: [], errors: {}, flags: {} };
 let _memberSheet = null;
 
 function svcChip(label, on) {
+    // null means the service did not answer. Showing that as "off" tells the
+    // owner a member has no vault because Vaultwarden happened to be
+    // restarting, which is worse than admitting we could not check.
+    if (on === null || on === undefined) {
+        return `<span class="chip chip-off" title="Could not check — the service did not answer">${label} ?</span>`;
+    }
     return `<span class="chip ${on ? 'chip-local' : 'chip-off'}">${label}</span>`;
 }
 

@@ -126,7 +126,12 @@ def password_change_payload(old_password, new_password, email, encrypted_key,
             "this vault uses key settings we did not issue")
     old_hash, old_mk = master_password_hash(old_password, email, kdf_iterations)
     user_key = decstring2(encrypted_key, stretch(old_mk))
-    new_hash, new_mk = master_password_hash(new_password, email, KDF_ITERATIONS)
+    # The account's own iteration count, not ours. Vaultwarden's password
+    # change rewrites the hash and the key but leaves client_kdf_iter alone,
+    # so deriving the new pair at our default would hand back a hash the
+    # client never computes and a key it cannot unwrap — a bricked vault on
+    # any account that is not already at KDF_ITERATIONS.
+    new_hash, new_mk = master_password_hash(new_password, email, kdf_iterations)
     return {
         "masterPasswordHash": old_hash,
         "newMasterPasswordHash": new_hash,

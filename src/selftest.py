@@ -334,17 +334,22 @@ def _prune_orphan_escrow(env):
     db_pass = env.get("VAULT_DB_PASSWORD", "")
     db_name = env.get("VAULT_DB_NAME", "vaultwarden")
     db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
-    if db_cid and db_pass:
-        rc, emails = docker_exec(db_cid, [
-            "env", f"MYSQL_PWD={db_pass}",
-            "mariadb", "-u", db_user, "-N", "-s", "-e",
-            f"SELECT email FROM `{db_name}`.users;",
-        ], timeout=10)
-        if rc == 0:
-            for line in emails.splitlines():
-                email = line.strip().lower()
-                if email.endswith("@homebrain.local"):
-                    live.add(email.split("@", 1)[0])
+    # The vault half is not optional. Pruning with only Nextcloud's list would
+    # drop the escrow of anyone who kept a vault after their Files account was
+    # removed — the one case the delete route deliberately preserves.
+    if not (db_cid and db_pass):
+        return 0
+    rc, emails = docker_exec(db_cid, [
+        "env", f"MYSQL_PWD={db_pass}",
+        "mariadb", "-u", db_user, "-N", "-s", "-e",
+        f"SELECT email FROM `{db_name}`.users;",
+    ], timeout=10)
+    if rc != 0:
+        return 0
+    for line in emails.splitlines():
+        email = line.strip().lower()
+        if email.endswith("@homebrain.local"):
+            live.add(email.split("@", 1)[0])
     try:
         import member_escrow
         return member_escrow.prune(live)

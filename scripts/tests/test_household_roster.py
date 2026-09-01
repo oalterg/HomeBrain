@@ -2,6 +2,8 @@
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
 import household as hh  # noqa: E402
@@ -104,3 +106,34 @@ def test_empty_inputs():
     r = hh.merge_roster({}, [], [], OWNER, reserved=RESERVED)
     assert r["members"] == []
     assert r["unmatched"] == []
+
+
+def test_service_that_did_not_answer_is_unknown_not_absent():
+    """A vault that failed to answer must not read as "they have no vault"."""
+    nc = {"alex": {"display_name": "Alex"}}
+    roster = hh.merge_roster(nc, [], [], "admin", vault_known=False, ha_known=False)
+    m = roster["members"][0]
+    assert m["vault"] is None and m["home"] is None
+
+    roster = hh.merge_roster(nc, [], [], "admin", vault_known=True, ha_known=True)
+    m = roster["members"][0]
+    assert m["vault"] is False and m["home"] is False
+
+
+def test_ha_create_refuses_an_account_home_assistant_made_admin(monkeypatch):
+    """The guard read group_ids off the outer dict, where Home Assistant never
+    puts it, so it fell back to the safe value and could never fire."""
+    calls = []
+
+    def fake_ws(token, commands, timeout=20):
+        calls.append(commands[0]["type"])
+        if commands[0]["type"] == "config/auth/create":
+            return [{"user": {"id": "u1", "group_ids": ["system-admin"]}}]
+        return [None]
+
+    monkeypatch.setattr(hh, "ha_ws_call", fake_ws)
+    with pytest.raises(hh.HouseholdError, match="admin"):
+        hh.ha_create_member("tok", "Alex", "alex", "pw")
+    # and it cleans up the account it refused to keep
+    assert "config/auth/delete" in calls
+    assert "config/auth_provider/homeassistant/create" not in calls

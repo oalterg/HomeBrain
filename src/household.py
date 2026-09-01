@@ -25,12 +25,17 @@ def vault_email_for(uid):
 
 
 def merge_roster(nc_users, vault_users, ha_users, owner_uid,
-                 reserved=(), sealed_uids=()):
+                 reserved=(), sealed_uids=(), vault_known=True, ha_known=True):
     """Union of the three services, keyed by Nextcloud uid.
 
     nc_users: {uid: {display_name, quota, last_seen}}
     vault_users: iterable of {email, ...}
     ha_users: iterable of {username, name, user_id, group_ids}
+
+    vault_known / ha_known say whether that service actually answered. When
+    it did not, the member's flag is None ("we could not ask") rather than
+    False ("we asked, they are not there") — the dashboard must not tell the
+    owner a member has no vault because Vaultwarden was restarting.
     """
     reserved = set(reserved)
     sealed = set(sealed_uids)
@@ -73,8 +78,8 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
             "quota": (acct or {}).get("quota") or "default",
             "last_seen": (acct or {}).get("last_seen") or "never",
             "files": True,
-            "vault": vault is not None,
-            "home": home is not None,
+            "vault": (vault is not None) if vault_known else None,
+            "home": (home is not None) if ha_known else None,
             "sealed": uid in sealed,
         })
 
@@ -222,7 +227,9 @@ def ha_create_member(token, name, uid, password):
     user_id, groups = ha_created_user(created)
     if not user_id:
         raise HouseholdError("Home Assistant did not return a user id")
-    groups = created.get("group_ids") or [HA_GROUP]
+    # Read what ha_created_user parsed out of Home Assistant's {"user": {...}}
+    # envelope. Re-reading group_ids from the outer dict finds nothing, falls
+    # back to [HA_GROUP], and makes this check unable to fail.
     if HA_GROUP not in groups or "system-admin" in groups:
         # Refuse to continue if we somehow minted an admin.
         try:

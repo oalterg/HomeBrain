@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import os
 import json
+import time
+import fcntl
 import base64
 import secrets
 import tempfile
 import threading
+import contextlib
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -20,11 +23,50 @@ ESCROW_PATH = "/var/lib/homebrain/member_escrow.json"
 INFO = b"homebrain-member-escrow-v1"
 NONCE_LEN = 12
 
+# Intra-process only. The manager runs `gunicorn --workers 3`, so a thread
+# lock alone lets two workers interleave a read-modify-write and drop an
+# entry — measured at 19 of 40 seals lost across four processes. The flock
+# below is what actually keeps invariant 14; this one just avoids spinning
+# on it between greenlets in the same worker.
 _lock = threading.Lock()
+LOCK_WAIT_SECONDS = 5.0
 
 
 class EscrowError(Exception):
     """Missing key, corrupt file, or AAD mismatch."""
+
+
+@contextlib.contextmanager
+def _locked(path):
+    """Serialize read-modify-write across greenlets *and* worker processes.
+
+    Non-blocking flock in a polling loop rather than a blocking one: gevent
+    does not patch fcntl, so a blocking flock would stall every greenlet in
+    the worker. The critical section is one small read, one AEAD op and one
+    rename, so contention is brief.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    lock_path = path + ".lock"
+    with _lock:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise EscrowError(
+                            "member escrow is locked by another worker")
+                    time.sleep(0.02)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def escrow_key(recovery_backup_key_b64):
@@ -57,8 +99,8 @@ def open_password(uid, recovery_backup_key_b64, path=ESCROW_PATH):
 
 def seal(uid, password, recovery_backup_key_b64, path=ESCROW_PATH):
     """Lock covers the read as well as the write (invariant 14)."""
-    with _lock:
-        data = _load(path)
+    with _locked(path):
+        data = _load_strict(path)
         wraps = data.setdefault("wraps", {})
         nonce = secrets.token_bytes(NONCE_LEN)
         ct = AESGCM(escrow_key(recovery_backup_key_b64)).encrypt(
@@ -72,8 +114,8 @@ def seal(uid, password, recovery_backup_key_b64, path=ESCROW_PATH):
 
 
 def drop(uid, path=ESCROW_PATH):
-    with _lock:
-        data = _load(path)
+    with _locked(path):
+        data = _load_strict(path)
         wraps = data.get("wraps") or {}
         if uid not in wraps:
             return False
@@ -85,8 +127,8 @@ def drop(uid, path=ESCROW_PATH):
 
 def rewrap(old_key_b64, new_key_b64, path=ESCROW_PATH):
     """Re-seal every entry under a new RECOVERY_BACKUP_KEY. All or nothing."""
-    with _lock:
-        data = _load(path)
+    with _locked(path):
+        data = _load_strict(path)
         wraps = data.get("wraps") or {}
         if not wraps:
             return 0
@@ -115,8 +157,8 @@ def rewrap(old_key_b64, new_key_b64, path=ESCROW_PATH):
 def prune(live_uids, path=ESCROW_PATH):
     """Drop entries whose uid is on no service. Returns how many were removed."""
     live = set(live_uids)
-    with _lock:
-        data = _load(path)
+    with _locked(path):
+        data = _load_strict(path)
         wraps = data.get("wraps") or {}
         stale = [uid for uid in wraps if uid not in live]
         if not stale:
@@ -128,21 +170,41 @@ def prune(live_uids, path=ESCROW_PATH):
         return len(stale)
 
 
-def _load(path):
+def _empty():
+    return {"v": 1, "wraps": {}}
+
+
+def _load_strict(path):
+    """For read-modify-write. A file that is absent is an empty roster; a file
+    that is present but unreadable is an error, never an empty roster.
+
+    Treating them alike is how one truncated file plus one seal silently
+    destroys every other member's recovery — the write would carry only the
+    new entry. Read paths keep the tolerant behaviour below; writers must
+    refuse instead."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict):
-            return {"v": 1, "wraps": {}}
-        data.setdefault("v", 1)
-        data.setdefault("wraps", {})
-        if not isinstance(data["wraps"], dict):
-            data["wraps"] = {}
-        return data
     except FileNotFoundError:
-        return {"v": 1, "wraps": {}}
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return {"v": 1, "wraps": {}}
+        return _empty()
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise EscrowError(
+            f"member escrow file is unreadable, refusing to overwrite it: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("wraps", {}), dict):
+        raise EscrowError(
+            "member escrow file is malformed, refusing to overwrite it")
+    data.setdefault("v", 1)
+    data.setdefault("wraps", {})
+    return data
+
+
+def _load(path):
+    """Read-only view. Degrades to "nothing sealed" so a missing or damaged
+    file never crashes the roster."""
+    try:
+        return _load_strict(path)
+    except EscrowError:
+        return _empty()
 
 
 def _atomic_write(path, data):
@@ -180,9 +242,22 @@ if __name__ == "__main__":
         dest_key = f.read().strip()
     if not old_key or not dest_key:
         raise SystemExit("wrap key or dest key missing")
-    if os.path.abspath(args.json) != os.path.abspath(args.out):
-        shutil.copy2(args.json, args.out)
+    # Re-wrap a scratch copy, and only then publish it. Re-wrapping in place
+    # at --out leaves the source-sealed json sitting at the destination when a
+    # single entry fails, and a blob sealed under the source key reads on this
+    # box as "not recoverable" for members whose vaults are perfectly fine.
+    staging = args.out + ".rewrap"
+    shutil.copy2(args.json, staging)
+    os.chmod(staging, 0o600)
+    try:
+        n = rewrap(old_key, dest_key, path=staging)
+        os.replace(staging, args.out)
         os.chmod(args.out, 0o600)
-    n = rewrap(old_key, dest_key, path=args.out)
+    except BaseException:
+        try:
+            os.unlink(staging)
+        except OSError:
+            pass
+        raise
     print(n)
 

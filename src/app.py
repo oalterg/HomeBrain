@@ -4915,6 +4915,12 @@ def _list_vault_users():
         raise household.HouseholdError("Vault admin is not available")
     r = requests.get(f"{_vault_base_url()}/admin/users",
                      cookies={"VW_ADMIN": jwt}, timeout=10)
+    if r.status_code == 429:
+        # Vaultwarden rate-limits the admin endpoint (a handful of logins per
+        # five minutes, keyed by IP). Reporting that as "no vault accounts"
+        # tells the owner their members have no vault.
+        raise household.HouseholdError(
+            "Vault admin is rate-limited — try again in a few minutes")
     if r.status_code != 200:
         raise household.HouseholdError("Could not list vault accounts")
     data = r.json()
@@ -5037,18 +5043,24 @@ def _reset_vault_password(uid, old_password, new_password):
 
 
 def _probe_vault(uid, env):
+    """recoverable / not_recoverable / unknown. Never report "unknown" as a
+    definitive no — a rate-limited or unreachable vault would otherwise mark
+    a healthy member unrecoverable and make /password refuse to fix it."""
     key = env.get("RECOVERY_BACKUP_KEY", "")
     if not key or not member_escrow.has_blob(uid):
         return "not_recoverable"
     try:
         password = member_escrow.open_password(uid, key)
     except member_escrow.EscrowError:
-        return "not_recoverable"
+        return "unknown"          # the blob exists; we just could not read it
     email = vault_account.vault_email(uid)
-    kdf, iters = _vault_prelogin(email)
-    if kdf != vault_account.KDF_PBKDF2:
-        return "not_recoverable"
-    status, _, _ = _vault_connect_token(email, password, iters)
+    try:
+        kdf, iters = _vault_prelogin(email)
+        if kdf != vault_account.KDF_PBKDF2:
+            return "not_recoverable"
+        status, _, _ = _vault_connect_token(email, password, iters)
+    except requests.RequestException:
+        return "unknown"
     return vault_account.probe_verdict(status)
 
 
@@ -5070,6 +5082,24 @@ def _seal_password(uid, password, env):
         raise household.HouseholdError(
             "Backup unlock is not enabled — HomeBrain cannot keep a recoverable vault password")
     member_escrow.seal(uid, password, key)
+
+
+def _nc_password_works(uid, password, env):
+    """Ask Nextcloud, over OCS, whether these are really their credentials.
+
+    Sealing a password nobody verified is how a mistyped one ends up in the
+    escrow while the member keeps a different password on Files — three
+    services, two passwords, and a blob that lies."""
+    port = env.get("NEXTCLOUD_PORT", "8080")
+    try:
+        r = requests.get(
+            f"http://127.0.0.1:{port}/ocs/v1.php/cloud/user?format=json",
+            auth=(uid, password), headers={"OCS-APIRequest": "true"},
+            timeout=15)
+    except requests.RequestException as e:
+        raise household.HouseholdError(
+            f"Could not check that password with Nextcloud ({e})")
+    return r.status_code == 200
 
 
 def _ha_user_id(users, uid):
@@ -5154,35 +5184,33 @@ def list_household_members():
         return jsonify({"error": str(e)}), 503
 
     vault_users, ha_users = [], []
+    vault_known, ha_known = True, False
     try:
         vault_users = _list_vault_users()
     except Exception as e:
         errors["vault"] = str(e)[:200]
+        vault_known = False
     if env.get("HA_PASSWORD_MANAGED") == "true":
         try:
             ha_users = _list_ha_users(env)
+            ha_known = True
         except Exception as e:
             errors["ha"] = str(e)[:200]
 
-    live = set(accounts)
-    for v in vault_users:
-        email = (v.get("email") or "").strip().lower()
-        if email.endswith("@homebrain.local"):
-            live.add(email.split("@", 1)[0])
-    for h in ha_users:
-        if h.get("username"):
-            live.add(h["username"])
-    try:
-        member_escrow.prune(live)
-    except Exception:
-        pass
-
+    # Deliberately no prune here. Discovery never writes (invariant 3), and
+    # pruning against a service that just failed to answer is how a member
+    # who kept a vault after their Files account went loses their sealed
+    # password to a routine Vaultwarden restart. selftest.check_vault prunes,
+    # and only when it could read every service.
     roster = household.merge_roster(
         accounts, vault_users, ha_users, admin_user,
-        reserved=RESERVED_MEMBERS, sealed_uids=member_escrow.sealed_uids())
+        reserved=RESERVED_MEMBERS, sealed_uids=member_escrow.sealed_uids(),
+        vault_known=vault_known, ha_known=ha_known)
     roster["errors"] = errors
     roster["flags"] = {
         "ha_managed": env.get("HA_PASSWORD_MANAGED") == "true",
+        "vault_known": vault_known,
+        "ha_known": ha_known,
         "backup_unlock": bool(env.get("RECOVERY_BACKUP_KEY")),
         "vault_url": _vault_public_url(),
     }
@@ -5299,10 +5327,23 @@ def add_household_member():
         return jsonify({"error": "Home Assistant manages its own login — "
                                  "HomeBrain cannot add people to it"}), 409
 
+    # Refuse a duplicate before sealing anything. Sealing first and rolling
+    # back on the occ failure overwrites the existing person's blob and then
+    # deletes it, so "did I already add Alex?" costs Alex their vault
+    # recovery — for an action that changes nothing else.
+    try:
+        if user in (nc_occ_json("user:list") or {}):
+            return jsonify({"error": f'The account "{user}" already exists.'}), 400
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+
     password = member_password()
     results = {}
+    # Only a blob this request created may be rolled back.
+    sealed_here = False
     try:
         _seal_password(user, password, env)
+        sealed_here = True
     except household.HouseholdError as e:
         if "vault" in services:
             return jsonify({"error": str(e)}), 409
@@ -5314,18 +5355,17 @@ def add_household_member():
                       "--display-name", name or user, user,
                       env_extra={"OC_PASS": password})
         if proc.returncode != 0:
-            member_escrow.drop(user)
+            if sealed_here:
+                member_escrow.drop(user)
             return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
                                       or "Could not add the user")[:200]}), 400
         ensure_photo_settings()
         payload = pairing_payload(user, password, env)
         results["files"] = "ok"
     except NextcloudError as e:
-        member_escrow.drop(user)
+        if sealed_here:
+            member_escrow.drop(user)
         return jsonify({"error": str(e)}), 502
-    except household.HouseholdError:
-        member_escrow.drop(user)
-        raise
 
     if "vault" in services:
         try:
@@ -5370,6 +5410,7 @@ def add_household_services(user):
                                  "HomeBrain cannot add people to it"}), 409
 
     password = (body.get("password") or "").strip()
+    typed = bool(password)
     key = env.get("RECOVERY_BACKUP_KEY", "")
     if not password and key and member_escrow.has_blob(user):
         try:
@@ -5379,6 +5420,13 @@ def add_household_services(user):
     if not password:
         return jsonify({"error": "Type the password from the sheet — HomeBrain "
                                  "does not have one stored for them"}), 400
+    if typed:
+        try:
+            if not _nc_password_works(user, password, env):
+                return jsonify({"error": "That is not their Files password — "
+                                         "nothing was changed."}), 400
+        except household.HouseholdError as e:
+            return jsonify({"error": str(e)}), 502
     if key:
         try:
             _seal_password(user, password, env)
@@ -5452,21 +5500,18 @@ def reset_household_password(user):
     if on_vault:
         verdict = _probe_vault(user, env) if old else "not_recoverable"
         if verdict == "unknown":
-            return jsonify({
-                "error": "Could not check whether their vault is still recoverable. "
-                         "Try again in a minute — HomeBrain will not guess."
-            }), 409
-        if verdict != "recoverable":
+            # We never got to ask. Files and Home still get their new
+            # password; the vault is left exactly as it is, and the reply
+            # says which of the two happened.
+            vault_note = ("Their vault was left alone — HomeBrain could not "
+                          "reach it to check. Try the vault again in a minute.")
+            on_vault = False
+        elif verdict != "recoverable":
             vault_note = ("Their vault password was left alone — they changed it "
                           "in the Bitwarden app, and HomeBrain cannot rotate it.")
             on_vault = False
 
     password = member_password()
-    try:
-        _seal_password(user, password, env)
-    except household.HouseholdError:
-        pass
-
     try:
         proc = nc_occ("user:resetpassword", "--password-from-env", user,
                       env_extra={"OC_PASS": password})
@@ -5478,7 +5523,15 @@ def reset_household_password(user):
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 502
 
+    # Sealed only now that Nextcloud has accepted it. Earlier, and a failed
+    # reset leaves the blob holding a password no service takes — which reads
+    # afterwards as "not recoverable" for a member who was fine.
     results = {"files": "ok"}
+    try:
+        _seal_password(user, password, env)
+    except household.HouseholdError:
+        pass
+
     if on_vault and old:
         try:
             verdict = _reset_vault_password(user, old, password)
@@ -5580,6 +5633,15 @@ def delete_household_member(user):
             still = True
     if not still:
         member_escrow.drop(user)
+    failed = [k for k, v in results.items() if v != "ok"]
+    if failed:
+        # "removed" while their vault account is still there is the sentence
+        # an owner acts on and never revisits.
+        return jsonify({"status": "partial", "services": results,
+                        "error": "Removed from " +
+                                 (", ".join(k for k, v in results.items() if v == "ok")
+                                  or "nothing") +
+                                 f"; still on: {', '.join(failed)}."}), 409
     return jsonify({"status": "removed", "services": results})
 
 

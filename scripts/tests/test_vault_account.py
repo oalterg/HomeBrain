@@ -98,3 +98,23 @@ def test_probe_verdict():
     assert va.probe_verdict(429) == "unknown"
     assert va.probe_verdict(0) == "unknown"
     assert va.probe_verdict(503) == "unknown"
+
+
+def test_password_change_stays_on_the_accounts_own_kdf():
+    """Vaultwarden's password change rewrites the hash and key but leaves
+    client_kdf_iter alone. Deriving the new pair at our default hands the
+    client a hash it never computes and a key it cannot unwrap."""
+    email = "alex@homebrain.local"
+    account_iters = 100_000                      # what prelogin reports
+    user_key = os.urandom(64)
+    enc = va.encstring2(
+        user_key, va.stretch(va.master_key("old-pw", email, account_iters)))
+
+    body = va.password_change_payload(
+        "old-pw", "new-pw", email, enc, kdf_iterations=account_iters)
+
+    # the hash the client will send after the change must be the one we wrote
+    expected, mk = va.master_password_hash("new-pw", email, account_iters)
+    assert body["newMasterPasswordHash"] == expected
+    # and the client must be able to unwrap the key with it
+    assert va.decstring2(body["key"], va.stretch(mk)) == user_key
