@@ -925,11 +925,20 @@ def is_setup_complete():
 def is_handover_pending():
     """True while the generated credentials are still waiting to be claimed.
 
-    Deploy marks setup complete before the owner has read anything; the
-    presence of install_creds.json is the only evidence that the master
-    password and recovery phrase have not yet been handed over.
+    Deploy marks setup complete before the owner has read anything, so the
+    existence of the credentials — anywhere — is what says the master password
+    and recovery phrase have not been handed over yet.
+
+    The staging path counts, and must. This gates login()'s rule that the
+    factory password keeps working until the owner has claimed their real one.
+    On a restore the credentials now sit in staging for the whole restore while
+    .setup_complete is already present, so reading only the final path would
+    reject the factory password for as long as the restore runs — in favour of
+    a master password the owner has by definition never been shown. A session
+    lost in that window (closed browser, moved to a laptop) would have no way
+    back in. Found on the hardware E2E for this change.
     """
-    return os.path.exists(INSTALL_CREDS_PATH)
+    return os.path.exists(INSTALL_CREDS_PATH) or os.path.exists(STAGING_CREDS_PATH)
 
 
 def is_setup_started():

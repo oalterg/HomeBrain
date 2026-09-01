@@ -135,6 +135,21 @@ else
     bad "a FAILED restore is flagged"
 fi
 
+echo "== the factory password still works while a restore runs =="
+
+# Holding the credentials back closed a door that was deliberately left open:
+# login() keeps honouring the factory password until the owner has claimed
+# their real one, and it asks is_handover_pending(). Reading only the promoted
+# path would reject the device-label password for the whole restore, in favour
+# of a master password the owner has never been shown.
+if grep -q 'STAGING_CREDS_PATH' "$SCRIPT_DIR/../../src/app.py" \
+   && sed -n '/^def is_handover_pending/,/^    return/p' "$SCRIPT_DIR/../../src/app.py" \
+      | grep -q 'STAGING_CREDS_PATH'; then
+    ok "is_handover_pending counts staged credentials, not only promoted ones"
+else
+    bad "is_handover_pending counts staged credentials (a lost session mid-restore cannot log back in)"
+fi
+
 echo "== restore.sh logs where its caller is looking =="
 
 # The other half of the same defect: the wizard streams the setup log, but
