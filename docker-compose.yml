@@ -117,7 +117,7 @@ services:
       retries: 5
 
   vaultwarden:
-    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.36.0}
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.37.2}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULT_PORT:-8082}:80"

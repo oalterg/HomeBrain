@@ -60,6 +60,8 @@ jobs:
         run: bash scripts/tests/test_update_guard.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
+      - name: Vaultwarden pin (both pins agree, past the Android `data` fix)
+        run: bash scripts/tests/test_vault_tag_pin.sh
       - name: platform detection (fixture sysfs trees)
         run: bash scripts/tests/test_platform_detect.sh
       - name: backup dir guard (internal-storage restore)

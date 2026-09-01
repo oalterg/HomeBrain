@@ -220,6 +220,14 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         else
             echo "VAULTWARDEN_TAG='${new_vault_tag}'" >> "$ENV_FILE"
         fi
+        # Re-export, don't just rewrite the file. `load_env` above did `set -a;
+        # source .env`, so on every bump after the first the OLD tag is already
+        # an exported variable — and Compose resolves ${VAULTWARDEN_TAG} from the
+        # real environment in preference to --env-file. Without this the sed is
+        # correct on disk and completely ignored, and the box silently keeps the
+        # previous image. (The `load_env` further down happens to paper over this
+        # today, but only when utilities.sh is present and executable.)
+        export VAULTWARDEN_TAG="$new_vault_tag"
     fi
     # Resolve from INSTALL_DIR, not SCRIPT_DIR: after the self-reload re-exec'd
     # the new update.sh from /tmp/homebrain_self_update, $SCRIPT_DIR points there
