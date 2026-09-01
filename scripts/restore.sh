@@ -523,6 +523,7 @@ profiles=$(get_tunnel_profiles)
 if handover_pending; then
     log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
+    stop_tunnel_services   # `up` alone would leave an already-running tunnel up
 fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 

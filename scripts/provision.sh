@@ -342,8 +342,16 @@ if [[ "$PROVISION_MODE" == "remote" && -f "$INSTALL_DIR/.setup_complete" && -f "
         fi
         # Confirm the new tunnel actually came up, then remind the operator of the
         # Pangolin org-side resources only they can configure (with correct targets).
-        log_warn "Remote access now flips to the new tunnel."
-        verify_newt_connected || true
+        # An unclaimed box is the exception: redeploy_tunnels.sh deliberately
+        # holds the tunnel there, so verify_newt_connected would report a
+        # failure for a box that is behaving exactly as designed.
+        if handover_pending; then
+            log_info "Credentials not yet claimed — the new domain is configured but not published."
+            log_info "The tunnel comes up under ${_dom} when the owner finishes the setup wizard."
+        else
+            log_warn "Remote access now flips to the new tunnel."
+            verify_newt_connected || true
+        fi
         print_pangolin_resource_guide "${_dom}"
     else
         log_info "--no-apply: .env updated but tunnel not redeployed. Run scripts/redeploy_tunnels.sh to apply."

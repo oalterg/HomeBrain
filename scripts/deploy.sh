@@ -89,6 +89,10 @@ profiles=$(get_tunnel_profiles)
 if handover_pending; then
     log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
+    # Not redundant with the empty profiles: `up` leaves services outside the
+    # active profile running, so a tunnel that is already up would sail through
+    # the whole handover window. See stop_tunnel_services in common.sh.
+    stop_tunnel_services
 fi
 
 vault_profiles=$(get_vault_profiles)

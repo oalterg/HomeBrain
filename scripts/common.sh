@@ -780,11 +780,30 @@ is_stack_running() {
 # publish it. Staging is the first-deploy case — install_creds.json does not
 # exist yet, which is why gating only on the json never fired.
 #
-# After claim neither file remains. update.sh / redeploy_tunnels.sh run on a
-# live box and do not consult this; they would otherwise hide a tunnel that
-# the owner already published.
+# update.sh is the one publisher that deliberately does NOT consult this, and
+# the reason is narrow: a box that deployed under the pre-guard code is sitting
+# there right now with a live tunnel AND an unclaimed install_creds.json, and
+# gating the update would drop its remote access mid-upgrade. On a claimed box
+# neither file exists, so gating would change nothing there — the legacy state
+# is the only thing that exemption buys. update.sh cannot run unattended in the
+# handover window anyway (app.py:perform_first_boot_update returns early once
+# setup is started, and there is no update timer), so it takes a deliberate
+# owner action to reach it.
 handover_pending() {
     [[ -f "$INSTALL_DIR/.install_creds_staging" ]] || [[ -f "$INSTALL_DIR/install_creds.json" ]]
+}
+
+# Take down every tunnel that publishes this box.
+#
+# Dropping the profiles from `compose up` only stops a tunnel being STARTED:
+# compose ignores services outside the active profile set rather than removing
+# them, so a newt that is already running survives `up` with profiles="" and
+# the handover guard becomes a no-op. Anything that holds tunnels must stop
+# them too. Shared so deploy.sh, restore.sh and redeploy_tunnels.sh cannot
+# drift on the service list — a tunnel missing from it stays published.
+stop_tunnel_services() {
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) \
+        stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
 }
 
 # --- Tunnel Profiles Helper ---

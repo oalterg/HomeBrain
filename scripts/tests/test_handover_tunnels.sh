@@ -62,27 +62,61 @@ clear_creds
 held "both files: still held"
 
 echo "== call sites =="
-# deploy.sh and restore.sh must consult the helper. update.sh and
-# redeploy_tunnels.sh must not — they run on a live, claimed box.
-if grep -qE '^[[:space:]]*if handover_pending; then' "$REPO_ROOT/scripts/deploy.sh"; then
-    ok "deploy.sh holds tunnels when handover_pending"
-else
-    bad "deploy.sh holds tunnels when handover_pending"
-fi
-if grep -qE '^[[:space:]]*if handover_pending; then' "$REPO_ROOT/scripts/restore.sh"; then
-    ok "restore.sh holds tunnels when handover_pending"
-else
-    bad "restore.sh holds tunnels when handover_pending"
-fi
+# Every script that can bring a tunnel up must consult the helper, including
+# redeploy_tunnels.sh: provision.sh reaches it on any box with .setup_complete,
+# and deploy.sh sets that marker inside the handover window.
+for script in deploy.sh restore.sh redeploy_tunnels.sh; do
+    if grep -qE '^[[:space:]]*if handover_pending; then' "$REPO_ROOT/scripts/$script"; then
+        ok "$script holds tunnels when handover_pending"
+    else
+        bad "$script holds tunnels when handover_pending"
+    fi
+done
+
+# update.sh is the deliberate exemption, not an oversight: a box deployed under
+# the pre-guard code has a live tunnel AND unclaimed creds, and gating the
+# update would drop its remote access mid-upgrade. Pinned so the exemption is a
+# decision someone has to revisit on purpose — if you are removing this, read
+# handover_pending's comment in common.sh first.
 if grep -q 'handover_pending' "$REPO_ROOT/scripts/update.sh"; then
-    bad "update.sh does not consult handover_pending"
+    bad "update.sh exemption is intact (it now consults handover_pending)"
 else
-    ok "update.sh does not consult handover_pending"
+    ok "update.sh exemption is intact"
 fi
-if grep -q 'handover_pending' "$REPO_ROOT/scripts/redeploy_tunnels.sh"; then
-    bad "redeploy_tunnels.sh does not consult handover_pending"
+
+echo "== teardown =="
+# Dropping the profiles only stops a tunnel being STARTED. Without an explicit
+# stop, a tunnel that is already running survives the whole handover window and
+# the guard above is decorative.
+for script in deploy.sh restore.sh; do
+    # Anchored: a prose mention of the helper in a comment is not a call.
+    if grep -qE '^[[:space:]]*stop_tunnel_services([[:space:]]|$)' "$REPO_ROOT/scripts/$script"; then
+        ok "$script stops tunnels that are already running"
+    else
+        bad "$script stops tunnels that are already running"
+    fi
+done
+
+# Drift guard: a tunnel service added to docker-compose.yml but not to
+# stop_tunnel_services stays published through handover. Collect every service
+# carrying a pangolin/cloudflare profile and demand the helper names it.
+stop_body=$(sed -n '/^stop_tunnel_services()/,/^}/p' "$COMMON")
+publishers=$(awk '
+    /^  [a-zA-Z0-9_-]+:/ { svc = $1; sub(/:$/, "", svc); inprof = 0 }
+    /^    profiles:/      { inprof = 1; next }
+    /^    [a-zA-Z]/       { inprof = 0 }
+    inprof && /pangolin|cloudflare/ { print svc }
+' "$REPO_ROOT/docker-compose.yml" | sort -u)
+if [[ -z "$publishers" ]]; then
+    bad "found no profile-gated tunnel services in docker-compose.yml (parser broken?)"
 else
-    ok "redeploy_tunnels.sh does not consult handover_pending"
+    for svc in $publishers; do
+        if grep -q -- "$svc" <<<"$stop_body"; then
+            ok "stop_tunnel_services covers $svc"
+        else
+            bad "stop_tunnel_services covers $svc"
+        fi
+    done
 fi
 
 echo
