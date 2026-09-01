@@ -794,6 +794,48 @@ is_stack_running() {
     [[ -n "$ha_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ha_cid" 2>/dev/null) == "true" ]]
 }
 
+# True while the owner has not claimed the generated credentials.
+#
+# The wizard writes .install_creds_staging, then starts deploy.sh. On a
+# first install, deploy promotes that file to install_creds.json when the
+# stack is up. On a wizard restore, credentials stay staged until
+# finish_restore (deploy.sh is only the first half). The factory password
+# still works in that window (app.py:is_handover_pending); newt/cloudflared
+# must stay down until claim, or the public hostname would publish it —
+# and on a restore, over a Nextcloud still carrying the backup's trusted
+# domains. Staging is why gating only on install_creds.json never fired.
+#
+# update.sh is the one publisher that deliberately does NOT consult this, and
+# the reason is narrow: a box that deployed under the pre-guard code is sitting
+# there right now with a live tunnel AND an unclaimed install_creds.json, and
+# gating the update would drop its remote access mid-upgrade. On a claimed box
+# neither file exists, so gating would change nothing there — the legacy state
+# is the only thing that exemption buys. update.sh cannot run unattended in the
+# handover window anyway (app.py:perform_first_boot_update returns early once
+# setup is started, and there is no update timer), so it takes a deliberate
+# owner action to reach it.
+handover_pending() {
+    [[ -f "$INSTALL_DIR/.install_creds_staging" ]] || [[ -f "$INSTALL_DIR/install_creds.json" ]]
+}
+
+# Take down every tunnel that publishes this box.
+#
+# Dropping the profiles from `compose up` only stops a tunnel being STARTED:
+# compose ignores services outside the active profile set rather than removing
+# them, so a newt that is already running survives `up` with profiles="" and
+# the handover guard becomes a no-op. Anything that holds tunnels must stop
+# them too. Shared so deploy.sh, restore.sh and redeploy_tunnels.sh cannot
+# drift on the service list — a tunnel missing from it stays published.
+stop_tunnel_services() {
+    # Profiles must be enabled: compose ignores profile-gated services
+    # otherwise, `stop newt` is "no such service", and `2>/dev/null || true`
+    # would hide it. The handover+redeploy path never follows this with
+    # `up --remove-orphans`, so a silent no-op would leave the tunnel up.
+    docker compose --env-file "$ENV_FILE" $(get_compose_args) \
+        --profile pangolin --profile cloudflare-nc --profile cloudflare-ha \
+        stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
+}
+
 # --- Tunnel Profiles Helper ---
 get_tunnel_profiles() {
     local profiles=""

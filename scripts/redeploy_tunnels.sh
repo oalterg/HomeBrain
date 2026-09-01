@@ -16,11 +16,24 @@ load_env
 # Docker compose 'up' with profiles ignores services not in the active profile,
 # so we must manually ensure the old ones are dead.
 log_info "Stopping any existing tunnel services..."
-docker compose --env-file "$ENV_FILE" $(get_compose_args) stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
+stop_tunnel_services
 
 # 2. Identify and Pull New Profile
 profiles=$(get_tunnel_profiles)
 log_info "Active Tunnel Profile: ${profiles:-None}"
+
+# Repointing a domain must not publish a box whose owner has not claimed it.
+# provision.sh reaches here on any box with .setup_complete — and deploy.sh
+# touches that marker INSIDE the handover window, so an operator repoint on a
+# deployed-but-unclaimed box would publish the factory-password window without
+# anyone clicking anything. Everything below still runs: .env is repointed and
+# the proxy/trusted-domain refresh applies, so activate_tunnels brings the
+# tunnel up against correctly configured services the moment the owner claims.
+# Only the publishing step waits.
+if handover_pending; then
+    log_info "Handover pending. Repointing configuration only; the tunnel comes up when credentials are claimed."
+    profiles=""
+fi
 
 vault_profiles=$(get_vault_profiles)
 if [[ -n "$profiles" || -n "$vault_profiles" ]]; then

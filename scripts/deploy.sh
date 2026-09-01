@@ -82,26 +82,23 @@ load_env  # Reload vault env vars set by provision_vault.sh
 # 1c. Start Remaining Services
 profiles=$(get_tunnel_profiles)
 
-# If this is the initial setup (creds not claimed), do NOT start tunnels.
-# This prevents internet exposure before the admin password is claimed by the user.
+# Do not publish newt/cloudflared until the owner claims credentials.
+# cleanup_credentials starts them via activate_tunnels after that click.
+# See handover_pending in common.sh — gating on install_creds.json alone
+# misses first deploy, when the file is still .install_creds_staging, and
+# a wizard restore keeps them staged until finish_restore.
 #
-# The staging path is the one that matters, and testing only the promoted path
-# meant this guard had never once fired: start_setup writes the credentials to
-# .install_creds_staging, and nothing promotes them until deploy is over. So
-# every first boot published its tunnels while it was still installing.
-#
-# Measured on the hardware E2E for this change: newt reported "Tunnel
-# connection established" at 16:59:21, six minutes before the restore re-applied
-# Nextcloud's trusted domains at 17:05 — so for those six minutes the public
-# URL served a Nextcloud still carrying the BACKUP's trusted domains, which
-# answers exactly "access through untrusted domain". On a large archive that
-# window is the length of the restore.
-#
-# cleanup_credentials calls `utilities.sh activate_tunnels` the moment the owner
-# claims their password, which is where these profiles are meant to come up.
-if [ -f "$INSTALL_DIR/install_creds.json" ] || [ -f "$INSTALL_DIR/.install_creds_staging" ]; then
+# Dropping the profiles is not enough: `up` leaves an already-running
+# tunnel up. stop_tunnel_services takes it down. Restore.sh has the same
+# hold — otherwise this skip just delayed publish until the stack restart,
+# while Nextcloud still carried the backup's trusted domains.
+if handover_pending; then
     log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
+    # Not redundant with the empty profiles: `up` leaves services outside the
+    # active profile running, so a tunnel that is already up would sail through
+    # the whole handover window. See stop_tunnel_services in common.sh.
+    stop_tunnel_services
 fi
 
 vault_profiles=$(get_vault_profiles)

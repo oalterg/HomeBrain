@@ -532,7 +532,6 @@ refresh_vault_lan_ip
 
 log_info "Restarting Docker Stack..."
 profiles=$(get_tunnel_profiles)
-
 # Same handover guard as deploy.sh, and it has to be here too: this restart is
 # the second place a wizard restore can publish the box, and it happens BEFORE
 # the trusted domains below are re-applied. Nextcloud is running on the
@@ -544,12 +543,14 @@ profiles=$(get_tunnel_profiles)
 # Caught by the hardware E2E: fixing deploy.sh alone just moved the exposure
 # later into the same restore (newt up at 17:23:07, domains applied after).
 #
-# Only for a restore the setup wizard is driving — credentials still unclaimed.
-# A dashboard restore on a live box has no pending handover and must keep its
-# tunnel, which is how the owner is watching it.
-if [[ -f "$INSTALL_DIR/install_creds.json" || -f "$INSTALL_DIR/.install_creds_staging" ]]; then
-    log_info "Handover pending — leaving tunnels down until the credentials are claimed."
+# Only for a restore the setup wizard is driving — credentials still unclaimed
+# (staging or install_creds.json). A dashboard restore on a live box has
+# neither file and must keep its tunnel, which is how the owner is watching it.
+# stop_tunnel_services: `up` without profiles leaves an already-running newt up.
+if handover_pending; then
+    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
+    stop_tunnel_services
 fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 

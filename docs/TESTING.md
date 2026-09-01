@@ -417,6 +417,21 @@ their password. Run on real hardware (it re-credentials live services).
       them out of the only page that ever shows the recovery phrase.
 - [ ] After the credentials are claimed, the factory password stops working and
       only the master password opens the box.
+- [ ] **Remote mode:** newt/cloudflared are **not** running between "Deployment
+      Complete" and *I have saved my password*. After that click,
+      `activate_tunnels` brings them up. Local mode has no tunnel profiles; this
+      check is a no-op there. Off-hardware: `bash scripts/tests/test_handover_tunnels.sh`
+- [ ] **Tunnel already up when the guard fires.** Dropping the compose profiles
+      only stops a tunnel being *started*. With the stack live and published,
+      `touch /opt/homebrain/install_creds.json` and re-run `deploy.sh`: newt must
+      go **down**, not merely stay up unmanaged. Same for `restore.sh`. (Remove
+      the file afterwards — it puts the box back on the handover page.)
+- [ ] **Operator repoint on an unclaimed box.** During the handover window
+      (`.setup_complete` exists, credentials not yet claimed), re-run
+      `provision.sh` in remote mode against a new domain. `.env` and the
+      NC/HA trusted domains must be repointed and the log must say the tunnel is
+      configured but not published — no newt. Claiming then brings it up on the
+      **new** domain. This is the one publish path nobody clicks.
 
 **Credential download (.txt)**
 

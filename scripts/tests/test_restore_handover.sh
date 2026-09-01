@@ -141,7 +141,9 @@ echo "== tunnels stay down until the credentials are claimed =="
 # during a first install the credentials are still at .install_creds_staging.
 # So every first boot published its tunnels while it was still installing —
 # on a restore, over a Nextcloud still carrying the BACKUP's trusted domains.
-if grep -q '\.install_creds_staging' "$SCRIPT_DIR/../deploy.sh"; then
+# The check lives in handover_pending (staging OR json); a filename grep of
+# the scripts would pass on a comment and miss a deleted call.
+if grep -qE '^[[:space:]]*if handover_pending; then' "$SCRIPT_DIR/../deploy.sh"; then
     ok "deploy.sh withholds tunnels for staged credentials, not only promoted ones"
 else
     bad "deploy.sh withholds tunnels for staged credentials (the guard never fires otherwise)"
@@ -154,7 +156,7 @@ fi
 # restore.sh restarts the stack itself, BEFORE it re-applies trusted domains.
 # Guarding only deploy.sh moved the exposure later into the same restore
 # instead of removing it — measured on hardware.
-if grep -q '\.install_creds_staging' "$SCRIPT_DIR/../restore.sh"; then
+if grep -qE '^[[:space:]]*if handover_pending; then' "$SCRIPT_DIR/../restore.sh"; then
     ok "restore.sh withholds tunnels too (its restart precedes the domain fix)"
 else
     bad "restore.sh withholds tunnels too (its restart precedes the domain fix)"
