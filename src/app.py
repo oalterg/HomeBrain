@@ -249,6 +249,11 @@ SETUP_STARTED_MARKER = f"{INSTALL_DIR}/.setup_started"
 # and the restore stream into one log, and the page has to know which "Ready
 # for Handover" line means it is safe to show the owner their credentials.
 RESTORING_MARKER = f"{INSTALL_DIR}/.restoring"
+# Written by `utilities.sh finish_restore` when the chained restore exited
+# non-zero. Outlives the task status, which run_background_task resets to idle
+# ten seconds after the task ends — so a refresh a minute later still learns
+# that the files did not come back.
+RESTORE_FAILED_MARKER = f"{INSTALL_DIR}/.restore_failed"
 REGISTRATION_MARKER = f"{INSTALL_DIR}/.registration_complete"
 ENV_FILE = f"{INSTALL_DIR}/.env"
 ENV_TEMPLATE = f"{INSTALL_DIR}/config/.env.template"
@@ -664,6 +669,10 @@ def get_one_time_credentials():
             # Check if cloud registration is configured in factory settings
             factory_conf = get_factory_config()
             data["cloud_enabled"] = bool(factory_conf.get("REGISTRAR_URL"))
+            # The handover screen must not tell someone their files are back
+            # when the restore died. Credentials are still handed over — they
+            # are the only copy — but the screen says what actually happened.
+            data["restore_failed"] = os.path.exists(RESTORE_FAILED_MARKER)
             return jsonify(data)
         except Exception as e:
             logging.error(f"Failed to read creds file: {e}")
@@ -686,6 +695,8 @@ def cleanup_credentials():
         os.remove(REGISTRATION_MARKER)
     if os.path.exists(RESTORING_MARKER):
         os.remove(RESTORING_MARKER)
+    if os.path.exists(RESTORE_FAILED_MARKER):
+        os.remove(RESTORE_FAILED_MARKER)
     session.pop('authenticated', None) # Force re-login with new master password
     
     # Now, start the remaining profile tunnel containers
@@ -1131,9 +1142,14 @@ def start_setup():
         "recovery_phrase": recovery_phrase,
         "recovery_adopted": bool(adopted_phrase),
         "domain": env_config.get('PANGOLIN_DOMAIN'),
+        # Whether THIS install was a restore. The handover screen words itself
+        # from this. It cannot read .restoring for that any more: that marker
+        # is now the in-flight flag and is gone by the time the screen renders.
+        "restored": bool(restore_archive),
         "generated_at": time.time()
     }
-    # Write to staging first. deploy.sh will move it to final path on success.
+    # Write to staging first. Promoted to the final path once the install is
+    # genuinely finished — after restore.sh too, when there is one.
     with open(STAGING_CREDS_PATH, 'w') as f:
         json.dump(creds_data, f)
 
@@ -1177,8 +1193,13 @@ def start_setup():
     task_name = "Initial Setup"
     if restore_archive:
         # Chained, not parallel: restore.sh needs the stack deploy.sh brings up.
-        # Both halves stream into the setup log so the wizard's existing log
-        # view shows one continuous install.
+        #
+        # RESTORE_LOG_FILE is what actually makes both halves stream into the
+        # setup log. Redirecting the chain is not enough: restore.sh re-opens
+        # its own stdout onto restore.log whenever it is not on a TTY, so the
+        # wizard's log froze at deploy.sh's last line and stayed frozen for the
+        # whole restore — the longest, most alarming part of the install. This
+        # run's restore output lives in the setup log instead of restore.log.
         #
         # The trailing marker matters. deploy.sh emits "Deployment Complete -
         # Ready for Handover" the moment IT finishes, and the wizard treats
@@ -1190,13 +1211,20 @@ def start_setup():
         # the clear, and restore.sh only shreds it if it gets far enough to read
         # it. A deploy that fails, or an off-site fetch that cannot reach the
         # remote, would otherwise leave the owner's recovery phrase in /tmp.
-        # rc round-trips restore's status so `check=True` still sees a failure.
+        # finish_restore then promotes the staged credentials and clears the
+        # in-flight marker — on failure too, flagging it, so a dead restore
+        # ends in an honest handover rather than a progress screen that never
+        # moves. rc round-trips restore's status so `check=True` still sees a
+        # failure.
         cmd = (
-            f"({cmd} && {restore_pass_env}bash {SCRIPT_RESTORE} {shlex.quote(restore_target)}"
+            f"({cmd} && {restore_pass_env}RESTORE_LOG_FILE={LOG_FILES['setup']}"
+            f" bash {SCRIPT_RESTORE} {shlex.quote(restore_target)}"
             f" --no-prompt{restore_flag}"
             f" && echo '=== Restore Complete - Ready for Handover ===')"
             f" >> {LOG_FILES['setup']} 2>&1"
-            f"; rc=$?; rm -f {shlex.quote(pass_path)}; exit $rc"
+            f"; rc=$?; rm -f {shlex.quote(pass_path)}"
+            f"; bash {SCRIPT_UTILITIES} finish_restore $rc >> {LOG_FILES['setup']} 2>&1"
+            f"; exit $rc"
         )
         task_name = ("Restore From Backup Drive" if restore_source == "local"
                      else "Restore From Off-site")
@@ -1337,6 +1365,17 @@ def index():
     if os.path.exists(INSTALL_CREDS_PATH):
         return render_template("installing.html", handover_ready=True,
                                restore_mode=restoring, has_gpu=has_gpu())
+
+    # A restore chained onto the first deploy outlives deploy.sh, which has
+    # already touched .setup_complete by the time it hands over to restore.sh.
+    # Without this branch, refreshing the wizard while the archive is still
+    # unpacking drops the owner onto the dashboard of a half-restored box —
+    # and, before the credentials were held back, onto the handover screen,
+    # one click away from starting the tunnels mid-restore. The marker is
+    # cleared by finish_restore, so this cannot outlive the restore itself.
+    if restoring:
+        return render_template("installing.html", restore_mode=True,
+                               has_gpu=has_gpu())
 
     if not is_setup_complete():
         # If setup is running, show progress (No auth required for this specific view state)
@@ -6069,10 +6108,31 @@ def resume_incomplete_setup():
                 logging.warning("Credentials missing. Resetting setup state to allow retry.")
                 try: os.remove(SETUP_STARTED_MARKER)
                 except: pass
+                # .restoring is setup state too, and index() now keeps the
+                # wizard on the progress screen for as long as it exists.
+                # Leaving it behind would send a box that is being sent BACK to
+                # the welcome screen to a progress screen that never moves.
+                try: os.remove(RESTORING_MARKER)
+                except: pass
                 return
 
+            # This path re-runs deploy.sh and nothing else, so an interrupted
+            # RESTORE cannot be picked up where it stopped — there is no resume
+            # point in the middle of an archive. Record it as the failed
+            # restore it is: the resumed deploy then promotes the credentials
+            # normally, and the owner is told the files did not come back
+            # instead of being left on a progress screen waiting for a second
+            # half that is never going to run.
+            if os.path.exists(RESTORING_MARKER):
+                logging.warning("Setup was interrupted mid-restore; a restore cannot be resumed.")
+                try:
+                    open(RESTORE_FAILED_MARKER, "w").close()
+                    os.remove(RESTORING_MARKER)
+                except Exception as e:
+                    logging.error(f"Could not close out the interrupted restore: {e}")
+
             logging.info("Resuming deployment script...")
-            # Announce resume in logs for the UI +            
+            # Announce resume in logs for the UI +
             try:
                 with open(LOG_FILES['setup'], "a") as f:
                     f.write(f"\n\n{'='*40}\n SYSTEM RESTART DETECTED: Resuming Installation... \n{'='*40}\n\n")

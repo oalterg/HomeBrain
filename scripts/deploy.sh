@@ -161,14 +161,15 @@ log_info "=== Deployment Complete ==="
 
 # ATOMIC HANDOVER: Move credentials from staging to final path
 # This ensures the UI only shows the Success screen when we are actually done.
-if [ -f "$INSTALL_DIR/.install_creds_staging" ]; then
-    mv "$INSTALL_DIR/.install_creds_staging" "$INSTALL_DIR/install_creds.json"
-fi
-
-if [ -f "$INSTALL_DIR/install_creds.json" ]; then
-    # Ensure ownership is root:root so the service can read it
-    chown root:root "$INSTALL_DIR/install_creds.json"
-    chmod 600 "$INSTALL_DIR/install_creds.json"
+#
+# .restoring means we are the first half of a restore: the owner's data is
+# still to come, so "actually done" is not now. utilities.sh finish_restore
+# promotes at the end of the chain instead — on failure too, or a failed
+# restore would leave the master password unreadable forever.
+if [ -f "$INSTALL_DIR/.restoring" ]; then
+    log_info "Restore pending — credentials stay staged until it finishes."
+else
+    promote_install_creds
 fi
 
 # Mark setup as complete before signaling the UI

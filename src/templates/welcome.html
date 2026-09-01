@@ -48,12 +48,14 @@
                 <label for="pan-endpoint">Pangolin endpoint</label>
                 <input type="text" id="pan-endpoint" placeholder="https://pangolin.yourdomain.com" autocomplete="off">
                 <label for="pan-id">Device ID</label>
-                <input type="text" id="pan-id" placeholder="newt-xxxxxxxx" autocomplete="off">
+                <input type="text" id="pan-id" placeholder="The Newt ID from your Pangolin site" autocomplete="off">
                 <label for="pan-secret">Device secret</label>
                 <input type="password" id="pan-secret" autocomplete="off"
                        placeholder="{% if config.NEWT_SECRET %}Leave blank to use the factory secret{% else %}Secret key{% endif %}">
                 <label for="pan-domain">Main domain</label>
-                <input type="text" id="pan-domain" placeholder="myserver.homebrain.com" autocomplete="off">
+                <input type="text" id="pan-domain" placeholder="myserver.homebrain.com" autocomplete="off"
+                       oninput="previewDomains()">
+                <p id="domain-preview" class="hint"></p>
             </div>
         </div>
 
@@ -171,7 +173,27 @@
                 if (!document.getElementById('pan-domain').value)
                     document.getElementById('pan-domain').value = {{ config.PANGOLIN_DOMAIN | tojson }};
                 {% endif %}
+                previewDomains();
             }
+        }
+
+        // Every public hostname is this field with a label prefixed onto it,
+        // so a value that is already a service hostname — or a pasted URL —
+        // silently produces nc.nc.example.com and a Nextcloud that rejects its
+        // own tunnel as an untrusted domain. The server sanitizes the scheme
+        // and path (sanitize_domain); nothing can sanitize the wrong host.
+        // Showing the three derived names makes either mistake obvious here,
+        // instead of after a 40-minute restore.
+        function previewDomains() {
+            var raw = document.getElementById('pan-domain').value.trim();
+            var host = raw.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '')
+                          .split(/[\/?#]/)[0]
+                          .split(':')[0]
+                          .replace(/\.$/, '');
+            var el = document.getElementById('domain-preview');
+            if (!host) { el.textContent = ''; return; }
+            el.textContent = 'Your services will be at nc.' + host + ', ha.' + host
+                           + ' and vault.' + host + '. Enter the main domain only, without a prefix.';
         }
 
         function toggleRestore() {
