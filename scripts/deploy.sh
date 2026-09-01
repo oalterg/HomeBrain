@@ -82,10 +82,12 @@ load_env  # Reload vault env vars set by provision_vault.sh
 # 1c. Start Remaining Services
 profiles=$(get_tunnel_profiles)
 
-# If this is the initial setup (creds not claimed), do NOT start tunnels.
-# This prevents internet exposure before the admin password is claimed by the user.
-if [ -f "$INSTALL_DIR/install_creds.json" ]; then
-    log_info "Initial setup detected. Skipping tunnel startup for security."
+# Do not publish newt/cloudflared until the owner claims credentials.
+# cleanup_credentials starts them via activate_tunnels after that click.
+# See handover_pending in common.sh — gating on install_creds.json alone
+# misses first deploy, when the file is still .install_creds_staging.
+if handover_pending; then
+    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
 fi
 

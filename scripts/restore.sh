@@ -517,6 +517,13 @@ refresh_vault_lan_ip
 
 log_info "Restarting Docker Stack..."
 profiles=$(get_tunnel_profiles)
+# Wizard restore runs before claim (staging or install_creds.json is present).
+# Starting tunnels here would undo deploy.sh's hold. Disaster restore on an
+# already-claimed box has neither file, so profiles stay.
+if handover_pending; then
+    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
+    profiles=""
+fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 
 wait_for_healthy "nextcloud" 180 || log_warn "Nextcloud taking longer to start."

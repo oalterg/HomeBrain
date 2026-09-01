@@ -770,6 +770,23 @@ is_stack_running() {
     [[ -n "$ha_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ha_cid" 2>/dev/null) == "true" ]]
 }
 
+# True while the owner has not claimed the generated credentials.
+#
+# The wizard writes .install_creds_staging, then starts deploy.sh. deploy.sh
+# promotes that file to install_creds.json only when the stack is up, and the
+# UI shows the handover page from then until cleanup_credentials deletes it.
+# The factory password still works in that window (app.py:is_handover_pending);
+# newt/cloudflared must stay down until claim, or the public hostname would
+# publish it. Staging is the first-deploy case — install_creds.json does not
+# exist yet, which is why gating only on the json never fired.
+#
+# After claim neither file remains. update.sh / redeploy_tunnels.sh run on a
+# live box and do not consult this; they would otherwise hide a tunnel that
+# the owner already published.
+handover_pending() {
+    [[ -f "$INSTALL_DIR/.install_creds_staging" ]] || [[ -f "$INSTALL_DIR/install_creds.json" ]]
+}
+
 # --- Tunnel Profiles Helper ---
 get_tunnel_profiles() {
     local profiles=""

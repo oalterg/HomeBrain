@@ -404,6 +404,10 @@ their password. Run on real hardware (it re-credentials live services).
       them out of the only page that ever shows the recovery phrase.
 - [ ] After the credentials are claimed, the factory password stops working and
       only the master password opens the box.
+- [ ] **Remote mode:** newt/cloudflared are **not** running between "Deployment
+      Complete" and *I have saved my password*. After that click,
+      `activate_tunnels` brings them up. Local mode has no tunnel profiles; this
+      check is a no-op there. Off-hardware: `bash scripts/tests/test_handover_tunnels.sh`
 
 **Credential download (.txt)**
 
