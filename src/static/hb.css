@@ -442,6 +442,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 }
 .chip-local  { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-strong); }
 .chip-remote { background: var(--info-soft);   border: 1px solid var(--info);   color: var(--info); }
+.chip-off    { opacity: 0.42; }
+.svc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 
 /* =====================================================================
    7. Data rows & meters
@@ -1047,6 +1049,13 @@ tbody tr:hover td { background: var(--accent-soft); }
 .btn-main:disabled { background: var(--neutral-soft); color: var(--text-faint); box-shadow: none; }
 
 /* --- installing --- */
+
+.install-phase {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--text);
+}
 
 .install-log {
   height: 420px;

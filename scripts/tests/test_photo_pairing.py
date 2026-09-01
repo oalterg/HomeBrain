@@ -95,6 +95,7 @@ def test_no_route_mints_for_admin():
     """The admin-only pairing route is gone, not merely unlinked from the UI."""
     rules = {r.rule for r in hb.app.url_map.iter_rules()}
     assert "/api/photos/pair" not in rules
+    assert not any(r.endswith("/pair") and "household" in r for r in rules)
 
 
 # --- the path that must still work -----------------------------------------

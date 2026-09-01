@@ -2996,6 +2996,23 @@ case "${1:-}" in
     activate_tunnels)
         activate_tunnels
         ;;
+    finish_restore)
+        # Closes out a restore that the setup wizard chained onto the first
+        # deploy. $2 is the chain's exit code.
+        #
+        # Runs on failure too, and deliberately so: deploy.sh no longer
+        # promotes the credentials on this path, so without this the master
+        # password of a box whose restore died would never be readable — and
+        # .restoring would keep the wizard on the progress screen forever.
+        # The failure flag is what stops the handover page from then claiming
+        # the files are back.
+        if [[ "${2:-0}" != "0" ]]; then
+            touch "$INSTALL_DIR/.restore_failed"
+            log_error "Restore did not complete (exit ${2:-0}). Handing over credentials anyway."
+        fi
+        promote_install_creds
+        rm -f "$INSTALL_DIR/.restoring"
+        ;;
     ha_admin)
         create_ha_admin "${2:-}"
         ;;

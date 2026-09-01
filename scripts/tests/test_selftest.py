@@ -209,6 +209,30 @@ def test_a_passing_check_carries_no_action(ha, monkeypatch):
     assert "action" not in selftest.check_ha_password({"HA_ADMIN_PASSWORD": "x"})
 
 
+# --- Vault ------------------------------------------------------------------
+
+def test_vault_disabled_is_a_skip():
+    assert selftest.check_vault({"VAULT_ENABLED": "false"})["status"] == SKIP
+
+
+def test_vault_container_missing_is_a_skip():
+    assert selftest.check_vault({})["status"] == SKIP
+
+
+def test_vault_alive_fails(monkeypatch):
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "http", lambda *a, **k: (0, "unreachable"))
+    r = selftest.check_vault({})
+    assert r["status"] == FAIL
+
+
+def test_vault_alive_ok(monkeypatch):
+    monkeypatch.setattr(selftest, "container_id", lambda s: "cid")
+    monkeypatch.setattr(selftest, "http", lambda *a, **k: (200, "ALIVE"))
+    r = selftest.check_vault({})
+    assert r["status"] == OK
+
+
 # --- Nextcloud data directory ----------------------------------------------
 
 def test_nextcloud_data_dir_missing_marker_is_a_failure(monkeypatch):
