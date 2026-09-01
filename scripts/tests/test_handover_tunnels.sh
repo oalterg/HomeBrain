@@ -118,6 +118,15 @@ else
         fi
     done
 fi
+# compose cannot stop a profile-gated service unless that profile is enabled.
+# Without this, `stop newt` is "no such service" and the || true hides it.
+for prof in pangolin cloudflare-nc cloudflare-ha; do
+    if grep -q -- "--profile $prof" <<<"$stop_body"; then
+        ok "stop_tunnel_services enables --profile $prof"
+    else
+        bad "stop_tunnel_services enables --profile $prof"
+    fi
+done
 
 echo
 echo "passed: $pass   failed: $fail"

@@ -802,7 +802,12 @@ handover_pending() {
 # them too. Shared so deploy.sh, restore.sh and redeploy_tunnels.sh cannot
 # drift on the service list — a tunnel missing from it stays published.
 stop_tunnel_services() {
+    # Profiles must be enabled: compose ignores profile-gated services
+    # otherwise, `stop newt` is "no such service", and `2>/dev/null || true`
+    # would hide it. The handover+redeploy path never follows this with
+    # `up --remove-orphans`, so a silent no-op would leave the tunnel up.
     docker compose --env-file "$ENV_FILE" $(get_compose_args) \
+        --profile pangolin --profile cloudflare-nc --profile cloudflare-ha \
         stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
 }
 
