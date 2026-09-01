@@ -34,6 +34,13 @@ function credsSheetFilename(date) {
     return `homebrain-recovery-${p.day}T${p.hh}-${p.mm}-${p.ss}.txt`;
 }
 
+function memberSheetFilename(name, date) {
+    const p = _hbSheetParts(date);
+    const slug = String(name || 'member').toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'member';
+    return `homebrain-${slug}-${p.day}T${p.hh}-${p.mm}-${p.ss}.txt`;
+}
+
 /* Returns the sheet body. ASCII only and CRLF terminated on purpose: this file
  * exists to be opened by an unknown text editor and printed, possibly from a
  * machine the owner does not control. The timestamp is formatted by hand rather
@@ -86,6 +93,34 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     return lines.join('\r\n');
 }
 
+function buildMemberSheet({ name, password, date, files, vault, home }) {
+    const p = _hbSheetParts(date);
+    const who = name || (files && files.user) || 'member';
+    const lines = [
+        `HomeBrain -- ${who}`,
+        `Generated: ${p.day} ${p.hh}:${p.mm}`,
+        `Password:  ${password}`,
+        '',
+    ];
+    if (files && files.url) {
+        lines.push(`Files   ${files.url}        user ${files.user}     (or scan the code)`);
+    }
+    if (vault && vault.url) {
+        lines.push(`Vault   ${vault.url}     ${vault.email}`);
+    }
+    if (home && home.url) {
+        lines.push(`Home    ${home.url}        user ${home.user}`);
+    }
+    lines.push(
+        '',
+        'Forgot it? Ask the owner -- they can issue a new one from the dashboard.',
+        'Saved vault items survive that reset, unless you changed the vault',
+        'password yourself in the Bitwarden app.',
+        '',
+    );
+    return lines.join('\r\n');
+}
+
 function saveCredsSheet(text, filename) {
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
     const a = Object.assign(document.createElement('a'), { href: url, download: filename });
@@ -104,4 +139,11 @@ function downloadCredsSheet(opts) {
     saveCredsSheet(
         buildCredsSheet(Object.assign({}, opts, { device: location.hostname, date })),
         credsSheetFilename(date));
+}
+
+function downloadMemberSheet(opts) {
+    const date = new Date();
+    saveCredsSheet(
+        buildMemberSheet(Object.assign({}, opts, { date })),
+        memberSheetFilename(opts.name || (opts.files && opts.files.user), date));
 }

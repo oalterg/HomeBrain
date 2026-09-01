@@ -366,7 +366,20 @@ echo "======================================================="
 echo "   PROVISIONING COMPLETE"
 echo "======================================================="
 echo "   Setup wizard is running. Open http://<server-ip> in a browser."
-echo "   Log in with the factory password (printed above if generated)."
+# Repeat the generated password HERE, not only where it was minted. It is
+# minted a few hundred lines of apt/venv/docker output before this point, on
+# stderr, so on a `curl | sudo bash` install the one credential needed to
+# continue had scrolled well off the screen by the time the operator was told
+# to go and find it.
+if [[ "$_GENERATED_PASS" == "true" ]]; then
+    echo "   Log in with this factory password:"
+    echo ""
+    echo "       ${_FC[FACTORY_PASSWORD]}"
+    echo ""
+    echo "   Record it on the device label — it cannot be recovered."
+else
+    echo "   Log in with the factory password set for this device."
+fi
 echo "   The master password is created in the wizard, not here."
 echo "   Reboot is not required to continue. On AMD GPU hardware a reboot"
 echo "   applies kernel parameters — recommended, not a gate."

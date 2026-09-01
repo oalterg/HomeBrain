@@ -181,6 +181,8 @@ rm -f "$INSTALL_DIR/docker-compose.override.yml" 2>/dev/null || true
 # Survived a reset and made the next fresh install describe itself as a restore
 # in the wizard, naming an archive from the box that no longer exists.
 rm -f "$INSTALL_DIR/.restoring" 2>/dev/null || true
+rm -f /var/lib/homebrain/member_escrow.json 2>/dev/null || true
+rm -f /var/lib/homebrain/member_escrow.wrap 2>/dev/null || true
 
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true

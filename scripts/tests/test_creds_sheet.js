@@ -93,6 +93,38 @@ check('two clicks in one minute get different names',
       credsSheetFilename(new Date(2026, 7, 20, 9, 5, 1)) !== fname);
 check('filename leaks no secret', fname.indexOf(PW) === -1 && fname.indexOf('homebrain.local') === -1);
 
+// --- member sheet -------------------------------------------------------
+var MEMBER_PW = 'correct-horse-battery-staple-copper-wren';
+var member = buildMemberSheet({
+    name: 'Alex',
+    password: MEMBER_PW,
+    date: DATE,
+    files: { url: 'https://nc.example.house', user: 'alex' },
+    vault: { url: 'https://vault.example.house', email: 'alex@homebrain.local' },
+    home: { url: 'https://ha.example.house', user: 'alex' },
+});
+var filesOnly = buildMemberSheet({
+    name: 'Alex',
+    password: MEMBER_PW,
+    date: DATE,
+    files: { url: 'https://nc.example.house', user: 'alex' },
+});
+check('member sheet carries the password', member.indexOf('Password:  ' + MEMBER_PW) !== -1);
+check('member sheet names them', member.indexOf('HomeBrain -- Alex') !== -1);
+check('member sheet lists files', member.indexOf('Files   https://nc.example.house') !== -1);
+check('member sheet lists vault email', member.indexOf('alex@homebrain.local') !== -1);
+check('member sheet lists home', member.indexOf('Home    https://ha.example.house') !== -1);
+check('files-only omits vault line', filesOnly.indexOf('Vault') === -1);
+check('member sheet is pure ASCII', /^[\x20-\x7e\r\n]*$/.test(member));
+check('member sheet newlines are CRLF', !/[^\r]\n/.test(member));
+check('member sheet tells them to ask the owner', member.indexOf('Ask the owner') !== -1);
+check('member sheet says vault items survive a reset',
+      member.indexOf('Saved vault items survive that reset') !== -1);
+var mname = memberSheetFilename('Alex', DATE);
+check('member filename has second resolution',
+      mname === 'homebrain-alex-2026-08-20T09-05-00.txt');
+check('member filename leaks no password', mname.indexOf(MEMBER_PW) === -1);
+
 // --- 8: regression against the sheet that actually shipped ---------------
 // Verbatim body of the pre-consolidation builder (installing.html @ 6fcee05),
 // parameterised only where it read a closure variable. A broken handover sheet

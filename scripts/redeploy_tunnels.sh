@@ -52,7 +52,10 @@ fi
 # 3. Reapply Proxy/Trust Configurations
 # (Crucial if the trusted domain changed)
 log_info "Refreshing Proxy and Trusted Domain Settings..."
-configure_nc_ha_proxy_settings
+# Explicitly non-fatal: it can now fail when the Nextcloud container is
+# missing, and aborting here would skip the restarts and the verification
+# below for a tunnel that is otherwise up. It logs its own [ERROR].
+configure_nc_ha_proxy_settings || true
 
 # 4. Selective Restart
 # Home Assistant reads configuration.yaml on startup, so it MUST be restarted if proxies changed.

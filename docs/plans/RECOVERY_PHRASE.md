@@ -184,9 +184,12 @@ Ordered, each step idempotent and reversible-until-committed:
    loginable. Surface partial-failure state explicitly in the task status.
 
 > Must-state UX truth: recovery restores **administrative control of the box**. It does
-> **not** decrypt per-user Vaultwarden vaults — those are end-to-end encrypted with each
-> user's own master password (VAULT_PLAN.md §3) and are intentionally unrecoverable from
-> the admin side. The first-run modal and the recovery screen must say this plainly.
+> **not** decrypt Vaultwarden items whose password HomeBrain never issued — those stay
+> end-to-end encrypted with that user's own password (VAULT_PLAN.md §3). Vaults the
+> dashboard created for household members *are* recoverable: the archive carries their
+> sealed password, so "issue a new password" still opens the items. The first-run modal
+> and the recovery screen must keep the owner-vault sentence; the household sheet says
+> the other half.
 
 ### 3.6 B1 — word-based master password
 

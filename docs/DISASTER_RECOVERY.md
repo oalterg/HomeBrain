@@ -106,7 +106,9 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 
 - Log in with the **new** box's master password from step 1.
 - Nextcloud, Home Assistant, Vaultwarden and the AI agent's workspace come back
-  as they were.
+  as they were. Issued household passwords come back too: restore re-wraps
+  `member_escrow.json` under this box's recovery key, and no wrap file is left
+  behind. Vaults someone changed themselves in the Bitwarden app stay theirs.
 - Connected accounts (email, extra Home Assistant or Nextcloud logins) survive:
   the archive carries the key those tokens are encrypted with, which is why the
   restore works across two boxes with different master passwords.

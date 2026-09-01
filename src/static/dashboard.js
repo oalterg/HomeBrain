@@ -1606,30 +1606,100 @@ async function loadFtpUsers() {
     } catch (e) { el.innerHTML = '<p class="faint small">Failed to load users.</p>'; }
 }
 
+let _household = { members: [], unmatched: [], errors: {}, flags: {} };
+let _memberSheet = null;
+
+function svcChip(label, on) {
+    // null means the service did not answer. Showing that as "off" tells the
+    // owner a member has no vault because Vaultwarden happened to be
+    // restarting, which is worse than admitting we could not check.
+    if (on === null || on === undefined) {
+        return `<span class="chip chip-off" title="Could not check — the service did not answer">${label} ?</span>`;
+    }
+    return `<span class="chip ${on ? 'chip-local' : 'chip-off'}">${label}</span>`;
+}
+
+function applyHouseholdFlags(flags) {
+    _household.flags = flags || {};
+    const vaultCb = document.getElementById('member-svc-vault');
+    const homeCb = document.getElementById('member-svc-home');
+    const vaultHint = document.getElementById('member-svc-vault-hint');
+    const homeHint = document.getElementById('member-svc-home-hint');
+    if (vaultCb) {
+        vaultCb.disabled = !_household.flags.backup_unlock;
+        if (!_household.flags.backup_unlock) vaultCb.checked = false;
+    }
+    if (vaultHint) {
+        vaultHint.textContent = _household.flags.backup_unlock
+            ? 'Same password. HomeBrain can reset it if they forget — unless they change it in the Bitwarden app.'
+            : 'Backup unlock is not enabled — HomeBrain cannot create a recoverable vault.';
+    }
+    if (homeCb) {
+        homeCb.disabled = !_household.flags.ha_managed;
+        if (!_household.flags.ha_managed) homeCb.checked = false;
+    }
+    if (homeHint) {
+        homeHint.textContent = _household.flags.ha_managed
+            ? 'They can control every device. They cannot add integrations or reach the Users page.'
+            : 'Home Assistant manages its own login — HomeBrain cannot add people to it.';
+    }
+}
+
 async function loadHousehold() {
     const el = document.getElementById('household-list');
+    const errEl = document.getElementById('household-errors');
+    const unmatchedEl = document.getElementById('household-unmatched');
     if (!el) return;
     try {
         const res = await fetch('/api/household/members', { credentials: 'include' });
         const d = await res.json();
         if (d.error) { el.innerHTML = `<p class="faint small">${escapeHtml(d.error)}</p>`; return; }
+        _household = d;
+        applyHouseholdFlags(d.flags || {});
+        if (errEl) {
+            const bits = [];
+            if (d.errors && d.errors.vault) bits.push(`Vault list unavailable: ${d.errors.vault}`);
+            if (d.errors && d.errors.ha) bits.push(`Home Assistant list unavailable: ${d.errors.ha}`);
+            errEl.innerHTML = bits.length
+                ? `<p class="faint small">${bits.map(escapeHtml).join(' ')}</p>` : '';
+        }
         if (!d.members.length) {
             el.innerHTML = '<p class="faint small">Nobody has an account on this box yet — add yourself first.</p>';
-            return;
-        }
-        el.innerHTML = d.members.map(m => `
+        } else {
+            el.innerHTML = d.members.map(m => `
             <div class="drive-row">
               <div class="row-main">
                 <strong>${escapeHtml(m.name)}</strong>
                 <span class="row-meta">${escapeHtml(m.user)} — last seen ${hbAgo(m.last_seen)}</span>
+                <div class="svc-chips">
+                  ${svcChip('files', m.files)}
+                  ${svcChip('vault', m.vault)}
+                  ${svcChip('home', m.home)}
+                  ${m.sealed ? svcChip('sealed', true) : ''}
+                </div>
               </div>
               <div class="row-actions">
                 <button onclick="toggleMemberDetail('${m.user}')">Storage &amp; devices</button>
-                <button onclick="repairMember('${m.user}')">New code</button>
-                <button class="btn-danger" onclick="removeMember('${m.user}', '${escapeHtml(m.name)}')">Remove</button>
+                <button onclick="repairMember('${m.user}')">New password</button>
+                <button class="btn-danger" onclick="removeMember('${m.user}', '${escapeHtml(m.name)}', ${m.vault ? 'true' : 'false'})">Remove</button>
               </div>
             </div>
             <div id="detail-${m.user}" class="mt" style="display:none;"></div>`).join('');
+        }
+        if (unmatchedEl) {
+            if (d.unmatched && d.unmatched.length) {
+                unmatchedEl.innerHTML = '<p class="hint">Not matched to a person — left as they are.</p>' +
+                    d.unmatched.map(u => {
+                        const who = u.kind === 'vault' ? (u.email || u.name) : (u.username || u.name);
+                        return `<div class="drive-row"><div class="row-main">
+                          <strong>${escapeHtml(u.name || who)}</strong>
+                          <span class="row-meta">${escapeHtml(u.kind)} — ${escapeHtml(who)}</span>
+                        </div></div>`;
+                    }).join('');
+            } else {
+                unmatchedEl.innerHTML = '';
+            }
+        }
     } catch (e) { el.innerHTML = '<p class="faint small">Failed to load members.</p>'; }
 }
 
@@ -1679,6 +1749,7 @@ async function loadMemberDetail(user) {
 function renderMemberDetail(el, d) {
     const unlimited = !d.total || d.quota === 'none';
     const pct = unlimited ? 0 : Math.min(100, Math.round(d.used / d.total * 100));
+    const row = (_household.members || []).find(m => m.user === d.user) || {};
     const devices = d.devices.length ? d.devices.map(dev => `
         <div class="drive-row">
           <div class="row-main">
@@ -1691,7 +1762,33 @@ function renderMemberDetail(el, d) {
         </div>`).join('')
         : '<p class="faint small">No device has signed in as them yet.</p>';
 
+    let recover = '';
+    if (row.vault) {
+        if (d.recoverable === 'recoverable') {
+            recover = '<p class="hint">Their vault password is still the one HomeBrain issued.</p>';
+        } else if (d.recoverable === 'unknown') {
+            recover = '<p class="hint">Could not check whether their vault is still recoverable. Try again in a minute.</p>';
+        } else {
+            recover = '<p class="hint">They changed the vault password in the Bitwarden app. HomeBrain cannot reset that vault.</p>';
+        }
+    }
+
+    const flags = _household.flags || {};
+    const addBits = [];
+    if (!row.vault && flags.backup_unlock) {
+        addBits.push(`<label><input type="checkbox" id="add-svc-vault-${d.user}"> Vault</label>`);
+    }
+    if (!row.home && flags.ha_managed) {
+        addBits.push(`<label><input type="checkbox" id="add-svc-home-${d.user}"> Home Assistant</label>`);
+    }
+    const addSvc = addBits.length
+        ? `<div class="mt">${addBits.join(' ')}
+             <button onclick="addMemberServices('${d.user}')">Add</button>
+             <p class="hint">Uses their current password. Does not issue a new one.</p></div>`
+        : '';
+
     el.innerHTML = `
+        ${recover}
         <div class="meter">
           <div class="meter-head">
             <span>Storage</span>
@@ -1708,6 +1805,7 @@ function renderMemberDetail(el, d) {
           <button onclick="setMemberQuota('${d.user}')">Set limit</button>
         </div>
         <p class="hint">Their phone stops uploading when they reach it. Blank or “none” means no limit.</p>
+        ${addSvc}
         <label class="mt" style="display:block;">Devices signed in as them</label>
         ${devices}`;
 }
@@ -1744,14 +1842,38 @@ async function revokeDevice(user, id) {
 }
 
 function showMemberPairing(d) {
-    document.getElementById('member-pair-who').textContent = d.user;
+    document.getElementById('member-pair-who').textContent = d.name || d.user;
     document.getElementById('member-qr').src = d.qr;
     document.getElementById('member-user').textContent = d.user;
     document.getElementById('member-pass').textContent = d.password;
     document.getElementById('member-url').textContent = d.remote
         ? '' : 'At home only — no remote address is set up yet, so the phone must be on your home '
              + 'Wi-Fi and will ask whether to trust this box\'s certificate.';
+    const vaultOk = d.services && d.services.vault === 'ok';
+    const homeOk = d.services && d.services.home === 'ok';
+    const vaultLine = document.getElementById('member-vault-line');
+    const homeLine = document.getElementById('member-home-line');
+    if (vaultLine) {
+        vaultLine.textContent = vaultOk
+            ? `Vault: ${d.vault_email || ''}  ${d.vault_url || ''}` : '';
+    }
+    if (homeLine) {
+        homeLine.textContent = homeOk
+            ? `Home: ${d.user}  ${d.home_url || ''}` : '';
+    }
+    _memberSheet = {
+        name: d.name || d.user,
+        password: d.password,
+        files: { url: d.url, user: d.user },
+        vault: vaultOk ? { url: d.vault_url, email: d.vault_email } : null,
+        home: homeOk ? { url: d.home_url, user: d.user } : null,
+    };
     document.getElementById('member-pair').style.display = '';
+}
+
+function saveMemberSheet() {
+    if (!_memberSheet || typeof downloadMemberSheet !== 'function') return;
+    downloadMemberSheet(_memberSheet);
 }
 
 async function addMember(e) {
@@ -1759,40 +1881,94 @@ async function addMember(e) {
     const input = document.getElementById('member-name');
     const name = input.value.trim();
     if (!name) return;
+    const services = ['files'];
+    if (document.getElementById('member-svc-vault')?.checked) services.push('vault');
+    if (document.getElementById('member-svc-home')?.checked) services.push('home');
     try {
         const res = await fetch('/api/household/members', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            credentials: 'include', body: JSON.stringify({ name }),
+            credentials: 'include', body: JSON.stringify({ name, services }),
         });
         const d = await res.json();
         if (!res.ok) { hbToast(d.error || 'Could not add them.', 'error'); return; }
         input.value = '';
+        const vaultCb = document.getElementById('member-svc-vault');
+        const homeCb = document.getElementById('member-svc-home');
+        if (vaultCb) vaultCb.checked = false;
+        if (homeCb) homeCb.checked = false;
         showMemberPairing(d);
+        if (d.services) {
+            for (const [svc, st] of Object.entries(d.services)) {
+                if (st !== 'ok') hbToast(`${svc}: ${st}`, 'error');
+            }
+        }
         loadHousehold();
     } catch (e) { hbToast('Could not add them — see the browser console.', 'error'); }
 }
 
-async function repairMember(user) {
-    if (!await hbConfirm({
-        title: `Issue a new code for ${user}?`,
-        body: 'Their password changes, so they need this new code to sign in on a computer. Phones paired '
-            + 'earlier keep working — each holds its own app password — so this does not cut off a lost phone. '
-            + 'For that, revoke the device in Nextcloud’s security settings.',
-        confirm: 'New code',
-    })) return;
+async function addMemberServices(user) {
+    const wanted = [];
+    if (document.getElementById(`add-svc-vault-${user}`)?.checked) wanted.push('vault');
+    if (document.getElementById(`add-svc-home-${user}`)?.checked) wanted.push('home');
+    if (!wanted.length) { hbToast('Tick vault or Home Assistant.', 'error'); return; }
+    const send = async (password) => {
+        const body = { services: wanted };
+        if (password) body.password = password;
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/services`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            credentials: 'include', body: JSON.stringify(body),
+        });
+        return { res, d: await res.json() };
+    };
     try {
-        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/pair`,
-            { method: 'POST', credentials: 'include' });
-        const d = await res.json();
-        if (!res.ok) { hbToast(d.error || 'Could not issue a code.', 'error'); return; }
-        showMemberPairing(d);
-    } catch (e) { hbToast('Could not issue a code.', 'error'); }
+        let { res, d } = await send();
+        if (res.status === 400 && (d.error || '').toLowerCase().includes('type the password')) {
+            const typed = await hbPrompt({
+                title: `Password for ${user}`,
+                body: 'HomeBrain does not have a stored password for them. Type it from the sheet they were given.',
+                label: 'Password',
+                confirm: 'Add',
+            });
+            if (!typed) return;
+            ({ res, d } = await send(typed));
+        }
+        if (!res.ok) { hbToast(d.error || 'Could not add that service.', 'error'); return; }
+        if (d.services) {
+            for (const [svc, st] of Object.entries(d.services)) {
+                if (st !== 'ok') hbToast(`${svc}: ${st}`, 'error');
+            }
+        }
+        hbToast('Service added.');
+        loadHousehold();
+        loadMemberDetail(user);
+    } catch (e) { hbToast('Could not add that service.', 'error'); }
 }
 
-async function removeMember(user, name) {
+async function repairMember(user) {
+    if (!await hbConfirm({
+        title: `Issue a new password for ${user}?`,
+        body: 'Their password changes on every service they already have. They need this new code to sign in on a computer. Phones paired earlier keep working — each holds its own app password — so this does not cut off a lost phone. For that, revoke the device below.',
+        confirm: 'New password',
+    })) return;
+    try {
+        const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/password`,
+            { method: 'POST', credentials: 'include' });
+        const d = await res.json();
+        if (!res.ok) { hbToast(d.error || 'Could not issue a password.', 'error'); return; }
+        showMemberPairing(d);
+        if (d.services && d.services.vault && d.services.vault !== 'ok') {
+            hbToast(d.services.vault, 'error');
+        }
+    } catch (e) { hbToast('Could not issue a password.', 'error'); }
+}
+
+async function removeMember(user, name, hasVault) {
+    const vaultNote = hasVault
+        ? ' Their vault and everything in it is gone forever — a forgotten password can be reset, a deleted account cannot.'
+        : '';
     if (!await hbConfirm({
         title: `Remove ${name}?`,
-        body: `Deletes ${user}'s account and everything in their files on this box. This cannot be undone.`,
+        body: `Deletes ${user}'s account and everything in their files on this box.${vaultNote} This cannot be undone.`,
         confirm: 'Remove', danger: true, requireText: 'REMOVE',
     })) return;
     try {

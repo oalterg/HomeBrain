@@ -358,6 +358,80 @@ def test_wizard_restore_rejects_an_unknown_source():
         h.close()
 
 
+def test_wizard_restore_streams_into_the_log_the_wizard_shows():
+    """restore.sh re-opens its own stdout onto restore.log whenever it is not
+    on a TTY, so redirecting the chain was never enough: the wizard's log froze
+    at deploy.sh's last line and stayed frozen for the whole restore — the
+    longest and least reassuring part of a first boot. Only the env override
+    puts this run's restore output where the wizard is looking."""
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW,
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        cmd = _cmd(h)
+        setup_log = hb.LOG_FILES["setup"]
+        assert f"RESTORE_LOG_FILE={setup_log}" in cmd, cmd
+    finally:
+        h.close()
+
+
+def test_wizard_restore_closes_out_the_handover_after_the_restore():
+    """deploy.sh must not promote the credentials on this path — it is only the
+    first half — and something must promote them afterwards whatever happens,
+    or a failed restore leaves the master password unreadable forever and the
+    wizard stuck on a progress screen that never moves."""
+    h = _fresh()
+    try:
+        r = h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW,
+        })
+        assert r.status_code == 200, r.get_data(as_text=True)
+        cmd = _cmd(h)
+        assert "finish_restore $rc" in cmd, cmd
+        # After the rc capture, so it runs on a failed restore too.
+        assert cmd.index("rc=$?") < cmd.index("finish_restore"), cmd
+        # And the chain still reports the restore's own status upwards.
+        assert cmd.rstrip().endswith("exit $rc"), cmd
+    finally:
+        h.close()
+
+
+def test_a_plain_install_has_nothing_to_finish():
+    h = _fresh()
+    try:
+        assert h.start().status_code == 200
+        cmd = _cmd(h)
+        assert "finish_restore" not in cmd, cmd
+        assert "RESTORE_LOG_FILE" not in cmd, cmd
+    finally:
+        h.close()
+
+
+def test_the_handover_screen_knows_this_install_was_a_restore():
+    """.restoring is the in-flight flag now and is gone before the handover
+    screen renders, so the screen cannot word itself from it. The credentials
+    file is the durable record of what this install was."""
+    h = _fresh()
+    try:
+        assert h.start(deployment_mode="local", restore={
+            "archive": ARCHIVE, "master_password": MASTER_PW,
+        }).status_code == 200
+        with open(h.creds) as f:
+            assert json.load(f)["restored"] is True
+
+        h2 = _fresh()
+        try:
+            assert h2.start().status_code == 200
+            with open(h2.creds) as f:
+                assert json.load(f)["restored"] is False
+        finally:
+            h2.close()
+    finally:
+        h.close()
+
+
 def _run_standalone():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

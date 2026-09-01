@@ -61,6 +61,11 @@ cleanup() {
     if [[ -n "${HA_CID:-}" ]]; then
         docker start "$HA_CID" >/dev/null 2>&1 || true
     fi
+    # Vault is stopped for its snapshot. A signal in the dump-and-rsync
+    # window must not leave the password manager down.
+    if [[ -n "${VAULT_CID:-}" ]]; then
+        docker start "$VAULT_CID" >/dev/null 2>&1 || true
+    fi
     
     # Remove staging directory safely
     if [[ -n "${STAGING_DIR:-}" && -d "$STAGING_DIR" ]]; then
@@ -82,7 +87,7 @@ trap cleanup EXIT INT TERM
 
 # Strategies:
 #   full      — everything: NC data + DB + config + apps, HA, vault, OpenClaw
-#   data_only — NC data + HA config (no DB, no NC config)
+#   data_only — NC data + HA config + vault (DB + data dir) (no NC DB, no NC config)
 #   system    — everything EXCEPT NC data (DB dumps, configs, vault, OpenClaw).
 #               Small + fast; used by update.sh as the pre-update snapshot.
 case "$STRATEGY" in
@@ -234,6 +239,19 @@ if [[ -s "$INSTANCE_SECRETS_FILE" ]]; then
     log_info "Portable instance secrets captured for cross-instance restore."
 else
     rm -f "$INSTANCE_SECRETS_FILE"
+fi
+
+# Member vault-recovery escrow: ciphertext plus the wrap key that sealed it.
+# The wrap file is 0600 and lives in staging only until tar+gpg; cleanup
+# removes staging on every path, including signals.
+ESCROW_SRC="/var/lib/homebrain/member_escrow.json"
+if [[ -f "$ESCROW_SRC" && -n "${RECOVERY_BACKUP_KEY:-}" ]]; then
+    cp "$ESCROW_SRC" "$STAGING_DIR/member_escrow.json" || die "Could not capture member vault escrow."
+    chmod 600 "$STAGING_DIR/member_escrow.json"
+    printf '%s' "$RECOVERY_BACKUP_KEY" > "$STAGING_DIR/member_escrow.wrap" \
+        || die "Could not capture member vault escrow wrap key."
+    chmod 600 "$STAGING_DIR/member_escrow.wrap"
+    log_info "Member vault escrow captured for restore."
 fi
 
 # 5. Stop Services / Enable Maintenance Mode
@@ -422,16 +440,16 @@ if [[ "${VAULT_ENABLED:-true}" == "true" ]] && [[ -n "$VAULT_CID" ]]; then
             mysql:8 \
             mysqldump --column-statistics=0 -h 127.0.0.1 -u "$VAULT_DB_USER" "$VAULT_DB_NAME" \
             > "$STAGING_DIR/vault_db/vaultwarden.sql" 2>/dev/null \
-            || log_warn "Vault DB dump failed (non-fatal)."
+            || die "Vault DB dump failed."
         if [[ ! -s "$STAGING_DIR/vault_db/vaultwarden.sql" ]]; then
-            log_warn "Vault DB dump empty — vault may be uninitialised."
+            die "Vault DB dump created but file is empty. Backup aborted."
         fi
     fi
 
     VAULT_DATA="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}"
     if [[ -d "$VAULT_DATA" ]]; then
         mkdir -p "$STAGING_DIR/vault_data"
-        rsync -a "$VAULT_DATA"/ "$STAGING_DIR/vault_data/" || log_warn "Vault data rsync failed (non-fatal)."
+        rsync -a "$VAULT_DATA"/ "$STAGING_DIR/vault_data/" || die "Vault data rsync failed."
         if [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pem" ]] && [[ ! -f "$STAGING_DIR/vault_data/rsa_key.pkcs8.der" ]]; then
             log_warn "Vault rsa_key not present in archive — sessions may need re-login after restore."
         fi

@@ -43,6 +43,10 @@ jobs:
                             scripts/tests/test_backup_crypto.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
+                            scripts/tests/test_vault_account.py \
+                            scripts/tests/test_member_escrow.py \
+                            scripts/tests/test_household_roster.py \
+                            scripts/tests/test_vault_probe.py \
                             scripts/tests/test_offsite_progress.py \
                             scripts/tests/test_mcp_homeassistant.py \
                             scripts/tests/test_mcp_homebrain.py \
@@ -60,12 +64,20 @@ jobs:
         run: bash scripts/tests/test_update_guard.sh
       - name: tunnels stay down until credentials are claimed
         run: bash scripts/tests/test_handover_tunnels.sh
+      - name: vault backup failures are fatal (shape)
+        run: bash scripts/tests/test_backup_vault_fatal.sh
+      - name: member escrow travels with the vault DB (shape)
+        run: bash scripts/tests/test_backup_member_escrow.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
+      - name: Vaultwarden pin (both pins agree, past the Android `data` fix)
+        run: bash scripts/tests/test_vault_tag_pin.sh
       - name: platform detection (fixture sysfs trees)
         run: bash scripts/tests/test_platform_detect.sh
       - name: backup dir guard (internal-storage restore)
         run: bash scripts/tests/test_restore_internal.sh
+      - name: restore handover + wizard log stream
+        run: bash scripts/tests/test_restore_handover.sh
       - name: Home Assistant password sync (restore + rotation)
         run: bash scripts/tests/test_ha_password_sync.sh
       - name: portable instance-secret merge (base64 padding)

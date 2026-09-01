@@ -117,7 +117,7 @@ services:
       retries: 5
 
   vaultwarden:
-    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.36.0}
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.37.2}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULT_PORT:-8082}:80"
@@ -152,6 +152,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      # Vaultwarden runs its schema migrations against MariaDB on first start,
+      # which on a Pi outlasts the first few probes. Without a grace period
+      # Docker reports the container unhealthy while it is merely starting, and
+      # that word lands in the first-boot log the owner is watching.
+      start_period: 60s
 
   proton-bridge:
     # Profile-gated: only starts when the user has added a Proton account in

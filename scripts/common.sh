@@ -5,7 +5,10 @@
 # (emit_platform_json writes under INSTALL_DIR). Everything else keeps the
 # hardcoded default it always had.
 export INSTALL_DIR="${INSTALL_DIR:-/opt/homebrain}"
-export LOG_DIR="/var/log/homebrain"
+# Same reason: sourcing this file mkdir's LOG_DIR, which needs root. Under
+# `set -e` that made every script here unrunnable off the box, so a test could
+# source common.sh but never invoke utilities.sh as the manager actually does.
+export LOG_DIR="${LOG_DIR:-/var/log/homebrain}"
 export ENV_FILE="$INSTALL_DIR/.env"
 export COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 export OVERRIDE_FILE="$INSTALL_DIR/docker-compose.override.yml"
@@ -746,6 +749,27 @@ clear_partial_install() {
     done
 }
 
+# Hand the generated credentials over to the wizard, atomically.
+#
+# The wizard treats install_creds.json as "this box is ready, and the owner may
+# now read their master password". deploy.sh used to promote it the moment IT
+# finished — but on the restore path deploy.sh is only the first half, so the
+# owner was handed credentials, a "Restore complete" screen and a button that
+# starts the tunnels while restore.sh was still writing their data.
+#
+# Promotion is therefore no longer deploy's to do unconditionally: on a restore
+# it belongs to the end of the whole chain. One implementation, two callers.
+promote_install_creds() {
+    if [[ -f "$INSTALL_DIR/.install_creds_staging" ]]; then
+        mv "$INSTALL_DIR/.install_creds_staging" "$INSTALL_DIR/install_creds.json"
+    fi
+    if [[ -f "$INSTALL_DIR/install_creds.json" ]]; then
+        # Ensure ownership is root:root so the service can read it
+        chown root:root "$INSTALL_DIR/install_creds.json"
+        chmod 600 "$INSTALL_DIR/install_creds.json"
+    fi
+}
+
 get_nc_cid() {
     docker compose $(get_compose_args) ps -a -q nextcloud 2>/dev/null || true
 }
@@ -772,13 +796,14 @@ is_stack_running() {
 
 # True while the owner has not claimed the generated credentials.
 #
-# The wizard writes .install_creds_staging, then starts deploy.sh. deploy.sh
-# promotes that file to install_creds.json only when the stack is up, and the
-# UI shows the handover page from then until cleanup_credentials deletes it.
-# The factory password still works in that window (app.py:is_handover_pending);
-# newt/cloudflared must stay down until claim, or the public hostname would
-# publish it. Staging is the first-deploy case — install_creds.json does not
-# exist yet, which is why gating only on the json never fired.
+# The wizard writes .install_creds_staging, then starts deploy.sh. On a
+# first install, deploy promotes that file to install_creds.json when the
+# stack is up. On a wizard restore, credentials stay staged until
+# finish_restore (deploy.sh is only the first half). The factory password
+# still works in that window (app.py:is_handover_pending); newt/cloudflared
+# must stay down until claim, or the public hostname would publish it —
+# and on a restore, over a Nextcloud still carrying the backup's trusted
+# domains. Staging is why gating only on install_creds.json never fired.
 #
 # update.sh is the one publisher that deliberately does NOT consult this, and
 # the reason is narrow: a box that deployed under the pre-guard code is sitting
@@ -936,7 +961,12 @@ wait_for_healthy() {
         fi
         sleep 3
     done
-    log_error "❌ $service_name failed health check."
+    # Warn, don't error: whether a service missing its window is fatal is the
+    # caller's call, and several of them treat it as non-fatal and say so on
+    # the next line. Announcing [ERROR] here regardless put a red line in the
+    # first-boot log for an install that was completing normally. Callers that
+    # do consider it fatal follow with die, which logs its own [ERROR].
+    log_warn "$service_name did not report healthy within ${timeout_seconds}s."
     return 1
 }
 
@@ -1332,7 +1362,19 @@ configure_nc_ha_proxy_settings() {
     log_info "Configuring trusted proxies for Docker Subnet..."
     local nc_cid=$(get_nc_cid)
     local ha_cid=$(get_ha_cid)
-    
+
+    # This function is the only thing that teaches Nextcloud its public
+    # hostname, and every one of its occ calls sits inside `if [[ -n
+    # "$nc_cid" ]]`. With no container id it therefore configured nothing,
+    # returned success, and left Nextcloud answering the tunnel with "access
+    # through untrusted domain" — with nothing in the log to say so. If we
+    # cannot find it, say which trusted domain did not get applied.
+    if [[ -z "$nc_cid" ]]; then
+        log_error "Nextcloud container not found — trusted domains and proxies NOT applied."
+        log_error "Nextcloud will reject ${NEXTCLOUD_TRUSTED_DOMAINS:-the tunnel domain} as untrusted."
+        return 1
+    fi
+
     # Get Docker Bridge Subnet
     local subnet
     # Try to find the network used by nextcloud
