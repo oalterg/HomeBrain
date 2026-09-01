@@ -541,14 +541,16 @@
             </section>
 
             <section class="section" id="household-card">
-                <h3>Phone Photos <span class="h-note">— replace Google Photos and iCloud</span></h3>
+                <h3>Household <span class="h-note">— files, and optionally vault and Home Assistant</span></h3>
                 <p class="lede">Everyone in the house — you included — gets an account here, with their own files and
-                    their own photo backup. Add a person, then show them their code: they scan it from the Nextcloud
-                    app's login screen and turn on Auto Upload, and every photo that phone takes lands here from then
-                    on. Nothing to type.</p>
-                <p class="lede">Nobody else gets the dashboard, Home Assistant or the Vault — those stay yours, behind
-                    the master password.</p>
+                    their own photo backup. Tick Vault or Home Assistant if they should have those too. One password
+                    opens everything you ticked. Add a person, then show them their code: they scan it from the
+                    Nextcloud app's login screen and turn on Auto Upload.</p>
+                <p class="lede">The dashboard stays yours, behind the master password. Home Assistant has no
+                    per-device permissions, so a person you add there can control every device.</p>
+                <div id="household-errors"></div>
                 <div id="household-list"><span class="skeleton sk-wide"></span></div>
+                <div id="household-unmatched" class="mt"></div>
                 <form class="mt" onsubmit="addMember(event)">
                     <div class="fields fields-2 fields-end">
                         <div>
@@ -556,6 +558,12 @@
                             <input type="text" id="member-name" placeholder="Alex" autocomplete="off" required>
                         </div>
                         <button type="submit" class="btn-primary">Add member</button>
+                    </div>
+                    <div class="mt" id="member-svc-opts">
+                        <label><input type="checkbox" id="member-svc-vault"> Vault</label>
+                        <span class="hint" id="member-svc-vault-hint"></span>
+                        <label class="mt" style="display:block;"><input type="checkbox" id="member-svc-home"> Home Assistant</label>
+                        <span class="hint" id="member-svc-home-hint"></span>
                     </div>
                 </form>
                 <div id="member-pair" class="notice notice-warning mt" style="display:none;">
@@ -567,10 +575,14 @@
                             <div>Scan from the Nextcloud app's login screen.</div>
                             <div class="mt">Username: <span id="member-user"></span></div>
                             <div>Password: <span id="member-pass"></span></div>
+                            <div id="member-vault-line"></div>
+                            <div id="member-home-line"></div>
                             <div id="member-url"></div>
                         </div>
                     </div>
-                    <p class="hint">The password is only needed to sign in on a computer — the code covers the phone.</p>
+                    <p class="hint">The password is only needed to sign in on a computer — the code covers the phone.
+                        Save their sheet; HomeBrain will not show this password again.</p>
+                    <button type="button" class="mt" onclick="saveMemberSheet()">Save sheet</button>
                 </div>
             </section>
 

@@ -58,6 +58,7 @@ def test_module_is_served():
         r = c.get(f"/static/{MODULE}")
     assert r.status_code == 200
     assert b"function buildCredsSheet" in r.data
+    assert b"function buildMemberSheet" in r.data
     assert b"function saveCredsSheet" in r.data
 
 

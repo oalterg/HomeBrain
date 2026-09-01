@@ -43,6 +43,10 @@ jobs:
                             scripts/tests/test_backup_crypto.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
+                            scripts/tests/test_vault_account.py \
+                            scripts/tests/test_member_escrow.py \
+                            scripts/tests/test_household_roster.py \
+                            scripts/tests/test_vault_probe.py \
                             scripts/tests/test_offsite_progress.py \
                             scripts/tests/test_mcp_homeassistant.py \
                             scripts/tests/test_mcp_homebrain.py \
@@ -58,6 +62,10 @@ jobs:
         run: bash scripts/tests/test_backup_unlock.sh
       - name: update guard
         run: bash scripts/tests/test_update_guard.sh
+      - name: vault backup failures are fatal (shape)
+        run: bash scripts/tests/test_backup_vault_fatal.sh
+      - name: member escrow travels with the vault DB (shape)
+        run: bash scripts/tests/test_backup_member_escrow.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
       - name: platform detection (fixture sysfs trees)

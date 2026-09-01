@@ -20,7 +20,7 @@ A GPU runs the agent. Without one, the same install is **HomeCloud**: files, hom
 
 ## Why this, not four apps
 
-- **One secret, one recovery** — dashboard, files, smart home, and backup encryption share a master password. A recovery phrase, shown once, resets the lot.
+- **One secret, one recovery** — dashboard, files, smart home, and backup encryption share a master password. People you add get one password of their own, for files and (if you tick them) vault and Home Assistant. A recovery phrase, shown once, resets the lot — including issued member vaults, unless they changed that password in the Bitwarden app.
 - **An agent that acts** — calendar, lights, files, email. Every token stays on your GPU.
 - **Backup that restores the composition** — not four separate dumps. Scheduled, encrypted, off-site, one click from the dashboard.
 - **It runs itself** — pinned versions, downgrades blocked, a factory reset back to the wizard. Health alerts while the box is up.

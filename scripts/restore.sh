@@ -237,10 +237,14 @@ if [[ -d "$TMP_DIR/ha_config" ]]; then HAS_HA_CONFIG=true; fi
 [[ -d "${TMP_DIR}/openclaw_workspace" ]] && HAS_OPENCLAW_WORKSPACE=true
 [[ -f "${TMP_DIR}/vault_db/vaultwarden.sql" ]] && HAS_VAULT_DB=true
 [[ -d "${TMP_DIR}/vault_data" ]] && HAS_VAULT_DATA=true
+HAS_ESCROW=false
+HAS_ESCROW_WRAP=false
+[[ -f "${TMP_DIR}/member_escrow.json" ]] && HAS_ESCROW=true
+[[ -f "${TMP_DIR}/member_escrow.wrap" ]] && HAS_ESCROW_WRAP=true
 
 log_info "Backup Contents: NC_DATA=$HAS_NC_DATA, NC_DB=$HAS_NC_DB, NC_CONFIG=$HAS_NC_CONFIG, HA=$HAS_HA_CONFIG"
 log_info "OpenClaw config in archive: ${HAS_OPENCLAW_CONFIG} | workspace: ${HAS_OPENCLAW_WORKSPACE}"
-log_info "Vault in archive: db=${HAS_VAULT_DB} data=${HAS_VAULT_DATA}"
+log_info "Vault in archive: db=${HAS_VAULT_DB} data=${HAS_VAULT_DATA} escrow=${HAS_ESCROW}"
 
 if [ "$HAS_NC_DATA" = false ] && [ "$HAS_HA_CONFIG" = false ]; then
     die "Invalid backup: No Data or HA config found."
@@ -477,7 +481,7 @@ if [[ "$HAS_VAULT_DATA" == "true" ]]; then
     log_info "Restoring Vault data directory..."
     VAULT_DATA="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}"
     mkdir -p "$VAULT_DATA"
-    rsync -a --delete "${TMP_DIR}/vault_data/" "$VAULT_DATA/" || log_warn "Vault data restore failed."
+    rsync -a --delete "${TMP_DIR}/vault_data/" "$VAULT_DATA/" || die "Vault data restore failed."
     chown -R 65534:65534 "$VAULT_DATA" 2>/dev/null || true
 fi
 
@@ -502,9 +506,9 @@ if [[ "$HAS_VAULT_DB" == "true" ]]; then
           -v "${TMP_DIR}/vault_db:/restore_dir:ro" \
           mysql:8 \
           sh -c "mysql -h 127.0.0.1 -u root ${VAULT_DB_NAME} < /restore_dir/vaultwarden.sql" \
-          || log_warn "Vault DB import failed."
+          || die "Vault DB import failed."
     else
-        log_warn "Vault DB credentials missing in .env — skipping vault DB import."
+        die "Vault DB credentials missing in .env — cannot restore vault database."
     fi
 fi
 
@@ -541,6 +545,56 @@ log_info "Restarting NC & HA frontends to apply proxy settings."
 docker compose $(get_compose_args) restart nextcloud homeassistant
 wait_for_healthy "nextcloud" 120 || log_error "Nextcloud failed to get healthy after proxy config" 
 wait_for_healthy "homeassistant" 120 || log_error "Homeassistant failed to get healthy after proxy config" 
+
+if [[ "$HAS_VAULT_DB" == "true" ]] || [[ "$HAS_VAULT_DATA" == "true" ]]; then
+    wait_for_healthy "vaultwarden" 120 || die "Vaultwarden failed to become healthy after restore."
+    if [[ "$HAS_VAULT_DB" == "true" ]]; then
+        DB_CID=$(get_nc_db_cid)
+        count="$(docker exec -e MYSQL_PWD="${VAULT_DB_PASSWORD}" "$DB_CID" \
+            mariadb -u "${VAULT_DB_USER}" -N -s -e \
+            "SELECT COUNT(*) FROM \`${VAULT_DB_NAME}\`.users;" 2>/dev/null)" \
+            || die "Vault DB restored but the users table is missing or unreadable."
+        if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+            die "Vault DB restored but the users table is missing or unreadable."
+        fi
+        log_info "Vault restored with ${count} user(s)."
+    fi
+fi
+
+# Member escrow and the vault DB are one unit (HOUSEHOLD_ACCOUNTS.md §6.4).
+# Restore the json iff the vault DB came back; re-wrap under dest's
+# RECOVERY_BACKUP_KEY; never leave member_escrow.wrap on dest.
+ESCROW_DEST="/var/lib/homebrain/member_escrow.json"
+rm -f /var/lib/homebrain/member_escrow.wrap
+if [[ "$HAS_VAULT_DB" == "true" && "$HAS_ESCROW" == "true" ]]; then
+    if [[ -z "${RECOVERY_BACKUP_KEY:-}" ]]; then
+        die "Backup unlock is not enabled on this box — member vault recovery cannot be restored. Enable it, then restore again. Nothing was left of the wrap file."
+    fi
+    mkdir -p /var/lib/homebrain
+    if [[ "$HAS_ESCROW_WRAP" == "true" ]]; then
+        DEST_KEY_FILE="${TMP_DIR}/.dest_escrow_key"
+        printf '%s' "$RECOVERY_BACKUP_KEY" > "$DEST_KEY_FILE"
+        chmod 600 "$DEST_KEY_FILE"
+        "$(backup_crypto_python)" "${INSTALL_DIR}/src/member_escrow.py" restore-rewrap \
+            --json "${TMP_DIR}/member_escrow.json" \
+            --wrap-file "${TMP_DIR}/member_escrow.wrap" \
+            --dest-key-file "$DEST_KEY_FILE" \
+            --out "$ESCROW_DEST" \
+            || die "Could not re-wrap member vault recovery onto this box."
+        rm -f "$DEST_KEY_FILE" "${TMP_DIR}/member_escrow.wrap"
+        chmod 600 "$ESCROW_DEST"
+        log_info "Member vault recovery restored and re-wrapped for this box."
+    else
+        cp "${TMP_DIR}/member_escrow.json" "$ESCROW_DEST" || die "Could not restore member vault recovery."
+        chmod 600 "$ESCROW_DEST"
+        log_warn "Archive had member escrow but no wrap file — copied as-is. If this is a new box, issued vault passwords cannot be reset."
+    fi
+elif [[ "$HAS_VAULT_DB" == "true" && "$HAS_ESCROW" == "false" ]]; then
+    log_warn "Vault restored without member recovery escrow — HomeBrain cannot reset issued vault passwords from this archive."
+elif [[ "$HAS_VAULT_DB" == "false" && "$HAS_ESCROW" == "true" ]]; then
+    log_warn "Archive has member vault recovery but no vault database — restoring neither (they are one unit)."
+fi
+rm -f /var/lib/homebrain/member_escrow.wrap
 
 # --- Home Assistant admin password -----------------------------------------
 # The mirror of the Nextcloud sync above, which HA never had. Restoring HA's

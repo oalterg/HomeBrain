@@ -13,6 +13,7 @@ This module checks the *claims*, through the real interfaces:
 
   * the recorded master password actually logs in to the dashboard, Nextcloud
     and Home Assistant;
+  * Vaultwarden is up and answering (user count; never a member login);
   * Nextcloud's data directory is the one its database thinks it has;
   * the newest local and off-site archives exist and are not too old;
   * the Fernet key that decrypts stored account tokens is intact;
@@ -272,6 +273,85 @@ def check_ha_password(env):
                   action=ADOPT_HA)
 
 
+def check_vault(env):
+    """Vaultwarden is running and answering. User count is a cheap shape
+    check — this does not log into any vault, member or owner.
+    """
+    if env.get("VAULT_ENABLED", "true").lower() == "false":
+        return result("Vault", SKIP, "Vault is switched off.")
+    if not container_id("vaultwarden"):
+        return result("Vault", SKIP, "The Vaultwarden container is not running.")
+    port = env.get("VAULT_PORT", "8082")
+    code, _ = http("GET", f"http://127.0.0.1:{port}/alive")
+    if code != 200:
+        return result("Vault", FAIL,
+                      f"Vaultwarden is running but did not answer on /alive (HTTP {code}).")
+    db_cid = container_id("db")
+    db_pass = env.get("VAULT_DB_PASSWORD", "")
+    db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+    db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+    if db_cid and db_pass:
+        rc, out = docker_exec(db_cid, [
+            "env", f"MYSQL_PWD={db_pass}",
+            "mariadb", "-u", db_user, "-N", "-s", "-e",
+            f"SELECT COUNT(*) FROM `{db_name}`.users;",
+        ], timeout=10)
+        if rc == 0:
+            raw = out.strip()
+            if raw.isdigit():
+                n = int(raw)
+                pruned = _prune_orphan_escrow(env)
+                extra = f" Pruned {pruned} orphan escrow." if pruned else ""
+                return result("Vault", OK,
+                              f"Vaultwarden is answering. {n} user(s).{extra}")
+    pruned = _prune_orphan_escrow(env)
+    extra = f" Pruned {pruned} orphan escrow." if pruned else ""
+    return result("Vault", OK, f"Vaultwarden is answering.{extra}")
+
+
+def _prune_orphan_escrow(env):
+    """Drop escrow entries whose uid is on no service. None of this runs
+    unless Nextcloud can be listed — pruning against vault alone would
+    delete files-only people. Failures are silent: this is a janitor."""
+    nc = container_id("nextcloud")
+    if not nc:
+        return 0
+    rc, out = docker_exec(nc, ["php", "occ", "user:list", "--output=json"], timeout=30)
+    if rc != 0:
+        return 0
+    try:
+        data = json.loads(out)
+    except Exception:
+        return 0
+    live = set()
+    if isinstance(data, dict):
+        live.update(data)
+    elif isinstance(data, list):
+        live.update(str(x) for x in data)
+    else:
+        return 0
+    db_cid = container_id("db")
+    db_pass = env.get("VAULT_DB_PASSWORD", "")
+    db_name = env.get("VAULT_DB_NAME", "vaultwarden")
+    db_user = env.get("VAULT_DB_USER", "vaultwarden_user")
+    if db_cid and db_pass:
+        rc, emails = docker_exec(db_cid, [
+            "env", f"MYSQL_PWD={db_pass}",
+            "mariadb", "-u", db_user, "-N", "-s", "-e",
+            f"SELECT email FROM `{db_name}`.users;",
+        ], timeout=10)
+        if rc == 0:
+            for line in emails.splitlines():
+                email = line.strip().lower()
+                if email.endswith("@homebrain.local"):
+                    live.add(email.split("@", 1)[0])
+    try:
+        import member_escrow
+        return member_escrow.prune(live)
+    except Exception:
+        return 0
+
+
 def check_nextcloud_data(env):
     """The data directory matches the database that points at it.
 
@@ -411,6 +491,7 @@ def run_all(env, *, now=None, storage_dir="/mnt/backup",
         check_dashboard_password(env),
         check_nextcloud_password(env),
         check_ha_password(env),
+        check_vault(env),
         check_nextcloud_data(env),
         check_local_backup(env, now, storage_dir),
         check_offsite(env, now),

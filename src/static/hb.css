@@ -442,6 +442,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 }
 .chip-local  { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-strong); }
 .chip-remote { background: var(--info-soft);   border: 1px solid var(--info);   color: var(--info); }
+.chip-off    { opacity: 0.42; }
+.svc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 
 /* =====================================================================
    7. Data rows & meters

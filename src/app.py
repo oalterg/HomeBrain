@@ -23,6 +23,9 @@ import migration
 import selftest
 import integrations
 import recovery
+import household
+import vault_account
+import member_escrow
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_sock import Sock
@@ -3605,6 +3608,21 @@ def _vault_public_url():
     return f"https://{host}:{https_port}"
 
 
+def _ha_public_url():
+    env = get_env_config()
+    if is_local_mode() or _is_lan_request():
+        host = ""
+        try:
+            host = request.host.split(":", 1)[0]
+        except RuntimeError:
+            pass
+        if not host:
+            host = get_lan_ip() if not is_local_mode() else "homebrain.local"
+        return f"http://{host}:8123"
+    domain = env.get("HA_TRUSTED_DOMAINS", "")
+    return f"https://{domain}" if domain else ""
+
+
 @app.route("/api/vault/status")
 def vault_status():
     """Surface vault state for the dashboard tile."""
@@ -3684,10 +3702,12 @@ def _vault_admin_jwt():
     if r.status_code not in (200, 302):
         return None
     set_cookie = r.headers.get("Set-Cookie", "")
-    m = re.search(r"VW_ADMIN=([^;]+)", set_cookie)
-    if not m:
+    jwt = r.cookies.get("VW_ADMIN")
+    if not jwt:
+        m = re.search(r"VW_ADMIN=([^;]+)", set_cookie)
+        jwt = m.group(1) if m else None
+    if not jwt:
         return None
-    jwt = m.group(1)
     ma = re.search(r"Max-Age=(\d+)", set_cookie, re.IGNORECASE)
     ttl = int(ma.group(1)) if ma else 1200
     session['vault_admin_jwt'] = jwt
@@ -4719,11 +4739,18 @@ def recovery_regenerate():
     """Mint a NEW phrase, return it once, replace the stored hash. The old
     phrase can never be revealed (only its hash is stored) — only regenerated."""
     try:
+        old_key = get_env_config().get("RECOVERY_BACKUP_KEY", "")
         phrase = recovery.generate_phrase()
         record = recovery.build_recovery_record(
             phrase, recovery.DEFAULT_PHRASE_WORDS, time.time())
+        # Escrow is tiny: re-wrap before .env commit. Archives stay after
+        # the point of no return (BACKUP_UNLOCK.md §8.4).
+        if old_key and member_escrow.sealed_uids():
+            member_escrow.rewrap(old_key, record["RECOVERY_BACKUP_KEY"])
         for k, v in record.items():
             update_env_var(k, v)
+    except member_escrow.EscrowError as e:
+        return jsonify({"error": f"Could not re-wrap member vault recovery: {e}"}), 500
     except Exception as e:
         return jsonify({"error": f"Could not generate recovery phrase: {e}"}), 500
     # Detached, and deliberately AFTER the point of no return: the rewrap
@@ -4853,9 +4880,8 @@ def pairing_payload(user, password, env):
 
 
 # HomeBrain is deliberately single-admin: one master password opens the
-# dashboard, Home Assistant and the Vault. A household member is therefore a
-# Nextcloud user and nothing more — their own files, their own photo backup,
-# no access to how the house is run.
+# dashboard. A household member gets files always, and vault / Home Assistant
+# only when the owner ticks them. They never get the dashboard.
 MEMBER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
 RESERVED_MEMBERS = {"replica"}   # the off-site receiver account, not a person
 
@@ -4867,6 +4893,190 @@ def member_password():
         return recovery.generate_password()
     except recovery.RecoveryError:
         return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+
+
+def _services_from_body(body, default=("files",)):
+    raw = body.get("services")
+    if raw is None:
+        return list(default)
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for s in raw:
+        s = str(s).strip().lower()
+        if s in ("files", "vault", "home") and s not in out:
+            out.append(s)
+    return out
+
+
+def _list_vault_users():
+    jwt = _vault_admin_jwt()
+    if not jwt:
+        raise household.HouseholdError("Vault admin is not available")
+    r = requests.get(f"{_vault_base_url()}/admin/users",
+                     cookies={"VW_ADMIN": jwt}, timeout=10)
+    if r.status_code != 200:
+        raise household.HouseholdError("Could not list vault accounts")
+    data = r.json()
+    if isinstance(data, dict):
+        data = data.get("users") or data.get("data") or []
+    return data if isinstance(data, list) else []
+
+
+def _ha_token_cached(env):
+    if env.get("HA_PASSWORD_MANAGED") != "true":
+        return None
+    now = int(time.time())
+    cached = session.get("ha_admin_token")
+    exp = session.get("ha_admin_token_exp", 0)
+    if cached and exp > now + 30:
+        return cached
+    token = household.ha_mint_token(
+        env.get("HA_ADMIN_USER") or "admin",
+        env.get("HA_ADMIN_PASSWORD") or env.get("MASTER_PASSWORD") or "")
+    session["ha_admin_token"] = token
+    session["ha_admin_token_exp"] = now + 1700
+    return token
+
+
+def _list_ha_users(env):
+    token = _ha_token_cached(env)
+    if not token:
+        return []
+    return household.ha_list_users(token)
+
+
+def _vault_connect_token(email, password, kdf_iter=None):
+    if kdf_iter is None:
+        kdf_iter = vault_account.KDF_ITERATIONS
+    mp_hash, _ = vault_account.master_password_hash(password, email, kdf_iter)
+    r = requests.post(
+        f"{_vault_base_url()}/identity/connect/token",
+        data={
+            "grant_type": "password",
+            "username": email,
+            "password": mp_hash,
+            "scope": "api offline_access",
+            "client_id": "web",
+            "deviceType": "9",
+            "deviceIdentifier": "homebrain-household",
+            "deviceName": "HomeBrain",
+        },
+        headers={"Bitwarden-Client-Version": "2024.6.0"},
+        timeout=30)
+    body = {}
+    try:
+        body = r.json()
+    except Exception:
+        pass
+    return r.status_code, body, mp_hash
+
+
+def _vault_prelogin(email):
+    r = requests.post(f"{_vault_base_url()}/identity/accounts/prelogin",
+                      json={"email": email}, timeout=10)
+    if r.status_code != 200:
+        return vault_account.KDF_PBKDF2, vault_account.KDF_ITERATIONS
+    data = r.json()
+    return data.get("kdf", 0), data.get("kdfIterations") or vault_account.KDF_ITERATIONS
+
+
+def _create_vault_account(uid, name, password):
+    jwt = _vault_admin_jwt()
+    if not jwt:
+        raise household.HouseholdError("Vault admin is not available")
+    email = vault_account.vault_email(uid)
+    inv = requests.post(f"{_vault_base_url()}/admin/invite",
+                        json={"email": email}, cookies={"VW_ADMIN": jwt}, timeout=15)
+    if inv.status_code not in (200, 201):
+        raise household.HouseholdError(
+            (inv.text or "Vault invite failed")[:200])
+    payload, _ = vault_account.register_payload(uid, name, password)
+    reg = requests.post(f"{_vault_base_url()}/identity/accounts/register",
+                        json=payload, timeout=60)
+    if reg.status_code not in (200, 201):
+        raise household.HouseholdError(
+            (reg.text or "Vault register failed")[:200])
+    status, body, _ = _vault_connect_token(email, password)
+    if status != 200 or not body.get("access_token"):
+        raise household.HouseholdError("Vault account was created but could not log in")
+    return email
+
+
+def _reset_vault_password(uid, old_password, new_password):
+    email = vault_account.vault_email(uid)
+    kdf, iters = _vault_prelogin(email)
+    if kdf != vault_account.KDF_PBKDF2:
+        raise household.HouseholdError(
+            "this vault uses key settings we did not issue")
+    status, body, old_hash = _vault_connect_token(email, old_password, iters)
+    verdict = vault_account.probe_verdict(status)
+    if verdict != "recoverable":
+        return verdict
+    enc_key = body.get("Key") or body.get("key")
+    if not enc_key:
+        raise household.HouseholdError("Vault login did not return the protected key")
+    change = vault_account.password_change_payload(
+        old_password, new_password, email, enc_key, kdf=kdf, kdf_iterations=iters)
+    token = body.get("access_token")
+    headers = {"Authorization": f"Bearer {token}",
+               "Bitwarden-Client-Version": "2024.6.0"}
+    r = requests.post(
+        f"{_vault_base_url()}/api/accounts/password",
+        json=change, headers=headers, timeout=30)
+    if r.status_code not in (200, 201):
+        r = requests.post(
+            f"{_vault_base_url()}/accounts/password",
+            json=change, headers=headers, timeout=30)
+    if r.status_code not in (200, 201):
+        raise household.HouseholdError("Vault refused the password change")
+    status, body, _ = _vault_connect_token(email, new_password)
+    if status != 200 or not body.get("access_token"):
+        raise household.HouseholdError("Vault password changed but the new one does not log in")
+    return "recoverable"
+
+
+def _probe_vault(uid, env):
+    key = env.get("RECOVERY_BACKUP_KEY", "")
+    if not key or not member_escrow.has_blob(uid):
+        return "not_recoverable"
+    try:
+        password = member_escrow.open_password(uid, key)
+    except member_escrow.EscrowError:
+        return "not_recoverable"
+    email = vault_account.vault_email(uid)
+    kdf, iters = _vault_prelogin(email)
+    if kdf != vault_account.KDF_PBKDF2:
+        return "not_recoverable"
+    status, _, _ = _vault_connect_token(email, password, iters)
+    return vault_account.probe_verdict(status)
+
+
+def _cached_vault_probe(uid, env):
+    now = time.time()
+    cache = session.get("vault_probe") or {}
+    hit = cache.get(uid)
+    if hit and now - hit.get("t", 0) < 180:
+        return hit.get("v", "unknown")
+    verdict = _probe_vault(uid, env)
+    cache[uid] = {"t": now, "v": verdict}
+    session["vault_probe"] = cache
+    return verdict
+
+
+def _seal_password(uid, password, env):
+    key = env.get("RECOVERY_BACKUP_KEY", "")
+    if not key:
+        raise household.HouseholdError(
+            "Backup unlock is not enabled — HomeBrain cannot keep a recoverable vault password")
+    member_escrow.seal(uid, password, key)
+
+
+def _ha_user_id(users, uid):
+    for u in users or []:
+        if u.get("username") == uid:
+            return u.get("user_id")
+    return None
 
 
 def nc_occ_json(*args):
@@ -4937,18 +5147,46 @@ def ensure_default_quota():
 def list_household_members():
     env = get_env_config()
     admin_user = env.get("NEXTCLOUD_ADMIN_USER", "")
+    errors = {}
     try:
         accounts = nc_occ_json("user:list", "--info")
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 503
-    members = [
-        {"user": uid, "name": a.get("display_name") or uid,
-         "quota": a.get("quota") or "default",
-         "last_seen": a.get("last_seen") or "never"}
-        for uid, a in accounts.items()
-        if uid not in RESERVED_MEMBERS and uid != admin_user
-    ]
-    return jsonify({"members": members})
+
+    vault_users, ha_users = [], []
+    try:
+        vault_users = _list_vault_users()
+    except Exception as e:
+        errors["vault"] = str(e)[:200]
+    if env.get("HA_PASSWORD_MANAGED") == "true":
+        try:
+            ha_users = _list_ha_users(env)
+        except Exception as e:
+            errors["ha"] = str(e)[:200]
+
+    live = set(accounts)
+    for v in vault_users:
+        email = (v.get("email") or "").strip().lower()
+        if email.endswith("@homebrain.local"):
+            live.add(email.split("@", 1)[0])
+    for h in ha_users:
+        if h.get("username"):
+            live.add(h["username"])
+    try:
+        member_escrow.prune(live)
+    except Exception:
+        pass
+
+    roster = household.merge_roster(
+        accounts, vault_users, ha_users, admin_user,
+        reserved=RESERVED_MEMBERS, sealed_uids=member_escrow.sealed_uids())
+    roster["errors"] = errors
+    roster["flags"] = {
+        "ha_managed": env.get("HA_PASSWORD_MANAGED") == "true",
+        "backup_unlock": bool(env.get("RECOVERY_BACKUP_KEY")),
+        "vault_url": _vault_public_url(),
+    }
+    return jsonify(roster)
 
 
 @app.route("/api/household/members/<user>")
@@ -4978,13 +5216,13 @@ def household_member_detail(user):
         "used": storage.get("used", 0),
         "total": storage.get("total") or parse_size(quota),
         "last_seen": info.get("last_seen") or "never",
-        # occ names an unnamed app password "cli"; so does every token occ
-        # itself creates. Anything paired before device naming shipped looks
-        # like that, and the owner still needs to be able to revoke it.
         "devices": sorted(
             ({"id": t.get("id"), "name": t.get("name") or "cli",
               "last_activity": t.get("lastActivity", 0)} for t in tokens),
             key=lambda d: d["last_activity"], reverse=True),
+        "recoverable": _cached_vault_probe(user, env),
+        "sealed": member_escrow.has_blob(user),
+        "vault_email": vault_account.vault_email(user),
     })
 
 
@@ -5040,10 +5278,7 @@ def set_household_quota(user):
 @app.route("/api/household/members", methods=["POST"])
 @limiter.limit("10 per minute")
 def add_household_member():
-    """Create a Nextcloud user and pair a phone to it in one step.
-
-    The password is generated here, shown once, and never stored — the QR is
-    what the member actually uses. Losing it costs a new code, not the account."""
+    """Create a person. Files always; vault and home only if ticked."""
     body = request.get_json(silent=True) or {}
     name = (body.get("name") or "").strip()
     user = (body.get("user") or name).strip().lower().replace(" ", "")
@@ -5054,45 +5289,185 @@ def add_household_member():
     if user == env.get("NEXTCLOUD_ADMIN_USER", ""):
         return jsonify({"error": "That is the owner's account"}), 400
 
+    services = _services_from_body(body, default=("files",))
+    if "files" not in services:
+        services.insert(0, "files")
+    if "vault" in services and not env.get("RECOVERY_BACKUP_KEY"):
+        return jsonify({"error": "Backup unlock is not enabled — HomeBrain cannot "
+                                 "create a recoverable vault"}), 409
+    if "home" in services and env.get("HA_PASSWORD_MANAGED") != "true":
+        return jsonify({"error": "Home Assistant manages its own login — "
+                                 "HomeBrain cannot add people to it"}), 409
+
     password = member_password()
+    results = {}
     try:
-        # Before the account exists, so it inherits the ceiling rather than
-        # being created unlimited and capped a moment later.
+        _seal_password(user, password, env)
+    except household.HouseholdError as e:
+        if "vault" in services:
+            return jsonify({"error": str(e)}), 409
+        # Files-only on a box without backup-unlock: no escrow, still create.
+
+    try:
         ensure_default_quota()
         proc = nc_occ("user:add", "--password-from-env",
                       "--display-name", name or user, user,
                       env_extra={"OC_PASS": password})
         if proc.returncode != 0:
-            # occ reports "The account ... already exists." on stdout, not
-            # stderr — read both or the owner gets a shrug.
+            member_escrow.drop(user)
             return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
                                       or "Could not add the user")[:200]}), 400
         ensure_photo_settings()
         payload = pairing_payload(user, password, env)
+        results["files"] = "ok"
     except NextcloudError as e:
+        member_escrow.drop(user)
         return jsonify({"error": str(e)}), 502
+    except household.HouseholdError:
+        member_escrow.drop(user)
+        raise
+
+    if "vault" in services:
+        try:
+            _create_vault_account(user, name or user, password)
+            results["vault"] = "ok"
+        except household.HouseholdError as e:
+            results["vault"] = str(e)
+    if "home" in services:
+        try:
+            token = _ha_token_cached(env)
+            household.ha_create_member(token, name or user, user, password)
+            results["home"] = "ok"
+        except household.HouseholdError as e:
+            results["home"] = str(e)
+
     payload["password"] = password
+    payload["name"] = name or user
+    payload["services"] = results
+    payload["vault_email"] = vault_account.vault_email(user)
+    payload["vault_url"] = _vault_public_url()
+    payload["home_url"] = _ha_public_url()
     return jsonify(payload)
 
 
-@app.route("/api/household/members/<user>/pair", methods=["POST"])
+@app.route("/api/household/members/<user>/services", methods=["POST"])
 @limiter.limit("10 per minute")
-def repair_household_member(user):
-    """A replacement code for a member who lost theirs.
-
-    Minting an app password needs the member's own password, which is not
-    stored anywhere, so this resets it. Safe on this box because server-side
-    encryption is never enabled — with it on, a reset would orphan their keys."""
+def add_household_services(user):
+    """Add vault and/or HA using the sealed (or typed) password. Does not mint."""
     env = get_env_config()
     if not_a_member(user, env):
         return jsonify({"error": "Not a household member"}), 400
+    body = request.get_json(silent=True) or {}
+    wanted = _services_from_body(body, default=())
+    wanted = [s for s in wanted if s != "files"]
+    if not wanted:
+        return jsonify({"error": "Tick vault or home"}), 400
+    if "vault" in wanted and not env.get("RECOVERY_BACKUP_KEY"):
+        return jsonify({"error": "Backup unlock is not enabled — HomeBrain cannot "
+                                 "create a recoverable vault"}), 409
+    if "home" in wanted and env.get("HA_PASSWORD_MANAGED") != "true":
+        return jsonify({"error": "Home Assistant manages its own login — "
+                                 "HomeBrain cannot add people to it"}), 409
 
-    password = member_password()
+    password = (body.get("password") or "").strip()
+    key = env.get("RECOVERY_BACKUP_KEY", "")
+    if not password and key and member_escrow.has_blob(user):
+        try:
+            password = member_escrow.open_password(user, key)
+        except member_escrow.EscrowError:
+            password = ""
+    if not password:
+        return jsonify({"error": "Type the password from the sheet — HomeBrain "
+                                 "does not have one stored for them"}), 400
+    if key:
+        try:
+            _seal_password(user, password, env)
+        except household.HouseholdError as e:
+            return jsonify({"error": str(e)}), 409
+
+    info = {}
+    try:
+        info = nc_occ_json("user:info", user)
+    except NextcloudError:
+        pass
+    name = (info.get("display_name") if isinstance(info, dict) else None) or user
+    results = {}
+    if "vault" in wanted:
+        try:
+            _create_vault_account(user, name, password)
+            results["vault"] = "ok"
+        except household.HouseholdError as e:
+            results["vault"] = str(e)
+    if "home" in wanted:
+        try:
+            token = _ha_token_cached(env)
+            household.ha_create_member(token, name, user, password)
+            results["home"] = "ok"
+        except household.HouseholdError as e:
+            results["home"] = str(e)
+    return jsonify({"status": "ok", "user": user, "services": results})
+
+
+@app.route("/api/household/members/<user>/password", methods=["POST"])
+@limiter.limit("10 per minute")
+def reset_household_password(user):
+    """Issue a new password for every service they are already on."""
+    env = get_env_config()
+    if not_a_member(user, env):
+        return jsonify({"error": "Not a household member"}), 400
     try:
         enc = nc_occ("encryption:status")
         if "enabled: true" in enc.stdout:
             return jsonify({"error": "Server-side encryption is on — resetting a "
                                      "password here would lose that user's files"}), 409
+    except NextcloudError as e:
+        return jsonify({"error": str(e)}), 502
+
+    old = None
+    key = env.get("RECOVERY_BACKUP_KEY", "")
+    if key and member_escrow.has_blob(user):
+        try:
+            old = member_escrow.open_password(user, key)
+        except member_escrow.EscrowError:
+            old = None
+
+    on_vault = False
+    try:
+        on_vault = any(
+            (v.get("email") or "").strip().lower() == vault_account.vault_email(user)
+            for v in _list_vault_users())
+    except Exception:
+        on_vault = False
+    on_home = False
+    ha_uid = None
+    if env.get("HA_PASSWORD_MANAGED") == "true":
+        try:
+            ha_users = _list_ha_users(env)
+            ha_uid = _ha_user_id(ha_users, user)
+            on_home = bool(ha_uid)
+        except Exception:
+            on_home = False
+
+    vault_note = None
+    if on_vault:
+        verdict = _probe_vault(user, env) if old else "not_recoverable"
+        if verdict == "unknown":
+            return jsonify({
+                "error": "Could not check whether their vault is still recoverable. "
+                         "Try again in a minute — HomeBrain will not guess."
+            }), 409
+        if verdict != "recoverable":
+            vault_note = ("Their vault password was left alone — they changed it "
+                          "in the Bitwarden app, and HomeBrain cannot rotate it.")
+            on_vault = False
+
+    password = member_password()
+    try:
+        _seal_password(user, password, env)
+    except household.HouseholdError:
+        pass
+
+    try:
         proc = nc_occ("user:resetpassword", "--password-from-env", user,
                       env_extra={"OC_PASS": password})
         if proc.returncode != 0:
@@ -5102,7 +5477,32 @@ def repair_household_member(user):
         payload = pairing_payload(user, password, env)
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 502
+
+    results = {"files": "ok"}
+    if on_vault and old:
+        try:
+            verdict = _reset_vault_password(user, old, password)
+            results["vault"] = "ok" if verdict == "recoverable" else verdict
+        except household.HouseholdError as e:
+            results["vault"] = str(e)
+    elif vault_note:
+        results["vault"] = vault_note
+    if on_home and ha_uid:
+        try:
+            household.ha_change_password(_ha_token_cached(env), ha_uid, password)
+            results["home"] = "ok"
+        except household.HouseholdError as e:
+            results["home"] = str(e)
+
+    cache = session.get("vault_probe") or {}
+    cache.pop(user, None)
+    session["vault_probe"] = cache
     payload["password"] = password
+    payload["name"] = user
+    payload["services"] = results
+    payload["vault_email"] = vault_account.vault_email(user)
+    payload["vault_url"] = _vault_public_url()
+    payload["home_url"] = _ha_public_url()
     return jsonify(payload)
 
 
@@ -5112,14 +5512,75 @@ def delete_household_member(user):
     env = get_env_config()
     if not_a_member(user, env):
         return jsonify({"error": "Not a household member"}), 400
-    try:
-        proc = nc_occ("user:delete", user)
-    except NextcloudError as e:
-        return jsonify({"error": str(e)}), 502
-    if proc.returncode != 0:
-        return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
-                                  or "Could not remove the user")[:200]}), 400
-    return jsonify({"status": "removed"})
+    body = request.get_json(silent=True) or {}
+    wanted = _services_from_body(body, default=("files", "vault", "home"))
+    results = {}
+
+    if "vault" in wanted:
+        try:
+            jwt = _vault_admin_jwt()
+            email = vault_account.vault_email(user)
+            for v in _list_vault_users():
+                if (v.get("email") or "").strip().lower() == email:
+                    vid = v.get("id") or v.get("_id") or v.get("uuid")
+                    if vid and jwt:
+                        dr = requests.post(
+                            f"{_vault_base_url()}/admin/users/{vid}/delete",
+                            json={}, cookies={"VW_ADMIN": jwt}, timeout=15)
+                        if dr.status_code not in (200, 201, 204):
+                            raise household.HouseholdError(
+                                f"Vault refused to delete the account ({dr.status_code})")
+                    break
+            results["vault"] = "ok"
+        except Exception as e:
+            results["vault"] = str(e)[:200]
+
+    if "home" in wanted and env.get("HA_PASSWORD_MANAGED") == "true":
+        try:
+            ha_users = _list_ha_users(env)
+            uid = _ha_user_id(ha_users, user)
+            if uid:
+                household.ha_delete_member(_ha_token_cached(env), user, uid)
+            results["home"] = "ok"
+        except household.HouseholdError as e:
+            results["home"] = str(e)
+
+    if "files" in wanted:
+        try:
+            proc = nc_occ("user:delete", user)
+        except NextcloudError as e:
+            return jsonify({"error": str(e), "services": results}), 502
+        if proc.returncode != 0:
+            return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
+                                      or "Could not remove the user")[:200],
+                            "services": results}), 400
+        results["files"] = "ok"
+
+    # Drop escrow only when they are gone from every service. Deleting
+    # Files while keeping a vault would otherwise lose the password the
+    # public reset API needs.
+    still = False
+    if "files" not in wanted or results.get("files") != "ok":
+        try:
+            still = user in nc_occ_json("user:list", "--info")
+        except NextcloudError:
+            still = True
+    if not still and results.get("vault") != "ok":
+        try:
+            email = vault_account.vault_email(user)
+            still = any(
+                (v.get("email") or "").strip().lower() == email
+                for v in _list_vault_users())
+        except Exception:
+            still = True
+    if not still and results.get("home") != "ok" and env.get("HA_PASSWORD_MANAGED") == "true":
+        try:
+            still = bool(_ha_user_id(_list_ha_users(env), user))
+        except Exception:
+            still = True
+    if not still:
+        member_escrow.drop(user)
+    return jsonify({"status": "removed", "services": results})
 
 
 # --- Routes: FTP Management ---

@@ -75,7 +75,7 @@ Same pattern as the existing OpenClaw gateway token (`MASTER_PASSWORD` derives a
 
 - `ADMIN_TOKEN` is the **Argon2id hash** of `MASTER_PASSWORD` salt-mixed with a per-install nonce written once by `provision.sh`. The plain-text token is never stored on disk.
 - The dashboard backend can reconstruct the plain admin token on demand (it has access to `MASTER_PASSWORD` and the nonce), so the **Vault admin panel link in the dashboard auto-authenticates** the user, exactly like the OpenClaw "Open Dashboard" button.
-- Vault user accounts (per-family-member) have their **own** master passwords set on first login. The admin password resets / disables them but cannot decrypt their vaults — same end-to-end model as Bitwarden.
+- Vault user accounts HomeBrain issues share that person's household password. A forgotten one is reset from the dashboard and their items stay readable. A vault password they set themselves in the Bitwarden app cannot be recovered from here — same end-to-end model as Bitwarden.
 
 ---
 

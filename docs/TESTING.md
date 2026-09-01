@@ -201,6 +201,19 @@ still-encrypted token to Home Assistant as a bearer token and the user saw a bar
 - [ ] File upload and download work end-to-end
 - [ ] Nextcloud cron job runs without errors (`utilities.sh` cron path)
 
+### Household members
+
+One password per person. Files always; vault and Home Assistant opt-in, off by default.
+
+- [ ] Add a files-only person → QR + sheet; they scan Nextcloud and Auto Upload works
+- [ ] Tick Vault (requires backup-unlock) → same password logs into Bitwarden at `uid@homebrain.local`; a login probe succeeded before the request returned
+- [ ] Tick Home Assistant only when `HA_PASSWORD_MANAGED=true`; they land in `system-users`, not admin; they can control devices
+- [ ] Adding Vault later (`Add` on their row) does **not** change the Nextcloud password
+- [ ] `New password` resets every service they are already on; a previously paired phone still syncs; computer logins need the new password
+- [ ] If they changed the vault password in Bitwarden, the person view says so and `New password` leaves that vault alone, with that sentence
+- [ ] Delete with vault ticked requires typing `REMOVE` and the dialog says vault contents are gone forever
+- [ ] After restore onto this box (or a fresh one) with master password **or** recovery phrase, `New password` still opens their vault items; `ls /var/lib/homebrain/member_escrow.wrap` is empty
+
 ### Home Assistant
 
 - [ ] Dashboard loads and shows at least one entity
