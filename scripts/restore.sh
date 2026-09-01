@@ -532,6 +532,25 @@ refresh_vault_lan_ip
 
 log_info "Restarting Docker Stack..."
 profiles=$(get_tunnel_profiles)
+
+# Same handover guard as deploy.sh, and it has to be here too: this restart is
+# the second place a wizard restore can publish the box, and it happens BEFORE
+# the trusted domains below are re-applied. Nextcloud is running on the
+# archive's config.php at this point, so a tunnel opened here answers the new
+# public URL from a Nextcloud that only trusts the domains of the machine the
+# backup came from — "access through untrusted domain", for as long as it takes
+# to reach configure_nc_ha_proxy_settings.
+#
+# Caught by the hardware E2E: fixing deploy.sh alone just moved the exposure
+# later into the same restore (newt up at 17:23:07, domains applied after).
+#
+# Only for a restore the setup wizard is driving — credentials still unclaimed.
+# A dashboard restore on a live box has no pending handover and must keep its
+# tunnel, which is how the owner is watching it.
+if [[ -f "$INSTALL_DIR/install_creds.json" || -f "$INSTALL_DIR/.install_creds_staging" ]]; then
+    log_info "Handover pending — leaving tunnels down until the credentials are claimed."
+    profiles=""
+fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 
 wait_for_healthy "nextcloud" 180 || log_warn "Nextcloud taking longer to start."

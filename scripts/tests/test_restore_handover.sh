@@ -151,6 +151,14 @@ if grep -q 'activate_tunnels' "$SCRIPT_DIR/../utilities.sh"; then
 else
     bad "activate_tunnels exists to bring them up at handover"
 fi
+# restore.sh restarts the stack itself, BEFORE it re-applies trusted domains.
+# Guarding only deploy.sh moved the exposure later into the same restore
+# instead of removing it — measured on hardware.
+if grep -q '\.install_creds_staging' "$SCRIPT_DIR/../restore.sh"; then
+    ok "restore.sh withholds tunnels too (its restart precedes the domain fix)"
+else
+    bad "restore.sh withholds tunnels too (its restart precedes the domain fix)"
+fi
 
 echo "== the factory password still works while a restore runs =="
 
