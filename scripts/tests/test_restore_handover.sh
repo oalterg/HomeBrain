@@ -135,6 +135,23 @@ else
     bad "a FAILED restore is flagged"
 fi
 
+echo "== tunnels stay down until the credentials are claimed =="
+
+# The guard existed but had never fired: it tested the promoted path, and
+# during a first install the credentials are still at .install_creds_staging.
+# So every first boot published its tunnels while it was still installing —
+# on a restore, over a Nextcloud still carrying the BACKUP's trusted domains.
+if grep -q '\.install_creds_staging' "$SCRIPT_DIR/../deploy.sh"; then
+    ok "deploy.sh withholds tunnels for staged credentials, not only promoted ones"
+else
+    bad "deploy.sh withholds tunnels for staged credentials (the guard never fires otherwise)"
+fi
+if grep -q 'activate_tunnels' "$SCRIPT_DIR/../utilities.sh"; then
+    ok "activate_tunnels exists to bring them up at handover"
+else
+    bad "activate_tunnels exists to bring them up at handover"
+fi
+
 echo "== the factory password still works while a restore runs =="
 
 # Holding the credentials back closed a door that was deliberately left open:
