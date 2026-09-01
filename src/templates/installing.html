@@ -14,7 +14,13 @@
         <h2 id="status-title">Installation in progress</h2>
         <p id="status-sub" class="tagline">Please do not unplug. This takes about 15 minutes.</p>
 
-        <pre id="logs" class="install-log mt">Connecting to log stream…</pre>
+        <p id="phase" class="install-phase mt">Starting…</p>
+        <p id="pulse" class="hint muted"></p>
+
+        <details class="mt">
+            <summary class="small muted">Show technical details</summary>
+            <pre id="logs" class="install-log mt">Connecting to log stream…</pre>
+        </details>
     </div>
 
     <script src="{{ url_for('static', filename='creds_sheet.js') }}?v={{ asset_v }}"></script>
@@ -38,8 +44,68 @@
                 + 'of the backup and your connection.';
         }
 
+        // The log is an operator's log — health-check warnings, container
+        // names, occ commands. Shown raw it made a normal install look like a
+        // failing one (a non-fatal "vaultwarden failed health check" during
+        // startup was read as a broken box). So the owner gets a phase, and
+        // the log is one click away for whoever actually wants it.
+        //
+        // Markers are matched in order and the LAST one present wins, which is
+        // exactly how the two scripts run: deploy.sh start to finish, then
+        // restore.sh start to finish.
+        const PHASES = [
+            ['=== Starting Deployment',            'Preparing the system'],
+            ['Deploying Docker stack',             'Downloading and starting services'],
+            ['Waiting for Nextcloud installation', 'Setting up Nextcloud'],
+            ['Configuring trusted proxies',        'Applying network settings'],
+            ['Configuring Cron',                   'Finishing the install'],
+            ['Deployment Complete - Ready',        restoreMode ? 'Starting the restore' : 'Almost done'],
+            // restore.sh — only reachable on a restore install
+            ['from the off-site remote',           'Downloading your backup'],
+            ['Decrypting and unpacking',           'Unpacking your backup — the long step. It prints nothing until it is done.'],
+            ['Analyzing backup structure',         'Reading your backup'],
+            ['Restoring Nextcloud Data',           'Restoring your files'],
+            ['Restoring Home Assistant Config',    'Restoring Home Assistant'],
+            ['Restoring OpenClaw',                 'Restoring your agent'],
+            ['Restoring Nextcloud Config',         'Restoring Nextcloud settings'],
+            ['Restoring Nextcloud Database',       'Restoring the Nextcloud database'],
+            ['Restoring Vault',                    'Restoring your vault'],
+            ['Restarting Docker Stack',            'Restarting services'],
+            ['Updating restored config with',      'Applying network settings'],
+            ['Running post-restore',               'Final checks'],
+        ];
+
+        function escapeHtml(s) {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        }
+
+        function phaseFor(log) {
+            let label = null;
+            for (const [marker, text] of PHASES) {
+                if (log.includes(marker)) label = text;
+            }
+            return label;
+        }
+
         let finished = false;
+        let sawRunning = false;
+        let lastLog = '';
+        let lastChange = Date.now();
         const logsEl = document.getElementById('logs');
+        const phaseEl = document.getElementById('phase');
+        const pulseEl = document.getElementById('pulse');
+
+        // "Is it stuck?" is the question this screen has to answer, and the
+        // honest answer is how long ago the install last said anything.
+        setInterval(() => {
+            if (finished) return;
+            const secs = Math.round((Date.now() - lastChange) / 1000);
+            pulseEl.textContent = secs < 90
+                ? `Working… last update ${secs}s ago.`
+                : `Working… last update ${Math.round(secs / 60)} min ago. Long steps are normal here.`;
+        }, 1000);
 
         const poller = setInterval(() => {
             if (finished) return;
@@ -48,8 +114,11 @@
                 return r.text();
             }).then(t => {
                 if (!t) return;
+                if (t !== lastLog) { lastLog = t; lastChange = Date.now(); }
                 logsEl.textContent = t;
                 logsEl.scrollTop = logsEl.scrollHeight;
+                const label = phaseFor(t);
+                if (label) phaseEl.textContent = label;
                 if (t.includes(DONE_MARKER)) {
                     finished = true;
                     clearInterval(poller);
@@ -57,6 +126,21 @@
                 }
             }).catch(() => { logsEl.textContent += '\n[Reconnecting…]'; });
         }, 3000);
+
+        // A failed install used to leave this screen polling a log that would
+        // never gain its marker, forever. The task status says the work has
+        // stopped; the credentials endpoint says what state it stopped in.
+        setInterval(() => {
+            if (finished) return;
+            fetch('/api/task_status').then(r => (r.ok ? r.json() : null)).then(s => {
+                if (!s) return;
+                if (s.status === 'running') { sawRunning = true; return; }
+                if (!sawRunning) return;
+                finished = true;
+                clearInterval(poller);
+                fetchCredentials();
+            }).catch(() => {});
+        }, 4000);
 
         // The credentials file is written moments after the log line lands.
         function fetchCredentials(retries = 5) {
@@ -72,12 +156,45 @@
                 .then(data => { if (data) showSuccess(data); })
                 .catch(e => {
                     console.error(e);
+                    // No credentials means the install did not get far enough to
+                    // write any — this is a failed install, not a finished one,
+                    // and saying "the system is ready" sent owners to a login
+                    // screen that could not accept anything they had.
                     document.getElementById('install-page').innerHTML = `
                         <div class="brand">Home<span>${BRAND_SUFFIX}</span></div>
-                        <h2>Installation finished</h2>
-                        <p class="muted">The system is ready, but the credentials could not be loaded.</p>
-                        <button class="btn-main" onclick="location.reload()">Go to login</button>`;
+                        <h2>Installation did not complete</h2>
+                        <p class="muted">No credentials were produced, so there is nothing to log in with yet.</p>
+                        <details class="mt">
+                            <summary class="small muted">Show technical details</summary>
+                            <pre class="install-log mt">${escapeHtml(lastLog) || 'No log was captured.'}</pre>
+                        </details>
+                        <button class="btn-main" onclick="location.reload()">Try again</button>`;
                 });
+        }
+
+        // Whether THIS install was a restore comes from the credentials file,
+        // not from restoreMode: the in-flight marker is cleared before this
+        // screen renders, and a page opened fresh on the handover would
+        // otherwise call a restore a plain setup.
+        function headline(data) {
+            if (data.restore_failed) return 'Restore did not finish';
+            if (data.restored) return 'Restore complete';
+            return 'Setup complete';
+        }
+
+        function blurb(data) {
+            if (data.restore_failed) {
+                return 'HomeBrain is installed, but your backup could not be restored — open the '
+                     + 'technical details below for the reason. Save these credentials first: they '
+                     + 'are shown only once, and you need them to log in and try the restore again '
+                     + 'from Settings → Backups.';
+            }
+            if (data.restored) {
+                return data.recovery_adopted
+                    ? 'Your files, Home Assistant setup and vault are back. You unlocked this backup with your recovery phrase, so this box has a new master password — save it now. Your recovery phrase is unchanged.'
+                    : 'Your files, Home Assistant setup and vault are back. Your master password is unchanged — it is the one you just entered.';
+            }
+            return 'Your private cloud is ready. Save these credentials now.';
         }
 
         function showSuccess(data) {
@@ -87,12 +204,8 @@
                 <div class="brand">Home<span>${BRAND_SUFFIX}</span></div>
 
                 <div class="success-box mt">
-                    <h2>${restoreMode ? 'Restore complete' : 'Setup complete'}</h2>
-                    <p>${restoreMode
-                        ? (data.recovery_adopted
-                            ? 'Your files, Home Assistant setup and vault are back. You unlocked this backup with your recovery phrase, so this box has a new master password — save it now. Your recovery phrase is unchanged.'
-                            : 'Your files, Home Assistant setup and vault are back. Your master password is unchanged — it is the one you just entered.')
-                        : 'Your private cloud is ready. Save these credentials now.'}</p>
+                    <h2>${headline(data)}</h2>
+                    <p>${blurb(data)}</p>
 
                     <div class="creds-block">
                         <span class="creds-label">Master username</span>
@@ -117,6 +230,12 @@
 
                     <p class="small muted">This password grants full administrative access to your Dashboard,
                         Nextcloud, and Home Assistant.</p>
+
+                    ${data.restore_failed ? `
+                    <details class="mt">
+                        <summary class="small muted">Show technical details</summary>
+                        <pre class="install-log mt">${escapeHtml(lastLog) || 'No log was captured.'}</pre>
+                    </details>` : ''}
 
                     ${data.cloud_enabled ? `
                     <div class="activate-card">
@@ -219,7 +338,13 @@
         if (handoverReady) {
             finished = true;
             logsEl.textContent = 'Resuming session… retrieving credentials…';
-            fetchCredentials();
+            // Pick the log up first: on a failed restore the handover screen
+            // offers it as the explanation, and this path never ran the poller.
+            fetch('/api/logs/setup')
+                .then(r => (r.ok ? r.text() : ''))
+                .then(t => { lastLog = t || ''; })
+                .catch(() => {})
+                .then(() => fetchCredentials());
         }
     </script>
 </body>

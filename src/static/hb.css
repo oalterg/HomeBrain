@@ -1050,6 +1050,13 @@ tbody tr:hover td { background: var(--accent-soft); }
 
 /* --- installing --- */
 
+.install-phase {
+  margin: 0;
+  font-size: 1.05em;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .install-log {
   height: 420px;
   padding: 16px 18px;

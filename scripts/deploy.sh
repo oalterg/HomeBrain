@@ -84,8 +84,23 @@ profiles=$(get_tunnel_profiles)
 
 # If this is the initial setup (creds not claimed), do NOT start tunnels.
 # This prevents internet exposure before the admin password is claimed by the user.
-if [ -f "$INSTALL_DIR/install_creds.json" ]; then
-    log_info "Initial setup detected. Skipping tunnel startup for security."
+#
+# The staging path is the one that matters, and testing only the promoted path
+# meant this guard had never once fired: start_setup writes the credentials to
+# .install_creds_staging, and nothing promotes them until deploy is over. So
+# every first boot published its tunnels while it was still installing.
+#
+# Measured on the hardware E2E for this change: newt reported "Tunnel
+# connection established" at 16:59:21, six minutes before the restore re-applied
+# Nextcloud's trusted domains at 17:05 — so for those six minutes the public
+# URL served a Nextcloud still carrying the BACKUP's trusted domains, which
+# answers exactly "access through untrusted domain". On a large archive that
+# window is the length of the restore.
+#
+# cleanup_credentials calls `utilities.sh activate_tunnels` the moment the owner
+# claims their password, which is where these profiles are meant to come up.
+if [ -f "$INSTALL_DIR/install_creds.json" ] || [ -f "$INSTALL_DIR/.install_creds_staging" ]; then
+    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
     profiles=""
 fi
 
@@ -161,14 +176,15 @@ log_info "=== Deployment Complete ==="
 
 # ATOMIC HANDOVER: Move credentials from staging to final path
 # This ensures the UI only shows the Success screen when we are actually done.
-if [ -f "$INSTALL_DIR/.install_creds_staging" ]; then
-    mv "$INSTALL_DIR/.install_creds_staging" "$INSTALL_DIR/install_creds.json"
-fi
-
-if [ -f "$INSTALL_DIR/install_creds.json" ]; then
-    # Ensure ownership is root:root so the service can read it
-    chown root:root "$INSTALL_DIR/install_creds.json"
-    chmod 600 "$INSTALL_DIR/install_creds.json"
+#
+# .restoring means we are the first half of a restore: the owner's data is
+# still to come, so "actually done" is not now. utilities.sh finish_restore
+# promotes at the end of the chain instead — on failure too, or a failed
+# restore would leave the master password unreadable forever.
+if [ -f "$INSTALL_DIR/.restoring" ]; then
+    log_info "Restore pending — credentials stay staged until it finishes."
+else
+    promote_install_creds
 fi
 
 # Mark setup as complete before signaling the UI

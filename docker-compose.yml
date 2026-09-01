@@ -152,6 +152,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
+      # Vaultwarden runs its schema migrations against MariaDB on first start,
+      # which on a Pi outlasts the first few probes. Without a grace period
+      # Docker reports the container unhealthy while it is merely starting, and
+      # that word lands in the first-boot log the owner is watching.
+      start_period: 60s
 
   proton-bridge:
     # Profile-gated: only starts when the user has added a Proton account in

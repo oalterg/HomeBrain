@@ -3,7 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
-RESTORE_LOG_FILE="$LOG_DIR/restore.log"
+# Overridable so a caller that is already streaming a log to the user can keep
+# this half of the work visible. The setup wizard chains deploy.sh and this
+# script into one install and shows the setup log; without the override, this
+# exec silently diverted everything here into restore.log and the wizard's log
+# stopped dead at deploy.sh's last line for the entire restore — which is the
+# longest and least reassuring stretch of a first boot.
+RESTORE_LOG_FILE="${RESTORE_LOG_FILE:-$LOG_DIR/restore.log}"
 
 # Log only if not running interactively
 if [ -t 1 ]; then :; else exec >> "$RESTORE_LOG_FILE" 2>&1; fi
@@ -150,7 +156,12 @@ if [ "$REQUIRED_SPACE" -gt "$AVAILABLE_SPACE" ]; then
     die "Insufficient space in $TMP_DIR for extraction (need ${REQUIRED_SPACE} bytes, have ${AVAILABLE_SPACE})."
 fi
 
-log_info "Extracting backup to temporary location $TMP_DIR..."
+# Say how big this is and that the silence is expected. decrypt | gunzip | tar
+# is one pipeline with no progress output of its own, and on a Pi with a large
+# archive it is the better part of an hour during which the only honest thing
+# the log can do is warn that nothing will be printed until it is done.
+log_info "Decrypting and unpacking $(du -sh "$BACKUP_FILE" | cut -f1) into $TMP_DIR."
+log_info "This is the long step. It prints nothing until it finishes — do not unplug."
 if [[ "$ENCRYPTED" == "true" ]]; then
     HB_PYTHON="$(backup_crypto_python)"
     # No helper on this box at all (a checkout predating HBK1) is the one case
@@ -521,6 +532,25 @@ refresh_vault_lan_ip
 
 log_info "Restarting Docker Stack..."
 profiles=$(get_tunnel_profiles)
+
+# Same handover guard as deploy.sh, and it has to be here too: this restart is
+# the second place a wizard restore can publish the box, and it happens BEFORE
+# the trusted domains below are re-applied. Nextcloud is running on the
+# archive's config.php at this point, so a tunnel opened here answers the new
+# public URL from a Nextcloud that only trusts the domains of the machine the
+# backup came from — "access through untrusted domain", for as long as it takes
+# to reach configure_nc_ha_proxy_settings.
+#
+# Caught by the hardware E2E: fixing deploy.sh alone just moved the exposure
+# later into the same restore (newt up at 17:23:07, domains applied after).
+#
+# Only for a restore the setup wizard is driving — credentials still unclaimed.
+# A dashboard restore on a live box has no pending handover and must keep its
+# tunnel, which is how the owner is watching it.
+if [[ -f "$INSTALL_DIR/install_creds.json" || -f "$INSTALL_DIR/.install_creds_staging" ]]; then
+    log_info "Handover pending — leaving tunnels down until the credentials are claimed."
+    profiles=""
+fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 
 wait_for_healthy "nextcloud" 180 || log_warn "Nextcloud taking longer to start."
