@@ -22,7 +22,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
 import app as hb            # noqa: E402
-import household           # noqa: E402
 
 USER = "alex"
 ENV = {"RECOVERY_BACKUP_KEY": "k" * 32, "HA_PASSWORD_MANAGED": "true",
