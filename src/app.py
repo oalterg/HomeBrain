@@ -5525,7 +5525,11 @@ def add_household_services(user):
         except member_escrow.EscrowError:
             password = ""
     if not password:
-        return jsonify({"error": "Type the password from the sheet — HomeBrain "
+        # The dashboard matches on "type the password" to know it should prompt.
+        # Keep that substring if this wording changes. Not "from the sheet":
+        # a hand-made account never had one, and neither did a member created
+        # before backup unlock was on.
+        return jsonify({"error": "Type the password they use for Files — HomeBrain "
                                  "does not have one stored for them"}), 400
     if typed:
         try:

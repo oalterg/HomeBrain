@@ -1861,6 +1861,9 @@ function showMemberPairing(d) {
         vault: vaultOk ? { url: d.vault_url, email: d.vault_email } : null,
         home: homeOk ? { url: d.home_url, user: d.user } : null,
     };
+    // The other panel describes a different person and an unchanged password.
+    const added = document.getElementById('member-added');
+    if (added) { added.style.display = 'none'; _addedFor = null; }
     document.getElementById('member-pair').style.display = '';
 }
 
@@ -1929,12 +1932,15 @@ async function addMemberService(user, svc) {
     try {
         let { res, d } = await send();
         if (res.status === 400 && (d.error || '').toLowerCase().includes('type the password')) {
-            // No escrow blob: either this account predates HomeBrain, or it
-            // was made by hand in Nextcloud. Either way there is no sheet to
-            // read it off, so do not send the owner looking for one.
+            // No escrow blob. Usually a hand-made Nextcloud account, but not
+            // always: a member the dashboard created before backup unlock was
+            // on has no blob either, and telling that owner "HomeBrain did not
+            // create this account" would be a plain lie. Say what is actually
+            // known, and do not send them looking for a sheet that may never
+            // have existed.
             const typed = await hbPrompt({
                 title: `${user}'s password`,
-                body: `HomeBrain did not create this account, so it has no password stored for them. `
+                body: `HomeBrain does not have a password stored for them. `
                     + `Type the one they use for Files — it is checked before anything is created.`,
                 label: 'Password',
                 type: 'password',
@@ -1957,17 +1963,45 @@ async function addMemberService(user, svc) {
 
 /* Where the new account lives. Not a pairing sheet — the password is
    unchanged — but a vault nobody can find is a vault nobody has, and its
-   username is an email, not their uid. */
+   username is an email, not their uid.
+
+   Tracks who the panel is describing so that adding vault and then home
+   reads as two lines about one person, rather than the second address
+   quietly overwriting the first. */
+let _addedFor = null;                  // { user, svcs: [] }
+
 function showServiceAdded(user, svc, d) {
     const box = document.getElementById('member-added');
-    if (!box) return;
+    const lines = document.getElementById('member-added-lines');
+    if (!box || !lines) return;
+
+    // Only one of these panels at a time. A pairing sheet on screen is about
+    // a different person and a password that did change; leaving it up next
+    // to this one invites reading the wrong password off the wrong notice.
+    const pair = document.getElementById('member-pair');
+    if (pair) pair.style.display = 'none';
+
+    if (!_addedFor || _addedFor.user !== user) {
+        lines.textContent = '';
+        _addedFor = { user, svcs: [] };
+    }
+    if (!_addedFor.svcs.includes(svc)) _addedFor.svcs.push(svc);
+
     const vault = svc === 'vault';
+    const block = document.createElement('div');
+    if (lines.children.length) block.className = 'mt';
+    const head = document.createElement('div');
+    head.textContent = vault ? 'Vault' : 'Home Assistant';
+    const addr = document.createElement('div');
+    addr.textContent = `Address: ${(vault ? d.vault_url : d.home_url) || 'on this box'}`;
+    const who = document.createElement('div');
+    who.textContent = `Username: ${vault ? (d.vault_email || '') : user}`;
+    block.append(head, addr, who);
+    lines.appendChild(block);
+
+    const names = _addedFor.svcs.map(x => (x === 'vault' ? 'the Vault' : 'Home Assistant'));
     document.getElementById('member-added-head').textContent =
-        vault ? `${user} now has the Vault.` : `${user} now has Home Assistant.`;
-    const url = vault ? d.vault_url : d.home_url;
-    document.getElementById('member-added-url').textContent = url ? `Address: ${url}` : '';
-    document.getElementById('member-added-user').textContent =
-        `Username: ${vault ? (d.vault_email || '') : user}`;
+        `${user} now has ${names.join(' and ')}.`;
     box.style.display = '';
 }
 

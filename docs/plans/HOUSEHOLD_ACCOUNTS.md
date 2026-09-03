@@ -306,7 +306,7 @@ their chips and keeps their password until the owner explicitly acts on that per
 
 | Situation | Path |
 |---|---|
-| NC `alex` exists, no vault, no HA | Tick a service → `POST .../services`. No escrow, so the owner types the sheet password (or issues a new one, loud, via `/password`). |
+| NC `alex` exists, no vault, no HA | Click the greyed `vault +` / `home +` chip on their row → `POST .../services`. No escrow, so the owner types the password that account already uses for Files (or issues a new one, loud, via `/password`). |
 | NC `alex` + hand-made HA login `alex` | Already matched — nothing to do. The chip just shows ✓. |
 | NC `alex` + HA login named `Alex Smith` | Two rows. Honest. No rename button in v1. |
 | NC `alex` + vault account under a real email | **Cannot be merged by us.** Their vault is theirs; changing its email re-keys it and only their client can do that. Listed under "not matched to a person" with that sentence. Or they change their email to `alex@homebrain.local` inside Bitwarden, and the row merges by itself on the next refresh — still not recoverable, because we never issued that password. |

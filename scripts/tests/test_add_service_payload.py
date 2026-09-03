@@ -112,6 +112,27 @@ def test_the_password_is_never_echoed_back():
     assert "s3cret-files-password" not in r.get_data(as_text=True)
 
 
+def test_the_prompt_trigger_survives_a_reword():
+    """dashboard.js decides to ask for a password by matching this text.
+
+    addMemberService keys on the substring "type the password" in the 400 body.
+    Reword the API without it and the dashboard stops prompting: the click just
+    fails with a toast, and adding a service to a hand-made account becomes
+    impossible with no clue why. The two live in different files with nothing
+    else holding them together.
+    """
+    with _client() as c:
+        r = c.post(f"/api/household/members/{USER}/services", json={"services": ["vault"]})
+    assert r.status_code == 400, r.status_code
+    assert "type the password" in r.get_json()["error"].lower(), r.get_json()
+
+    js = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
+                      "src", "static", "dashboard.js")
+    with open(js, encoding="utf-8") as fh:
+        assert "'type the password'" in fh.read(), \
+            "dashboard.js no longer matches on this string — update both sides together"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
