@@ -5501,7 +5501,19 @@ def add_household_services(user):
             results["home"] = "ok"
         except household.HouseholdError as e:
             results["home"] = str(e)
-    return jsonify({"status": "ok", "user": user, "services": results})
+
+    # Their password does not change here — but a vault they cannot find is a
+    # vault they do not have, and its username is an email, not their uid.
+    # POST /members hands these back in the pairing payload; a service added
+    # months later needs them just as much. Only for services that succeeded:
+    # an address for an account that was not created is worse than silence.
+    resp = {"status": "ok", "user": user, "services": results}
+    if results.get("vault") == "ok":
+        resp["vault_email"] = vault_account.vault_email(user)
+        resp["vault_url"] = _vault_public_url()
+    if results.get("home") == "ok":
+        resp["home_url"] = _ha_public_url()
+    return jsonify(resp)
 
 
 @app.route("/api/household/members/<user>/password", methods=["POST"])

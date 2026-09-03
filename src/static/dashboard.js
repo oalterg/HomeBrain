@@ -1609,12 +1609,20 @@ async function loadFtpUsers() {
 let _household = { members: [], unmatched: [], errors: {}, flags: {} };
 let _memberSheet = null;
 
-function svcChip(label, on) {
+function svcChip(label, on, user, canAdd) {
     // null means the service did not answer. Showing that as "off" tells the
     // owner a member has no vault because Vaultwarden happened to be
     // restarting, which is worse than admitting we could not check.
+    //
+    // Deliberately not clickable in that state: "we could not ask" is not
+    // "they do not have one", and adding on a guess would try to create an
+    // account that may already exist.
     if (on === null || on === undefined) {
         return `<span class="chip chip-off" title="Could not check — the service did not answer">${label} ?</span>`;
+    }
+    if (!on && canAdd) {
+        return `<button type="button" class="chip chip-add" onclick="addMemberService('${user}', '${label}')"
+                        title="Give them ${label}">${label} +</button>`;
     }
     return `<span class="chip ${on ? 'chip-local' : 'chip-off'}">${label}</span>`;
 }
@@ -1673,8 +1681,8 @@ async function loadHousehold() {
                 <span class="row-meta">${escapeHtml(m.user)} — last seen ${hbAgo(m.last_seen)}</span>
                 <div class="svc-chips">
                   ${svcChip('files', m.files)}
-                  ${svcChip('vault', m.vault)}
-                  ${svcChip('home', m.home)}
+                  ${svcChip('vault', m.vault, m.user, d.flags && d.flags.backup_unlock)}
+                  ${svcChip('home', m.home, m.user, d.flags && d.flags.ha_managed)}
                   ${m.sealed ? svcChip('sealed', true) : ''}
                 </div>
               </div>
@@ -1773,20 +1781,6 @@ function renderMemberDetail(el, d) {
         }
     }
 
-    const flags = _household.flags || {};
-    const addBits = [];
-    if (!row.vault && flags.backup_unlock) {
-        addBits.push(`<label><input type="checkbox" id="add-svc-vault-${d.user}"> Vault</label>`);
-    }
-    if (!row.home && flags.ha_managed) {
-        addBits.push(`<label><input type="checkbox" id="add-svc-home-${d.user}"> Home Assistant</label>`);
-    }
-    const addSvc = addBits.length
-        ? `<div class="mt">${addBits.join(' ')}
-             <button onclick="addMemberServices('${d.user}')">Add</button>
-             <p class="hint">Uses their current password. Does not issue a new one.</p></div>`
-        : '';
-
     el.innerHTML = `
         ${recover}
         <div class="meter">
@@ -1805,7 +1799,6 @@ function renderMemberDetail(el, d) {
           <button onclick="setMemberQuota('${d.user}')">Set limit</button>
         </div>
         <p class="hint">Their phone stops uploading when they reach it. Blank or “none” means no limit.</p>
-        ${addSvc}
         <label class="mt" style="display:block;">Devices signed in as them</label>
         ${devices}`;
 }
@@ -1906,13 +1899,26 @@ async function addMember(e) {
     } catch (e) { hbToast('Could not add them — see the browser console.', 'error'); }
 }
 
-async function addMemberServices(user) {
-    const wanted = [];
-    if (document.getElementById(`add-svc-vault-${user}`)?.checked) wanted.push('vault');
-    if (document.getElementById(`add-svc-home-${user}`)?.checked) wanted.push('home');
-    if (!wanted.length) { hbToast('Tick vault or Home Assistant.', 'error'); return; }
+/* Give one person one more service, from the greyed chip on their row.
+
+   Their password is not touched: this creates the account on the other
+   service under the password they already use for Files. That is also why
+   it does not end in a pairing sheet — there is nothing new to save, only
+   an address to pass on. */
+async function addMemberService(user, svc) {
+    const nice = svc === 'vault' ? 'Vault' : 'Home Assistant';
+    const ok = await hbConfirm({
+        title: `Give ${user} ${nice}?`,
+        body: 'Uses the password they already have for Files, so nothing they use today changes.',
+        detail: svc === 'home'
+            ? 'Home Assistant has no per-device permissions — they will be able to control every device.'
+            : 'HomeBrain can reset this vault for them later, unless they change its password in the Bitwarden app.',
+        confirm: 'Add',
+    });
+    if (!ok) return;
+
     const send = async (password) => {
-        const body = { services: wanted };
+        const body = { services: [svc] };
         if (password) body.password = password;
         const res = await fetch(`/api/household/members/${encodeURIComponent(user)}/services`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1923,25 +1929,46 @@ async function addMemberServices(user) {
     try {
         let { res, d } = await send();
         if (res.status === 400 && (d.error || '').toLowerCase().includes('type the password')) {
+            // No escrow blob: either this account predates HomeBrain, or it
+            // was made by hand in Nextcloud. Either way there is no sheet to
+            // read it off, so do not send the owner looking for one.
             const typed = await hbPrompt({
-                title: `Password for ${user}`,
-                body: 'HomeBrain does not have a stored password for them. Type it from the sheet they were given.',
+                title: `${user}'s password`,
+                body: `HomeBrain did not create this account, so it has no password stored for them. `
+                    + `Type the one they use for Files — it is checked before anything is created.`,
                 label: 'Password',
+                type: 'password',
                 confirm: 'Add',
             });
             if (!typed) return;
             ({ res, d } = await send(typed));
         }
         if (!res.ok) { hbToast(d.error || 'Could not add that service.', 'error'); return; }
-        if (d.services) {
-            for (const [svc, st] of Object.entries(d.services)) {
-                if (st !== 'ok') hbToast(`${svc}: ${st}`, 'error');
-            }
+        const state = (d.services || {})[svc];
+        if (state !== 'ok') {
+            hbToast(`${svc}: ${state || 'could not be added'}`, 'error');
+            loadHousehold();
+            return;
         }
-        hbToast('Service added.');
+        showServiceAdded(user, svc, d);
         loadHousehold();
-        loadMemberDetail(user);
     } catch (e) { hbToast('Could not add that service.', 'error'); }
+}
+
+/* Where the new account lives. Not a pairing sheet — the password is
+   unchanged — but a vault nobody can find is a vault nobody has, and its
+   username is an email, not their uid. */
+function showServiceAdded(user, svc, d) {
+    const box = document.getElementById('member-added');
+    if (!box) return;
+    const vault = svc === 'vault';
+    document.getElementById('member-added-head').textContent =
+        vault ? `${user} now has the Vault.` : `${user} now has Home Assistant.`;
+    const url = vault ? d.vault_url : d.home_url;
+    document.getElementById('member-added-url').textContent = url ? `Address: ${url}` : '';
+    document.getElementById('member-added-user').textContent =
+        `Username: ${vault ? (d.vault_email || '') : user}`;
+    box.style.display = '';
 }
 
 async function repairMember(user) {

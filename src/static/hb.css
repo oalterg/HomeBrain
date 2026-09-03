@@ -443,6 +443,21 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .chip-local  { background: var(--accent-soft); border: 1px solid var(--accent); color: var(--accent-strong); }
 .chip-remote { background: var(--info-soft);   border: 1px solid var(--info);   color: var(--info); }
 .chip-off    { opacity: 0.42; }
+/* A service they do not have but could. The greyed chip is where the owner
+   already looks to see what someone is missing, so it is where they act.
+   Dashed and full-opacity: chip-off's 42% reads as disabled, not as an offer. */
+.chip-add {
+  color: var(--text-dim);
+  background: none;
+  border: 1px dashed var(--border);
+  font-weight: 500;
+}
+.chip-add:hover {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  transform: none;              /* the button lift looks wrong on a pill */
+}
 .svc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 
 /* =====================================================================

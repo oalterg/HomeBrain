@@ -312,6 +312,11 @@ their chips and keeps their password until the owner explicitly acts on that per
 | NC `alex` + vault account under a real email | **Cannot be merged by us.** Their vault is theirs; changing its email re-keys it and only their client can do that. Listed under "not matched to a person" with that sentence. Or they change their email to `alex@homebrain.local` inside Bitwarden, and the row merges by itself on the next refresh — still not recoverable, because we never issued that password. |
 | Vault or HA account with no NC user | Same unmatched list. Read-only. Includes the owner's own vault account, which is correct — it is not a household member. |
 
+The greyed service chip on their row is the entry point: `vault +` / `home +` are clickable where
+the flag allows it, and a `?` chip (the service did not answer) never is. Adding this way returns
+the new account's address and username — the password is untouched, but a vault they cannot find is
+a vault they do not have.
+
 A person whose ids differ everywhere and who does not want to rename anything simply shows as more
 than one row. That is honest, costs nothing, and is the alternative to a linking table that would
 have to be maintained forever for a household of four.
