@@ -1862,8 +1862,7 @@ function showMemberPairing(d) {
         home: homeOk ? { url: d.home_url, user: d.user } : null,
     };
     // The other panel describes a different person and an unchanged password.
-    const added = document.getElementById('member-added');
-    if (added) { added.style.display = 'none'; _addedFor = null; }
+    hideServiceAdded();
     document.getElementById('member-pair').style.display = '';
 }
 
@@ -1970,6 +1969,12 @@ async function addMemberService(user, svc) {
    quietly overwriting the first. */
 let _addedFor = null;                  // { user, svcs: [] }
 
+function hideServiceAdded() {
+    const box = document.getElementById('member-added');
+    if (box) box.style.display = 'none';
+    _addedFor = null;
+}
+
 function showServiceAdded(user, svc, d) {
     const box = document.getElementById('member-added');
     const lines = document.getElementById('member-added-lines');
@@ -2039,6 +2044,7 @@ async function removeMember(user, name, hasVault) {
         if (!res.ok) { hbToast(d.error || 'Could not remove them.', 'error'); return; }
         hbToast(`${name} removed.`);
         document.getElementById('member-pair').style.display = 'none';
+        if (_addedFor && _addedFor.user === user) hideServiceAdded();
         loadHousehold();
     } catch (e) { hbToast('Could not remove them.', 'error'); }
 }
