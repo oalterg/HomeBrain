@@ -5371,7 +5371,18 @@ def _taken_outside_nextcloud(user, env):
     member is rare and interactive, so "try again in a moment" is a much
     cheaper failure than a member whose sealed password is a lie.
     """
+    # A box whose vault was never provisioned has no admin token, and its
+    # vault accounts never reach the roster either — merge_roster is handed an
+    # empty list, so nothing can merge and there is nothing here to guard.
+    # Blocking such a box would make adding anyone impossible, forever. This
+    # is the same reasoning as the HA_PASSWORD_MANAGED skip below, and it is
+    # a local .env read, not a call that can fail on its own.
+    #
+    # Every other failure means the vault IS configured and merely did not
+    # answer — exactly when guessing is dangerous.
     email = vault_account.vault_email(user)
+    if not _vault_admin_token_plain():
+        return _taken_in_home_assistant(user, env)
     try:
         for v in _list_vault_users():
             if (v.get("email") or "").strip().lower() == email:
@@ -5383,6 +5394,11 @@ def _taken_outside_nextcloud(user, env):
         raise household.HouseholdError(
             f"Could not check the Vault for an existing {user} ({e}). Try again in a moment.")
 
+    return _taken_in_home_assistant(user, env)
+
+
+def _taken_in_home_assistant(user, env):
+    """The Home Assistant half of _taken_outside_nextcloud. Same contract."""
     # With HA unmanaged its accounts never enter the roster, so none can merge.
     if env.get("HA_PASSWORD_MANAGED") != "true":
         return None

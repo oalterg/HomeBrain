@@ -30,11 +30,12 @@ BOOM = RuntimeError("Vaultwarden is restarting")
 
 
 @contextlib.contextmanager
-def _client(vault_users=(), ha_users=(), vault_raises=False, ha_raises=False):
+def _client(vault_users=(), ha_users=(), vault_raises=False, ha_raises=False,
+            no_vault=False):
     names = ["get_env_config", "nc_occ_json", "nc_occ", "_list_vault_users",
              "_list_ha_users", "_seal_password", "ensure_default_quota",
              "ensure_photo_settings", "pairing_payload", "_vault_public_url",
-             "_ha_public_url"]
+             "_ha_public_url", "_vault_admin_token_plain"]
     saved = {n: getattr(hb, n) for n in names}
     saved["is_setup_complete"] = hb.is_setup_complete
     saved["TESTING"] = hb.app.config.get("TESTING")
@@ -66,6 +67,7 @@ def _client(vault_users=(), ha_users=(), vault_raises=False, ha_raises=False):
     hb.ensure_default_quota = lambda: None
     hb.ensure_photo_settings = lambda: None
     hb.pairing_payload = lambda user, pw, env: {"user": user, "url": "u", "qr": "q"}
+    hb._vault_admin_token_plain = lambda: "" if no_vault else "tok"
     hb._vault_public_url = lambda: "https://vault.example"
     hb._ha_public_url = lambda: "https://ha.example"
     try:
@@ -131,6 +133,30 @@ def test_a_service_that_cannot_be_asked_blocks_rather_than_guesses():
     with _client(ha_raises=True) as c:
         r = _add(c)
         assert r.status_code == 502, r.status_code
+        assert c.created == []
+
+
+def test_a_box_with_no_vault_can_still_add_people():
+    """No admin token means the vault was never provisioned here.
+
+    Its accounts never reach the roster either — merge_roster is handed an
+    empty list — so nothing can merge and there is nothing to guard. Treating
+    that like an outage would make adding anyone impossible on such a box,
+    permanently, and it is the state every pre-vault install is in.
+    """
+    with _client(no_vault=True, vault_raises=True) as c:
+        r = _add(c)
+        assert r.status_code == 200, r.get_json()
+        assert any("user:add" in a for a in c.created), c.created
+
+
+def test_no_vault_still_checks_home_assistant():
+    """Skipping the vault half must not skip the other one."""
+    with _client(no_vault=True, vault_raises=True,
+                 ha_users=[{"username": USER}]) as c:
+        r = _add(c)
+        assert r.status_code == 400, r.status_code
+        assert "Home Assistant" in r.get_json()["error"]
         assert c.created == []
 
 
