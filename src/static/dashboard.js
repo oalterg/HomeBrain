@@ -352,8 +352,8 @@ function openTab(id) {
         loadFtpUsers();
         populateFtpNcUserSelect();
         loadNetworkStatus();
-        loadHousehold();
     }
+    if (id === 'household') loadHousehold();
     if (id === 'settings') {
         loadSystemConfig();
         loadModelsOnDisk();

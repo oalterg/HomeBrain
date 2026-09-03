@@ -120,7 +120,7 @@ vault admin + HA login-and-WS, and HA down must not 503 the card. The payload ca
 
 **Cache the HA token in the manager session**, the same way `_vault_admin_jwt` already is. An HA
 access token from `/auth/token` lives long enough that minting a fresh `login_flow` on every
-Connectivity-tab open is a tax, not a security property. Refresh ~30s before expiry. Writes reuse
+Household-tab open is a tax, not a security property. Refresh ~30s before expiry. Writes reuse
 the cached token. If `HA_PASSWORD_MANAGED != "true"`, skip the HA query entirely.
 
 ### 3.2 The password: minted once, shown once, sealed
@@ -517,7 +517,7 @@ know to be false — the one place this design would knowingly show a lie.
 The live probe runs where a password is already in memory (create, `/services`, `/password`,
 restore re-wrap, phrase regen) and when the owner opens that person
 (`GET /api/household/members/<uid>`), never on the list. A house of four must not cost four 600k
-KDFs every time the Connectivity tab opens. Cache the verdict per uid for a few minutes; opening
+KDFs every time the Household tab opens. Cache the verdict per uid for a few minutes; opening
 the same person twice must not probe twice.
 
 **A failed probe is not one state, it is three.** Vaultwarden's `check_limit_login` is keyed by
@@ -691,7 +691,7 @@ stay thin.
 | `src/app.py` §household (`:4742`–`:5117`) | Thin routes; call `household.py` / `vault_account.py` / `member_escrow.py` |
 | `src/app.py` `recovery_regenerate` | Re-wrap escrow **before** committing the new `RECOVERY_BACKUP_KEY` (§5.3) |
 | `src/static/dashboard.js` (`:1609`–`:1810`) | Service chips, checkboxes default off, member sheet, unmatched list, add-service vs reset |
-| `src/templates/dashboard.html` (`:543`) | Card copy (the "nobody else" paragraph), service checkboxes |
+| `src/templates/dashboard.html` (`:170`, Household tab) | Card copy (the "nobody else" paragraph), service checkboxes |
 | `src/static/creds_sheet.js` | `buildMemberSheet` |
 | `scripts/backup.sh`, `scripts/restore.sh` | Carry `member_escrow.json` + `member_escrow.wrap`; dest re-wraps (§5.2); escrow and vault DB restore as one unit (§6.4) |
 | `scripts/backup.sh` (`:61`, `:417`, `:431`) | Restart the vault in the cleanup trap; vault dump failures become fatal (F1, F2) |
