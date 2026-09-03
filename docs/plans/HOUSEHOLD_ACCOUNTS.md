@@ -311,6 +311,7 @@ their chips and keeps their password until the owner explicitly acts on that per
 | NC `alex` + HA login named `Alex Smith` | Two rows. Honest. No rename button in v1. |
 | NC `alex` + vault account under a real email | **Cannot be merged by us.** Their vault is theirs; changing its email re-keys it and only their client can do that. Listed under "not matched to a person" with that sentence. Or they change their email to `alex@homebrain.local` inside Bitwarden, and the row merges by itself on the next refresh — still not recoverable, because we never issued that password. |
 | Vault or HA account with no NC user | Same unmatched list. Read-only. Includes the owner's own vault account, which is correct — it is not a household member. |
+| Adding Files `alex` while vault/HA `alex` exists | **Refused.** Free in Nextcloud is not free: `merge_roster` joins on the uid, so this would merge the two into one row standing for two passwords, with the escrow blob describing only the newer one. `DELETE` reaches this honestly — it drops services one at a time. A service that cannot be asked also refuses; silence is not evidence of absence. |
 
 The greyed service chip on their row is the entry point: `vault +` / `home +` are clickable where
 the flag allows it, and a `?` chip (the service did not answer) never is. Adding this way returns

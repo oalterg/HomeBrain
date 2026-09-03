@@ -54,6 +54,7 @@ jobs:
                             scripts/tests/test_creds_sheet_wiring.py \
                             scripts/tests/test_household_tab_wiring.py \
                             scripts/tests/test_add_service_payload.py \
+                            scripts/tests/test_member_id_collision.py \
                             scripts/tests/test_health_banner.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
       - name: recovery sheet text + DOM contract
