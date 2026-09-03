@@ -193,6 +193,17 @@
                         <span class="hint" id="member-svc-home-hint"></span>
                     </div>
                 </form>
+                <!-- Adding a service later is not a pairing sheet: the password is
+                     unchanged and there is nothing to save. But the account is
+                     useless without its address, and a vault's username is an
+                     email, not their uid. Inline rather than a modal so it stays
+                     readable while the owner sets up the other person's phone. -->
+                <div id="member-added" class="notice mt" style="display:none;">
+                    <strong id="member-added-head"></strong>
+                    <div id="member-added-lines" class="small mono mt" style="overflow-wrap:anywhere;"></div>
+                    <p class="hint">Their password has not changed — it is the one they already use for Files.</p>
+                </div>
+
                 <div id="member-pair" class="notice notice-warning mt" style="display:none;">
                     <strong>Show this to <span id="member-pair-who"></span> now — it is not shown again.</strong>
                     <div class="mt" style="display:flex; gap:18px; flex-wrap:wrap; align-items:flex-start;">

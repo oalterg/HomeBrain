@@ -5351,6 +5351,71 @@ def set_household_quota(user):
     return jsonify({"status": "ok", "quota": quota})
 
 
+def _taken_outside_nextcloud(user, env):
+    """An id free in Nextcloud can still be taken in the vault or in HA.
+
+    merge_roster joins on the Nextcloud uid, so creating Files `alex` while a
+    vault or Home Assistant `alex` already exists does not collide loudly — it
+    merges the two into one row on the next refresh, and that row now stands
+    for two different passwords while the escrow blob describes only the newer
+    one. Every later promise breaks quietly: `/password` resets what it can and
+    the rest drifts, and the sealed copy recovery depends on is wrong.
+
+    DELETE reaches this honestly rather than exotically — it removes services
+    one at a time, so dropping Files and keeping the vault leaves this id
+    behind by design.
+
+    Returns a message for the owner, or None. Raises HouseholdError when a
+    service could not be asked: silence there is not evidence of absence, and
+    creating anyway is exactly how the two-password row gets made. Adding a
+    member is rare and interactive, so "try again in a moment" is a much
+    cheaper failure than a member whose sealed password is a lie.
+    """
+    # A box whose vault was never provisioned has no admin token, and its
+    # vault accounts never reach the roster either — merge_roster is handed an
+    # empty list, so nothing can merge and there is nothing here to guard.
+    # Blocking such a box would make adding anyone impossible, forever. This
+    # is the same reasoning as the HA_PASSWORD_MANAGED skip below, and it is
+    # a local .env read, not a call that can fail on its own.
+    #
+    # Every other failure means the vault IS configured and merely did not
+    # answer — exactly when guessing is dangerous.
+    email = vault_account.vault_email(user)
+    if not _vault_admin_token_plain():
+        return _taken_in_home_assistant(user, env)
+    try:
+        for v in _list_vault_users():
+            if (v.get("email") or "").strip().lower() == email:
+                return (f"A Vault account for {email} already exists. HomeBrain did not "
+                        f"just create it, so it has its own password — adding Files under "
+                        f"the same name would leave them with two. Remove it from the Vault "
+                        f"first, or pick a different name.")
+    except Exception as e:
+        raise household.HouseholdError(
+            f"Could not check the Vault for an existing {user} ({e}). Try again in a moment.")
+
+    return _taken_in_home_assistant(user, env)
+
+
+def _taken_in_home_assistant(user, env):
+    """The Home Assistant half of _taken_outside_nextcloud. Same contract."""
+    # With HA unmanaged its accounts never enter the roster, so none can merge.
+    if env.get("HA_PASSWORD_MANAGED") != "true":
+        return None
+    try:
+        for h in _list_ha_users(env):
+            if (h.get("username") or "").strip() == user:
+                return (f'A Home Assistant login called "{user}" already exists. HomeBrain '
+                        f"did not create it, so it has its own password — adding Files under "
+                        f"the same name would leave them with two. Remove it in Home Assistant "
+                        f"first, or pick a different name.")
+    except Exception as e:
+        raise household.HouseholdError(
+            f"Could not check Home Assistant for an existing {user} ({e}). "
+            f"Try again in a moment.")
+    return None
+
+
 @app.route("/api/household/members", methods=["POST"])
 @limiter.limit("10 per minute")
 def add_household_member():
@@ -5384,6 +5449,16 @@ def add_household_member():
             return jsonify({"error": f'The account "{user}" already exists.'}), 400
     except NextcloudError as e:
         return jsonify({"error": str(e)}), 502
+
+    # Free in Nextcloud is not free. Checked whether or not that service was
+    # ticked: the merge happens on the next roster refresh either way, and
+    # when it was not ticked nothing else would have made a sound.
+    try:
+        clash = _taken_outside_nextcloud(user, env)
+    except household.HouseholdError as e:
+        return jsonify({"error": str(e)}), 502
+    if clash:
+        return jsonify({"error": clash}), 400
 
     password = member_password()
     results = {}
@@ -5466,7 +5541,11 @@ def add_household_services(user):
         except member_escrow.EscrowError:
             password = ""
     if not password:
-        return jsonify({"error": "Type the password from the sheet — HomeBrain "
+        # The dashboard matches on "type the password" to know it should prompt.
+        # Keep that substring if this wording changes. Not "from the sheet":
+        # a hand-made account never had one, and neither did a member created
+        # before backup unlock was on.
+        return jsonify({"error": "Type the password they use for Files — HomeBrain "
                                  "does not have one stored for them"}), 400
     if typed:
         try:
@@ -5501,7 +5580,19 @@ def add_household_services(user):
             results["home"] = "ok"
         except household.HouseholdError as e:
             results["home"] = str(e)
-    return jsonify({"status": "ok", "user": user, "services": results})
+
+    # Their password does not change here — but a vault they cannot find is a
+    # vault they do not have, and its username is an email, not their uid.
+    # POST /members hands these back in the pairing payload; a service added
+    # months later needs them just as much. Only for services that succeeded:
+    # an address for an account that was not created is worse than silence.
+    resp = {"status": "ok", "user": user, "services": results}
+    if results.get("vault") == "ok":
+        resp["vault_email"] = vault_account.vault_email(user)
+        resp["vault_url"] = _vault_public_url()
+    if results.get("home") == "ok":
+        resp["home_url"] = _ha_public_url()
+    return jsonify(resp)
 
 
 @app.route("/api/household/members/<user>/password", methods=["POST"])
