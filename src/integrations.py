@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import threading
 import time
+from email.utils import parseaddr
 from typing import Any
 
 from flask import jsonify, request, session
@@ -51,6 +52,7 @@ NC_TOKEN_FILE = os.path.join(OPENCLAW_DIR, "nextcloud.token")
 HA_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "ha_accounts.json")
 NC_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "nc_accounts.json")
 EMAIL_ACCOUNTS_FILE = os.path.join(OPENCLAW_DIR, "email_accounts.json")
+EMAIL_CHANNEL_FILE = os.path.join(OPENCLAW_DIR, "email_channel.json")
 SELF_TOKEN_FILE = os.path.join(OPENCLAW_DIR, "homebrain.token")
 
 PYTHON_BIN = "/usr/bin/python3"
@@ -71,8 +73,9 @@ INTEGRATION_ORDER = ["self", "homeassistant", "nextcloud", "vault", "email"]
 
 # Channels that HomeBrain can link via the dashboard (separate from MCP
 # integrations — channels are messaging bridges, not tool servers). Telegram
-# only: it ships inside core OpenClaw, needs no plugin install, and covers
-# the product need with one code path.
+# is the only OpenClaw channel (ships in core, no plugin). Email prompting is
+# HomeBrain-owned (`email_channel.json`); do not put "email" on this list or
+# call `_write_openclaw_channel("email", …)` / `_channel_status("email")`.
 CHANNEL_ORDER = ["telegram"]
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 
@@ -807,15 +810,44 @@ def disconnect_nextcloud_all() -> None:
 # Email account store
 # ---------------------------------------------------------------------------
 
+def normalize_email(value: str) -> str:
+    """parseaddr + lowercase. Empty if there is no address."""
+    _, addr = parseaddr((value or "").strip())
+    return addr.strip().lower()
+
+
+def migrate_email_agent_mailbox(accounts: list[dict]) -> tuple[list[dict], bool]:
+    """Fill missing agent_mailbox. One account → true; two or more → false.
+
+    Missing key is not true. Writes are the caller's job.
+    """
+    if not any("agent_mailbox" not in a for a in accounts):
+        return accounts, False
+    default = len(accounts) == 1
+    out = []
+    for a in accounts:
+        b = dict(a)
+        if "agent_mailbox" not in b:
+            b["agent_mailbox"] = default
+        else:
+            b["agent_mailbox"] = bool(b["agent_mailbox"])
+        out.append(b)
+    return out, True
+
+
 def _load_email_accounts() -> list[dict]:
     if not os.path.exists(EMAIL_ACCOUNTS_FILE):
         return []
     try:
         with open(EMAIL_ACCOUNTS_FILE) as f:
             d = json.load(f)
-        return d.get("accounts", []) if isinstance(d, dict) else []
+        raw = d.get("accounts", []) if isinstance(d, dict) else []
     except (OSError, json.JSONDecodeError):
         return []
+    accounts, changed = migrate_email_agent_mailbox(raw)
+    if changed:
+        _save_email_accounts(accounts)
+    return accounts
 
 
 def _save_email_accounts(accounts: list[dict]) -> None:
@@ -823,13 +855,23 @@ def _save_email_accounts(accounts: list[dict]) -> None:
     _write_secret(EMAIL_ACCOUNTS_FILE, blob)
 
 
+def agent_mailbox_addrs(accounts: list[dict] | None = None) -> set[str]:
+    acc = accounts if accounts is not None else _load_email_accounts()
+    return {normalize_email(a.get("user") or "")
+            for a in acc if a.get("agent_mailbox") and normalize_email(a.get("user") or "")}
+
+
 def add_email_account(name: str, user: str, imap_host: str, imap_port: int,
-                      smtp_host: str, smtp_port: int, password: str) -> tuple[bool, str]:
+                      smtp_host: str, smtp_port: int, password: str,
+                      agent_mailbox: bool | None = None) -> tuple[bool, str]:
     if not all([name, user, imap_host, smtp_host, password]):
         return False, "missing required fields"
     accounts = _load_email_accounts()
     if any(a.get("name") == name for a in accounts):
         return False, f"account '{name}' already exists"
+    if agent_mailbox is None:
+        flagged = bool(agent_mailbox_addrs(accounts))
+        agent_mailbox = not flagged
     enc = _encrypt_secret(password)
     accounts.append({
         "name": name,
@@ -842,9 +884,26 @@ def add_email_account(name: str, user: str, imap_host: str, imap_port: int,
         "smtp_password": enc,
         "drafts_folder": "Drafts",
         "archive_folder": "Archive",
+        "agent_mailbox": bool(agent_mailbox),
     })
     _save_email_accounts(accounts)
     return True, "added"
+
+
+def set_email_agent_mailbox(name: str, agent_mailbox: bool) -> tuple[bool, str]:
+    accounts = _load_email_accounts()
+    found = False
+    out = []
+    for a in accounts:
+        b = dict(a)
+        if b.get("name") == name:
+            b["agent_mailbox"] = bool(agent_mailbox)
+            found = True
+        out.append(b)
+    if not found:
+        return False, "account not found"
+    _save_email_accounts(out)
+    return True, "updated"
 
 
 def remove_email_account(name: str) -> bool:
@@ -857,6 +916,108 @@ def remove_email_account(name: str) -> bool:
     else:
         os.remove(EMAIL_ACCOUNTS_FILE)
     return True
+
+
+def normalize_allow_from(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, list):
+        parts = [str(p).strip() for p in raw]
+    else:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        addr = normalize_email(p)
+        if addr and addr not in seen:
+            seen.add(addr)
+            out.append(addr)
+    return out
+
+
+def email_channel_from_to_ok(allow_from: list[str],
+                             accounts: list[dict] | None = None) -> bool:
+    """True if at least one allow_from is not an agent-mailbox address."""
+    agents = agent_mailbox_addrs(accounts)
+    return any(a not in agents for a in allow_from)
+
+
+def prompting_ready(channel: dict, accounts: list[dict] | None = None) -> bool:
+    acc = accounts if accounts is not None else _load_email_accounts()
+    if not channel.get("enabled"):
+        return False
+    if not agent_mailbox_addrs(acc):
+        return False
+    allow = normalize_allow_from(channel.get("allow_from"))
+    return email_channel_from_to_ok(allow, acc)
+
+
+def _default_allow_from() -> list[str]:
+    return normalize_allow_from(_read_env().get("CLOUD_EMAIL", ""))
+
+
+def _load_email_channel() -> dict:
+    if not os.path.exists(EMAIL_CHANNEL_FILE):
+        return {"enabled": False, "allow_from": _default_allow_from()}
+    try:
+        with open(EMAIL_CHANNEL_FILE) as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"enabled": False, "allow_from": _default_allow_from()}
+    if not isinstance(d, dict):
+        return {"enabled": False, "allow_from": _default_allow_from()}
+    allow = normalize_allow_from(d.get("allow_from"))
+    if not allow:
+        allow = _default_allow_from()
+    return {"enabled": bool(d.get("enabled")), "allow_from": allow}
+
+
+def _save_email_channel(channel: dict) -> None:
+    blob = json.dumps({
+        "enabled": bool(channel.get("enabled")),
+        "allow_from": normalize_allow_from(channel.get("allow_from")),
+    }, indent=2)
+    _write_secret(EMAIL_CHANNEL_FILE, blob)
+
+
+def email_channel_enable_error(enabled: bool, allow_from: list[str],
+                               accounts: list[dict] | None = None) -> str:
+    """Empty if the requested state is legal. Reason string otherwise."""
+    if not enabled:
+        return ""
+    acc = accounts if accounts is not None else _load_email_accounts()
+    if not agent_mailbox_addrs(acc):
+        return "Connect an agent mailbox under Agent Integrations first."
+    if not allow_from:
+        return "Add at least one owner From address."
+    if not email_channel_from_to_ok(allow_from, acc):
+        return ("Prompting needs a From that is not an agent mailbox. "
+                "Use a dedicated agent address and your personal email as From.")
+    return ""
+
+
+def email_channel_status() -> dict:
+    accounts = _load_email_accounts()
+    channel = _load_email_channel()
+    to_addrs = sorted(agent_mailbox_addrs(accounts))
+    allow = channel.get("allow_from") or []
+    configured = bool(to_addrs)
+    err = email_channel_enable_error(True, allow, accounts)
+    saved = bool(channel.get("enabled"))
+    ready = prompting_ready(channel, accounts)
+    info: dict[str, Any] = {
+        "key": "email",
+        "configured": configured,
+        "enabled": saved,
+        "ready": ready,
+        "allow_from": allow,
+        "to_addresses": to_addrs,
+    }
+    if err:
+        info["block_reason"] = err
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -905,11 +1066,14 @@ def integration_status(key: str) -> dict:
         accounts = _load_email_accounts()
         info["configured"] = bool(accounts)
         info["accounts"] = [{"name": a.get("name"), "user": a.get("user"),
-                             "imap_host": a.get("imap_host")}
+                             "imap_host": a.get("imap_host"),
+                             "agent_mailbox": bool(a.get("agent_mailbox"))}
                             for a in accounts]
         info["send_direct_enabled"] = (
             _read_env().get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").lower() == "true"
         )
+        info["prompting_enabled"] = prompting_ready(_load_email_channel(),
+                                                    accounts)
     return info
 
 
@@ -1237,6 +1401,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         body = request.get_json(silent=True) or {}
+        flag = body.get("agent_mailbox")
         ok_, msg = add_email_account(
             name=body.get("name", "").strip(),
             user=body.get("user", "").strip(),
@@ -1245,6 +1410,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             smtp_host=body.get("smtp_host", "").strip(),
             smtp_port=int(body.get("smtp_port") or 587),
             password=body.get("password", ""),
+            agent_mailbox=None if flag is None else bool(flag),
         )
         if not ok_:
             return jsonify({"error": msg}), 400
@@ -1259,6 +1425,23 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "account not found"}), 404
         reconcile_one("email")
         return jsonify({"status": "removed"})
+
+    def email_agent_mailbox():
+        # Dashboard session only — copy email_add. Do not use
+        # _require_session_or_bearer: the self-MCP proxy would let the
+        # agent rename the house Gmail as its own.
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name required"}), 400
+        if "agent_mailbox" not in body:
+            return jsonify({"error": "agent_mailbox required"}), 400
+        ok_, msg = set_email_agent_mailbox(name, bool(body.get("agent_mailbox")))
+        if not ok_:
+            return jsonify({"error": msg}), 404
+        return jsonify({"status": "updated"})
 
     def email_send_direct_toggle():
         if not session.get("authenticated"):
@@ -1450,6 +1633,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/email/send-direct-toggle",
                      "email_send_direct_toggle",
                      email_send_direct_toggle, methods=["POST"])
+    app.add_url_rule("/api/integrations/email/agent-mailbox",
+                     "email_agent_mailbox",
+                     limiter.limit("20 per minute")(email_agent_mailbox),
+                     methods=["POST"])
 
     app.add_url_rule("/api/integrations/self/restart-service",
                      "self_restart_service", self_restart_service,
@@ -1482,8 +1669,26 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not session.get("authenticated"):
             return jsonify({"error": "unauthenticated"}), 401
         return jsonify({
-            "channels": [_channel_status(k) for k in CHANNEL_ORDER],
+            "channels": [_channel_status(k) for k in CHANNEL_ORDER]
+            + [email_channel_status()],
         })
+
+    def email_channel_update():
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        current = _load_email_channel()
+        if "allow_from" in body:
+            allow = normalize_allow_from(body.get("allow_from"))
+        else:
+            allow = list(current.get("allow_from") or [])
+        enabled = bool(body.get("enabled")) if "enabled" in body \
+            else bool(current.get("enabled"))
+        err = email_channel_enable_error(enabled, allow)
+        if err:
+            return jsonify({"error": err}), 400
+        _save_email_channel({"enabled": enabled, "allow_from": allow})
+        return jsonify({"status": "ok", **email_channel_status()})
 
     def telegram_add():
         if not session.get("authenticated"):
@@ -1533,6 +1738,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      methods=["POST"])
     app.add_url_rule("/api/channels/telegram/remove",
                      "telegram_remove", telegram_remove, methods=["POST"])
+    app.add_url_rule("/api/channels/email",
+                     "email_channel_update",
+                     limiter.limit("10 per minute")(email_channel_update),
+                     methods=["POST"])
 
     # Post-provision self-heal: reconcile_all_mcp() was historically only
     # triggered by the user clicking "Apply" in Connections, which left

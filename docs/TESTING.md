@@ -274,11 +274,16 @@ default Vault bootstrap.
       (`disabled`) until the Settings toggle flips it on.
 - [ ] Proton account: `docker compose --profile proton-bridge up -d`
       starts Bridge; `imap_host=127.0.0.1`, `imap_port=12143` works.
+- [ ] Flagged account chip shows **Agent mailbox**. `email.list_accounts`
+      returns `role: "agent_mailbox"` and the address; the agent can name
+      it on a fresh Telegram turn.
 
 ### Channel linking — Telegram (stock upstream OpenClaw)
 
 HomeBrain runs **stock npm `openclaw`** (no fork, no channel plugins).
-Telegram is the only supported channel and is bundled in core.
+Telegram is the only OpenClaw channel and is bundled in core. Email
+prompts are a HomeBrain daemon (`email_channel.json`), not
+`.channels.email`.
 
 - [ ] Paste a bot token → row flips to configured; daemon restarts.
 - [ ] Send `/pair` from the bot, approve the code in the dashboard
@@ -288,6 +293,22 @@ Telegram is the only supported channel and is bundled in core.
       `~/.openclaw/openclaw.json` has no `.channels.whatsapp` /
       `.plugins.entries.whatsapp` keys (one-shot migration in
       `patch_openclaw_config` + `remove_whatsapp_plugins`).
+
+### Email prompts (GPU only)
+
+Plan: [`plans/AGENT_EMAIL.md`](plans/AGENT_EMAIL.md). Isolated session
+`email-in`; agent replies via `email.draft` (or `email.send_direct` if
+that toggle is on). HomeBrain does not SMTP the model's last token.
+
+- [ ] `systemctl is-active homebrain-email-watch` → `active` (OpenClaw present)
+- [ ] Flag a dedicated agent mailbox, `allow_from` = `CLOUD_EMAIL`
+      (distinct address), Enable on Messaging Channels → Email.
+- [ ] Enable with From = agent mailbox address is refused.
+- [ ] Mail from `CLOUD_EMAIL` to the agent address starts an isolated
+      `email-in` turn; Telegram DM session is untouched. Reply path is a
+      draft (or send_direct).
+- [ ] Unflag the agent mailbox: further mail does not wake.
+- [ ] `email_channel.json` is mode 0600 and in the backup archive.
 
 ### Cross-cutting
 

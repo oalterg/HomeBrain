@@ -37,8 +37,9 @@ treat HA names as data), `scripts/healthcheck.py` (`openclaw message send`),
 
 ### Non-goals
 
-- Not IFTTT, MQTT, cron-in-JSON, email triggers, or a public inbound
-  webhook (that *would* need Pangolin here).
+- Not IFTTT, MQTT, cron-in-JSON, or a public inbound webhook (that
+  *would* need Pangolin here). Email triggers are a separate daemon:
+  [`AGENT_EMAIL.md`](AGENT_EMAIL.md) — not this service.
 - Not a replacement for `healthcheck.py` or the OpenClaw hourly heartbeat.
   Internal events (backup finished) call `send_push` directly if needed.
 - Not putting the loop inside an MCP server. MCP is a short-lived stdio

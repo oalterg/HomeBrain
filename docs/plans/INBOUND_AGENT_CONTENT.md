@@ -1,11 +1,13 @@
 # Inbound agent content — threat model
 
-**Status:** open. Distillation only. No implementation plan yet.
+**Status:** open. Distillation. Owner-to-agent mail is a channel:
+[`AGENT_EMAIL.md`](AGENT_EMAIL.md) (in tree). Other inbound surfaces (browser,
+notes, MCP body fetch) are still unplanned.
 **Date:** 2026-08-15
 **Parent:** [`PRODUCT_REVIEW_2026-08.md`](PRODUCT_REVIEW_2026-08.md) §B1
 **Essence:** A prompt-injected email or a browsed page can reach a root shell.
 
-This is the audit Phase 2 asked for. A later plan must make product decisions, not silent enables. Do not treat this file as a to-do list.
+This is the audit Phase 2 asked for. A later plan must make product decisions, not silent enables. Do not treat this file as a to-do list. Allowlisted owner mail to a flagged agent mailbox is a channel: [`AGENT_EMAIL.md`](AGENT_EMAIL.md). It does not relax the rest of this model (browser, notes, MCP body fetch).
 
 ---
 

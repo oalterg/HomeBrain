@@ -273,6 +273,12 @@ systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
     && log_info "HA watcher service enabled." \
     || log_warn "HA watcher service not started (OpenClaw not present yet is OK)."
 
+cp "${SCRIPT_DIR}/../config/homebrain-email-watch.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-email-watch.service 2>/dev/null \
+    && log_info "Email watcher service enabled." \
+    || log_warn "Email watcher service not started (OpenClaw not present yet is OK)."
+
 # Rotate /var/log/homebrain. Without this it grows for the life of the box.
 cp "${SCRIPT_DIR}/../config/logrotate-homebrain" /etc/logrotate.d/homebrain
 chmod 644 /etc/logrotate.d/homebrain

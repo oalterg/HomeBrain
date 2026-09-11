@@ -286,7 +286,7 @@ install_python_venv_deps
 UNITS_CHANGED=false
 for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer \
             homebrain-offsite.service homebrain-offsite.timer \
-            homebrain-ha-watch.service; do
+            homebrain-ha-watch.service homebrain-email-watch.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
 
@@ -317,6 +317,7 @@ systemctl enable --now homebrain-health.timer 2>/dev/null || true
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.
 systemctl enable --now homebrain-ha-watch.service 2>/dev/null || true
+systemctl enable --now homebrain-email-watch.service 2>/dev/null || true
 # Drop the short-lived drop-in that delayed dockerd until a default route
 # existed. Superseded by the `dns:` upstreams on the newt container, which fix
 # the tunnel-after-reboot bug without delaying boot. Idempotent, no-op on a box

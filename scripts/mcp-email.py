@@ -123,10 +123,14 @@ def _imap(account: dict) -> imaplib.IMAP4 | None:
 # ---------------------------------------------------------------------------
 
 def t_list_accounts(_args: dict) -> dict:
-    accounts = [{"name": a.get("name"),
-                 "user": a.get("user"),
-                 "imap_host": a.get("imap_host"),
-                 "smtp_host": a.get("smtp_host")} for a in _accounts()]
+    accounts = []
+    for a in _accounts():
+        role = "agent_mailbox" if a.get("agent_mailbox") else "owner_inbox"
+        accounts.append({
+            "name": a.get("name"),
+            "user": a.get("user"),
+            "role": role,
+        })
     return ok(accounts=accounts, total=len(accounts),
               send_direct_enabled=SEND_DIRECT_ENABLED)
 
@@ -813,7 +817,11 @@ def t_flag(args: dict) -> dict:
 
 TOOLS = [
     {"name": "email.list_accounts",
-     "description": "List configured email accounts (names only — never credentials).",
+     "description": (
+         "Your mailboxes (role=agent_mailbox) and owner inboxes you may "
+         "operate (role=owner_inbox). Names, addresses, role — never "
+         "credentials."
+     ),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "email.list_unread",
      "description": (

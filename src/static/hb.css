@@ -520,6 +520,14 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   border: 0;
 }
 .acct-chip button:hover { color: var(--danger); background: none; border: 0; transform: none; }
+.acct-chip button.acct-role {
+  font-size: 0.82em;
+  color: var(--text-dim);
+  padding: 0 6px;
+}
+.acct-chip button.acct-role:hover {
+  color: var(--accent);
+}
 
 /* Meters. The reading sits above the bar. It used to sit inside the
    fill, half on green and half on grey, kept legible by a double
