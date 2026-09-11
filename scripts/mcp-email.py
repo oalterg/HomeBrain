@@ -817,18 +817,15 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "email.list_unread",
      "description": (
-         "List unread messages. id is IMAP UID (stable). Headers only: from, "
-         "subject, date, has_attachments, attachments:[{filename}]. Reads do "
-         "not mark seen. has_attachments is true for PDFs even when the "
-         "client marked them inline (Apple Mail forwards)."
+         "Unread headers by IMAP UID. Includes filenames; inline PDFs count. "
+         "Does not mark seen."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "limit": {"type": "integer"}}}},
     {"name": "email.search",
      "description": (
-         "IMAP TEXT search. id is IMAP UID. Headers only, including "
-         "has_attachments and attachments:[{filename}]. Does not mark seen."
+         "IMAP TEXT search. IMAP UID + filenames. Does not mark seen."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
@@ -837,9 +834,8 @@ TOOLS = [
                      "required": ["query"]}},
     {"name": "email.fetch",
      "description": (
-         "Fetch a message body (plaintext, else HTML) by IMAP UID. Does not "
-         "mark seen. Returns attachment filenames; use email.attachment to "
-         "save a file."
+         "Body by IMAP UID (plain, else HTML). Lists filenames. Does not "
+         "mark seen."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
@@ -848,10 +844,8 @@ TOOLS = [
                      "required": ["id"]}},
     {"name": "email.attachment",
      "description": (
-         "Save one email file onto this box by IMAP UID, including PDFs "
-         "marked inline (Apple Mail forwards). Does not mark seen. Returns "
-         "`media`; send with the message tool (media=path). Several files: "
-         "pass filename."
+         "Save one file by IMAP UID, including inline PDFs. Returns media=. "
+         "Several: pass filename."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
