@@ -39,17 +39,44 @@ ACCOUNT = {
 }
 
 
+# Live shape from Yahoo IMAP for an Apple Mail forward (PDF marked INLINE).
+APPLE_MAIL_STRUCTURE = (
+    b'4 (UID 7 BODYSTRUCTURE ((("text" "html" ("charset" "utf-8") NIL NIL '
+    b'"quoted-printable" 65962 1288 NIL NIL NIL NIL)("application" "pdf" '
+    b'("name" "invoice.pdf") NIL NIL "base64" 82810 NIL '
+    b'("inline" ("filename" "invoice.pdf")) NIL NIL)("text" "html" '
+    b'("charset" "us-ascii") NIL NIL "7bit" 225 0 NIL NIL NIL NIL) "mixed" '
+    b'("boundary" "x") NIL) "alternative" ("boundary" "y") NIL))'
+)
+
+
 class FakeIMAP:
-    def __init__(self, raw, missing=False):
+    def __init__(self, raw, missing=False, structure=None, unseen=b"1"):
         self.raw = raw
         self.missing = missing
+        self.structure = structure
+        self.unseen = unseen
 
     def select(self, *a, **k):
         return "OK", [b"1"]
 
+    def search(self, *a, **k):
+        return "OK", [self.unseen]
+
     def fetch(self, uid, spec):
         if self.missing:
             return "OK", [None]
+        spec_s = spec.decode() if isinstance(spec, bytes) else spec
+        if "BODYSTRUCTURE" in spec_s:
+            struct = self.structure
+            if struct is None:
+                struct = (
+                    b'1 (BODYSTRUCTURE ("TEXT" "PLAIN" NIL NIL NIL '
+                    b'"7BIT" 5 NIL NIL NIL NIL))'
+                )
+            if isinstance(struct, str):
+                struct = struct.encode()
+            return "OK", [struct]
         return "OK", [(b"1 (RFC822)", self.raw)]
 
     def logout(self):
@@ -66,6 +93,20 @@ def _msg(*attachments, body="hello"):
         main, sub = mime.split("/", 1)
         msg.add_attachment(payload, maintype=main, subtype=sub, filename=filename)
     return msg.as_bytes()
+
+
+def _apple_fwd_pdf(filename="invoice.pdf", html="<p>fwd</p>"):
+    """Apple Mail forward: HTML body + PDF with Content-Disposition: inline."""
+    msg = EmailMessage()
+    msg["From"] = "Oliver <o@g.com>"
+    msg["To"] = "a@b.c"
+    msg["Subject"] = "Fwd: Rechnung"
+    msg.set_content(html, subtype="html")
+    msg.add_attachment(PDF, maintype="application", subtype="pdf", filename=filename)
+    for p in msg.walk():
+        if p.get_content_type() == "application/pdf":
+            p.replace_header("Content-Disposition", f'inline; filename="{filename}"')
+    return msg
 
 
 def _attach(mod, args):
@@ -236,3 +277,70 @@ def test_fetch_still_returns_body_not_files(em):
     assert "path" not in out
     assert "media" not in out
     assert JPEG not in json.dumps(out).encode()
+
+
+def test_attachment_keeps_apple_mail_inline_pdf(em):
+    em._imap = lambda acc: FakeIMAP(
+        _apple_fwd_pdf("Rechnung SRE10859500.pdf").as_bytes())
+    out = _attach(em, {"id": "1", "filename": "SRE"})
+    assert out["ok"] is True
+    assert out["filename"] == "Rechnung_SRE10859500.pdf"
+    assert open(out["path"], "rb").read() == PDF
+
+
+def test_attachment_single_inline_pdf_needs_no_filename(em):
+    em._imap = lambda acc: FakeIMAP(_apple_fwd_pdf("invoice.pdf").as_bytes())
+    out = _attach(em, {"id": "1"})
+    assert out["ok"] is True
+    assert out["filename"] == "invoice.pdf"
+
+
+def test_structure_detects_apple_mail_inline_pdf(em):
+    assert em._structure_has_attachments(APPLE_MAIL_STRUCTURE) is True
+    assert em._structure_has_attachments(
+        b'1 (BODYSTRUCTURE ("TEXT" "PLAIN" NIL NIL NIL "7BIT" 5 NIL NIL NIL NIL))'
+    ) is False
+
+
+def test_summarise_headers_only_cannot_see_mime_parts(em):
+    """IMAP RFC822.HEADER is top-level headers only — no MIME parts."""
+    import email as email_mod
+    full = _msg(("a.pdf", "application/pdf", PDF))
+    top = email_mod.message_from_bytes(full)
+    header_msg = email_mod.message.Message()
+    for k, v in top.items():
+        header_msg[k] = v
+    header = header_msg.as_bytes()
+    assert em._summarise(header, "1")["has_attachments"] is False
+    assert em._summarise(full, "1")["has_attachments"] is True
+
+
+def test_list_unread_sets_has_attachments_from_bodystructure(em):
+    em._imap = lambda acc: FakeIMAP(
+        _apple_fwd_pdf().as_bytes(),
+        structure=APPLE_MAIL_STRUCTURE,
+        unseen=b"4",
+    )
+    out = em.dispatch("email.list_unread", {})
+    assert out["ok"] is True
+    assert out["messages"][0]["id"] == "4"
+    assert out["messages"][0]["has_attachments"] is True
+
+
+def test_list_unread_plain_message_has_no_attachments(em):
+    em._imap = lambda acc: FakeIMAP(_msg())
+    out = em.dispatch("email.list_unread", {})
+    assert out["ok"] is True
+    assert out["messages"][0]["has_attachments"] is False
+
+
+def test_fetch_html_only_forward_returns_html(em):
+    em._imap = lambda acc: FakeIMAP(
+        _apple_fwd_pdf(html="<p>Coolblue invoice</p>").as_bytes())
+    out = em.dispatch("email.fetch", {"id": "1"})
+    if out.get("requires_confirmation"):
+        out = em.dispatch("email.fetch", {
+            "id": "1", "confirmation_token": out["action_id"],
+        })
+    assert out["ok"] is True
+    assert "Coolblue invoice" in out["body"]
