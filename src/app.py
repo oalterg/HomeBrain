@@ -4931,6 +4931,10 @@ def pairing_payload(user, password, env):
 # dashboard. A household member gets files always, and vault / Home Assistant
 # only when the owner ticks them. They never get the dashboard.
 MEMBER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+# Nextcloud's own uid charset: case, '@', 1–64 chars. MEMBER_ID is what
+# HomeBrain will mint; hand-made accounts were never asked to satisfy it.
+# Leading alphanumeric so `occ` cannot read the uid as a flag.
+NC_UID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,63}$")
 RESERVED_MEMBERS = {"replica"}   # the off-site receiver account, not a person
 
 
@@ -5173,10 +5177,18 @@ def nc_occ_json(*args):
 
 
 def not_a_member(user, env):
-    """The check every member route repeats: a plausible id, not the off-site
-    receiver, and never the owner — whose account runs occ and holds the Vault."""
-    return (not MEMBER_ID.match(user) or user in RESERVED_MEMBERS
-            or user == env.get("NEXTCLOUD_ADMIN_USER", ""))
+    """The check every member route repeats: a plausible Nextcloud uid, not the
+    off-site receiver, and never the owner — whose account runs occ and holds
+    the Vault.
+
+    Membership is not "looks like an id HomeBrain would mint". The roster is
+    every Nextcloud account, and the vault+ chip posts that uid as-is.
+    Nextcloud treats uids as case-insensitive, so the owner check does too:
+    otherwise `Admin` would pass when .env says `admin` and we would try to
+    hang a second vault on the owner's account."""
+    owner = (env.get("NEXTCLOUD_ADMIN_USER") or "").lower()
+    return (not NC_UID.match(user) or user.lower() in RESERVED_MEMBERS
+            or (owner and user.lower() == owner))
 
 
 SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
