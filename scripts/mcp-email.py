@@ -27,9 +27,11 @@ import email
 import imaplib
 import json
 import os
+import re
 import smtplib
 import sys
 import time
+from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
@@ -129,7 +131,92 @@ def t_list_accounts(_args: dict) -> dict:
               send_direct_enabled=SEND_DIRECT_ENABLED)
 
 
-def _summarise(msg_bytes: bytes, uid: str) -> dict:
+_APP_PART_RE = re.compile(
+    r'"application"\s+"[^"]+"\s+\(([^)]*)\)', re.IGNORECASE)
+_ATTACH_DISP_RE = re.compile(
+    r'\(\s*"attachment"\s+\(([^)]*)\)', re.IGNORECASE)
+_NAME_PARAM_RE = re.compile(
+    r'"(?:name|filename)"\s+"([^"]+)"', re.IGNORECASE)
+
+
+def _hdr(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
+
+
+def _uid_bytes(uid) -> bytes:
+    if isinstance(uid, (bytes, bytearray)):
+        return bytes(uid)
+    return str(uid).encode()
+
+
+def _uid_str(uid) -> str:
+    if isinstance(uid, (bytes, bytearray)):
+        return uid.decode()
+    return str(uid)
+
+
+def _fetch_literal(data) -> bytes | None:
+    if not data or not data[0]:
+        return None
+    item = data[0]
+    if isinstance(item, tuple) and len(item) >= 2:
+        payload = item[1]
+        return bytes(payload) if isinstance(payload, (bytes, bytearray)) else None
+    return None
+
+
+def _imap_payload(data) -> bytes:
+    if not data or not data[0]:
+        return b""
+    item = data[0]
+    if isinstance(item, tuple):
+        return b"".join(x for x in item if isinstance(x, (bytes, bytearray)))
+    if isinstance(item, (bytes, bytearray)):
+        return bytes(item)
+    return b""
+
+
+def _filenames_from_structure(struct: bytes | str) -> list[str]:
+    """Filenames from application/* parts and disposition=attachment.
+
+    Skips HTML-embedded images (image/* + inline). Duplicate name/filename
+    params on the same part are collapsed.
+    """
+    text = struct.decode("utf-8", "replace") if isinstance(struct, (bytes, bytearray)) else str(struct)
+    names: list[str] = []
+    seen: set[str] = set()
+    chunks = [m.group(1) for m in _APP_PART_RE.finditer(text)]
+    chunks.extend(m.group(1) for m in _ATTACH_DISP_RE.finditer(text))
+    for chunk in chunks:
+        for name in _NAME_PARAM_RE.findall(chunk):
+            key = name.lower()
+            if name and key not in seen:
+                seen.add(key)
+                names.append(name)
+    return names
+
+
+def _structure_has_attachments(struct: bytes | str) -> bool:
+    """True if IMAP BODYSTRUCTURE describes a real file (PDF, etc.).
+
+    Apple Mail forwards invoices as application/pdf with disposition INLINE,
+    so we cannot key only on ATTACHMENT. RFC822.HEADER is not enough: the
+    MIME parts live in the body, and a headers-only parse always looks empty.
+    """
+    if _filenames_from_structure(struct):
+        return True
+    text = struct.decode("utf-8", "replace") if isinstance(struct, (bytes, bytearray)) else str(struct)
+    s = text.lower()
+    return '"application"' in s or '("attachment"' in s
+
+
+def _summarise(msg_bytes: bytes, uid: str, has_attachments: bool | None = None,
+               attachments: list[dict] | None = None) -> dict:
     msg = email.message_from_bytes(msg_bytes)
     received = ""
     if msg.get("Date"):
@@ -137,17 +224,52 @@ def _summarise(msg_bytes: bytes, uid: str) -> dict:
             received = parsedate_to_datetime(msg["Date"]).isoformat()
         except (TypeError, ValueError):
             pass
+    if attachments is None:
+        attachments = [{"filename": n} for _, n, _ in _attachment_catalog(msg)]
+    if has_attachments is None:
+        has_attachments = bool(attachments)
     return {
         "id": uid,
-        "from": msg.get("From", ""),
-        "to": msg.get("To", ""),
-        "subject": msg.get("Subject", ""),
+        "from": _hdr(msg.get("From", "")),
+        "to": _hdr(msg.get("To", "")),
+        "subject": _hdr(msg.get("Subject", "")),
         "received": received,
-        "has_attachments": any(
-            (part.get_content_disposition() == "attachment")
-            for part in msg.walk()
-        ),
+        "has_attachments": bool(has_attachments),
+        "attachments": attachments,
     }
+
+
+def _uid_search(conn, *criteria) -> list[bytes]:
+    rc, ids = conn.uid("SEARCH", *criteria)
+    if rc != "OK" or not ids or not ids[0]:
+        return []
+    return ids[0].split()
+
+
+def _peek_message(conn, uid):
+    rc, data = conn.uid("FETCH", _uid_bytes(uid), "(BODY.PEEK[])")
+    raw = _fetch_literal(data) if rc == "OK" else None
+    if not raw:
+        return None
+    return email.message_from_bytes(raw)
+
+
+def _list_from_imap(conn, uids: list) -> list[dict]:
+    out = []
+    for uid in reversed(uids):
+        rc, data = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
+        header = _fetch_literal(data) if rc == "OK" else None
+        if not header:
+            continue
+        rc_s, sdata = conn.uid("FETCH", uid, "(BODYSTRUCTURE)")
+        struct = _imap_payload(sdata) if rc_s == "OK" else b""
+        names = _filenames_from_structure(struct)
+        out.append(_summarise(
+            header, _uid_str(uid),
+            has_attachments=_structure_has_attachments(struct),
+            attachments=[{"filename": n} for n in names],
+        ))
+    return out
 
 
 def t_list_unread(args: dict) -> dict:
@@ -161,16 +283,11 @@ def t_list_unread(args: dict) -> dict:
         return unavailable(f"could not connect to IMAP for '{name}'")
     try:
         conn.select("INBOX", readonly=True)
-        rc, ids = conn.search(None, "UNSEEN")
-        if rc != "OK" or not ids or not ids[0]:
+        uids = _uid_search(conn, "UNSEEN")
+        if not uids:
             return ok(account=name, messages=[], total=0)
-        uids = ids[0].split()[-limit:]
-        out = []
-        for uid in reversed(uids):
-            rc, data = conn.fetch(uid, "(RFC822.HEADER)")
-            if rc != "OK" or not data or not data[0]:
-                continue
-            out.append(_summarise(data[0][1], uid.decode()))
+        uids = uids[-limit:]
+        out = _list_from_imap(conn, uids)
         return ok(account=name, messages=out, total=len(out))
     finally:
         try:
@@ -193,23 +310,49 @@ def t_search(args: dict) -> dict:
         return unavailable(f"could not connect to IMAP for '{name}'")
     try:
         conn.select("INBOX", readonly=True)
-        # IMAP TEXT search — matches headers + body; returns IDs only.
-        rc, ids = conn.search(None, "TEXT", f'"{query}"')
-        if rc != "OK" or not ids or not ids[0]:
+        # IMAP TEXT search — matches headers + body; returns UIDs only.
+        uids = _uid_search(conn, "TEXT", f'"{query}"')
+        if not uids:
             return ok(account=name, messages=[], total=0)
-        uids = ids[0].split()[-limit:]
-        out = []
-        for uid in reversed(uids):
-            rc, data = conn.fetch(uid, "(RFC822.HEADER)")
-            if rc != "OK" or not data or not data[0]:
-                continue
-            out.append(_summarise(data[0][1], uid.decode()))
+        uids = uids[-limit:]
+        out = _list_from_imap(conn, uids)
         return ok(account=name, messages=out, total=len(out))
     finally:
         try:
             conn.logout()
         except Exception:
             pass
+
+
+def _decode_part_text(part) -> str:
+    try:
+        return (part.get_payload(decode=True) or b"").decode(
+            part.get_content_charset() or "utf-8", "replace")
+    except Exception:
+        payload = part.get_payload()
+        return payload if isinstance(payload, str) else ""
+
+
+def _message_body(msg) -> str:
+    """Plaintext if present, otherwise HTML. Skip file parts."""
+    plain, html = "", ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            if ctype == "text/plain" and not plain:
+                if (part.get_content_disposition() or "").lower() == "attachment":
+                    continue
+                plain = _decode_part_text(part)
+            elif ctype == "text/html" and not html:
+                if (part.get_content_disposition() or "").lower() == "attachment":
+                    continue
+                html = _decode_part_text(part)
+        return plain or html
+    try:
+        return msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "replace")
+    except Exception:
+        payload = msg.get_payload()
+        return payload if isinstance(payload, str) else ""
 
 
 def t_fetch(args: dict) -> dict:
@@ -238,35 +381,22 @@ def t_fetch(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX")
-        rc, data = conn.fetch(redeemed["id"].encode(), "(RFC822)")
-        if rc != "OK" or not data or not data[0]:
+        conn.select("INBOX", readonly=True)
+        msg = _peek_message(conn, redeemed["id"])
+        if msg is None:
             return err("message not found")
-        msg = email.message_from_bytes(data[0][1])
-        body = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                ctype = part.get_content_type()
-                if ctype == "text/plain" and part.get_content_disposition() != "attachment":
-                    try:
-                        body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace")
-                    except Exception:
-                        body = part.get_payload()
-                    break
-        else:
-            try:
-                body = msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "replace")
-            except Exception:
-                body = msg.get_payload()
+        body = _message_body(msg)
+        parts = _attachment_catalog(msg)
         audit("email", "fetch", account=redeemed["account"], id=redeemed["id"])
         return ok(
             id=redeemed["id"],
-            from_=msg.get("From", ""),
-            to=msg.get("To", ""),
-            subject=msg.get("Subject", ""),
+            from_=_hdr(msg.get("From", "")),
+            to=_hdr(msg.get("To", "")),
+            subject=_hdr(msg.get("Subject", "")),
             received=msg.get("Date", ""),
             body=body[:50_000],  # hard cap to keep token usage sane
             truncated=len(body) > 50_000,
+            attachments=[{"filename": n, "size": len(b)} for _, n, b in parts],
         )
     finally:
         try:
@@ -276,9 +406,24 @@ def t_fetch(args: dict) -> dict:
 
 
 def _is_keepable(part) -> bool:
+    """True for real file parts, including Apple Mail inline PDFs.
+
+    HTML-embedded images (inline / CID) are skipped; application/* and
+    other named non-body parts are kept even when disposition is inline.
+    """
     if part.get_content_maintype() == "multipart":
         return False
-    return (part.get_content_disposition() or "").lower() == "attachment"
+    ctype = part.get_content_type()
+    if ctype in ("text/plain", "text/html"):
+        return False
+    disp = (part.get_content_disposition() or "").lower()
+    if disp == "attachment":
+        return True
+    if ctype.startswith("image/"):
+        return False
+    if part.get_content_maintype() == "application":
+        return True
+    return bool(part.get_filename())
 
 
 def _attachment_catalog(msg) -> list[tuple[object, str, bytes]]:
@@ -391,11 +536,10 @@ def t_attachment(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX")
-        rc, data = conn.fetch(redeemed["id"].encode(), "(RFC822)")
-        if rc != "OK" or not data or not data[0]:
+        conn.select("INBOX", readonly=True)
+        msg = _peek_message(conn, redeemed["id"])
+        if msg is None:
             return err("message not found")
-        msg = email.message_from_bytes(data[0][1])
     finally:
         try:
             conn.logout()
@@ -404,6 +548,8 @@ def t_attachment(args: dict) -> dict:
     parts = _attachment_catalog(msg)
     catalog = [{"filename": n, "size": len(body)} for _, n, body in parts]
     if not parts:
+        audit("email", "attachment.none", account=redeemed["account"],
+              id=redeemed["id"])
         return err("no attachments")
     chosen = None
     if want:
@@ -611,8 +757,9 @@ def t_archive(args: dict) -> dict:
             conn.create(archive)
         except Exception:
             pass
-        conn.copy(redeemed["id"].encode(), archive)
-        conn.store(redeemed["id"].encode(), "+FLAGS", r"(\Deleted \Seen)")
+        uid = _uid_bytes(redeemed["id"])
+        conn.uid("COPY", uid, archive)
+        conn.uid("STORE", uid, "+FLAGS", r"(\Deleted \Seen)")
         conn.expunge()
         audit("email", "archive", account=redeemed["account"], id=redeemed["id"])
         return ok(archived=True, folder=archive)
@@ -653,7 +800,7 @@ def t_flag(args: dict) -> dict:
     try:
         conn.select("INBOX")
         op = "-FLAGS" if redeemed.get("remove") else "+FLAGS"
-        conn.store(redeemed["id"].encode(), op, r"(\Flagged)")
+        conn.uid("STORE", _uid_bytes(redeemed["id"]), op, r"(\Flagged)")
         audit("email", "flag", account=redeemed["account"],
               id=redeemed["id"], remove=redeemed.get("remove", False))
         return ok(flagged=not redeemed.get("remove"), id=redeemed["id"])
@@ -669,19 +816,27 @@ TOOLS = [
      "description": "List configured email accounts (names only — never credentials).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "email.list_unread",
-     "description": "List unread messages. Returns headers only (from, subject, date) — never bodies.",
+     "description": (
+         "Unread headers by IMAP UID. Includes filenames; inline PDFs count. "
+         "Does not mark seen."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "limit": {"type": "integer"}}}},
     {"name": "email.search",
-     "description": "IMAP TEXT search. Returns headers only.",
+     "description": (
+         "IMAP TEXT search. IMAP UID + filenames. Does not mark seen."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "query": {"type": "string"},
                                     "limit": {"type": "integer"}},
                      "required": ["query"]}},
     {"name": "email.fetch",
-     "description": "Fetch a full message body.",
+     "description": (
+         "Body by IMAP UID (plain, else HTML). Lists filenames. Does not "
+         "mark seen."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
                                     "id": {"type": "string"},
@@ -689,8 +844,8 @@ TOOLS = [
                      "required": ["id"]}},
     {"name": "email.attachment",
      "description": (
-         "Save one email attachment onto this box. Returns `media`; send "
-         "with the message tool (media=path). Several files: pass filename."
+         "Save one file by IMAP UID, including inline PDFs. Returns media=. "
+         "Several: pass filename."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -759,4 +914,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-email", "0.3.0", TOOLS, dispatch)
+    serve("homebrain-email", "0.4.0", TOOLS, dispatch)
