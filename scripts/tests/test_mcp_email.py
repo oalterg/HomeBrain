@@ -421,3 +421,25 @@ def test_reads_use_uid_not_sequence_fetch(em):
         not spec.startswith("(RFC822")
         for spec in imap.fetch_specs
     )
+
+
+def test_list_accounts_roles_no_hosts(em):
+    em._accounts = lambda: [
+        {"name": "Agent", "user": "agent@box.test", "agent_mailbox": True,
+         "imap_host": "secret.example", "smtp_host": "smtp.example"},
+        {"name": "Personal", "user": "me@box.test", "agent_mailbox": False,
+         "imap_host": "imap.example"},
+    ]
+    desc = next(t["description"] for t in em.TOOLS
+                if t["name"] == "email.list_accounts")
+    assert "agent_mailbox" in desc
+    assert "names only" not in desc
+    out = em.dispatch("email.list_accounts", {})
+    assert out["ok"] is True
+    assert out["accounts"][0]["role"] == "agent_mailbox"
+    assert out["accounts"][1]["role"] == "owner_inbox"
+    for a in out["accounts"]:
+        assert "imap_host" not in a
+        assert "smtp_host" not in a
+        assert "user" in a
+

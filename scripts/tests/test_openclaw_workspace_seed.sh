@@ -125,6 +125,12 @@ else
     bad "creates AGENTS.md after OpenClaw would have started, if still missing" \
         "missing $ws/AGENTS.md"
 fi
+if grep -q '## HomeBrain identity' "$ws/AGENTS.md"; then
+    ok "seeded AGENTS.md includes the identity block"
+else
+    bad "seeded AGENTS.md includes the identity block" \
+        "missing ## HomeBrain identity"
+fi
 printf '# Agent\n\nBe brief.\n' > "$ws/AGENTS.md"
 seed_openclaw_workspace 1
 if grep -q '## HomeBrain memory' "$ws/AGENTS.md" && grep -q 'Be brief' "$ws/AGENTS.md"; then
@@ -139,6 +145,26 @@ if cmp -s "$TMP_ROOT/agents.first" "$ws/AGENTS.md"; then
     ok "a second seed does not duplicate the memory block"
 else
     bad "a second seed does not duplicate the memory block" \
+        "AGENTS.md changed on the second pass"
+fi
+
+echo "== AGENTS.md identity block on upgrade =="
+printf '# Agent\n\n## HomeBrain memory\n\n- Durable facts.\n' > "$ws/AGENTS.md"
+seed_openclaw_workspace 1
+if grep -q '## HomeBrain identity' "$ws/AGENTS.md" \
+        && grep -q 'Durable facts' "$ws/AGENTS.md" \
+        && grep -q '## HomeBrain memory' "$ws/AGENTS.md"; then
+    ok "appends the identity block without dropping the memory block"
+else
+    bad "appends the identity block without dropping the memory block" \
+        "$(cat "$ws/AGENTS.md")"
+fi
+cp "$ws/AGENTS.md" "$TMP_ROOT/agents.identity"
+seed_openclaw_workspace 1
+if cmp -s "$TMP_ROOT/agents.identity" "$ws/AGENTS.md"; then
+    ok "a second seed does not duplicate the identity block"
+else
+    bad "a second seed does not duplicate the identity block" \
         "AGENTS.md changed on the second pass"
 fi
 

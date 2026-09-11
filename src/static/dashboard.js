@@ -492,6 +492,7 @@ function closeForm(id) {
 // ── Channel linking ─────────────────────────────────────────────
 const CHANNEL_LABELS = {
     telegram: { name: 'Telegram', sub: 'Bot via @BotFather' },
+    email:    { name: 'Email',    sub: 'Owner mail to the agent mailbox' },
 };
 
 async function channelRefresh() {
@@ -504,8 +505,10 @@ async function channelRefresh() {
         rows.innerHTML = '';
         for (const ch of (d.channels || [])) {
             const meta = CHANNEL_LABELS[ch.key] || { name: ch.key, sub: '' };
+            let sub = meta.sub;
             let badge;
-            if (ch.enabled) badge = '<span class="status-badge status-running">Active</span>';
+            if (ch.key === 'email' ? ch.ready : ch.enabled)
+                badge = '<span class="status-badge status-running">Active</span>';
             else if (ch.configured) badge = '<span class="status-badge status-unknown">Configured</span>';
             else badge = '<span class="status-badge status-stopped">Not linked</span>';
 
@@ -518,11 +521,28 @@ async function channelRefresh() {
                     buttons.push(`<button onclick="channelRemove('telegram')">Unlink</button>`);
                 }
             }
+            if (ch.key === 'email') {
+                window._emailChannel = ch;
+                const to = (ch.to_addresses || []).join(', ') || 'no agent mailbox';
+                sub = ch.ready ? `To ${to}` : meta.sub;
+                if (!ch.configured) {
+                    buttons.push(`<button disabled title="Connect an agent mailbox under Agent Integrations first">Enable&hellip;</button>`);
+                } else if (ch.enabled) {
+                    buttons.push(`<button onclick="channelEmailSave(false)">Disable</button>`);
+                    buttons.push(`<button onclick="openEmailChannelForm()">From&hellip;</button>`);
+                } else {
+                    buttons.push(`<button class="btn-primary" onclick="openEmailChannelForm()">Enable&hellip;</button>`);
+                }
+            }
+            const extra = (ch.key === 'email' && ch.block_reason && !ch.ready)
+                ? `<span class="row-meta">${ch.block_reason}</span>`
+                : '';
             rows.insertAdjacentHTML('beforeend',
                 `<div class="row-item">
                    <div class="row-main">
                      <strong>${meta.name}</strong>
-                     <span class="row-meta">${meta.sub}</span>
+                     <span class="row-meta">${sub}</span>
+                     ${extra}
                    </div>
                    <div class="row-actions">${badge}${buttons.join('')}</div>
                  </div>`);
@@ -576,6 +596,42 @@ async function channelTelegramPair() {
     channelRefresh();
 }
 
+function openEmailChannelForm() {
+    const ch = window._emailChannel || {};
+    const toEl = document.getElementById('em-ch-to');
+    const fromEl = document.getElementById('em-ch-from');
+    if (toEl) {
+        const to = (ch.to_addresses || []).join(', ');
+        toEl.innerText = to ? `Agent mailbox: ${to}` : 'No agent mailbox flagged.';
+    }
+    if (fromEl) fromEl.value = (ch.allow_from || []).join(', ');
+    openDetails('details-email-channel', 'em-ch-from');
+}
+
+async function channelEmailSave(enabled) {
+    const msg = document.getElementById('channel-msg');
+    const body = { enabled };
+    if (enabled) {
+        const fromEl = document.getElementById('em-ch-from');
+        body.allow_from = (fromEl && fromEl.value || '').split(/[,;]/).map(s => s.trim()).filter(Boolean);
+    }
+    try {
+        const r = await fetch('/api/channels/email', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (r.ok) {
+            msg.innerText = enabled ? 'Email prompts enabled.' : 'Email prompts disabled.';
+            closeForm('details-email-channel');
+        } else {
+            msg.innerText = d.error || 'Failed';
+        }
+    } catch (e) { msg.innerText = 'Error: ' + e; }
+    channelRefresh();
+}
+
 async function channelRemove(key) {
     const name = (CHANNEL_LABELS[key] || {}).name || key;
     if (!await hbConfirm({
@@ -598,7 +654,7 @@ const CONN_LABELS = {
     homeassistant: { name: 'Home Assistant', sub: 'Lights, scenes, automations' },
     nextcloud:     { name: 'Nextcloud',      sub: 'Files, notes, calendar' },
     vault:         { name: 'Vault',          sub: 'Passwords (read + create)' },
-    email:         { name: 'Email',          sub: 'IMAP/SMTP — Proton Bridge or direct' },
+    email:         { name: 'Email',          sub: 'Agent mailbox and optional owner inboxes' },
 };
 
 async function connRefresh() {
@@ -640,8 +696,12 @@ async function connRefresh() {
             let extras = '';
             // Multi-account integrations surface a per-account list under the
             // row title with a small remove button.
-            if (it.key === 'email' && (it.accounts || []).length) {
-                extras = renderAccountList(it.accounts.map(a => ({ name: a.name, sub: a.user })), 'email');
+            if (it.key === 'email') {
+                const box = document.getElementById('em-agent-mailbox');
+                if (box) box.checked = !(it.accounts || []).some(a => a.agent_mailbox);
+                if ((it.accounts || []).length) {
+                    extras = renderEmailAccountList(it.accounts, !!it.prompting_enabled);
+                }
             }
             if (it.key === 'homeassistant' && (it.accounts || []).length) {
                 extras = renderAccountList(it.accounts.map(a => ({ name: a.name, sub: a.base_url })), 'homeassistant');
@@ -712,6 +772,54 @@ async function connReconcile() {
 
 /* Inline per-account list under an integration row. `kind` selects the
    remove endpoint (email | homeassistant | nextcloud). */
+function renderEmailAccountList(accounts, promptingEnabled) {
+    if (!accounts || !accounts.length) return '';
+    const agentCount = accounts.filter(a => a.agent_mailbox).length;
+    const items = accounts.map(a => {
+        const sub = a.user ? ` <span class="faint">— ${a.user}</span>` : '';
+        const role = a.agent_mailbox ? 'Agent mailbox' : 'Owner inbox';
+        const next = !a.agent_mailbox;
+        const esc = (a.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `<span class="acct-chip">
+                  <strong>${a.name}</strong>${sub}
+                  <button type="button" class="acct-role"
+                          onclick="connEmailAgentMailbox('${esc}', ${next}, ${agentCount}, ${!!promptingEnabled})"
+                          title="Click to switch role">${role}</button>
+                  <button onclick="connAccountRemove('email','${esc}')"
+                          title="Remove account" aria-label="Remove account">&times;</button>
+                </span>`;
+    }).join('');
+    return `<div class="acct-list">${items}</div>`;
+}
+
+async function connEmailAgentMailbox(name, next, agentCount, promptingEnabled) {
+    if (next && agentCount >= 1) {
+        if (!await hbConfirm({
+            title: 'Another agent mailbox?',
+            body: 'The agent will treat this as another of its own addresses, not yours.',
+            confirm: 'Make agent mailbox',
+        })) return;
+    }
+    if (!next && agentCount <= 1 && promptingEnabled) {
+        if (!await hbConfirm({
+            title: 'Clear the last agent mailbox?',
+            body: 'Email prompts will stop until an agent mailbox is set.',
+            confirm: 'Make owner inbox', danger: true,
+        })) return;
+    }
+    const r = await fetch('/api/integrations/email/agent-mailbox', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, agent_mailbox: next }),
+    });
+    const d = await r.json().catch(() => ({}));
+    document.getElementById('conn-msg').innerText = r.ok
+        ? (next ? `“${name}” is the agent mailbox.` : `“${name}” is an owner inbox.`)
+        : (d.error || 'Update failed');
+    connRefresh();
+    channelRefresh();
+}
+
 function renderAccountList(accounts, kind) {
     if (!accounts || !accounts.length) return '';
     const items = accounts.map(a => {
@@ -742,6 +850,7 @@ async function connAccountRemove(kind, name) {
     const d = await r.json().catch(() => ({}));
     document.getElementById('conn-msg').innerText = r.ok ? `Removed ${kind} account "${name}".` : (d.error || 'Remove failed');
     connRefresh();
+    if (kind === 'email') channelRefresh();
 }
 
 async function connHaAdd() {
@@ -907,6 +1016,7 @@ async function connEmailAdd() {
         imap_port: parseInt(document.getElementById('em-imap-port').value || '993', 10),
         smtp_host: document.getElementById('em-smtp-host').value.trim(),
         smtp_port: parseInt(document.getElementById('em-smtp-port').value || '587', 10),
+        agent_mailbox: document.getElementById('em-agent-mailbox').checked,
         password: document.getElementById('em-pass').value,
     };
     const r = await fetch('/api/integrations/email/add', {
@@ -920,6 +1030,7 @@ async function connEmailAdd() {
         ['em-name', 'em-user', 'em-imap-host', 'em-imap-port', 'em-smtp-host', 'em-smtp-port', 'em-pass']
             .forEach(id => document.getElementById(id).value = '');
         closeForm('details-email');
+        channelRefresh();
     }
     connRefresh();
 }
