@@ -18,6 +18,26 @@ def test_uid_search_is_not_unseen():
     spec = email_watch.uid_search_set(41)
     assert spec == "42:*"
     assert "UNSEEN" not in spec
+    args = email_watch.uid_search_args(41)
+    assert "None" not in args
+    assert None not in args
+    assert "UNSEEN" not in args
+    assert args == ("UID", "42:*")
+
+
+def test_uids_after_drops_star_substitution():
+    # Servers may return the mailbox max for n:* when n does not exist.
+    assert email_watch.uids_after([41], 41) == []
+    assert email_watch.uids_after([41, 42], 41) == [42]
+    assert email_watch.uids_after([1, 2], 0) == [1, 2]
+
+
+def test_auth_fail_does_not_tight_loop():
+    assert email_watch.auth_fail_wait(1) == 60
+    assert email_watch.auth_fail_wait(2) == 180
+    assert email_watch.auth_fail_wait(3) == 600
+    assert email_watch.auth_fail_wait(9) == 600
+    assert email_watch.auth_fail_wait(0) >= 60
 
 
 def test_cursor_seeds_on_missing_or_validity_change():

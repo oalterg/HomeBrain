@@ -1752,6 +1752,12 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     # does the work, the rest no-op. Idempotent on subsequent boots once the
     # self-MCP is wired.
     threading.Thread(target=_startup_wire_if_needed, daemon=True).start()
+    # Write agent_mailbox onto existing email_accounts.json so MCP / the
+    # watcher see the migrated flag without waiting for a dashboard click.
+    try:
+        _load_email_accounts()
+    except Exception as e:
+        logging.warning("email account migrate failed: %s", e)
 
 
 def _startup_sync_self_token() -> None:

@@ -109,6 +109,31 @@ def test_agent_mailbox_requires_session(email_box):
     assert res.status_code == 401
 
 
+def test_agent_mailbox_bearer_cannot_set(email_box, monkeypatch):
+    """_require_session_or_bearer must not unlock this. Self-MCP bearer
+    would otherwise let the agent rename the house Gmail as its own."""
+    _add()
+    monkeypatch.setattr(integrations, "_self_token", lambda: "tok")
+    hb.app.config["TESTING"] = True
+    anon = hb.app.test_client()
+    res = anon.post("/api/integrations/email/agent-mailbox",
+                    json={"name": "Agent", "agent_mailbox": False},
+                    headers={"Authorization": "Bearer tok"})
+    assert res.status_code == 401
+    assert integrations._load_email_accounts()[0]["agent_mailbox"] is True
+
+
+def test_channel_enable_bearer_cannot_set(email_box, monkeypatch):
+    _add("Agent", "agent@box.test", True)
+    monkeypatch.setattr(integrations, "_self_token", lambda: "tok")
+    hb.app.config["TESTING"] = True
+    anon = hb.app.test_client()
+    res = anon.post("/api/channels/email",
+                    json={"enabled": True, "allow_from": ["owner@example.com"]},
+                    headers={"Authorization": "Bearer tok"})
+    assert res.status_code == 401
+
+
 def test_agent_mailbox_toggle_session(email_box):
     _add()
     _, client = email_box
@@ -156,6 +181,7 @@ def test_channels_status_composes_email(email_box):
     keys = [c["key"] for c in res.get_json()["channels"]]
     assert "telegram" in keys
     assert "email" in keys
+    assert "email" not in integrations.CHANNEL_ORDER
 
 
 def test_load_migrates_and_writes(email_box):

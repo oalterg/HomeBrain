@@ -46,6 +46,22 @@ AUTH_FAIL_BACKOFF_S = (60, 180, 600)
 _in_flight = threading.Event()
 
 
+def auth_fail_wait(streak: int) -> int:
+    """Backoff after a poll/auth failure. Never 0 — Proton locks on a tight loop."""
+    i = min(max(int(streak), 1), len(AUTH_FAIL_BACKOFF_S)) - 1
+    return AUTH_FAIL_BACKOFF_S[i]
+
+
+def uids_after(found: list[int], last_uid: int) -> list[int]:
+    """Drop UIDs the cursor already consumed.
+
+    IMAP `n:*` may return the mailbox max when n does not exist (RFC 3501
+    `*` substitution). We must not re-handle last_uid.
+    """
+    last = int(last_uid)
+    return [u for u in found if u > last]
+
+
 def log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -130,6 +146,12 @@ def strip_quoted(body: str) -> str:
 def uid_search_set(last_uid: int) -> str:
     """IMAP UID set for mail newer than last_uid. Not UNSEEN."""
     return f"{int(last_uid) + 1}:*"
+
+
+def uid_search_args(last_uid: int) -> tuple[str, ...]:
+    """Criteria for `UID SEARCH`. Never charset None (imaplib would send the
+    literal 'None') and never UNSEEN."""
+    return ("UID", uid_search_set(last_uid))
 
 
 def seed_cursor(uidvalidity: int, max_uid: int) -> dict:
@@ -382,8 +404,8 @@ def _imap(account: dict, key_b64: str):
     return conn
 
 
-def _uid_list(conn, uid_set: str) -> list[int]:
-    rc, data = conn.uid("SEARCH", None, "UID", uid_set)
+def _uid_list(conn, *criteria: str) -> list[int]:
+    rc, data = conn.uid("SEARCH", *criteria)
     if rc != "OK" or not data or not data[0]:
         return []
     out: list[int] = []
@@ -453,7 +475,7 @@ def poll_account(account: dict, channel: dict, agent_addrs: list[str],
         typ, _data = conn.select("INBOX", readonly=True)
         if typ != "OK":
             raise RuntimeError(f"select INBOX failed: {typ}")
-        known = _uid_list(conn, "1:*")
+        known = _uid_list(conn, "UID", "1:*")
         max_uid = known[-1] if known else 0
         uidvalidity = _uidvalidity(conn) or 1
 
@@ -464,9 +486,8 @@ def poll_account(account: dict, channel: dict, agent_addrs: list[str],
                 f"last_uid={cursor['last_uid']}")
             return
 
-        uid_set = uid_search_set(int(cursor.get("last_uid") or 0))
-        uids = _uid_list(conn, uid_set)
         last = int(cursor.get("last_uid") or 0)
+        uids = uids_after(_uid_list(conn, *uid_search_args(last)), last)
         woken = False
         for uid in uids:
             if woken or _in_flight.is_set():
@@ -540,7 +561,7 @@ def main() -> int:
                 except Exception as e:
                     streak = fail_streak.get(name, 0) + 1
                     fail_streak[name] = streak
-                    wait = AUTH_FAIL_BACKOFF_S[min(streak, len(AUTH_FAIL_BACKOFF_S)) - 1]
+                    wait = auth_fail_wait(streak)
                     next_try[name] = now + wait
                     log(f"[WARN] {name}: poll failed ({streak}), "
                         f"retry in {wait}s: {e}")
