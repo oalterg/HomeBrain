@@ -812,3 +812,253 @@ def test_upload_quotes_dest_and_streams_put(nc, monkeypatch):
     dumped = json.dumps(out)
     assert "app-secret" not in dumped
     assert JPEG not in dumped.encode()
+
+
+# --- list quoting / search escape / share / filing -------------------------
+
+def _ocs(data, statuscode=200):
+    return json.dumps({
+        "ocs": {"meta": {"status": "ok", "statuscode": statuscode},
+                "data": data},
+    }).encode()
+
+
+def _act(mod, name, args):
+    out = mod.dispatch(name, dict(args))
+    if out.get("requires_confirmation"):
+        args = dict(args)
+        args["confirmation_token"] = out["action_id"]
+        out = mod.dispatch(name, args)
+    return out
+
+
+def test_link_scope_lan_vs_internet(nc):
+    assert nc.link_scope("http://127.0.0.1:8080/s/abc") == "lan"
+    assert nc.link_scope("http://homebrain.local/s/abc") == "lan"
+    assert nc.link_scope("http://192.168.1.9/s/abc") == "lan"
+    assert nc.link_scope("https://nc.example.house/s/abc") == "internet"
+
+
+def test_files_list_quotes_path(nc):
+    seen = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        seen.append(path)
+        return 207, _PROPFIND_ENCODED, {}
+
+    nc._http = fake_http
+    out = nc.dispatch("nc.files_list", {"path": "/Photos/From chat"})
+    assert out["ok"] is True
+    assert any("From%20chat" in p for p in seen), seen
+    assert "truncated" in out
+
+
+def test_files_list_rejects_dotdot(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    out = nc.dispatch("nc.files_list", {"path": "/foo/../secret"})
+    assert out["ok"] is False
+    assert "invalid" in out["error"]
+
+
+def test_files_search_escapes_xml_and_like(nc):
+    seen = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        seen.append(body or b"")
+        return 207, _PROPFIND_ENCODED, {}
+
+    nc._http = fake_http
+    out = nc.dispatch("nc.files_search", {"query": "a<b%_c"})
+    assert out["ok"] is True
+    inner = seen[0].decode().split("<d:literal>")[1].split("</d:literal>")[0]
+    assert inner == "%a&lt;bc%"
+    out = nc.dispatch("nc.files_search", {"query": "%%%"})
+    assert out["ok"] is False
+
+
+def test_files_share_sends_expire_date(nc):
+    posts = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        if method == "HEAD":
+            return 200, b"", {"Content-Type": "application/pdf"}
+        if method == "POST":
+            posts.append(body.decode() if isinstance(body, bytes) else body)
+            return 200, _ocs({
+                "id": "9", "url": "http://127.0.0.1:8080/s/abc",
+                "share_type": 3, "path": "/Docs/a.pdf",
+                "expiration": "2099-01-01 00:00:00", "permissions": 1,
+            }), {}
+        pytest.fail(method)
+
+    nc._http = fake_http
+    out = _act(nc, "nc.files_share", {"path": "/Docs/a.pdf"})
+    assert out["ok"] is True, out
+    assert "expireDate=" in posts[0]
+    assert "shareType=3" in posts[0]
+    assert out["share_url"] == "http://127.0.0.1:8080/s/abc"
+    assert out["link_scope"] == "lan"
+    assert "Telegram" in out["hint"]
+
+
+def test_files_share_user_no_public_url(nc):
+    posts = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        if method == "HEAD":
+            return 200, b"", {"Content-Type": "application/pdf"}
+        if method == "POST":
+            posts.append(body.decode())
+            return 200, _ocs({
+                "id": "4", "share_type": 0, "share_with": "alex",
+                "path": "/Docs/a.pdf", "permissions": 1,
+            }), {}
+        pytest.fail(method)
+
+    nc._http = fake_http
+    out = _act(nc, "nc.files_share", {
+        "path": "/Docs/a.pdf", "share_with": "alex",
+    })
+    assert out["ok"] is True, out
+    assert "shareType=0" in posts[0]
+    assert "shareWith=alex" in posts[0]
+    assert "expireDate=" in posts[0]
+    assert out["share_with"] == "alex"
+    assert "Nextcloud" in (out.get("hint") or "")
+    assert not out.get("url")
+
+
+def test_files_share_rejects_dotdot_and_root(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    out = nc.dispatch("nc.files_share", {"path": "/foo/../secret"})
+    assert out["ok"] is False
+    assert not out.get("requires_confirmation")
+    out = nc.dispatch("nc.files_share", {"path": "/"})
+    assert out["ok"] is False
+
+
+def test_files_share_404_before_consent(nc):
+    nc._http = lambda *a, **k: (404, b"", {})
+    out = nc.dispatch("nc.files_share", {"path": "/Docs/missing.pdf"})
+    assert out["ok"] is False
+    assert not out.get("requires_confirmation")
+
+
+def test_notes_update_clears_content(nc):
+    puts = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        puts.append(json.loads(body))
+        return 200, json.dumps({"id": 3, "title": "x"}).encode(), {}
+
+    nc._http = fake_http
+    out = _act(nc, "nc.notes_update", {"id": 3, "content": ""})
+    assert out["ok"] is True
+    assert puts[0] == {"content": ""}
+    assert "title" not in puts[0]
+
+
+def test_notes_list_excludes_content_and_caps(nc):
+    seen = []
+    notes = [{"id": i, "title": str(i), "content": "secret"} for i in range(5)]
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        seen.append(path)
+        return 200, json.dumps(notes).encode(), {}
+
+    nc._http = fake_http
+    out = nc.dispatch("nc.notes_list", {"category": "Work"})
+    assert out["ok"] is True
+    assert "exclude=content" in seen[0]
+    assert "category=Work" in seen[0]
+    assert "content" not in json.dumps(out["notes"])
+
+
+def test_files_mkdir_move_delete(nc):
+    calls = []
+
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        calls.append((method, path, headers or {}))
+        if method == "HEAD":
+            return 200, b"", {"Content-Type": "application/pdf"}
+        if method == "MKCOL":
+            return 201, b"", {}
+        if method == "MOVE":
+            return 201, b"", {}
+        if method == "DELETE":
+            return 204, b"", {}
+        pytest.fail(method)
+
+    nc._http = fake_http
+    out = _act(nc, "nc.files_mkdir", {"dest": "/Documents/Taxes"})
+    assert out["ok"] is True, out
+    assert out["nc_path"] == "/Documents/Taxes"
+    out = _act(nc, "nc.files_move", {
+        "src": "/Docs/a.pdf", "dest": "/Documents/Taxes/",
+    })
+    assert out["ok"] is True, out
+    assert out["nc_path"] == "/Documents/Taxes/a.pdf"
+    moves = [c for c in calls if c[0] == "MOVE"]
+    assert moves
+    dest = moves[0][2]["Destination"]
+    assert dest.endswith("/Documents/Taxes/a.pdf") or "Taxes/a.pdf" in dest
+    out = _act(nc, "nc.files_delete", {"path": "/Documents/Taxes/a.pdf"})
+    assert out["ok"] is True
+    assert out["deleted"] == "/Documents/Taxes/a.pdf"
+    assert any(c[0] == "DELETE" for c in calls)
+
+
+def test_files_mkdir_rejects_encrypted(nc):
+    nc._http = lambda *a, **k: pytest.fail("must not hit Nextcloud")
+    out = nc.dispatch("nc.files_mkdir", {"dest": "/Documents (Encrypted)/x"})
+    assert out["ok"] is False
+    assert "encrypted" in out["error"]
+
+
+def test_shares_list_and_delete(nc):
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        if method == "GET":
+            return 200, _ocs([{
+                "id": "9", "share_type": 3, "path": "/Docs/a.pdf",
+                "url": "http://127.0.0.1:8080/s/abc", "permissions": 1,
+            }]), {}
+        if method == "DELETE":
+            assert path.endswith("/shares/9")
+            return 200, _ocs({}), {}
+        pytest.fail(method)
+
+    nc._http = fake_http
+    out = nc.dispatch("nc.shares_list", {})
+    assert out["ok"] is True
+    assert out["shares"][0]["id"] == "9"
+    assert out["shares"][0]["link_scope"] == "lan"
+    out = _act(nc, "nc.share_delete", {"id": "9"})
+    assert out["ok"] is True
+    assert out["deleted"] == "9"
+
+
+def test_sharees_users_only(nc):
+    def fake_http(account, method, path, body=None, headers=None,
+                  timeout=10, ocs=False):
+        assert "lookup=false" in path
+        return 200, _ocs({
+            "exact": {"users": [{
+                "label": "Alex",
+                "value": {"shareType": 0, "shareWith": "alex"},
+            }]},
+            "users": [],
+        }), {}
+
+    nc._http = fake_http
+    out = nc.dispatch("nc.sharees", {"query": "al"})
+    assert out["ok"] is True
+    assert out["users"] == [{"share_with": "alex", "label": "Alex"}]
+

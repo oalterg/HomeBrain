@@ -254,8 +254,13 @@ default Vault bootstrap.
 
 - [ ] Click **Connect** → `occ user:add-app-password` runs, token at
       `~/.openclaw/nextcloud.token` mode 0600.
-- [ ] `connTest('nextcloud')` lists 8 tools.
+- [ ] `connTest('nextcloud')` lists files, notes, and share tools.
 - [ ] `nc.notes_create` (with consent) appears on a separate NC client.
+- [ ] `nc.files_share` with `share_with` of a household username shows the
+      file in that user's Nextcloud (no public URL). A public link on a
+      LAN-only box reports `link_scope: lan`.
+- [ ] `nc.files_mkdir` / `nc.files_move` file a document; `nc.share_delete`
+      revokes a link listed by `nc.shares_list`.
 - [ ] Revoking the app password in NC's UI flips `nc.health` to
       `unauthorised` within one health-check cycle.
 
