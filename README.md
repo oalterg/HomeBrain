@@ -98,11 +98,13 @@ Versions are pinned and updated from the dashboard in one click.
 |---|---|---|
 | CPU | AMD Ryzen 5 / Intel i5 or better | Raspberry Pi 5 |
 | RAM | 32 GB | 8 GB |
-| Storage | 512 GB NVMe | SSD |
-| GPU | AMD Radeon RX 9060 XT (16 GB VRAM) | — |
+| Storage | 512 GB NVMe (2 TB on the demo BOM) | SSD |
+| GPU | Discrete 16–24 GB. Production: RX 9060 XT 16 GB. Demo: Arc Pro B60 24 GB. | — |
 | OS | Ubuntu 24.04 LTS | Raspberry Pi OS Trixie 64-bit |
 
-Inference is Vulkan via Mesa RADV — no ROCm. Throughput and tuning: [BENCHMARKS.md](docs/BENCHMARKS.md).
+Inference is Vulkan (Mesa RADV on AMD; Intel `xe` is the same backend). No ROCm.
+Throughput and tuning: [BENCHMARKS.md](docs/BENCHMARKS.md). The Mini-ITX demo
+BOM and what not to buy: [HARDWARE.md](docs/HARDWARE.md).
 
 ---
 
@@ -126,6 +128,7 @@ Tunnel credentials at provision time are stored on the box and selected in the w
 
 | Doc | What's in it |
 |-----|-------------|
+| [HARDWARE.md](docs/HARDWARE.md) | Demo Mini-ITX BOM, SKUs, and what not to buy |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Inference throughput, quantization comparisons, tuning notes |
 | [DISASTER_RECOVERY.md](docs/DISASTER_RECOVERY.md) | Getting your data back onto new hardware after the box is gone |
 | [PANGOLIN.md](docs/PANGOLIN.md) | Optional browser tunnel (no GPU, or GPU-box web UIs from outside) |
