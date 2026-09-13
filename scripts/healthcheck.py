@@ -449,6 +449,45 @@ def release_key(tag):
     return tuple(int(p) for p in m.group(1).split(".")) if m else None
 
 
+def newer_release(installed, latest):
+    """True when latest is a strictly newer dotted tag than installed."""
+    cur, new = release_key(installed), release_key(latest)
+    return bool(cur and new and new > cur)
+
+
+def stable_update_offer(installed_ref, latest_tag):
+    """(available, message) for the stable channel.
+
+    Offers an install only when the tag is newer, or when the box is not on
+    a dotted tag (beta SHA / 'main') so the owner can leave that channel.
+    update.sh still refuses a real downgrade. Never nags a newer stable
+    toward an older GitHub 'latest'.
+    """
+    latest_tag = (latest_tag or "").strip()
+    installed_ref = (installed_ref or "").strip()
+    if not latest_tag:
+        return False, "No releases found."
+    if newer_release(installed_ref, latest_tag):
+        return True, f"New Release Available: {latest_tag}"
+    cur, new = release_key(installed_ref), release_key(latest_tag)
+    if cur and new:
+        return False, f"Up to date ({installed_ref})"
+    if installed_ref == latest_tag:
+        return False, f"Up to date ({latest_tag})"
+    return True, f"Latest stable: {latest_tag}"
+
+
+def beta_ahead(installed_ref, remote_sha):
+    """True when main's SHA is not what version.json recorded."""
+    remote = (remote_sha or "").strip()
+    if not remote:
+        return False
+    local = (installed_ref or "").strip()
+    if not local or local in ("main", "unknown"):
+        return True
+    return local[:7] != remote[:7]
+
+
 def check_update(state, now):
     """Once a day, on the stable channel only: is a newer release out?
     info-level — surfaces in the banner and one push per new version."""
@@ -483,8 +522,7 @@ def check_update(state, now):
     # older than the one installed. Updates are one-way (see the downgrade
     # guard in common.sh), so nagging the user toward an older tag sends them
     # at something update.sh will refuse. Unorderable tags stay quiet.
-    cur, new = release_key(installed), release_key(latest)
-    if cur and new and new > cur:
+    if newer_release(installed, latest):
         return {"id": "update", "level": "info",
                 "summary": f"Update {latest} is available — install it from the dashboard"}
     return {"id": "update", "level": "ok", "summary": "HomeBrain is up to date"}

@@ -388,16 +388,28 @@ async function fetchHealth() {
         const el = document.getElementById('health-banner');
         if (!el) return;
         const issues = (h.checks || []).filter(c => c.level !== 'ok');
-        if (!issues.length || h.overall === 'ok' || h.overall === 'unknown') {
+        const stale = h.overall === 'unknown' || h.stale;
+        if (!stale && (!issues.length || h.overall === 'ok')) {
             el.style.display = 'none';
             return;
         }
         el.classList.remove('notice-warning', 'notice-danger');
         if (h.overall === 'crit') el.classList.add('notice-danger');
-        else if (h.overall === 'warn') el.classList.add('notice-warning');
-        const heading = h.overall === 'info' ? 'Good to know' : 'Needs attention';
-        el.innerHTML = `<strong>${heading}</strong><ul>` +
-            issues.map(c => `<li>${escapeHtml(c.summary)}</li>`).join('') + '</ul>';
+        else if (stale || h.overall === 'warn') el.classList.add('notice-warning');
+        const heading = stale ? 'Health report is stale' :
+            (h.overall === 'info' ? 'Good to know' : 'Needs attention');
+        const items = [];
+        if (stale) {
+            items.push('The checker has not run recently. This box may be fine; the report is too old to trust.');
+        }
+        items.push(...issues.map(c => c.summary));
+        const reboot = issues.some(c => c.id === 'reboot');
+        let html = `<strong>${heading}</strong><ul>` +
+            items.map(t => `<li>${escapeHtml(t)}</li>`).join('') + '</ul>';
+        if (reboot) {
+            html += '<p><button type="button" onclick="rebootBox()">Restart now</button></p>';
+        }
+        el.innerHTML = html;
         el.style.display = 'block';
     } catch (e) { /* non-fatal — banner just stays hidden */ }
 }
@@ -2953,11 +2965,22 @@ async function doManagerUpdate() {
     });
     const data = await res.json();
     if (data.status === 'started') {
-        hbToast('Update started. This page reloads in 15 seconds.');
+        hbToast(data.message || 'Update started. This page reloads in 15 seconds.');
+        pollTask();
         setTimeout(() => location.reload(), 15000);
     } else {
         hbToast('Update failed to start: ' + (data.error || 'unknown error'), 'error');
     }
+}
+
+async function rebootBox() {
+    if (!await hbConfirm({
+        title: 'Restart this box?',
+        body: 'Finishes kernel and libc security updates. The dashboard drops for about a minute.',
+        confirm: 'Restart',
+        danger: true,
+    })) return;
+    await triggerAction('/api/system/reboot', 'Restart');
 }
 
 /* =====================================================================

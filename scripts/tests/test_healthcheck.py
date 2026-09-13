@@ -18,6 +18,7 @@ from healthcheck import (  # noqa: E402
     DAY,
     backup_is_scheduled,
     backup_log_outcome,
+    beta_ahead,
     check_backup,
     check_offsite,
     check_reboot,
@@ -29,8 +30,10 @@ from healthcheck import (  # noqa: E402
     decide_notification,
     disk_level,
     expected_backup_interval,
+    newer_release,
     parse_env,
     release_key,
+    stable_update_offer,
     sweep_openclaw_daily_memory,
     tunnel_state_from_logs,
 )
@@ -424,6 +427,30 @@ def test_release_key_orders_date_and_semver_tags():
     assert release_key("main") is None
     assert release_key("") is None
     assert release_key(None) is None
+
+
+def test_newer_release_and_stable_offer():
+    assert newer_release("v2026.07.19", "v2026.07.21") is True
+    assert newer_release("v2026.07.21", "v2026.07.19") is False
+    assert newer_release("v2026.07.21", "v2026.07.21") is False
+    assert newer_release("main", "v2026.07.21") is False
+
+    ok, msg = stable_update_offer("v2026.07.19", "v2026.07.21")
+    assert ok and "v2026.07.21" in msg
+    ok, msg = stable_update_offer("v2026.07.21", "v2026.07.19")
+    assert not ok and "Up to date" in msg
+    ok, msg = stable_update_offer("abc1234", "v2026.07.21")
+    assert ok and "Latest stable" in msg
+    ok, msg = stable_update_offer("v2026.07.21", "")
+    assert not ok and "No releases" in msg
+
+
+def test_beta_ahead():
+    assert beta_ahead("main", "abcdef1") is True
+    assert beta_ahead("unknown", "abcdef1") is True
+    assert beta_ahead("abcdef1deadbeef", "abcdef1") is False
+    assert beta_ahead("abcdef1", "bbbbbb2") is True
+    assert beta_ahead("abcdef1", "") is False
 
 
 def test_update_available_only_when_release_is_newer(tmp_path):
