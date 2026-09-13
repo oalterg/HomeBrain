@@ -293,12 +293,34 @@ STATUS_FILE = os.path.join(tempfile.gettempdir(), "homebrain_task_status.json")
 # appended so nothing in scripts/ can shadow a stdlib or site-packages module.
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 try:
-    from healthcheck import tunnel_state_from_logs
+    from healthcheck import (
+        beta_ahead,
+        stable_update_offer,
+        tunnel_state_from_logs,
+    )
 except ImportError:
     # Degrade to today's behaviour rather than taking the whole dashboard down
     # over the tunnel badge.
     def tunnel_state_from_logs(_tail):
         return "unknown"
+
+    def stable_update_offer(installed_ref, latest_tag):
+        latest_tag = (latest_tag or "").strip()
+        installed_ref = (installed_ref or "").strip()
+        if not latest_tag:
+            return False, "No releases found."
+        if latest_tag != installed_ref:
+            return True, f"New Release Available: {latest_tag}"
+        return False, f"Up to date ({latest_tag})"
+
+    def beta_ahead(installed_ref, remote_sha):
+        remote = (remote_sha or "").strip()
+        local = (installed_ref or "").strip()
+        if not remote:
+            return False
+        if not local or local in ("main", "unknown"):
+            return True
+        return local[:7] != remote[:7]
 
 LOG_FILES = {
     "setup": f"{LOG_DIR}/main_setup.log",
@@ -521,6 +543,7 @@ task_lock = threading.Lock()
 current_task_status = {"status": "idle", "message": "", "log_type": "setup"}
 
 def write_status(status):
+    global current_task_status
     try:
         # Use mkstemp for secure file creation (prevents race conditions)
         # Use system temp dir to ensure write permissions regardless of user (root/www-data)
@@ -531,8 +554,18 @@ def write_status(status):
         os.rename(temp_path, STATUS_FILE) # Atomic replacement
     except Exception as e:
         logging.error(f"Failed to write status file: {e}. Using in-memory fallback.")
-        global current_task_status
         current_task_status = status  # Fallback to global if file fails
+    else:
+        current_task_status = status
+
+
+def task_running():
+    """True when a background task is in flight.
+
+    Reads the status file (shared across gunicorn workers), not only the
+    in-process global that write_status used to leave stale.
+    """
+    return read_status().get("status") == "running"
 
 def read_status():
     # 1. Try reading from file (Active Background Task)
@@ -1473,10 +1506,11 @@ def health_status():
         with open(HEALTH_FILE) as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return jsonify({"overall": "unknown", "checks": []})
+        return jsonify({"overall": "unknown", "checks": [], "stale": True})
     # A stale report (timer dead > 2h) is itself a signal — surface it.
     if time.time() - data.get("ts", 0) > 2 * 3600:
         data["overall"] = "unknown"
+        data["stale"] = True
     # health.json is up to 30 minutes old. Saving a schedule writes the timer
     # immediately, so this snapshot can keep warning "not set up" after it is.
     if os.path.exists(BACKUP_CRON_FILE) or os.path.exists(BACKUP_TIMER_FILE):
@@ -2897,67 +2931,68 @@ services:
         logging.error(f"Zigbee update error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+def os_upgrade_command(log_path):
+    """Manual trigger of the same path unattended-upgrades runs nightly.
+
+    Security origin only (distro unattended-upgrade policy), new kernel
+    packages allowed, no docker compose, no apt-get upgrade of every
+    installed package. `&&` so a failed apt-get cannot still report success.
+    """
+    safe_log = shlex.quote(log_path)
+    confold = (
+        "-o Dpkg::Options::=--force-confdef "
+        "-o Dpkg::Options::=--force-confold"
+    )
+    return (
+        f"echo '=== Starting OS upgrade ===' > {safe_log} && "
+        "export DEBIAN_FRONTEND=noninteractive && "
+        "export APT_LISTCHANGES_FRONTEND=none && "
+        f"echo '[1/2] Fetching package lists...' >> {safe_log} && "
+        f"apt-get update >> {safe_log} 2>&1 && "
+        f"echo '[2/2] Applying security updates...' >> {safe_log} && "
+        f"apt-get install -y -qq {confold} unattended-upgrades >> {safe_log} 2>&1 && "
+        f"unattended-upgrade -v >> {safe_log} 2>&1 && "
+        f"if [ -f /var/run/reboot-required ]; then "
+        f"echo 'Restart this box to finish kernel/libc updates.' >> {safe_log}; "
+        f"fi && "
+        f"echo '=== Upgrade complete ===' >> {safe_log}"
+    )
+
+
 @app.route("/api/upgrade", methods=["POST"])
 @limiter.limit("2 per minute") # Very expensive operation
 def trigger_upgrade():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
-    # 1. Fetch Active Profiles (Critical for Tunnels)
-    # We reuse the bash logic to ensure consistency with deploy.sh
-    try:
-        profiles = subprocess.check_output(
-            ["bash", "-c",
-             f"source {INSTALL_DIR}/scripts/common.sh; load_env; get_tunnel_profiles"],
-        ).decode().strip()
-    except Exception as e:
-        logging.error(f"Failed to fetch profiles: {e}")
-        # Fail safe: don't proceed if we can't determine the profile, 
-        # otherwise we might start the stack without the tunnel.
-        return jsonify({"error": "Could not determine system profile. Upgrade aborted."}), 500
-
-    # 2. Construct Docker Arguments
-    safe_env = shlex.quote(ENV_FILE)
-    safe_compose = shlex.quote(COMPOSE_FILE)
-    safe_log = shlex.quote(LOG_FILES["setup"])
-    
-    # Handle Override File
-    compose_args = f"-f {safe_compose}"
-    if os.path.exists(OVERRIDE_FILE):
-        safe_override = shlex.quote(OVERRIDE_FILE)
-        compose_args += f" -f {safe_override}"
-
-    # 3. Build the Command Chain
-    # Note: 'profiles' variable contains flags (e.g. --profile cloudflare), so it cannot be quoted as a single string.
-    cmd = (
-        f"echo '=== Starting System & Stack Upgrade ===' > {safe_log}; "
-        
-        # Step A: OS Updates
-        f"echo '[1/4] Updating System Packages...' >> {safe_log}; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        f"apt-get update >> {safe_log} 2>&1; "
-        f"apt-get upgrade -y >> {safe_log} 2>&1; "
-        f"apt-get autoremove -y >> {safe_log} 2>&1; "
-
-        # Step B: Docker Pull (Updates Images)
-        f"echo '[2/4] Pulling Docker Images...' >> {safe_log}; "
-        f"docker compose --env-file {safe_env} {compose_args} {profiles} pull >> {safe_log} 2>&1; "
-
-        # Step C: Docker Up (Recreates Containers)
-        f"echo '[3/4] Restarting Stack...' >> {safe_log}; "
-        f"docker compose --env-file {safe_env} {compose_args} {profiles} up -d --remove-orphans >> {safe_log} 2>&1; "
-        
-        # Step D: Cleanup
-        f"echo '[4/4] Cleaning up...' >> {safe_log}; "
-        f"docker image prune -f >> {safe_log} 2>&1; "
-        
-        f"echo '=== Upgrade Complete ===' >> {safe_log}"
-    )
-
+    cmd = os_upgrade_command(LOG_FILES["setup"])
     threading.Thread(
-        target=run_background_task, args=("System Upgrade", cmd, "setup")
+        target=run_background_task, args=("OS Upgrade", cmd, "setup")
     ).start()
     return jsonify({"status": "started"})
+
+
+@app.route("/api/system/reboot", methods=["POST"])
+@limiter.limit("1 per 5 minutes")
+def trigger_reboot():
+    """Finish kernel/libc updates. Health nags; this is the button for it."""
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    write_status({
+        "status": "running",
+        "message": "Restarting this box...",
+        "log_type": "setup",
+    })
+
+    def _reboot():
+        time.sleep(2)
+        subprocess.run(["systemctl", "reboot"], check=False)
+
+    threading.Thread(target=_reboot, daemon=True).start()
+    return jsonify({
+        "status": "started",
+        "message": "Restarting. This page will drop; wait a minute and refresh.",
+    })
 
 @app.route("/api/manager/check_update", methods=["GET"])
 def check_manager_update():
@@ -2970,28 +3005,17 @@ def check_manager_update():
         update_available = False
 
         if channel == "stable":
-            # Check Latest Release
             resp = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
             if resp.status_code == 200:
-                data = resp.json()
-                remote_ref = data.get("tag_name", "")
-                # Compare tags (Simple string comparison, semantic versioning library is better but heavy)
-                if remote_ref != local_ver.get("ref"):
-                    update_available = True
-                    message = f"New Release Available: {remote_ref}"
-                else:
-                    message = f"Up to date ({remote_ref})"
-            else:
-                 # Fallback if no releases exist yet
-                 message = "No releases found."
+                remote_ref = resp.json().get("tag_name", "")
+            update_available, message = stable_update_offer(
+                local_ver.get("ref"), remote_ref)
 
         else: # Beta / Dev
-            # Check Main Branch Commit
             resp = requests.get(f"{REPO_API_URL}/commits/main", timeout=5)
             if resp.status_code == 200:
-                data = resp.json()
-                remote_ref = data.get("sha", "")[:7] # Short SHA
-                if remote_ref != local_ver.get("ref"):
+                remote_ref = (resp.json().get("sha") or "")[:7]
+                if beta_ahead(local_ver.get("ref"), remote_ref):
                     update_available = True
                     message = f"New Beta Commit: {remote_ref}"
                 else:
@@ -3014,7 +3038,7 @@ def check_manager_update():
 @app.route("/api/manager/update", methods=["POST"])
 @limiter.limit("3 per minute")
 def do_manager_update():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
@@ -3051,13 +3075,46 @@ def do_manager_update():
     except Exception:
         pass
 
-    # Fire and forget thread, as the service will restart
+    write_status({
+        "status": "running",
+        "message": f"Updating to {channel} {target_ref}...",
+        "log_type": "update",
+    })
+
     def _run_update():
-        with open(LOG_FILES["update"], "w") as log:
-            log.write(f"Starting Manager Update ({channel})...\n")
-            log.flush()
-            subprocess.run(["bash", SCRIPT_UPDATE, channel, target_ref],
-                           stdout=log, stderr=subprocess.STDOUT)
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(LOG_FILES["update"], "w") as log:
+                log.write(f"Starting Manager Update ({channel} {target_ref})...\n")
+                log.flush()
+                result = subprocess.run(
+                    ["bash", SCRIPT_UPDATE, channel, target_ref],
+                    stdout=log, stderr=subprocess.STDOUT,
+                )
+            if result.returncode != 0:
+                write_status({
+                    "status": "error",
+                    "message": "Update failed. Check the update log.",
+                    "log_type": "update",
+                })
+            else:
+                write_status({
+                    "status": "success",
+                    "message": f"Updated to {channel} {target_ref}.",
+                    "log_type": "update",
+                })
+        except Exception as e:
+            write_status({
+                "status": "error",
+                "message": str(e),
+                "log_type": "update",
+            })
+        time.sleep(10)
+        current = read_status()
+        if current.get("status") != "running":
+            current["status"] = "idle"
+            write_status(current)
+
     threading.Thread(target=_run_update).start()
 
     return jsonify({

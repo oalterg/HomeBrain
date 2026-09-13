@@ -45,7 +45,8 @@ value-add vs the stack, and the findings we will act on (disclosed credentials,
 inbound agent content, container hardening). Inbound content threat model:
 [`INBOUND_AGENT_CONTENT.md`](plans/INBOUND_AGENT_CONTENT.md). Owner-to-agent
 email (identity + optional prompts): [`AGENT_EMAIL.md`](plans/AGENT_EMAIL.md).
-Bare-metal
+App update vs OS upgrade vs health checker:
+[`UPDATE_AND_HEALTH.md`](plans/UPDATE_AND_HEALTH.md). Bare-metal
 no-drive restore walked 2026-08-12. A cloud dead-man's switch is a non-goal:
 it would phone home. ARGB lighting is not on that list.
 

@@ -80,6 +80,44 @@ clean "needsDbUpgrade: false" "$(printf -- '  - installed: true\n  - needsDbUpgr
 clean "field absent"          "$(printf -- '  - installed: true\n  - versionstring: 32.0.9\n')"
 needs "tab-indented true"     "$(printf -- '\t- needsDbUpgrade:   true\n')"
 
+echo "== get_runtime_profiles =="
+# Isolate tunnel detection from the developer machine's environment.
+unset PANGOLIN_ENDPOINT NEWT_ID NEWT_SECRET CF_TOKEN_NC CF_TOKEN_HA PANGOLIN_DOMAIN
+docker() {
+    if [ "$1" = "ps" ]; then
+        echo "homebrain-proton-bridge-1"
+        return 0
+    fi
+    printf 'unexpected docker %s\n' "$*" >&2
+    return 1
+}
+got="$(get_runtime_profiles 2>/dev/null || true)"
+if printf '%s' "$got" | grep -q -- '--profile proton-bridge'; then
+    ok "proton-bridge profile kept when the container is running"
+else
+    bad "proton-bridge profile kept when the container is running (got '$got')"
+fi
+docker() {
+    if [ "$1" = "ps" ]; then
+        return 0
+    fi
+    return 1
+}
+got="$(get_runtime_profiles 2>/dev/null || true)"
+if printf '%s' "$got" | grep -q -- 'proton-bridge'; then
+    bad "no proton-bridge profile when the container is down (got '$got')"
+else
+    ok "no proton-bridge profile when the container is down"
+fi
+unset -f docker
+
+UPDATE_SH="$SCRIPT_DIR/../update.sh"
+if grep -q 'get_runtime_profiles' "$UPDATE_SH"; then
+    ok "update.sh compose pull/up uses get_runtime_profiles"
+else
+    bad "update.sh compose pull/up uses get_runtime_profiles"
+fi
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

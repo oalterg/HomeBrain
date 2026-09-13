@@ -870,6 +870,20 @@ get_tunnel_profiles() {
     echo "${profiles}"
 }
 
+# Tunnel profiles plus optional compose profiles whose containers are already
+# running. `compose up --remove-orphans` without these stops those containers
+# (proton-bridge is the one that bit: it is not a tunnel profile).
+get_runtime_profiles() {
+    local profiles names
+    profiles="$(get_tunnel_profiles)"
+    names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
+    if printf '%s\n' "$names" | grep -q 'proton-bridge'; then
+        profiles="${profiles} --profile proton-bridge"
+    fi
+    profiles="${profiles#" "}"
+    echo "${profiles}"
+}
+
 # Caddy (LAN HTTPS edge) now always runs — no profile gate.
 # Kept as a stub so deploy.sh / redeploy_tunnels.sh don't break.
 get_vault_profiles() {

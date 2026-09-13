@@ -23,11 +23,12 @@ import app as hb            # noqa: E402
 
 
 @contextmanager
-def _health(checks, timer=False, cron=False):
+def _health(checks, timer=False, cron=False, ts=None, overall="warn"):
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "health.json")
         with open(report, "w") as f:
-            json.dump({"ts": time.time(), "overall": "warn", "checks": checks}, f)
+            json.dump({"ts": time.time() if ts is None else ts,
+                       "overall": overall, "checks": checks}, f)
         timer_path = os.path.join(tmp, "timer")
         cron_path = os.path.join(tmp, "cron")
         if timer:
@@ -76,6 +77,24 @@ def test_a_real_backup_warning_is_not_eaten():
                    "summary": "Backup drive is not connected"}],
                  timer=True) as client:
         assert _backup_summaries(client) == ["Backup drive is not connected"]
+
+
+def test_stale_report_is_flagged_unknown():
+    with _health([{"id": "backup", "level": "ok",
+                   "summary": "Backups are up to date"}],
+                 overall="ok", ts=time.time() - 3 * 3600) as client:
+        data = client.get("/api/health").get_json()
+        assert data["overall"] == "unknown"
+        assert data["stale"] is True
+
+
+def test_fresh_report_is_not_stale():
+    with _health([{"id": "backup", "level": "ok",
+                   "summary": "Backups are up to date"}],
+                 overall="ok") as client:
+        data = client.get("/api/health").get_json()
+        assert data["overall"] == "ok"
+        assert not data.get("stale")
 
 
 if __name__ == "__main__":
