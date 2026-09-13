@@ -77,11 +77,22 @@ def test_homebrain_leads_with_telegram_not_pangolin():
         assert r.status_code == 200
         html = r.get_data(as_text=True)
         assert "pair Telegram" in html
+        assert "20 MB" in html
         assert "Public tunnel" in html
         assert "selectMode('remote');" not in html
         assert "There is no agent on this box" not in html
+        assert "including large Nextcloud files" in html
     finally:
         h.close()
+
+
+def test_dashboard_names_the_20mb_file_contract():
+    root = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
+    dash = os.path.join(root, "src", "templates", "dashboard.html")
+    with open(dash) as f:
+        html = f.read()
+    assert "files up to 20 MB" in html
+    assert "Larger files stay in Nextcloud" in html
 
 
 def test_homebrain_does_not_auto_select_factory_tunnel():
@@ -102,6 +113,7 @@ def test_homecloud_auto_selects_factory_tunnel():
         html = h.get().get_data(as_text=True)
         assert "There is no agent on this box" in html
         assert "selectMode('remote');" in html
+        assert "20 MB" not in html
         assert "Leave the secret blank" in html
         assert "factoryHasSecret = true" in html
         assert "factory-secret-value" not in html

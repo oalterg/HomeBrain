@@ -5,6 +5,10 @@ Home Assistant, and Vault. It is the remote path for **HomeCloud** (no GPU, no a
 On a GPU **HomeBrain** box the daily remote path is Telegram; Pangolin is only needed if
 you want those web UIs from outside the LAN.
 
+The LAN target is the same map with a `.local` suffix, HTTPS on 443, no ports:
+[`LAN_HTTPS.md`](plans/LAN_HTTPS.md). Today's box still uses `:8080` / `:8123` / `:8443` /
+`:8444`; do not document those as the destination.
+
 A `newt` client container on the box dials out to your [Pangolin](https://github.com/fosrl/pangolin)
 server. You map public hostnames ("resources") to local "targets" in the Pangolin dashboard.
 The **box side is automatic** (`provision.sh`); the **Pangolin server side is manual**.

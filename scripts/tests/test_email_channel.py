@@ -20,6 +20,23 @@ def test_normalize_email_parseaddr():
     assert integrations.normalize_email("") == ""
 
 
+def test_deployment_mode_mcp_env_defaults_local(monkeypatch):
+    monkeypatch.setattr(integrations, "_read_env", lambda: {})
+    assert integrations._deployment_mode_mcp_env() == {
+        "HOMEBRAIN_DEPLOYMENT_MODE": "local",
+    }
+    monkeypatch.setattr(integrations, "_read_env",
+                        lambda: {"DEPLOYMENT_MODE": "remote"})
+    assert integrations._deployment_mode_mcp_env() == {
+        "HOMEBRAIN_DEPLOYMENT_MODE": "remote",
+    }
+    monkeypatch.setattr(integrations, "_read_env",
+                        lambda: {"DEPLOYMENT_MODE": "weird"})
+    assert integrations._deployment_mode_mcp_env() == {
+        "HOMEBRAIN_DEPLOYMENT_MODE": "local",
+    }
+
+
 def test_migrate_one_account_missing_key_becomes_true():
     out, changed = integrations.migrate_email_agent_mailbox(
         [{"name": "Personal", "user": "a@b.c"}])

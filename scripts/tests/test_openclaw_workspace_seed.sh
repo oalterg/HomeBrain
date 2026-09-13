@@ -131,6 +131,13 @@ else
     bad "seeded AGENTS.md includes the identity block" \
         "missing ## HomeBrain identity"
 fi
+if grep -q '## HomeBrain files' "$ws/AGENTS.md" \
+        && grep -q '20 MB' "$ws/AGENTS.md"; then
+    ok "seeded AGENTS.md includes the files block"
+else
+    bad "seeded AGENTS.md includes the files block" \
+        "missing ## HomeBrain files"
+fi
 printf '# Agent\n\nBe brief.\n' > "$ws/AGENTS.md"
 seed_openclaw_workspace 1
 if grep -q '## HomeBrain memory' "$ws/AGENTS.md" && grep -q 'Be brief' "$ws/AGENTS.md"; then
@@ -165,6 +172,27 @@ if cmp -s "$TMP_ROOT/agents.identity" "$ws/AGENTS.md"; then
     ok "a second seed does not duplicate the identity block"
 else
     bad "a second seed does not duplicate the identity block" \
+        "AGENTS.md changed on the second pass"
+fi
+
+echo "== AGENTS.md files block on upgrade =="
+printf '# Agent\n\n## HomeBrain memory\n\n- Durable facts.\n\n## HomeBrain identity\n\n- Addresses.\n' > "$ws/AGENTS.md"
+seed_openclaw_workspace 1
+if grep -q '## HomeBrain files' "$ws/AGENTS.md" \
+        && grep -q '20 MB' "$ws/AGENTS.md" \
+        && grep -q 'Durable facts' "$ws/AGENTS.md" \
+        && grep -q '## HomeBrain identity' "$ws/AGENTS.md"; then
+    ok "appends the files block without dropping identity or memory"
+else
+    bad "appends the files block without dropping identity or memory" \
+        "$(cat "$ws/AGENTS.md")"
+fi
+cp "$ws/AGENTS.md" "$TMP_ROOT/agents.files"
+seed_openclaw_workspace 1
+if cmp -s "$TMP_ROOT/agents.files" "$ws/AGENTS.md"; then
+    ok "a second seed does not duplicate the files block"
+else
+    bad "a second seed does not duplicate the files block" \
         "AGENTS.md changed on the second pass"
 fi
 

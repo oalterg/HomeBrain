@@ -13,7 +13,7 @@
         <div class="brand">Home<span>{{ platform.product_suffix }}</span></div>
         <p class="tagline">Private Cloud Setup</p>
         {% if has_gpu %}
-        <p class="muted">The dashboard stays on your home network. After setup, pair Telegram — that is how you reach the agent from your phone. A public tunnel is optional.</p>
+        <p class="muted">The dashboard stays on your home network. After setup, pair Telegram — that is how you reach the agent from your phone. Documents up to 20 MB go that way; larger files sync when you are home. A public tunnel is optional.</p>
         {% else %}
         <p class="muted">Choose how you want to reach your {{ platform.product_name }}. There is no agent on this box, so a Pangolin tunnel is how you open the browser from outside.</p>
         {% endif %}
@@ -26,7 +26,7 @@
                     <input type="radio" name="mode" value="local" checked>
                     <div class="mode-title">Local network</div>
                     {% if has_gpu %}
-                    <div class="mode-desc">Dashboard and apps on this network. Telegram is how you use the agent from outside.</div>
+                    <div class="mode-desc">Dashboard and apps on this network. Telegram is how you use the agent from outside — files up to 20 MB. Larger files wait until you are home.</div>
                     {% else %}
                     <div class="mode-desc">Reachable on your home network only. No internet account required.</div>
                     {% endif %}
@@ -35,7 +35,7 @@
                     <input type="radio" name="mode" value="remote">
                     {% if has_gpu %}
                     <div class="mode-title">Public tunnel</div>
-                    <div class="mode-desc">Optional. HTTPS for the browser through Pangolin. Not required for the agent.</div>
+                    <div class="mode-desc">Optional. HTTPS for the browser through Pangolin, including large Nextcloud files. Not required for the agent.</div>
                     {% else %}
                     <div class="mode-title">Remote access</div>
                     <div class="mode-desc">Reachable from anywhere through a Pangolin tunnel. Requires Pangolin credentials.</div>

@@ -17,8 +17,9 @@ Privacy posture (see INTEGRATIONS_PLAN.md §3.2):
   * `nc.files_upload` is ACT tier — capped at 20 MB, audited. Reads a
     file already on THIS box (Telegram inbound or workspace) and PUTs it
     to WebDAV. The envelope never carries base64 or file bytes.
-  * Bigger files: use `nc.files_share`; the user opens the link themselves
-    so the LM never ingests the bytes.
+  * Bigger files cannot go through chat (Telegram / agent mail, 20 MB).
+    On a public tunnel, `nc.files_share` is the remote path. Local-only:
+    they stay on Nextcloud until the owner is on the home network.
 
 Environment:
   NC_ACCOUNTS_FILE             path to ~/.openclaw/nc_accounts.json
@@ -33,6 +34,10 @@ Environment:
                                make the returned `media` path relative.
   HOMEBRAIN_OC_MEDIA_INBOUND   OpenClaw Telegram inbound store
                                (default ~/.openclaw/media/inbound).
+  HOMEBRAIN_DEPLOYMENT_MODE    `local` (default) or `remote`. Remote means
+                               a public tunnel is on, so share links work
+                               off-LAN. Local oversize hints must not
+                               promise a share the owner cannot open.
 
 Legacy fallback (single-account installs pre-multi-account):
   NC_BASE_URL, NC_USER, NC_TOKEN, NC_TOKEN_FILE — used only if
@@ -671,11 +676,32 @@ def t_files_search(args: dict) -> dict:
 
 
 _FOLDER_HINT = "Pick a file, or use nc.files_share for a folder link."
-_SEND_FILE_HINT = (
-    "File saved on THIS HomeBrain at `media`. "
-    "Send it with the message tool (media=<that path>). "
-    "Do not paste the contents. For larger files, use nc.files_share."
-)
+
+
+def _remote_web() -> bool:
+    return os.environ.get("HOMEBRAIN_DEPLOYMENT_MODE", "local").strip().lower() == "remote"
+
+
+def _send_file_hint() -> str:
+    base = (
+        "File saved on THIS HomeBrain at `media`. "
+        "Send it with the message tool (media=<that path>). "
+        "Do not paste the contents."
+    )
+    if _remote_web():
+        return base + " For larger files, use nc.files_share."
+    return base + " Larger files stay on Nextcloud on the home network."
+
+
+def _oversize_err(nbytes: int) -> dict:
+    msg = f"file is {nbytes} bytes (cap {MAX_DOWNLOAD_BYTES})"
+    if _remote_web():
+        return err(msg, hint="use nc.files_share for large files")
+    return err(
+        msg,
+        hint="too large for Telegram; it stays on Nextcloud until you "
+             "are on the home network",
+    )
 
 
 def t_files_download(args: dict) -> dict:
@@ -720,10 +746,7 @@ def t_files_download(args: dict) -> dict:
         if head_size > MAX_DOWNLOAD_BYTES:
             audit("nextcloud", "download.too_large",
                   account=account["name"], path=norm, bytes=head_size)
-            return err(
-                f"file is {head_size} bytes (cap {MAX_DOWNLOAD_BYTES}); "
-                "use nc.files_share for large files"
-            )
+            return _oversize_err(head_size)
     summary = (f"Nextcloud ({account['name']}): fetch {norm} onto this box "
                f"so it can be sent in chat")
     if head_size is not None:
@@ -772,10 +795,7 @@ def t_files_download(args: dict) -> dict:
     if nbytes > MAX_DOWNLOAD_BYTES:
         audit("nextcloud", "download.too_large",
               account=redeem_account["name"], path=p, bytes=nbytes)
-        return err(
-            f"file is {nbytes} bytes (cap {MAX_DOWNLOAD_BYTES}); "
-            "use nc.files_share for large files"
-        )
+        return _oversize_err(nbytes)
     if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
         return err("could not write file to the OpenClaw workspace")
     try:
@@ -799,7 +819,7 @@ def t_files_download(args: dict) -> dict:
         "filename": filename,
         "mime_type": mime,
         "size": nbytes,
-        "hint": _SEND_FILE_HINT,
+        "hint": _send_file_hint(),
     }
     if nbytes <= TEXT_INGEST_MAX and _is_text_mime(mime):
         try:
@@ -1148,7 +1168,7 @@ TOOLS = [
      "description": (
          "Fetch a file ≤20 MB onto this box. Returns `media`; send with "
          "the message tool (media=path). Don't paste contents. "
-         "Larger: nc.files_share."
+         "Larger files cannot go through chat."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},

@@ -63,21 +63,45 @@ ATTACHED_PHOTO_STRUCTURE = (
 
 
 class FakeIMAP:
-    def __init__(self, raw, missing=False, structure=None, unseen=b"1"):
+    def __init__(self, raw, missing=False, structure=None, unseen=b"1",
+                 all_uids=None, text_hits=b"", folders=None, fail_select=False):
         self.raw = raw
         self.missing = missing
         self.structure = structure
         self.unseen = unseen
+        self.all_uids = unseen if all_uids is None else all_uids
+        self.text_hits = text_hits
+        self.folders = folders if folders is not None else [
+            b'(\\HasNoChildren) "/" INBOX',
+        ]
+        self.fail_select = fail_select
         self.readonly = None
+        self.selected = None
         self.fetch_specs = []
         self.uid_commands = []
 
     def select(self, mailbox="INBOX", readonly=False):
+        self.selected = mailbox
         self.readonly = readonly
+        if self.fail_select:
+            return "NO", [b"missing"]
         return "OK", [b"1"]
 
+    def list(self, *a, **k):
+        return "OK", self.folders
+
     def search(self, *a, **k):
-        return "OK", [self.unseen]
+        parts = []
+        for x in a:
+            if x is None:
+                continue
+            parts.append(x.decode() if isinstance(x, bytes) else str(x))
+        joined = " ".join(parts).upper()
+        if "UNSEEN" in joined:
+            return "OK", [self.unseen]
+        if "TEXT" in joined or "SUBJECT" in joined:
+            return "OK", [self.text_hits]
+        return "OK", [self.all_uids]
 
     def uid(self, command, *args):
         self.uid_commands.append((command,) + args)
@@ -266,6 +290,7 @@ def test_attachment_rejects_oversize(em, tmp_path):
     media = tmp_path / "media"
     after = list(media.iterdir()) if media.exists() else []
     assert after == []
+    assert "mailbox" in (out.get("hint") or "")
 
 
 def test_attachment_message_not_found(em):
@@ -442,4 +467,72 @@ def test_list_accounts_roles_no_hosts(em):
         assert "imap_host" not in a
         assert "smtp_host" not in a
         assert "user" in a
+
+
+def test_list_includes_read_mail_list_unread_skips_it(em):
+    msg = EmailMessage()
+    msg["From"] = "Oliver <o@g.com>"
+    msg["To"] = "agentic.neo@yahoo.com"
+    msg["Subject"] = "check dis"
+    msg.set_content("ping")
+    imap = FakeIMAP(msg.as_bytes(), unseen=b"", all_uids=b"10")
+    em._imap = lambda acc: imap
+    unread = em.dispatch("email.list_unread", {})
+    assert unread["ok"] is True
+    assert unread["total"] == 0
+    listed = em.dispatch("email.list", {})
+    assert listed["ok"] is True
+    assert listed["messages"][0]["subject"] == "check dis"
+    assert listed["messages"][0]["folder"] == "INBOX"
+    assert listed["messages"][0]["id"] == "10"
+
+
+def test_list_folders_and_list_other_folder(em):
+    msg = EmailMessage()
+    msg["From"] = "Oliver <o@g.com>"
+    msg["Subject"] = "check dis"
+    msg.set_content("x")
+    imap = FakeIMAP(
+        msg.as_bytes(),
+        all_uids=b"4",
+        folders=[
+            b'(\\HasNoChildren) "/" INBOX',
+            b'(\\HasNoChildren \\Junk) "/" "Bulk Mail"',
+        ],
+    )
+    em._imap = lambda acc: imap
+    folders = em.dispatch("email.list_folders", {})
+    assert folders["ok"] is True
+    assert "INBOX" in folders["folders"]
+    assert "Bulk Mail" in folders["folders"]
+    out = em.dispatch("email.list", {"folder": "Bulk Mail"})
+    assert out["ok"] is True
+    assert out["folder"] == "Bulk Mail"
+    assert imap.selected == '"Bulk Mail"'
+    assert out["messages"][0]["folder"] == "Bulk Mail"
+
+
+def test_search_falls_back_to_headers_when_text_empty(em):
+    msg = EmailMessage()
+    msg["From"] = "Oliver <o@g.com>"
+    msg["Subject"] = "check dis"
+    msg.set_content("body")
+    imap = FakeIMAP(msg.as_bytes(), all_uids=b"10", text_hits=b"")
+    em._imap = lambda acc: imap
+    out = em.dispatch("email.search", {"query": "check dis"})
+    assert out["ok"] is True
+    assert out.get("scanned") is True
+    assert out["messages"][0]["subject"] == "check dis"
+
+
+def test_fetch_literal_skips_exists_none(em):
+    assert em._fetch_literal([None, (b"1 (BODY[HEADER] {4}", b"From: x")]) == b"From: x"
+    assert em._fetch_literal([None]) is None
+
+
+def test_unknown_folder_errors(em):
+    em._imap = lambda acc: FakeIMAP(_msg(), fail_select=True)
+    out = em.dispatch("email.list", {"folder": "Nope"})
+    assert out["ok"] is False
+    assert "folder" in out["error"]
 

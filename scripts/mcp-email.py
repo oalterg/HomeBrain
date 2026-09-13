@@ -12,7 +12,7 @@ Tier policy (see INTEGRATIONS_PLAN.md §3.4):
                 Subjects, senders, dates only — never bodies.
   * REVEAL    : email.fetch — full body. email.attachment — one file
                 onto this box as `media` for the message tool. Audited.
-                Consent-gated.
+                Consent-gated. Cap 20 MB; oversize stays in the mailbox.
   * ACT       : email.draft (creates a draft, never sends), email.archive,
                 email.flag. Consent-gated. email.send_direct is OFF by
                 default (gated behind a settings-level toggle the dashboard
@@ -165,24 +165,65 @@ def _uid_str(uid) -> str:
 
 
 def _fetch_literal(data) -> bytes | None:
-    if not data or not data[0]:
+    # imaplib inserts None when an untagged EXISTS lands during FETCH.
+    if not data:
         return None
-    item = data[0]
-    if isinstance(item, tuple) and len(item) >= 2:
-        payload = item[1]
-        return bytes(payload) if isinstance(payload, (bytes, bytearray)) else None
+    for item in data:
+        if isinstance(item, tuple) and len(item) >= 2:
+            payload = item[1]
+            if isinstance(payload, (bytes, bytearray)):
+                return bytes(payload)
     return None
 
 
 def _imap_payload(data) -> bytes:
-    if not data or not data[0]:
+    if not data:
         return b""
-    item = data[0]
-    if isinstance(item, tuple):
-        return b"".join(x for x in item if isinstance(x, (bytes, bytearray)))
-    if isinstance(item, (bytes, bytearray)):
-        return bytes(item)
-    return b""
+    chunks: list[bytes] = []
+    for item in data:
+        if isinstance(item, tuple):
+            chunks.extend(x for x in item if isinstance(x, (bytes, bytearray)))
+        elif isinstance(item, (bytes, bytearray)):
+            chunks.append(bytes(item))
+    return b"".join(chunks)
+
+
+def _folder_arg(args: dict | None) -> str:
+    name = ((args or {}).get("folder") or "INBOX").strip() or "INBOX"
+    return name
+
+
+def _mailbox(name: str) -> str:
+    name = (name or "INBOX").strip() or "INBOX"
+    if name.upper() == "INBOX":
+        return "INBOX"
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _select(conn, folder: str, readonly: bool = True) -> dict | None:
+    typ, _ = conn.select(_mailbox(folder), readonly=readonly)
+    if typ != "OK":
+        return err(f"folder '{folder}' not found")
+    return None
+
+
+def mailbox_from_list(raw) -> str:
+    """IMAP LIST mailbox name (last quoted string, else last token)."""
+    if isinstance(raw, tuple):
+        raw = raw[-1] if raw else b""
+    if isinstance(raw, (bytes, bytearray)):
+        text = raw.decode("utf-8", "replace")
+    else:
+        text = str(raw or "")
+    text = text.strip()
+    if not text:
+        return ""
+    if text.endswith('"'):
+        end = len(text) - 1
+        start = text.rfind('"', 0, end)
+        if start >= 0:
+            return text[start + 1:end].replace('\\"', '"')
+    return text.split()[-1].strip()
 
 
 def _filenames_from_structure(struct: bytes | str) -> list[str]:
@@ -234,6 +275,7 @@ def _summarise(msg_bytes: bytes, uid: str, has_attachments: bool | None = None,
         has_attachments = bool(attachments)
     return {
         "id": uid,
+        "folder": "INBOX",
         "from": _hdr(msg.get("From", "")),
         "to": _hdr(msg.get("To", "")),
         "subject": _hdr(msg.get("Subject", "")),
@@ -258,7 +300,7 @@ def _peek_message(conn, uid):
     return email.message_from_bytes(raw)
 
 
-def _list_from_imap(conn, uids: list) -> list[dict]:
+def _list_from_imap(conn, uids: list, folder: str = "INBOX") -> list[dict]:
     out = []
     for uid in reversed(uids):
         rc, data = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
@@ -268,31 +310,73 @@ def _list_from_imap(conn, uids: list) -> list[dict]:
         rc_s, sdata = conn.uid("FETCH", uid, "(BODYSTRUCTURE)")
         struct = _imap_payload(sdata) if rc_s == "OK" else b""
         names = _filenames_from_structure(struct)
-        out.append(_summarise(
+        row = _summarise(
             header, _uid_str(uid),
             has_attachments=_structure_has_attachments(struct),
             attachments=[{"filename": n} for n in names],
-        ))
+        )
+        row["folder"] = folder
+        out.append(row)
     return out
 
 
-def t_list_unread(args: dict) -> dict:
+def _list_messages(args: dict, *, unread_only: bool) -> dict:
     acc, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
     name = acc["name"]
+    folder = _folder_arg(args)
     limit = int(args.get("limit") or 20)
     conn = _imap(acc)
     if not conn:
         return unavailable(f"could not connect to IMAP for '{name}'")
     try:
-        conn.select("INBOX", readonly=True)
-        uids = _uid_search(conn, "UNSEEN")
+        sel = _select(conn, folder, readonly=True)
+        if sel is not None:
+            return sel
+        if unread_only:
+            uids = _uid_search(conn, "UNSEEN")
+        else:
+            uids = _uid_search(conn, "ALL") or _uid_search(conn, "UID", "1:*")
         if not uids:
-            return ok(account=name, messages=[], total=0)
+            return ok(account=name, folder=folder, messages=[], total=0)
         uids = uids[-limit:]
-        out = _list_from_imap(conn, uids)
-        return ok(account=name, messages=out, total=len(out))
+        out = _list_from_imap(conn, uids, folder)
+        return ok(account=name, folder=folder, messages=out, total=len(out))
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def t_list_unread(args: dict) -> dict:
+    return _list_messages(args, unread_only=True)
+
+
+def t_list(args: dict) -> dict:
+    return _list_messages(args, unread_only=False)
+
+
+def t_list_folders(args: dict) -> dict:
+    acc, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    name = acc["name"]
+    conn = _imap(acc)
+    if not conn:
+        return unavailable(f"could not connect to IMAP for '{name}'")
+    try:
+        rc, data = conn.list()
+        folders: list[str] = []
+        seen: set[str] = set()
+        if rc == "OK":
+            for item in data or []:
+                mb = mailbox_from_list(item)
+                if mb and mb.lower() not in seen:
+                    seen.add(mb.lower())
+                    folders.append(mb)
+        return ok(account=name, folders=folders)
     finally:
         try:
             conn.logout()
@@ -306,6 +390,7 @@ def t_search(args: dict) -> dict:
         return ebody
     name = acc["name"]
     query = args.get("query") or ""
+    folder = _folder_arg(args)
     limit = int(args.get("limit") or 30)
     if not query:
         return err("query is required")
@@ -313,14 +398,36 @@ def t_search(args: dict) -> dict:
     if not conn:
         return unavailable(f"could not connect to IMAP for '{name}'")
     try:
-        conn.select("INBOX", readonly=True)
-        # IMAP TEXT search — matches headers + body; returns UIDs only.
-        uids = _uid_search(conn, "TEXT", f'"{query}"')
-        if not uids:
-            return ok(account=name, messages=[], total=0)
-        uids = uids[-limit:]
-        out = _list_from_imap(conn, uids)
-        return ok(account=name, messages=out, total=len(out))
+        sel = _select(conn, folder, readonly=True)
+        if sel is not None:
+            return sel
+        uids: list[bytes] = []
+        # Yahoo's TEXT index is often empty even when the mail is there.
+        if '"' not in query and "\\" not in query:
+            quoted = f'"{query}"'
+            uids = _uid_search(conn, "TEXT", quoted)
+            if not uids:
+                uids = _uid_search(conn, "SUBJECT", quoted)
+        if uids:
+            uids = uids[-limit:]
+            out = _list_from_imap(conn, uids, folder)
+            return ok(account=name, folder=folder, messages=out, total=len(out))
+        all_uids = _uid_search(conn, "ALL") or _uid_search(conn, "UID", "1:*")
+        scan = all_uids[-max(limit, 50):]
+        needle = query.strip().lower()
+        out = []
+        for msg in _list_from_imap(conn, scan, folder):
+            blob = " ".join([
+                msg.get("subject") or "",
+                msg.get("from") or "",
+                msg.get("to") or "",
+            ]).lower()
+            if needle in blob:
+                out.append(msg)
+            if len(out) >= limit:
+                break
+        return ok(account=name, folder=folder, messages=out, total=len(out),
+                  scanned=True)
     finally:
         try:
             conn.logout()
@@ -369,10 +476,12 @@ def t_fetch(args: dict) -> dict:
     chat_id = args.get("_chat_id")
     if not msg_id:
         return err("id is required")
+    folder = _folder_arg(args)
     summary = f"Email: read full body of message {msg_id} from account '{name}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
-                                  {"account": name, "id": msg_id},
+                                  {"account": name, "id": msg_id,
+                                   "folder": folder},
                                   chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "email", chat_id)
@@ -385,7 +494,9 @@ def t_fetch(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX", readonly=True)
+        sel = _select(conn, redeemed.get("folder") or folder, readonly=True)
+        if sel is not None:
+            return sel
         msg = _peek_message(conn, redeemed["id"])
         if msg is None:
             return err("message not found")
@@ -520,13 +631,14 @@ def t_attachment(args: dict) -> dict:
     chat_id = args.get("_chat_id")
     if not msg_id:
         return err("id is required")
+    folder = _folder_arg(args)
     summary = f"Email: fetch attachment from message {msg_id} on '{name}'"
     if filename:
         summary += f" ({filename})"
     if not confirm:
         action_id = Consent.issue("email", summary,
                                   {"account": name, "id": msg_id,
-                                   "filename": filename},
+                                   "filename": filename, "folder": folder},
                                   chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "email", chat_id)
@@ -540,7 +652,9 @@ def t_attachment(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX", readonly=True)
+        sel = _select(conn, redeemed.get("folder") or folder, readonly=True)
+        if sel is not None:
+            return sel
         msg = _peek_message(conn, redeemed["id"])
         if msg is None:
             return err("message not found")
@@ -574,6 +688,7 @@ def t_attachment(args: dict) -> dict:
         return err(
             f"file is {len(body)} bytes (cap {MAX_ATTACHMENT_BYTES})",
             filename=fname,
+            hint="too large for Telegram; open it in the mailbox",
         )
     if not body:
         return err("attachment is empty", filename=fname)
@@ -739,10 +854,12 @@ def t_archive(args: dict) -> dict:
     chat_id = args.get("_chat_id")
     if not msg_id:
         return err("id is required")
+    folder = _folder_arg(args)
     summary = f"Email: archive message {msg_id} on account '{name}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
-                                  {"account": name, "id": msg_id},
+                                  {"account": name, "id": msg_id,
+                                   "folder": folder},
                                   chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "email", chat_id)
@@ -755,7 +872,9 @@ def t_archive(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX")
+        sel = _select(conn, redeemed.get("folder") or folder, readonly=False)
+        if sel is not None:
+            return sel
         archive = redeem_acc.get("archive_folder") or "Archive"
         try:
             conn.create(archive)
@@ -785,12 +904,13 @@ def t_flag(args: dict) -> dict:
     chat_id = args.get("_chat_id")
     if not msg_id:
         return err("id is required")
+    folder = _folder_arg(args)
     action = "unflag" if remove else "flag"
     summary = f"Email: {action} message {msg_id} on account '{name}'"
     if not confirm:
         action_id = Consent.issue("email", summary,
                                   {"account": name, "id": msg_id,
-                                   "remove": remove}, chat_id)
+                                   "remove": remove, "folder": folder}, chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "email", chat_id)
     if not redeemed:
@@ -802,7 +922,9 @@ def t_flag(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX")
+        sel = _select(conn, redeemed.get("folder") or folder, readonly=False)
+        if sel is not None:
+            return sel
         op = "-FLAGS" if redeemed.get("remove") else "+FLAGS"
         conn.uid("STORE", _uid_bytes(redeemed["id"]), op, r"(\Flagged)")
         audit("email", "flag", account=redeemed["account"],
@@ -830,13 +952,32 @@ TOOLS = [
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
                                     "limit": {"type": "integer"}}}},
-    {"name": "email.search",
+    {"name": "email.list",
      "description": (
-         "IMAP TEXT search. IMAP UID + filenames. Does not mark seen."
+         "Recent headers, read or unread. Optional folder (Bulk Mail, Archive). "
+         "Does not mark seen."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
+                                    "limit": {"type": "integer"}}}},
+    {"name": "email.list_folders",
+     "description": "Mailbox folder names (INBOX, Bulk Mail, Archive, …).",
+     "inputSchema": {"type": "object",
+                     "properties": {"account": {"type": "string"}}}},
+    {"name": "email.search",
+     "description": (
+         "Find by subject/from. Yahoo TEXT is often empty; falls back to headers. "
+         "Does not mark seen."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
                                     "query": {"type": "string"},
                                     "limit": {"type": "integer"}},
                      "required": ["query"]}},
@@ -847,13 +988,15 @@ TOOLS = [
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["id"]}},
     {"name": "email.attachment",
      "description": (
          "Save one file by IMAP UID, including inline PDFs. Returns media=. "
-         "Several: pass filename."
+         "Several: pass filename. Cap 20 MB."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -861,6 +1004,8 @@ TOOLS = [
                          "filename": {"type": "string",
                                       "description": "Substring of the attachment name."},
                          "account": {"type": "string"},
+                         "folder": {"type": "string",
+                                    "description": "IMAP folder (default INBOX)."},
                          "confirmation_token": {"type": "string"},
                      },
                      "required": ["id"]}},
@@ -886,6 +1031,8 @@ TOOLS = [
      "description": "Archive a message (mark seen + move to Archive folder).",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
                                     "id": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["id"]}},
@@ -893,6 +1040,8 @@ TOOLS = [
      "description": "Flag or unflag a message (IMAP \\Flagged).",
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
+                                    "folder": {"type": "string",
+                                               "description": "IMAP folder (default INBOX)."},
                                     "id": {"type": "string"},
                                     "remove": {"type": "boolean",
                                                "description": "true to unflag (default false)"},
@@ -904,6 +1053,8 @@ TOOLS = [
 DISPATCH = {
     "email.list_accounts": t_list_accounts,
     "email.list_unread": t_list_unread,
+    "email.list": t_list,
+    "email.list_folders": t_list_folders,
     "email.search": t_search,
     "email.fetch": t_fetch,
     "email.attachment": t_attachment,

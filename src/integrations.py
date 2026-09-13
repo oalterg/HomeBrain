@@ -327,6 +327,14 @@ def _openclaw_daemon_restart() -> None:
 # MCP server specs
 # ---------------------------------------------------------------------------
 
+def _deployment_mode_mcp_env() -> dict:
+    """Tell file MCPs whether Nextcloud share links work off-LAN."""
+    mode = _read_env().get("DEPLOYMENT_MODE", "local").strip().lower()
+    if mode != "remote":
+        mode = "local"
+    return {"HOMEBRAIN_DEPLOYMENT_MODE": mode}
+
+
 def _mcp_consent_env() -> dict:
     """Return env vars that control MCP consent behavior.
 
@@ -390,6 +398,7 @@ def _spec_nextcloud() -> dict | None:
             # Telegram inbound files land here (not under the workspace).
             # nc.files_upload reads from this allowlisted root.
             "HOMEBRAIN_OC_MEDIA_INBOUND": os.path.join(OPENCLAW_DIR, "media", "inbound"),
+            **_deployment_mode_mcp_env(),
             **_mcp_consent_env(),
         },
     }
@@ -454,6 +463,7 @@ def _spec_email() -> dict | None:
             # with the message tool's media= parameter.
             "HOMEBRAIN_EMAIL_MEDIA_DIR": os.path.join(
                 OPENCLAW_DIR, "workspace", "media", "email"),
+            **_deployment_mode_mcp_env(),
             **_mcp_consent_env(),
         },
     }

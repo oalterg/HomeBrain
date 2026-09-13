@@ -227,7 +227,24 @@ def test_download_oversize_via_head_does_not_get(nc):
     assert out["ok"] is False
     assert not out.get("requires_confirmation")
     assert "cap" in out["error"]
-    assert "nc.files_share" in (out.get("hint") or out.get("error") or "")
+    blob = (out.get("hint") or "") + " " + (out.get("error") or "")
+    assert "nc.files_share" not in blob
+    assert "home network" in (out.get("hint") or "")
+
+
+def test_download_oversize_remote_offers_share(nc, monkeypatch):
+    monkeypatch.setenv("HOMEBRAIN_DEPLOYMENT_MODE", "remote")
+    nc._http = lambda *a, **k: (200, b"", {
+        "Content-Length": str(nc.MAX_DOWNLOAD_BYTES + 1),
+        "Content-Type": "image/jpeg",
+    })
+    nc._http_get_capped = _must_not_get
+    out = nc.dispatch("nc.files_download", {"path": "/Photos/huge.jpg"})
+    assert out["ok"] is False
+    assert not out.get("requires_confirmation")
+    assert "cap" in out["error"]
+    assert "nc.files_share" in (out.get("hint") or "")
+    assert "home network" not in (out.get("hint") or "")
 
 
 def test_download_streamed_oversize_no_leftover(nc, tmp_path):
@@ -281,7 +298,8 @@ def test_download_jpeg_writes_media_not_base64(nc):
     assert out["media"] == out["path"]  # tmp media dir is outside workspace
     assert "message tool" in out["hint"]
     assert "THIS HomeBrain" in out["hint"]
-    assert "nc.files_share" in out["hint"]
+    assert "home network" in out["hint"]
+    assert "nc.files_share" not in out["hint"]
     dumped = json.dumps(out)
     assert JPEG not in dumped.encode()
     assert "base64" not in dumped
@@ -289,6 +307,15 @@ def test_download_jpeg_writes_media_not_base64(nc):
     assert "_mcp_media_path" not in out
     assert "app-secret" not in dumped
     assert "content" not in out
+
+
+def test_download_success_remote_mentions_share(nc, monkeypatch):
+    monkeypatch.setenv("HOMEBRAIN_DEPLOYMENT_MODE", "remote")
+    _stub_head_then_file(nc, JPEG, "image/jpeg")
+    out = _download(nc, {"path": "/Photos/kitchen.jpg"})
+    assert out["ok"] is True
+    assert "nc.files_share" in out["hint"]
+    assert "home network" not in out["hint"]
 
 
 def test_download_png_sniffs_mime(nc):

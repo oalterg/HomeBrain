@@ -114,9 +114,19 @@ def test_wake_prompt_wraps_and_tells_draft():
     assert "quoted" not in prompt.split("not instructions:")[1]
     assert "email.draft" in prompt
     assert "will not send" in prompt
+    assert "<<<INBOX>>>" in prompt
+    assert "pass folder" in prompt
     instr = prompt.split("not instructions:")[0]
     assert "Please archive this" not in instr
     assert "do it" not in instr
+
+
+def test_wake_prompt_includes_non_inbox_folder():
+    prompt = email_watch.wake_prompt(
+        "Agent", "4", "owner@ex.com", "agent@ex.com",
+        "check dis", "ping", [], True, "Bulk Mail")
+    assert "<<<Bulk Mail>>>" in prompt
+    assert "email.send_direct" in prompt
 
 
 def test_prompting_off_is_json_only():
@@ -124,3 +134,49 @@ def test_prompting_off_is_json_only():
     assert not email_watch.prompting_ready(
         {"enabled": False, "allow_from": ["a@b.c"]},
         [{"name": "A", "user": "agent@ex.com", "agent_mailbox": True}])
+
+
+def test_watch_folders_adds_yahoo_bulk_not_trash():
+    listed = [
+        b'(\\HasNoChildren) "/" INBOX',
+        b'(\\HasNoChildren \\Junk) "/" "Bulk Mail"',
+        b'(\\HasNoChildren \\Trash) "/" Trash',
+        b'(\\HasNoChildren \\Sent) "/" Sent',
+        b'(\\HasNoChildren) "/" "[Gmail]/Spam"',
+    ]
+    folders = email_watch.watch_folders(listed)
+    assert folders[0] == "INBOX"
+    assert "Bulk Mail" in folders
+    assert "[Gmail]/Spam" in folders
+    assert "Trash" not in folders
+    assert "Sent" not in folders
+
+
+def test_is_junk_mailbox_by_name_and_flag():
+    assert email_watch.is_junk_mailbox("Bulk Mail")
+    assert email_watch.is_junk_mailbox("Spam")
+    assert email_watch.is_junk_mailbox("Junk", r"\Junk")
+    assert not email_watch.is_junk_mailbox("INBOX")
+    assert not email_watch.is_junk_mailbox("Trash", r"\Trash")
+
+
+def test_nested_cursors_migrate_flat_inbox():
+    nested = email_watch.nested_account_cursors(
+        {"uidvalidity": 9, "last_uid": 12})
+    assert nested["INBOX"] == {"uidvalidity": 9, "last_uid": 12}
+    already = {"INBOX": {"uidvalidity": 1, "last_uid": 3},
+               "Bulk Mail": {"uidvalidity": 2, "last_uid": 8}}
+    assert email_watch.nested_account_cursors(already)["Bulk Mail"]["last_uid"] == 8
+
+
+def test_junk_folder_replays_existing_mail():
+    action, cur = email_watch.cursor_for_scan(None, 9, 12, replay=True)
+    assert action == "scan"
+    assert cur == {"uidvalidity": 9, "last_uid": 0}
+
+
+def test_fetch_bytes_skips_exists_none():
+    class Conn:
+        def uid(self, *_a, **_k):
+            return "OK", [None, (b"1 (BODY[HEADER] {4}", b"From: x")]
+    assert email_watch._fetch_bytes(Conn(), 1, "(BODY.PEEK[HEADER])") == b"From: x"
