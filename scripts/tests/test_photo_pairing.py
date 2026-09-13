@@ -100,6 +100,12 @@ def test_no_route_mints_for_admin():
 
 # --- the path that must still work -----------------------------------------
 
+def test_empty_trusted_domains_pairs_at_the_lan_name(occ_calls, no_qrencode):
+    payload = hb.pairing_payload(MEMBER, "pw", {})
+    assert payload["url"] == "https://nc.homebrain.local"
+    assert payload["remote"] is False
+
+
 def test_member_pairing_still_returns_a_scannable_payload(occ_calls, no_qrencode):
     payload = hb.pairing_payload(MEMBER, "pw", ENV)
     assert payload["user"] == MEMBER

@@ -43,6 +43,7 @@ jobs:
                             scripts/tests/test_backup_crypto.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
+                            scripts/tests/test_lan_https.py \
                             scripts/tests/test_vault_account.py \
                             scripts/tests/test_member_escrow.py \
                             scripts/tests/test_household_roster.py \
@@ -76,6 +77,8 @@ jobs:
         run: bash scripts/tests/test_backup_member_escrow.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
+      - name: LAN HTTPS is names on 443
+        run: bash scripts/tests/test_lan_https.sh
       - name: Vaultwarden pin (both pins agree, past the Android `data` fix)
         run: bash scripts/tests/test_vault_tag_pin.sh
       - name: platform detection (fixture sysfs trees)

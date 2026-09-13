@@ -1531,9 +1531,9 @@ patch_openclaw_config() {
     lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     local origins_jq='['
     origins_jq+='"http://localhost","http://127.0.0.1",'
-    origins_jq+='"http://homebrain.local","http://homebrain.local:80",'
+    origins_jq+='"https://homebrain.local","https://homebrain.local:443",'
     if [[ -n "${lan_ip:-}" ]]; then
-        origins_jq+="\"http://${lan_ip}\",\"http://${lan_ip}:80\","
+        origins_jq+="\"https://${lan_ip}\",\"https://${lan_ip}:443\","
     fi
     if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
         origins_jq+="\"https://${PANGOLIN_DOMAIN}\","

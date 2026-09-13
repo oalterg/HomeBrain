@@ -21,7 +21,11 @@ ExecStartPre=-/bin/bash -c 'source /opt/homebrain/scripts/common.sh >/dev/null 2
 # (flask-sock + simple-websocket). gunicorn auto-applies gevent monkey-patch
 # at startup so existing subprocess/threading code keeps working — long
 # blocking calls just yield to other greenlets instead of stalling the worker.
-ExecStart=/opt/homebrain/venv/bin/gunicorn --worker-class gevent --workers 3 --bind 0.0.0.0:80 --timeout 30 app:app
+# :8000 is not an owner-facing URL. Caddy (LAN 443) and Pangolin (newt on
+# the compose network) reach this via the Docker bridge gateway. Bound on
+# all interfaces so host-gateway packets arrive; ufw does not allow 8000
+# from the LAN.
+ExecStart=/opt/homebrain/venv/bin/gunicorn --worker-class gevent --workers 3 --bind 0.0.0.0:8000 --timeout 30 app:app
 Restart=always
 RestartSec=10
 TimeoutStartSec=60

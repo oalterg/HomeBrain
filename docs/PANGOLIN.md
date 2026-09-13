@@ -5,6 +5,11 @@ Home Assistant, and Vault. It is the remote path for **HomeCloud** (no GPU, no a
 On a GPU **HomeBrain** box the daily remote path is Telegram; Pangolin is only needed if
 you want those web UIs from outside the LAN.
 
+The LAN is the same map with a `.local` suffix, HTTPS on 443, no ports:
+[`LAN_HTTPS.md`](plans/LAN_HTTPS.md). Caddy is the only process that faces
+the LAN; host-published 8080 / 8123 / 8082 are loopback-only and are not
+owner-facing URLs.
+
 A `newt` client container on the box dials out to your [Pangolin](https://github.com/fosrl/pangolin)
 server. You map public hostnames ("resources") to local "targets" in the Pangolin dashboard.
 The **box side is automatic** (`provision.sh`); the **Pangolin server side is manual**.
@@ -43,15 +48,16 @@ the target.
 
 | Public hostname  | Target              | Notes |
 |------------------|---------------------|-------|
-| `<domain>` (root)| `<gateway>:80`      | Dashboard / manager — a **host process**, so target the Docker bridge gateway, not a container name. |
-| `nc.<domain>`    | `nextcloud:80`      | Nextcloud. Use container port **80**, **not** host-published 8080. |
+| `<domain>` (root)| `<gateway>:8000`    | Dashboard / manager — a **host process** on :8000, so target the Docker bridge gateway, not a container name. Caddy owns LAN 80/443. |
+| `nc.<domain>`    | `nextcloud:80`      | Nextcloud. Use container port **80**, **not** host-published 8080 (loopback-only). |
 | `ha.<domain>`    | `homeassistant:8123`| Home Assistant. |
 | `vault.<domain>` | `vaultwarden:80`    | Vaultwarden. Host port 8082 is loopback-only — use the container name. |
 
-**Why these targets:** `newt` runs on the `homebrain_default` Docker network with the Docker
-socket mounted, so it reaches the service containers **by name** on their **internal** ports.
+**Why these targets:** `newt` runs on the `homebrain_default` Docker network, so it reaches
+the service containers **by name** on their **internal** ports.
 The host-published ports (8080 / 8123 / 8082) are a common trap — e.g. `nextcloud:8080` is
-wrong (nothing listens on 8080 *inside* the container) and returns a 404.
+wrong (nothing listens on 8080 *inside* the container) and returns a 404. The manager is not
+on :80; Caddy took that.
 
 Find the bridge gateway for the root/manager target:
 

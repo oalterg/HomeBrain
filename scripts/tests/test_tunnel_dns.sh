@@ -133,6 +133,9 @@ else
     # update_env_var chowns through harden_env_file; not available unprivileged.
     harden_env_file() { :; }
 
+    LAN_HOSTS_FILE="$TMP/hosts"
+    printf '127.0.0.1 localhost\n' > "$LAN_HOSTS_FILE"
+
     # Stub `hostname` the way sibling tests stub `docker`: a function shadows
     # the binary for everything this shell calls.
     STUB_IP="192.168.178.112"
