@@ -131,11 +131,13 @@ Dashboard → **Backup** → pick the ☁️ archive → **Restore**.
 ## Check that your files are actually off-site
 
 Pre-update *system snapshots* stay on the backup drive. They restore settings,
-Home Assistant, and the vault — not your Nextcloud files — so they are not
-copied off-site. On the Backup page, the ☁️ entries are what you would be
-restoring from after losing the box; they should say "Full System". Leftover
-system snapshots from older versions are removed on the next off-site copy
-once a full archive is present locally.
+Home Assistant, and the vault — not your Nextcloud files, and not the app
+release (code, image pins, deps). Restoring one uses whatever HomeBrain
+release is installed now and may repeat that release's migration, so they
+are not an app rollback. They are not copied off-site. On the Backup page,
+the ☁️ entries are what you would be restoring from after losing the box;
+they should say "Full System". Leftover system snapshots from older versions
+are removed on the next off-site copy once a full archive is present locally.
 
 The usual cause of a remote that only held snapshots was a too-old rclone:
 versions before 1.64 cannot split a large upload into chunks, so a

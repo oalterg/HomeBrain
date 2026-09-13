@@ -1692,9 +1692,12 @@ offsite_keep() {
 # re-uploaded and immediately pruned again on every hourly resume tick,
 # burning a home uplink on a transfer that is deleted the moment it lands.
 #
-# System snapshots are a local rollback point for updates (backup.sh
-# --strategy system). They do not contain the user's files, so they are
-# never copied off-site. Leftovers from older versions are deleted once a
+# System snapshots (`backup.sh --strategy system`) are a local data/config
+# restore point taken before an update migrates services forward. They do
+# not contain the previous app tree, image pins, or deps, so they cannot
+# roll back a release — restore uses whatever release is installed now.
+# They also omit the user's files, so they are never copied off-site.
+# Leftovers from older versions are deleted once a
 # full archive is present locally — a full archive already contains
 # everything the snapshot does. With no local full, leftovers stay: they
 # may be the only copy of vault/config left anywhere.

@@ -16,7 +16,7 @@ shipped the notifier and unattended-upgrades).
 
 | Path | Trigger | What it changes | Rollback |
 |---|---|---|---|
-| **App update** | Dashboard *App update* → `POST /api/manager/update` → `update.sh` | `/opt/homebrain` tree, pinned deps, systemd units, compose image pins, Nextcloud schema | Restore a pre-update snapshot. Updates are one-way. |
+| **App update** | Dashboard *App update* → `POST /api/manager/update` → `update.sh` | `/opt/homebrain` tree, pinned deps, systemd units, compose image pins, Nextcloud schema | None for the release. The pre-update snapshot is data/config only — not the previous code, image pins, or deps. Restore runs on whatever release is installed now and may repeat that release's migration. Updates are one-way. |
 | **OS, nightly** | `unattended-upgrades` (enabled by `update.sh` writing `20auto-upgrades`) | Distro security origin. No automatic reboot. | Package manager. Kernel waits for a manual restart. |
 | **OS, button** | Dashboard *Run now* → `POST /api/upgrade` | The same `unattended-upgrade` path, on demand. No docker compose. | None taken. Failed apt no longer reports success. |
 
@@ -44,8 +44,11 @@ Service crash recovery is systemd `Restart=always` and Docker
 3. Rsync the release over `/opt/homebrain`, keeping `.env`, `version.json`,
    venv, compose override, `.platform.json`.
 4. Pre-update **system** snapshot via `backup.sh --strategy system
-   --skip-offsite` (data/config, not the Nextcloud file tree). Non-fatal if
-   no backup drive. Then pin bumps (llama.cpp / OpenClaw / Vaultwarden),
+   --skip-offsite` (data/config, not the Nextcloud file tree, and not the
+   app tree / image pins / deps). It is a data restore point, not an app
+   rollback: restoring it uses the currently installed release and may
+   re-run that release's Nextcloud migration. Non-fatal if no backup drive.
+   Then pin bumps (llama.cpp / OpenClaw / Vaultwarden),
    systemd unit sync, `docker compose pull/up` with `get_runtime_profiles`
    (tunnel profiles plus a running `proton-bridge`, so `--remove-orphans`
    does not stop it), `reconcile_nextcloud`, write `version.json`, restart
@@ -58,9 +61,11 @@ tag's digest.
 Stable vs beta: the channel dropdown sits with **App update**. OS upgrade
 ignores it.
 
-`/api/manager/update` publishes task status (`log_type=update`) so the
-global banner tracks the run and a second long job 409s. The manager
-restart at the end of `update.sh` clears the status file on startup.
+`/api/manager/update` claims the shared task slot (`log_type=update`) so the
+global banner tracks the run and a second long job 409s. The claim is a
+file lock across Gunicorn workers — backups, restores, OS upgrade, reboot,
+and the other long jobs use the same reservation. The manager restart at
+the end of `update.sh` clears the status file on startup.
 
 Check-now uses `stable_update_offer` / `beta_ahead` (same ordering as
 healthcheck), not string inequality.
@@ -119,6 +124,8 @@ not hide it. Tests: `scripts/tests/test_healthcheck.py`,
 
 - *App update* ≠ *Run now* (OS). Different endpoints, different risk,
   different rollback.
+- A pre-update snapshot ≠ rolling the app back. It restores data/config onto
+  the currently installed release, which may repeat that release's migration.
 - Nightly unattended **is** the OS button. Both security-origin; neither
   reboots.
 - Health ≠ healer. It tells the owner. systemd/Docker restart crashed

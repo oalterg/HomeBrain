@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from contextlib import contextmanager
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
@@ -110,6 +111,88 @@ def test_reboot_is_scheduled_not_inline(monkeypatch):
         assert r.get_json()["status"] == "started"
         assert started, "reboot must be scheduled on a thread"
         assert hb.read_status()["status"] == "running"
+
+
+def test_claim_task_only_one_job_holds_the_slot():
+    with _client():
+        assert hb.claim_task(
+            {"status": "running", "message": "update", "log_type": "update"})
+        assert hb.claim_task(
+            {"status": "running", "message": "backup", "log_type": "backup"}) is False
+        assert hb.read_status()["log_type"] == "update"
+
+
+def test_claim_task_is_atomic_under_contention():
+    with _client():
+        won = []
+
+        def attempt(i):
+            if hb.claim_task({"status": "running", "message": str(i),
+                              "log_type": "setup"}):
+                won.append(i)
+
+        threads = [threading.Thread(target=attempt, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(won) == 1, won
+
+
+def test_backup_409s_on_shared_running_status_even_if_worker_local_is_idle(monkeypatch):
+    class _T:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise AssertionError("backup must not start")
+
+    monkeypatch.setattr(hb.threading, "Thread", _T)
+    with _client() as client:
+        hb.write_status({"status": "running", "message": "Updating",
+                         "log_type": "update"})
+        hb.current_task_status.update(
+            {"status": "idle", "message": "", "log_type": "setup"})
+        r = client.post("/api/backup/now", json={"strategy": "full"})
+        assert r.status_code == 409
+        r = client.post("/api/restore", json={"filename": "x.tar.gz"})
+        assert r.status_code == 409
+
+
+def test_second_backup_409s_while_first_holds_the_slot(monkeypatch):
+    class _T:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(hb.threading, "Thread", _T)
+    with _client() as client:
+        r1 = client.post("/api/backup/now", json={"strategy": "full"})
+        assert r1.status_code == 200
+        r2 = client.post("/api/backup/now", json={"strategy": "full"})
+        assert r2.status_code == 409
+
+
+def test_reboot_failure_publishes_error(monkeypatch):
+    class _T:
+        def __init__(self, target=None, daemon=None, args=()):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(hb.threading, "Thread", _T)
+    monkeypatch.setattr(hb.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        hb.subprocess, "run",
+        lambda *a, **k: type("R", (), {"returncode": 1})())
+    with _client() as client:
+        r = client.post("/api/system/reboot")
+        assert r.status_code == 200
+        assert hb.read_status()["status"] == "error"
+        assert not hb.task_running()
 
 
 if __name__ == "__main__":
