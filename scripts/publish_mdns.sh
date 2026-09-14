@@ -1,25 +1,36 @@
 #!/bin/bash
-# Publish A records for nc/vault/ha.homebrain.local via Avahi.
-#
-# homebrain.local is the machine hostname (avahi-daemon already advertises
-# it). The three aliases do not exist until something publishes them —
-# Caddy SANs are not DNS. avahi-publish stays in the foreground; systemd
-# restarts the unit when the LAN IP changes (refresh_vault_lan_ip).
+# Flat .local names work with nss-mdns's two-label limit. Republish when the
+# multicast route's source changes; never select a Docker/loopback address.
 set -euo pipefail
-
-ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[[ -n "$ip" ]] || exit 1
-
 pids=()
-cleanup() { kill "${pids[@]}" 2>/dev/null || true; }
+cleanup() {
+    if ((${#pids[@]})); then
+        kill "${pids[@]}" 2>/dev/null || true
+        wait "${pids[@]}" 2>/dev/null || true
+    fi
+    pids=()
+}
 trap cleanup EXIT
-
-for name in nc.homebrain.local vault.homebrain.local ha.homebrain.local; do
-	avahi-publish -a -R "$name" "$ip" &
-	pids+=($!)
+trap 'exit 0' TERM INT
+current_ip=""
+while true; do
+    ip=$(ip -4 route get 224.0.0.251 2>/dev/null | awk '
+        {for (i=1;i<=NF;i++) {if ($i=="dev") dev=$(i+1); if ($i=="src") src=$(i+1)}}
+        END {if (dev!="lo" && dev!~/^(docker|br-|veth)/) print src}') || ip=""
+    alive=true
+    for pid in "${pids[@]}"; do
+        kill -0 "$pid" 2>/dev/null || alive=false
+    done
+    if [[ "$ip" != "$current_ip" || "$alive" == false ]]; then
+        cleanup
+        current_ip="$ip"
+        if [[ -n "$ip" ]]; then
+            for name in nc-homebrain.local vault-homebrain.local ha-homebrain.local; do
+                avahi-publish -a -R "$name" "$ip" &
+                pids+=($!)
+            done
+        fi
+    fi
+    sleep 5 &
+    wait $! || true
 done
-
-# Any publisher dying (IP gone, avahi restarted) takes the unit down so
-# systemd brings all three back on the current address.
-wait -n "${pids[@]}"
-exit 1

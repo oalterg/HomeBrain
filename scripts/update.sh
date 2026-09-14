@@ -1,6 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
+# Dashboard updates (including an old manager's self-updated script) must
+# leave the manager cgroup before restarting it. A fixed unit rejects overlap.
+# Journal/file logging survives the caller disappearing; no pipe back to it.
+if [[ "${HOMEBRAIN_UPDATE_DETACHED:-0}" != 1 ]]; then
+    exec systemd-run --unit=homebrain-update --collect --wait \
+        --setenv=HOMEBRAIN_UPDATE_DETACHED=1 \
+        --setenv="ALLOW_DOWNGRADE=${ALLOW_DOWNGRADE:-0}" \
+        --setenv="SKIP_PREUPDATE_BACKUP=${SKIP_PREUPDATE_BACKUP:-0}" \
+        /bin/bash "$(readlink -f "$0")" "$@"
+fi
+
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 
@@ -310,8 +321,7 @@ if [ "$UNITS_CHANGED" = true ]; then
     systemctl daemon-reload
     log_info "Service files synchronized."
     # Caddy takes host :80/:443. Release gunicorn from :80 before compose publishes Caddy.
-    systemctl restart homebrain-manager \
-        || log_warn "Manager restart after unit sync failed — Caddy may not bind :80."
+    systemctl restart homebrain-manager || die "Manager restart failed; aborting LAN migration."
 fi
 # The health timer ships disabled on boxes provisioned before it existed —
 # enable it (idempotent). smartmontools is a provision-time dep; install it
@@ -322,14 +332,15 @@ systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.
 systemctl enable --now homebrain-ha-watch.service 2>/dev/null || true
 systemctl enable --now homebrain-email-watch.service 2>/dev/null || true
-# mDNS aliases for nc/vault/ha.homebrain.local. New on boxes that predates LAN HTTPS.
+# mDNS aliases for nc/vault/ha-homebrain.local. New on boxes that predates LAN HTTPS.
 command -v avahi-publish >/dev/null 2>&1 \
     || apt-get install -y -qq avahi-daemon avahi-utils libnss-mdns 2>/dev/null \
-    || log_warn "avahi install failed — nc/vault/ha.homebrain.local will not resolve on the LAN."
+    || log_warn "avahi install failed — nc/vault/ha-homebrain.local will not resolve on the LAN."
 chmod +x "$INSTALL_DIR/scripts/publish_mdns.sh" 2>/dev/null || true
 ensure_lan_hosts
 systemctl enable --now avahi-daemon.service 2>/dev/null || true
-systemctl enable --now homebrain-mdns.service 2>/dev/null || true
+systemctl enable homebrain-mdns.service 2>/dev/null || true
+systemctl restart homebrain-mdns.service || log_warn "LAN name publisher failed to restart."
 # Drop the short-lived drop-in that delayed dockerd until a default route
 # existed. Superseded by the `dns:` upstreams on the newt container, which fix
 # the tunnel-after-reboot bug without delaying boot. Idempotent, no-op on a box
@@ -369,7 +380,7 @@ command -v ufw >/dev/null 2>&1 && ufw delete allow 18789/tcp >/dev/null 2>&1 || 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
     ufw allow 80/tcp >/dev/null 2>&1 || true
     ufw allow 443/tcp >/dev/null 2>&1 || true
-    ufw allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
+    ufw delete allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
     ufw delete allow 8080/tcp >/dev/null 2>&1 || true
     ufw delete allow 8123/tcp >/dev/null 2>&1 || true
 fi
@@ -423,7 +434,8 @@ docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --re
 
 # Teach Nextcloud the HTTPS names. A box that still has overwriteprotocol=http
 # and http://homebrain.local:8080 would fight the new Caddy routes.
-configure_nc_ha_proxy_settings || log_warn "Failed to apply LAN HTTPS proxy settings."
+wait_for_healthy "nextcloud" 180 || die "Nextcloud is not ready for proxy migration."
+configure_nc_ha_proxy_settings || die "Failed to apply LAN HTTPS proxy settings."
 
 # 6c. Nextcloud schema reconcile — a docker image bump lands new code in the
 # html volume, but the DB migration still has to run. The image entrypoint's

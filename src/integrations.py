@@ -412,7 +412,7 @@ def _spec_vault() -> dict | None:
             # was read by nothing (grep mcp-vault.py: 0 hits) and every other
             # spec already passes the dir form.
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
-            # vault.homebrain.local is this box's Caddy (`tls internal`);
+            # vault-homebrain.local is this box's Caddy (`tls internal`);
             # Node rejects the untrusted CA. Loopback via /etc/hosts —
             # a MITM there already implies code execution as root. Same
             # reasoning as _vault_bw_argv() in app.py, which sets it for the

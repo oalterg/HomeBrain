@@ -32,7 +32,7 @@ if grep -qE ':8443|:8444' "$CADDY"; then
 else
     ok "Caddyfile has no :8443/:8444"
 fi
-for name in homebrain.local nc.homebrain.local vault.homebrain.local ha.homebrain.local; do
+for name in homebrain.local nc-homebrain.local vault-homebrain.local ha-homebrain.local; do
     if grep -q "$name" "$CADDY"; then
         ok "Caddyfile names $name"
     else
@@ -114,7 +114,7 @@ if [[ -f "$MDNS_UNIT" && -f "$PUBLISH" ]]; then
 else
     bad "mdns unit and publisher script are in tree"
 fi
-for name in nc.homebrain.local vault.homebrain.local ha.homebrain.local; do
+for name in nc-homebrain.local vault-homebrain.local ha-homebrain.local; do
     if grep -q "$name" "$PUBLISH"; then
         ok "publisher advertises $name"
     else
@@ -136,10 +136,10 @@ if grep -qF 'overwriteprotocol --value=http ' <<< "$nc_fn" \
 else
     ok "local mode does not force overwriteprotocol=http"
 fi
-if grep -q 'overwrite.cli.url --value="https://nc.homebrain.local"' <<< "$nc_fn"; then
-    ok "local overwrite.cli.url is https://nc.homebrain.local"
+if grep -q 'overwrite.cli.url --value="https://nc-homebrain.local"' <<< "$nc_fn"; then
+    ok "local overwrite.cli.url is https://nc-homebrain.local"
 else
-    bad "local overwrite.cli.url is https://nc.homebrain.local"
+    bad "local overwrite.cli.url is https://nc-homebrain.local"
 fi
 if grep -q 'homebrain.local:8080' <<< "$nc_fn"; then
     bad "proxy settings do not mention :8080"
@@ -203,15 +203,15 @@ else
     LAN_HOSTS_FILE="$TMP/hosts"
     printf '127.0.0.1 localhost\n' > "$LAN_HOSTS_FILE"
     ensure_lan_hosts
-    if grep -q 'nc.homebrain.local' "$LAN_HOSTS_FILE" \
-       && grep -q 'vault.homebrain.local' "$LAN_HOSTS_FILE" \
-       && grep -q 'ha.homebrain.local' "$LAN_HOSTS_FILE"; then
+    if grep -q 'nc-homebrain.local' "$LAN_HOSTS_FILE" \
+       && grep -q 'vault-homebrain.local' "$LAN_HOSTS_FILE" \
+       && grep -q 'ha-homebrain.local' "$LAN_HOSTS_FILE"; then
         ok "ensure_lan_hosts writes the three aliases"
     else
         bad "ensure_lan_hosts writes the three aliases"
     fi
     ensure_lan_hosts
-    count="$(grep -c 'nc.homebrain.local' "$LAN_HOSTS_FILE" || true)"
+    count="$(grep -c 'nc-homebrain.local' "$LAN_HOSTS_FILE" || true)"
     if [[ "$count" -eq 1 ]]; then
         ok "a second ensure_lan_hosts call does not duplicate"
     else
@@ -226,7 +226,7 @@ else
     hostname() { printf '192.168.1.1 \n'; }
     refresh_vault_lan_ip >/dev/null 2>&1
     got="$(env_value VAULT_DOMAIN)"
-    if [[ "$got" == "https://vault.homebrain.local" ]]; then
+    if [[ "$got" == "https://vault-homebrain.local" ]]; then
         ok "local VAULT_DOMAIN heals off :8443"
     else
         bad "local VAULT_DOMAIN heals off :8443 (got '$got')"

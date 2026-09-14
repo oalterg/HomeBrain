@@ -1406,8 +1406,8 @@ def index():
     # Names, not the request host: a raw IP is the dashboard only.
     lan_access = _is_lan_request()
     if local or lan_access:
-        nc_url = "https://nc.homebrain.local"
-        ha_url = "https://ha.homebrain.local"
+        nc_url = "https://nc-homebrain.local"
+        ha_url = "https://ha-homebrain.local"
     else:
         nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
         ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
@@ -3624,7 +3624,7 @@ def _vault_base_url():
 def _vault_public_url():
     """The user-facing vault URL.
 
-    On the LAN this is always https://vault.homebrain.local — names, not
+    On the LAN this is always https://vault-homebrain.local — names, not
     ports, not the request IP (a raw IP on 443 is the dashboard). Away from
     home it is the tunnel URL.
     """
@@ -3635,13 +3635,13 @@ def _vault_public_url():
             return domain
         pd = env.get("PANGOLIN_DOMAIN")
         return f"https://vault.{pd}" if pd else ""
-    return "https://vault.homebrain.local"
+    return "https://vault-homebrain.local"
 
 
 def _ha_public_url():
     env = get_env_config()
     if is_local_mode() or _is_lan_request():
-        return "https://ha.homebrain.local"
+        return "https://ha-homebrain.local"
     domain = env.get("HA_TRUSTED_DOMAINS", "")
     return f"https://{domain}" if domain else ""
 
@@ -3825,17 +3825,17 @@ def _vault_bw_url():
     """The URL the bw CLI on this box uses to reach the local vault.
 
     Always loopback-name to the Caddy TLS edge. Vaultwarden insists on HTTPS,
-    and /etc/hosts points vault.homebrain.local at 127.0.0.1 so this never
+    and /etc/hosts points vault-homebrain.local at 127.0.0.1 so this never
     leaves the box. Talking to the public VAULT_DOMAIN would route through
     Pangolin and present the wrong cert.
     """
-    return "https://vault.homebrain.local"
+    return "https://vault-homebrain.local"
 
 
 def _vault_bw_argv(*bw_args, session=None):
     """Build a `sudo -u homebrain env … bw …` argv that survives sudo's
     env-stripping. We need NODE_TLS_REJECT_UNAUTHORIZED=0 (Caddy's
-    internal CA is not in the system store; vault.homebrain.local is
+    internal CA is not in the system store; vault-homebrain.local is
     loopback via /etc/hosts — MITM there already implies root) and
     optionally BW_SESSION inside the bw process's environment, not just
     the sudo wrapper's."""
@@ -4051,7 +4051,7 @@ def vault_mcp_wire_up():
             "VAULT_SESSION_FILE": VAULT_MCP_SESSION_FILE,
             "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log",
             # bw on this box talks to Caddy's `tls internal` cert for
-            # vault.homebrain.local; Node's hostname check rejects the
+            # vault-homebrain.local; Node's hostname check rejects the
             # untrusted CA. Loopback only — MITM impossible without root.
             "NODE_TLS_REJECT_UNAUTHORIZED": "0",
         },
@@ -4150,7 +4150,7 @@ def vault_docs_status():
         if info["e2ee_enabled"] and info["folder_exists"]:
             base = ""
             if is_local_mode():
-                base = "https://nc.homebrain.local"
+                base = "https://nc-homebrain.local"
             else:
                 base = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
             info["folder_url"] = f"{base}/apps/files/?dir=/Documents%20(Encrypted)"
@@ -4804,12 +4804,12 @@ def nc_client_url(env):
     """The address to hand a phone, and whether it works away from home.
 
     Prefer the tunnel: a phone that only syncs inside the house is not a photo
-    backup. The LAN fallback is https://nc.homebrain.local; the phone will ask
+    backup. The LAN fallback is https://nc-homebrain.local; the phone will ask
     about this box's certificate unless its CA has been installed."""
     domains = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()
     if domains:
         return f"https://{domains[0]}", True
-    return "https://nc.homebrain.local", False
+    return "https://nc-homebrain.local", False
 
 
 # Nextcloud's built-in preview list, plus HEIC. Kept whole because setting the

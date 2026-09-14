@@ -5,7 +5,7 @@ Home Assistant, and Vault. It is the remote path for **HomeCloud** (no GPU, no a
 On a GPU **HomeBrain** box the daily remote path is Telegram; Pangolin is only needed if
 you want those web UIs from outside the LAN.
 
-The LAN is the same map with a `.local` suffix, HTTPS on 443, no ports:
+The LAN uses flat names such as `nc-homebrain.local`, HTTPS on 443, no ports:
 [`LAN_HTTPS.md`](plans/LAN_HTTPS.md). Caddy is the only process that faces
 the LAN; host-published 8080 / 8123 / 8082 are loopback-only and are not
 owner-facing URLs.
@@ -39,6 +39,9 @@ sudo /opt/homebrain/scripts/provision.sh \
 It stores `NEWT_ID` / `NEWT_SECRET` / `PANGOLIN_ENDPOINT` / `PANGOLIN_DOMAIN` in
 `factory_config.txt` + `.env`, then (on an already-set-up box) redeploys, verifies the
 tunnel connected, and prints the resource map below.
+
+For the port-80 migration and client re-pairing sequence, follow
+[LAN upgrade instructions](plans/LAN_HTTPS.md#6-upgrade-and-client-onboarding).
 
 ## Pangolin side (manual): resources → targets
 

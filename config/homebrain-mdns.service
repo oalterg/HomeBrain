@@ -1,5 +1,5 @@
 [Unit]
-Description=HomeBrain mDNS aliases (nc/vault/ha.homebrain.local)
+Description=HomeBrain mDNS aliases (nc/vault/ha-homebrain.local)
 After=avahi-daemon.service network-online.target
 Wants=avahi-daemon.service network-online.target
 

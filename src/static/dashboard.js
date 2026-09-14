@@ -910,7 +910,7 @@ function connHaAddLocal() {
     document.getElementById('ha-base-url').value = 'http://127.0.0.1:8123';
     const hint = document.getElementById('ha-local-hint');
     if (hint) {
-        const tokenUrl = 'https://ha.homebrain.local/profile/security';
+        const tokenUrl = 'https://ha-homebrain.local/profile/security';
         hint.innerHTML = `Open <a href="${tokenUrl}" target="_blank" rel="noopener">Home Assistant → Profile → Security</a>, create a long-lived access token, and paste it below.`;
         hint.style.display = 'block';
     }

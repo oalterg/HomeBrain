@@ -2,15 +2,15 @@
 #
 # Owner-facing URLs are names on 443, no ports:
 #   homebrain.local        dashboard (host gunicorn via Docker host-gateway)
-#   nc.homebrain.local     Nextcloud
-#   vault.homebrain.local  Vaultwarden
-#   ha.homebrain.local     Home Assistant
+#   nc-homebrain.local     Nextcloud
+#   vault-homebrain.local  Vaultwarden
+#   ha-homebrain.local     Home Assistant
 #
 # Caddy mints one internal CA covering all four. Download it from the
 # dashboard as this box's certificate. Persistent PKI lives in caddy_data.
 #
 # A raw IP on 443 is the dashboard (one service). Phones that cannot
-# resolve .local should use the name, not https://192.168.x.x.
+# resolve .local need local DNS/hosts entries; an IP cannot select the apps.
 #
 # Loopback/health/MCP keep talking to 127.0.0.1 on unpublished ports.
 
@@ -41,7 +41,7 @@ homebrain.local, 127.0.0.1, {$VAULT_LAN_IP:127.0.0.2} {
 	reverse_proxy host.docker.internal:8000
 }
 
-nc.homebrain.local {
+nc-homebrain.local {
 	tls internal
 	reverse_proxy nextcloud:80 {
 		header_up X-Forwarded-Proto https
@@ -49,7 +49,7 @@ nc.homebrain.local {
 	}
 }
 
-vault.homebrain.local {
+vault-homebrain.local {
 	tls internal
 	reverse_proxy vaultwarden:80 {
 		header_up X-Forwarded-Proto https
@@ -57,7 +57,7 @@ vault.homebrain.local {
 	}
 }
 
-ha.homebrain.local {
+ha-homebrain.local {
 	tls internal
 	reverse_proxy homeassistant:8123 {
 		header_up X-Forwarded-Proto https

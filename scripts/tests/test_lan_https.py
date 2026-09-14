@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LAN HTTPS is names on 443, no ports.
 
-The product tells a phone https://nc.homebrain.local, never
+The product tells a phone https://nc-homebrain.local, never
 http://homebrain.local:8080 or https://homebrain.local:8444. The box CA
 is this box's certificate, not a Vault CA, and it is downloadable on the
 LAN in both deployment modes.
@@ -20,7 +20,7 @@ import app as hb            # noqa: E402
 
 def test_local_pairing_url_is_the_nc_name():
     url, remote = hb.nc_client_url({})
-    assert url == "https://nc.homebrain.local"
+    assert url == "https://nc-homebrain.local"
     assert remote is False
     assert ":" not in url.split("://", 1)[1]
 
@@ -34,15 +34,15 @@ def test_pairing_url_prefers_the_tunnel_when_one_exists():
 def test_pairing_url_does_not_print_the_old_https_port():
     url, _ = hb.nc_client_url({"NC_LOCAL_HTTPS_PORT": "8444"})
     assert "8444" not in url
-    assert url == "https://nc.homebrain.local"
+    assert url == "https://nc-homebrain.local"
 
 
 def test_lan_vault_and_ha_urls_are_names(monkeypatch):
     monkeypatch.setattr(hb, "is_local_mode", lambda: True)
     with hb.app.test_request_context("/", headers={"Host": "192.168.178.58"}):
-        assert hb._vault_public_url() == "https://vault.homebrain.local"
-        assert hb._ha_public_url() == "https://ha.homebrain.local"
-        assert hb._vault_bw_url() == "https://vault.homebrain.local"
+        assert hb._vault_public_url() == "https://vault-homebrain.local"
+        assert hb._ha_public_url() == "https://ha-homebrain.local"
+        assert hb._vault_bw_url() == "https://vault-homebrain.local"
 
 
 def test_remote_off_lan_keeps_the_tunnel_urls(monkeypatch):
@@ -60,8 +60,8 @@ def test_remote_on_lan_still_uses_local_names(monkeypatch):
     """A remote-mode box opened at homebrain.local must not print :8443."""
     monkeypatch.setattr(hb, "is_local_mode", lambda: False)
     with hb.app.test_request_context("/", headers={"Host": "homebrain.local"}):
-        assert hb._vault_public_url() == "https://vault.homebrain.local"
-        assert hb._ha_public_url() == "https://ha.homebrain.local"
+        assert hb._vault_public_url() == "https://vault-homebrain.local"
+        assert hb._ha_public_url() == "https://ha-homebrain.local"
 
 
 def test_box_ca_is_served_in_remote_mode(monkeypatch):

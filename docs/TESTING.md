@@ -137,15 +137,15 @@ No external tunnel; access via `homebrain.local`.
 ### Vault — LAN HTTPS (Caddy + box CA)
 
 - [ ] `caddy` container reaches healthy within 30 s of first boot
-- [ ] In local mode `VAULT_DOMAIN` is `https://vault.homebrain.local`
+- [ ] In local mode `VAULT_DOMAIN` is `https://vault-homebrain.local`
 - [ ] `curl -k https://homebrain.local/healthz` returns HTTP 200
-- [ ] Browser at `https://vault.homebrain.local/` shows the Bitwarden web vault (cert warning expected until CA is installed)
+- [ ] Browser at `https://vault-homebrain.local/` shows the Bitwarden web vault (cert warning expected until CA is installed)
 - [ ] `/api/vault/local-ca` returns a PEM (`homebrain-ca.pem`) in **both** modes; installing it on a phone removes the warning
-- [ ] After CA install, Bitwarden Android app at `https://vault.homebrain.local` connects without trust errors
+- [ ] After CA install, Bitwarden Android app at `https://vault-homebrain.local` connects without trust errors
 - [ ] WebSocket sync works: edit a credential in browser ext → mobile updates within 2 s
 - [ ] Mode flip local → remote → `redeploy_tunnels.sh` keeps Caddy up; `VAULT_DOMAIN` updates; LAN names still work
-- [ ] `nc.homebrain.local` / `vault.homebrain.local` / `ha.homebrain.local` resolve (Avahi) to the box's LAN IP
-- [ ] Nextcloud pairing QR in local mode is `https://nc.homebrain.local` (no port)
+- [ ] `nc-homebrain.local` / `vault-homebrain.local` / `ha-homebrain.local` resolve (Avahi) to the box's LAN IP
+- [ ] Nextcloud pairing QR in local mode is `https://nc-homebrain.local` (no port)
 
 ### Vault — encrypted documents (Nextcloud E2EE)
 

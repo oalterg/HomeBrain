@@ -108,7 +108,7 @@ if [[ -z "${VAULT_DOMAIN:-}" ]]; then
         # LAN HTTPS via Caddy. Bitwarden clients require TLS.
         # This VAULT_DOMAIN is the canonical URL Vaultwarden uses internally
         # (Send links, password-reset emails, etc.).
-        update_env_var "VAULT_DOMAIN" "https://vault.homebrain.local"
+        update_env_var "VAULT_DOMAIN" "https://vault-homebrain.local"
     else
         # Remote mode: vault.<tunnel-domain>, served via Pangolin TLS edge.
         if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then

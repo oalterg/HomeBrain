@@ -981,7 +981,7 @@ wait_for_apt_lock() {
     done
 }
 
-# Point nc/vault/ha.homebrain.local at loopback so tools on this box
+# Point nc/vault/ha-homebrain.local at loopback so tools on this box
 # (bw CLI, curl) resolve the names without waiting on mDNS. Phones get
 # the LAN IP from the Avahi publisher, not from here.
 #
@@ -990,8 +990,10 @@ ensure_lan_hosts() {
     local dest="${LAN_HOSTS_FILE:-/etc/hosts}"
     local begin="# BEGIN homebrain-lan"
     [[ -f "$dest" && -w "$dest" ]] || return 0
-    grep -q "^${begin}$" "$dest" 2>/dev/null && return 0
-    printf '\n%s\n127.0.0.1 nc.homebrain.local vault.homebrain.local ha.homebrain.local\n%s\n' \
+    local contents
+    contents=$(sed '/^# BEGIN homebrain-lan$/,/^# END homebrain-lan$/d' "$dest")
+    printf '%s\n' "$contents" > "$dest"
+    printf '\n%s\n127.0.0.1 nc-homebrain.local vault-homebrain.local ha-homebrain.local\n%s\n' \
         "$begin" "# END homebrain-lan" >> "$dest"
     return 0
 }
@@ -1017,9 +1019,9 @@ refresh_vault_lan_ip() {
     # https://homebrain.local:8443 from before LAN HTTPS.
     if is_local_mode; then
         case "${VAULT_DOMAIN:-}" in
-            ''|https://homebrain.local:8443|https://homebrain.local)
-                update_env_var "VAULT_DOMAIN" "https://vault.homebrain.local"
-                export VAULT_DOMAIN="https://vault.homebrain.local"
+            ''|https://homebrain.local:8443|https://homebrain.local|https://vault.homebrain.local)
+                update_env_var "VAULT_DOMAIN" "https://vault-homebrain.local"
+                export VAULT_DOMAIN="https://vault-homebrain.local"
                 ;;
         esac
     fi
@@ -1424,18 +1426,20 @@ configure_nc_ha_proxy_settings() {
     fi
     log_info "Detected Docker Subnet: $subnet"
 
+    # Both entry points forward Host. Remove the old LAN-only override so
+    # switching modes keeps LAN and public links on the requested hostname.
     # 1. Update Nextcloud Trusted Proxies
     if [[ -n "$nc_cid" ]]; then
+        docker exec --user www-data "$nc_cid" php occ config:system:delete overwritehost || die "Failed to clear overwritehost."
         if is_local_mode; then
             # Local mode: HTTPS names on 443, no ports. Pairing is
-            # https://nc.homebrain.local for the life of that pairing.
+            # https://nc-homebrain.local for the life of that pairing.
             local lan_ip
             lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
             docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
-            docker exec --user www-data "$nc_cid" php occ config:system:set overwritehost --value="nc.homebrain.local" || true
-            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://nc.homebrain.local" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://nc-homebrain.local" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="localhost" || die "Failed to set trusted_domains localhost."
-            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc.homebrain.local" || die "Failed to set trusted_domains nc.homebrain.local."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc-homebrain.local" || die "Failed to set trusted_domains nc-homebrain.local."
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="homebrain.local" || die "Failed to set trusted_domains homebrain.local."
             if [[ -n "$lan_ip" ]]; then
                 docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="$lan_ip" || die "Failed to set trusted_domains LAN IP."
@@ -1452,7 +1456,7 @@ configure_nc_ha_proxy_settings() {
             docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
             docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://${NEXTCLOUD_TRUSTED_DOMAINS}" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
-            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc.homebrain.local" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc-homebrain.local" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="homebrain.local" || true
             if [[ -n "$lan_ip" ]]; then
                 docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="$lan_ip" || true

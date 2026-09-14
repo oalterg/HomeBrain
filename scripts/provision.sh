@@ -100,7 +100,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; 
     ufw allow 80/tcp    # Caddy HTTP → HTTPS
     ufw allow 443/tcp   # Caddy HTTPS (the LAN face)
     # Caddy and Pangolin reach the manager via the Docker bridge, not the LAN.
-    ufw allow from 172.16.0.0/12 to any port 8000 proto tcp
+    ufw delete allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
     ufw delete allow 8080/tcp >/dev/null 2>&1 || true
     ufw delete allow 8123/tcp >/dev/null 2>&1 || true
     # No 18789 rule: the OpenClaw gateway binds loopback only and is
@@ -300,14 +300,15 @@ systemctl enable --now homebrain-offsite.timer 2>/dev/null \
     && log_info "Off-site resume timer enabled." \
     || log_warn "Failed to enable off-site resume timer."
 
-# mDNS aliases for nc/vault/ha.homebrain.local. homebrain.local is the
+# mDNS aliases for nc/vault/ha-homebrain.local. homebrain.local is the
 # machine hostname; these three do not exist until we publish them.
 cp "${SCRIPT_DIR}/../config/homebrain-mdns.service" /etc/systemd/system/
 chmod +x "${SCRIPT_DIR}/publish_mdns.sh"
 ensure_lan_hosts
 systemctl daemon-reload
 systemctl enable --now avahi-daemon.service 2>/dev/null || true
-systemctl enable --now homebrain-mdns.service 2>/dev/null \
+systemctl enable homebrain-mdns.service 2>/dev/null \
+    && systemctl restart homebrain-mdns.service \
     && log_info "mDNS aliases published." \
     || log_warn "mDNS aliases not started (avahi missing is OK on a non-appliance test)."
 
@@ -318,7 +319,7 @@ if ( cd "$INSTALL_DIR" && VAULT_LAN_IP="${_lan_ip:-127.0.0.2}" \
         docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d --no-deps caddy ); then
     log_info "Caddy is up — wizard at https://homebrain.local"
 else
-    log_warn "Caddy did not start — wizard is at http://<ip>:8000 until deploy."
+    log_warn "Caddy did not start — inspect docker compose logs caddy locally before continuing."
 fi
 
 # --- 6. OpenClaw integration scaffold ---
