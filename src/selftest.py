@@ -184,7 +184,7 @@ def check_dashboard_password(env):
         return result("Dashboard password", SKIP, "No MANAGER_PASSWORD is recorded.",
                       "Set a master password in Settings.")
     body = urllib.parse.urlencode({"password": pw}).encode()
-    code, _ = http("POST", "http://127.0.0.1/login", data=body,
+    code, _ = http("POST", "http://127.0.0.1:8000/login", data=body,
                    headers={"Content-Type": "application/x-www-form-urlencoded"})
     if code == 200:
         return result("Dashboard password", OK, "The dashboard accepts the recorded password.")

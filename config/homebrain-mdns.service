@@ -1,0 +1,13 @@
+[Unit]
+Description=HomeBrain mDNS aliases (nc/vault/ha-homebrain.local)
+After=avahi-daemon.service network-online.target
+Wants=avahi-daemon.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/homebrain/scripts/publish_mdns.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

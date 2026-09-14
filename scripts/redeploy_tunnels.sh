@@ -38,15 +38,12 @@ fi
 vault_profiles=$(get_vault_profiles)
 if [[ -n "$profiles" || -n "$vault_profiles" ]]; then
     docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} pull
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
 fi
-# In remote mode, ensure Caddy is stopped (mode flip from local→remote
-# leaves it running otherwise — its profile is now opt-out).
-if [[ -z "$vault_profiles" ]]; then
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) stop caddy 2>/dev/null || true
-fi
-if [[ -z "$profiles" && -z "$vault_profiles" ]]; then
-    log_info "No tunnel and no vault profile configured."
+# Always up: Caddy is the LAN face in both modes. Empty tunnel profiles
+# keep newt down; default services (including caddy) still start.
+docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
+if [[ -z "$profiles" ]]; then
+    log_info "No tunnel profile configured (LAN HTTPS still served by Caddy)."
 fi
 
 # 3. Reapply Proxy/Trust Configurations

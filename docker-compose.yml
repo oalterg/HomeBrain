@@ -40,8 +40,9 @@ services:
   nextcloud:
     image: nextcloud:33.0.6-apache
     restart: unless-stopped
+    # Loopback only — Caddy is the LAN face. Health/MCP/self-test use 127.0.0.1.
     ports:
-      - "${NEXTCLOUD_PORT:-8080}:80"
+      - "127.0.0.1:${NEXTCLOUD_PORT:-8080}:80"
     volumes:
       - nextcloud_html:/var/www/html
       - ${NEXTCLOUD_DATA_DIR:-/home/homebrain/nextcloud-data}:/var/www/html/data
@@ -72,8 +73,9 @@ services:
   homeassistant:
     image: homeassistant/home-assistant:2026.7.2
     restart: unless-stopped
+    # Loopback only — Caddy is the LAN face. Health/MCP/self-test use 127.0.0.1.
     ports:
-      - "${HA_PORT:-8123}:8123"
+      - "127.0.0.1:${HA_PORT:-8123}:8123"
     volumes:
       - ha_config:/config
     environment:
@@ -85,33 +87,32 @@ services:
       retries: 5
 
   caddy:
-    # Always runs: provides local HTTPS access to Vault and Nextcloud so LAN
-    # links work even when the tunnel is down.  In remote mode Pangolin
-    # terminates TLS at the public edge; Caddy is the LAN fallback.
+    # The only process that faces the LAN: HTTPS on 443, HTTP on 80 to redirect.
+    # Always runs, including remote mode — LAN names stay live when the tunnel
+    # is down, and the box CA is downloadable from homebrain.local either way.
     image: caddy:2.11.4-alpine
     restart: unless-stopped
     ports:
-      - "${VAULT_LOCAL_HTTPS_PORT:-8443}:8443"
-      - "${NC_LOCAL_HTTPS_PORT:-8444}:8444"
+      - "80:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
       - VAULT_LAN_IP=${VAULT_LAN_IP:-127.0.0.2}
-    depends_on:
-      - vaultwarden
-      - nextcloud
     logging:
       driver: "json-file"
       options:
         max-size: "5m"
         max-file: "2"
     healthcheck:
-      # Caddy serves TLS on :8443 with an internal CA. wget --no-check-certificate
-      # accepts the self-signed leaf without trying to verify against the host's
-      # CA bundle.
-      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:8443/healthz"]
+      # tls internal. wget --no-check-certificate accepts the leaf without
+      # the host CA bundle. /healthz is served on the dashboard site, which
+      # is also the default_sni / IP catch-all.
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1/healthz"]
       interval: 30s
       timeout: 5s
       retries: 5

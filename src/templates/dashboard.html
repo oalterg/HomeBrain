@@ -60,10 +60,20 @@
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
                     <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
                     <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
+                    <a href="/api/vault/local-ca" class="link-out" title="Install on each phone so this box's HTTPS names are trusted">This box's certificate<span aria-hidden="true">↓</span></a>
                     {% if has_gpu %}
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
                     {% endif %}
                 </div>
+                <details class="small">
+                    <summary>Trust this box on your phone</summary>
+                    <p>Download this box's certificate and install it as a trusted CA on each device.
+                        On iPhone or iPad, also enable full trust in Settings → General → About → Certificate Trust Settings.
+                        Verify that both your browser and each app connect without a certificate warning.</p>
+                    <p>Use the main home Wi-Fi. If local names do not resolve, turn off VPN or DNS filtering;
+                        your network administrator may need to enable local name discovery. Old app URLs with
+                        ports must be replaced with the service links above.</p>
+                </details>
             </div>
 
             {% if has_gpu %}
@@ -587,7 +597,8 @@
             <section class="section" id="network-card">
                 <h3>Network <span class="h-note">— a stable address for cameras and devices</span></h3>
                 <p class="lede">Cameras and many smart devices can't resolve <code>homebrain.local</code> — they need
-                    a numeric IP. Pin a fixed address so the target never changes.</p>
+                    a numeric IP. Pin a fixed address so the target never changes. Phones and computers use the names
+                    (<code>https://nc-homebrain.local</code> and the others), not the IP.</p>
                 <div id="net-status" class="small"><span class="skeleton sk-wide"></span></div>
 
                 <div id="net-pin-form" class="inline-row mt" style="display:none; flex-wrap:wrap; align-items:end;">
@@ -871,9 +882,6 @@
 
                 <div class="link-row">
                     <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
-                    {% if deployment_mode == 'local' %}
-                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
-                    {% endif %}
                 </div>
 
                 <hr>

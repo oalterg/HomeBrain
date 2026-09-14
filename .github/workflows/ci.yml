@@ -43,6 +43,7 @@ jobs:
                             scripts/tests/test_backup_crypto.py \
                             scripts/tests/test_mcp_servers_load.py scripts/tests/test_selftest.py \
                             scripts/tests/test_photo_pairing.py \
+                            scripts/tests/test_lan_https.py scripts/tests/test_lan_lifecycle.py \
                             scripts/tests/test_vault_account.py \
                             scripts/tests/test_member_escrow.py \
                             scripts/tests/test_household_roster.py \
@@ -76,6 +77,8 @@ jobs:
         run: bash scripts/tests/test_backup_member_escrow.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
+      - name: LAN HTTPS is names on 443
+        run: bash scripts/tests/test_lan_https.sh
       - name: Vaultwarden pin (both pins agree, past the Android `data` fix)
         run: bash scripts/tests/test_vault_tag_pin.sh
       - name: platform detection (fixture sysfs trees)
@@ -129,3 +132,14 @@ jobs:
           printf "%s\n" "VAULT_ADMIN_TOKEN='\$argon2id\$v=19\$m=65540\$t=3\$p=4\$c2FsdHNhbHRzYWx0c2FsdA\$aGFzaGhhc2hoYXNo'" >> .env
           docker compose -f docker-compose.yml config > /tmp/compose.yml
           grep -q 'argon2id' /tmp/compose.yml
+
+  lan-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install LAN resolver dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq avahi-daemon avahi-utils libnss-mdns
+      - name: LAN edge integration (TLS, firewall, mDNS, updater cgroup)
+        run: sudo bash scripts/tests/test_lan_edge.sh

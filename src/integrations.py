@@ -343,7 +343,7 @@ def _spec_self() -> dict:
         "command": PYTHON_BIN,
         "args": [os.path.join(SCRIPTS_DIR, "mcp-homebrain.py")],
         "env": {
-            "HOMEBRAIN_BASE_URL": "http://127.0.0.1:80",
+            "HOMEBRAIN_BASE_URL": "http://127.0.0.1:8000",
             "HOMEBRAIN_SELF_TOKEN_FILE": SELF_TOKEN_FILE,
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
             "HA_ACCOUNTS_FILE": HA_ACCOUNTS_FILE,
@@ -412,9 +412,8 @@ def _spec_vault() -> dict | None:
             # was read by nothing (grep mcp-vault.py: 0 hits) and every other
             # spec already passes the dir form.
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
-            # The loopback Caddy presents an IP-SAN cert that Node's hostname
-            # check rejects, so every `bw` call that reaches the server fails
-            # TLS without this. Safe because the destination is 127.0.0.1 —
+            # vault-homebrain.local is this box's Caddy (`tls internal`);
+            # Node rejects the untrusted CA. Loopback via /etc/hosts —
             # a MITM there already implies code execution as root. Same
             # reasoning as _vault_bw_argv() in app.py, which sets it for the
             # dashboard's own bw calls; this spec is the other writer of the
