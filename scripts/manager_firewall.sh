@@ -5,7 +5,7 @@
 set -euo pipefail
 iptables -w -N HOMEBRAIN_MANAGER 2>/dev/null || iptables -w -S HOMEBRAIN_MANAGER >/dev/null
 # Insert the terminal reject first. Repeated starts add no duplicate rules.
-for rule in '-j REJECT' '-i br+ -j ACCEPT' '-i docker0 -j ACCEPT' '-i lo -j ACCEPT'; do
+for rule in '-j REJECT' '-i br-+ -j ACCEPT' '-i docker0 -j ACCEPT' '-i lo -j ACCEPT'; do
     # Intentional splitting: each rule above is a fixed argument list.
     # shellcheck disable=SC2086
     iptables -w -C HOMEBRAIN_MANAGER $rule 2>/dev/null || iptables -w -I HOMEBRAIN_MANAGER 1 $rule

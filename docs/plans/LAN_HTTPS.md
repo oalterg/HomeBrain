@@ -93,7 +93,7 @@ cannot select the apps. Networks without this resolution path are not supported
 for LAN pairing; an optional public tunnel remains available.
 
 Gunicorn's pre-start firewall guard accepts port 8000 only on loopback and
-Docker bridge ingress, then rejects every other interface. It runs before
+Docker bridge ingress (`docker0` / `br-*`), then rejects every other interface. It runs before
 binding and fails startup if filtering cannot be installed. UFW is optional;
 no broad private-source-CIDR allowance is needed. Other host services (SSH,
 configured camera FTP) retain their own policies.
