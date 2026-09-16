@@ -4,6 +4,7 @@ Run: python3 -m pytest scripts/tests/test_email_watch.py
 """
 import os
 import sys
+from email.message import EmailMessage
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -124,3 +125,93 @@ def test_prompting_off_is_json_only():
     assert not email_watch.prompting_ready(
         {"enabled": False, "allow_from": ["a@b.c"]},
         [{"name": "A", "user": "agent@ex.com", "agent_mailbox": True}])
+
+
+class FakeWatchIMAP:
+    def __init__(self, messages: dict[int, bytes], uidvalidity=1):
+        self.messages = messages
+        self.untagged_responses = {"UIDVALIDITY": [str(uidvalidity)]}
+        self.uid_commands = []
+        self.readonly = None
+
+    def select(self, mailbox="INBOX", readonly=False):
+        self.readonly = readonly
+        return "OK", [b"1"]
+
+    def uid(self, command, *args):
+        self.uid_commands.append((command,) + args)
+        cmd = (command or "").upper()
+        if cmd == "SEARCH":
+            ids = b" ".join(str(u).encode() for u in sorted(self.messages))
+            return "OK", [ids]
+        if cmd == "FETCH":
+            raw_uid = args[0]
+            uid = int(raw_uid.decode() if isinstance(raw_uid, bytes) else raw_uid)
+            payload = self.messages.get(uid)
+            if payload is None:
+                return "OK", [None]
+            return "OK", [(b"%d (BODY[])" % uid, payload)]
+        if cmd == "STORE":
+            return "OK", [b""]
+        return "BAD", [b"unknown"]
+
+    def logout(self):
+        return "BYE", []
+
+
+def _rfc822(frm, to, subject, body="please file this"):
+    msg = EmailMessage()
+    msg["From"] = frm
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body)
+    return msg.as_bytes()
+
+
+def _seen_stores(imap):
+    return [
+        cmd for cmd in imap.uid_commands
+        if str(cmd[0]).upper() == "STORE" and "Seen" in "".join(map(str, cmd))
+    ]
+
+
+def test_poll_wake_marks_seen(monkeypatch):
+    imap = FakeWatchIMAP({
+        12: _rfc822("Oliver <owner@ex.com>", "agent@ex.com",
+                    "Please save in Nextcloud Rechnungen"),
+    })
+    woken = []
+    monkeypatch.setattr(email_watch, "_imap", lambda acc, key: imap)
+    monkeypatch.setattr(email_watch, "_wake_async", woken.append)
+    state = {"accounts": {"Agent": {"uidvalidity": 1, "last_uid": 11}}}
+    email_watch.poll_account(
+        {"name": "Agent", "user": "agent@ex.com", "agent_mailbox": True},
+        {"enabled": True, "allow_from": ["owner@ex.com"]},
+        ["agent@ex.com"],
+        state,
+        "",
+    )
+    assert woken
+    assert imap.readonly is False
+    assert _seen_stores(imap)
+    assert state["accounts"]["Agent"]["last_uid"] == 12
+
+
+def test_poll_ignore_does_not_mark_seen(monkeypatch):
+    imap = FakeWatchIMAP({
+        12: _rfc822("stranger@ex.com", "agent@ex.com", "hi"),
+    })
+    woken = []
+    monkeypatch.setattr(email_watch, "_imap", lambda acc, key: imap)
+    monkeypatch.setattr(email_watch, "_wake_async", woken.append)
+    state = {"accounts": {"Agent": {"uidvalidity": 1, "last_uid": 11}}}
+    email_watch.poll_account(
+        {"name": "Agent", "user": "agent@ex.com", "agent_mailbox": True},
+        {"enabled": True, "allow_from": ["owner@ex.com"]},
+        ["agent@ex.com"],
+        state,
+        "",
+    )
+    assert woken == []
+    assert _seen_stores(imap) == []
+    assert state["accounts"]["Agent"]["last_uid"] == 12
