@@ -336,6 +336,7 @@ if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
     mkdir -p "${HOMEBRAIN_HOME}/.openclaw"
     for f in ha.token nextcloud.token homebrain.token vault.session \
              ha_accounts.json nc_accounts.json email_accounts.json \
+             email_channel.json \
              ha_watchers.json ha_watch_pings.json pending_actions.json; do
         [[ -f "${TMP_DIR}/openclaw_integrations/${f}" ]] || continue
         cp -a "${TMP_DIR}/openclaw_integrations/${f}" "${HOMEBRAIN_HOME}/.openclaw/${f}"
@@ -347,7 +348,9 @@ if [[ -d "${TMP_DIR}/openclaw_integrations" ]]; then
     # seed quietly, not replay every entity as a fresh on). Drop it and
     # bounce the daemon so it re-seeds from HA.
     rm -f /var/lib/homebrain/ha_watch_state.json
+    rm -f /var/lib/homebrain/email_watch_state.json
     systemctl try-restart homebrain-ha-watch.service 2>/dev/null || true
+    systemctl try-restart homebrain-email-watch.service 2>/dev/null || true
     # homebrain.token above came from the SOURCE box, where it was derived from
     # that box's MASTER_PASSWORD. This box keeps its own master password (only
     # the nonce is portable, see the instance-secret merge earlier), so the

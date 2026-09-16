@@ -13,7 +13,7 @@ credentials in its own process — it pulls the bearer token from
 HOMEBRAIN_SELF_TOKEN_FILE on every call.
 
 Environment:
-  HOMEBRAIN_BASE_URL    e.g. http://127.0.0.1:80 (default)
+  HOMEBRAIN_BASE_URL    e.g. http://127.0.0.1:8000 (default)
   HOMEBRAIN_SELF_TOKEN_FILE  path to bearer token (mode 0600)
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from mcp_common import (  # noqa: E402
 )
 import ha_watch  # noqa: E402
 
-BASE_URL = os.environ.get("HOMEBRAIN_BASE_URL", "http://127.0.0.1:80").rstrip("/")
+BASE_URL = os.environ.get("HOMEBRAIN_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 TOKEN_FILE = os.environ.get(
     "HOMEBRAIN_SELF_TOKEN_FILE",
     os.path.expanduser("~/.openclaw/homebrain.token"),

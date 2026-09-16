@@ -133,6 +133,30 @@ def test_the_prompt_trigger_survives_a_reword():
             "dashboard.js no longer matches on this string — update both sides together"
 
 
+def test_handmade_nextcloud_uid_is_still_a_member():
+    """The roster lists every Nextcloud account, including ones HomeBrain did
+    not mint. Nextcloud keeps the case it was given and allows '@'; MEMBER_ID
+    is the minting rule and is stricter. Using it as a membership test is how
+    clicking vault+ on a person the dashboard just showed yields
+    "Not a household member" instead of asking for their Files password.
+    """
+    env = dict(ENV)
+    assert not hb.not_a_member("Alice", env), hb.not_a_member("Alice", env)
+    assert not hb.not_a_member("jane@site.com", env)
+    assert hb.not_a_member("admin", env)
+    assert hb.not_a_member("Admin", env), "Nextcloud uids are case-insensitive"
+    assert hb.not_a_member("replica", env)
+    assert hb.not_a_member("-flag", env)
+
+    with _client() as c:
+        r = c.post("/api/household/members/Alice/services",
+                   json={"services": ["vault"]})
+    assert r.status_code == 400, r.status_code
+    err = r.get_json()["error"]
+    assert "type the password" in err.lower(), err
+    assert "household member" not in err.lower(), err
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

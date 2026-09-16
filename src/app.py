@@ -1401,14 +1401,13 @@ def index():
     deployment_mode = "local" if local else "remote"
 
     # Compute service URLs.  When the browser reached us on a LAN address
-    # (IP, .local mDNS) serve local URLs so the links work even when
+    # (IP, .local mDNS) serve local names so the links work even when
     # the tunnel is down — regardless of the configured deployment mode.
+    # Names, not the request host: a raw IP is the dashboard only.
     lan_access = _is_lan_request()
     if local or lan_access:
-        host = request.host.split(":", 1)[0] if lan_access else get_lan_ip()
-        nc_https_port = env.get("NC_LOCAL_HTTPS_PORT", "8444")
-        nc_url = f"https://{host}:{nc_https_port}"
-        ha_url = f"http://{host}:8123"
+        nc_url = "https://nc-homebrain.local"
+        ha_url = "https://ha-homebrain.local"
     else:
         nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
         ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
@@ -3625,15 +3624,9 @@ def _vault_base_url():
 def _vault_public_url():
     """The user-facing vault URL.
 
-    In local mode, derive it from the dashboard's request Host header so the
-    link matches whatever path the user took to reach the dashboard (e.g.
-    accessing via 192.168.178.58 → vault on https://192.168.178.58:8443;
-    accessing via homebrain.local → vault on https://homebrain.local:8443).
-    Caddy serves a SAN-correct cert for each. The env var VAULT_DOMAIN
-    remains the canonical URL Vaultwarden itself uses internally (Send
-    links, etc.).
-
-    In remote mode, always use the configured tunnel URL.
+    On the LAN this is always https://vault-homebrain.local — names, not
+    ports, not the request IP (a raw IP on 443 is the dashboard). Away from
+    home it is the tunnel URL.
     """
     env = get_env_config()
     if not is_local_mode() and not _is_lan_request():
@@ -3642,31 +3635,13 @@ def _vault_public_url():
             return domain
         pd = env.get("PANGOLIN_DOMAIN")
         return f"https://vault.{pd}" if pd else ""
-
-    # Local / LAN access: derive from the request hostname so the link
-    # matches how the user reached the dashboard.
-    https_port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
-    host = ""
-    try:
-        host = request.host.split(":", 1)[0]
-    except RuntimeError:
-        pass
-    if not host:
-        host = "homebrain.local"
-    return f"https://{host}:{https_port}"
+    return "https://vault-homebrain.local"
 
 
 def _ha_public_url():
     env = get_env_config()
     if is_local_mode() or _is_lan_request():
-        host = ""
-        try:
-            host = request.host.split(":", 1)[0]
-        except RuntimeError:
-            pass
-        if not host:
-            host = get_lan_ip() if not is_local_mode() else "homebrain.local"
-        return f"http://{host}:8123"
+        return "https://ha-homebrain.local"
     domain = env.get("HA_TRUSTED_DOMAINS", "")
     return f"https://{domain}" if domain else ""
 
@@ -3849,24 +3824,21 @@ VAULT_MCP_SESSION_FILE = os.path.join(
 def _vault_bw_url():
     """The URL the bw CLI on this box uses to reach the local vault.
 
-    Always loopback to the Caddy TLS edge — Vaultwarden insists on HTTPS,
-    and Caddy's `tls internal` cert for 127.0.0.1 has a matching IP SAN.
-    Talking to the public VAULT_DOMAIN would route through Pangolin/Traefik
-    and present the wrong cert (TRAEFIK DEFAULT CERT), which is what made
-    every `bw unlock` fail with "self-signed certificate" before.
+    Always loopback-name to the Caddy TLS edge. Vaultwarden insists on HTTPS,
+    and /etc/hosts points vault-homebrain.local at 127.0.0.1 so this never
+    leaves the box. Talking to the public VAULT_DOMAIN would route through
+    Pangolin and present the wrong cert.
     """
-    env = get_env_config()
-    port = env.get("VAULT_LOCAL_HTTPS_PORT", "8443")
-    return f"https://127.0.0.1:{port}"
+    return "https://vault-homebrain.local"
 
 
 def _vault_bw_argv(*bw_args, session=None):
     """Build a `sudo -u homebrain env … bw …` argv that survives sudo's
-    env-stripping. We need NODE_TLS_REJECT_UNAUTHORIZED=0 (loopback Caddy
-    presents an IP-SAN cert that Node's hostname check rejects; safe
-    because the destination is 127.0.0.1 — MITM there already implies
-    code execution as root) and optionally BW_SESSION inside the bw
-    process's environment, not just the sudo wrapper's."""
+    env-stripping. We need NODE_TLS_REJECT_UNAUTHORIZED=0 (Caddy's
+    internal CA is not in the system store; vault-homebrain.local is
+    loopback via /etc/hosts — MITM there already implies root) and
+    optionally BW_SESSION inside the bw process's environment, not just
+    the sudo wrapper's."""
     extra_env = ["NODE_TLS_REJECT_UNAUTHORIZED=0"]
     if session:
         extra_env.append(f"BW_SESSION={session}")
@@ -4078,9 +4050,9 @@ def vault_mcp_wire_up():
             "VAULT_URL": _vault_bw_url(),
             "VAULT_SESSION_FILE": VAULT_MCP_SESSION_FILE,
             "VAULT_AUDIT_LOG": "/var/log/homebrain/mcp-vault-audit.log",
-            # bw on this box talks to Caddy's `tls internal` cert on
-            # 127.0.0.1; Node's hostname check rejects the IP-SAN cert.
-            # Loopback only — MITM impossible without root.
+            # bw on this box talks to Caddy's `tls internal` cert for
+            # vault-homebrain.local; Node's hostname check rejects the
+            # untrusted CA. Loopback only — MITM impossible without root.
             "NODE_TLS_REJECT_UNAUTHORIZED": "0",
         },
     }
@@ -4178,7 +4150,7 @@ def vault_docs_status():
         if info["e2ee_enabled"] and info["folder_exists"]:
             base = ""
             if is_local_mode():
-                base = f"http://{get_lan_ip()}:8080"
+                base = "https://nc-homebrain.local"
             else:
                 base = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
             info["folder_url"] = f"{base}/apps/files/?dir=/Documents%20(Encrypted)"
@@ -4266,15 +4238,12 @@ def vault_docs_setup():
 @app.route("/api/vault/local-ca")
 @limiter.limit("20 per minute")
 def vault_local_ca():
-    """Serve the Caddy-issued internal CA root certificate so users can
-    install it on their LAN clients (one-time per device). Master-password
-    gated. Returns 404 in remote mode where Pangolin's public CA chain is
-    used. Returns 503 if Caddy hasn't minted the CA yet (first boot)."""
+    """Serve the Caddy-issued internal CA root so phones can trust this
+    box's HTTPS names. Master-password gated. Available in both modes —
+    a remote-mode box still serves homebrain.local on the LAN. Returns 503
+    if Caddy hasn't minted the CA yet (first boot)."""
     if not session.get("authenticated"):
         abort(401)
-    if not is_local_mode():
-        return ("Local CA is only used in LAN-only deployments. "
-                "Remote-mode installs use Pangolin's public TLS chain."), 404
     try:
         cid = compose_ps_q("caddy")
         if not cid:
@@ -4292,7 +4261,7 @@ def vault_local_ca():
             pem,
             mimetype="application/x-pem-file",
             headers={
-                "Content-Disposition": 'attachment; filename="homebrain-vault-ca.pem"',
+                "Content-Disposition": 'attachment; filename="homebrain-ca.pem"',
             },
         )
     except subprocess.CalledProcessError:
@@ -4835,12 +4804,12 @@ def nc_client_url(env):
     """The address to hand a phone, and whether it works away from home.
 
     Prefer the tunnel: a phone that only syncs inside the house is not a photo
-    backup. The LAN fallback works, but the phone will ask about this box's
-    certificate unless its CA has been installed."""
+    backup. The LAN fallback is https://nc-homebrain.local; the phone will ask
+    about this box's certificate unless its CA has been installed."""
     domains = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()
     if domains:
         return f"https://{domains[0]}", True
-    return f"https://homebrain.local:{env.get('NC_LOCAL_HTTPS_PORT', '8444')}", False
+    return "https://nc-homebrain.local", False
 
 
 # Nextcloud's built-in preview list, plus HEIC. Kept whole because setting the
@@ -4931,6 +4900,10 @@ def pairing_payload(user, password, env):
 # dashboard. A household member gets files always, and vault / Home Assistant
 # only when the owner ticks them. They never get the dashboard.
 MEMBER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+# Nextcloud's own uid charset: case, '@', 1–64 chars. MEMBER_ID is what
+# HomeBrain will mint; hand-made accounts were never asked to satisfy it.
+# Leading alphanumeric so `occ` cannot read the uid as a flag.
+NC_UID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,63}$")
 RESERVED_MEMBERS = {"replica"}   # the off-site receiver account, not a person
 
 
@@ -5173,10 +5146,18 @@ def nc_occ_json(*args):
 
 
 def not_a_member(user, env):
-    """The check every member route repeats: a plausible id, not the off-site
-    receiver, and never the owner — whose account runs occ and holds the Vault."""
-    return (not MEMBER_ID.match(user) or user in RESERVED_MEMBERS
-            or user == env.get("NEXTCLOUD_ADMIN_USER", ""))
+    """The check every member route repeats: a plausible Nextcloud uid, not the
+    off-site receiver, and never the owner — whose account runs occ and holds
+    the Vault.
+
+    Membership is not "looks like an id HomeBrain would mint". The roster is
+    every Nextcloud account, and the vault+ chip posts that uid as-is.
+    Nextcloud treats uids as case-insensitive, so the owner check does too:
+    otherwise `Admin` would pass when .env says `admin` and we would try to
+    hang a second vault on the owner's account."""
+    owner = (env.get("NEXTCLOUD_ADMIN_USER") or "").lower()
+    return (not NC_UID.match(user) or user.lower() in RESERVED_MEMBERS
+            or (owner and user.lower() == owner))
 
 
 SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}

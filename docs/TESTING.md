@@ -56,7 +56,7 @@ No external tunnel; access via `homebrain.local`.
 
 - [ ] `DEPLOYMENT_MODE=local` in `.env`
 - [ ] No Pangolin/Newt container running
-- [ ] Dashboard loads at `http://homebrain.local:8000` (or configured port)
+- [ ] Dashboard loads at `https://homebrain.local`
 - [ ] Nextcloud accessible at its configured local URL
 - [ ] Home Assistant accessible at its configured local URL
 
@@ -134,17 +134,18 @@ No external tunnel; access via `homebrain.local`.
 - [ ] Switch deployment mode `local` ↔ `remote` → `VAULT_DOMAIN` updates, vaultwarden container restarts, clients re-resolve
 - [ ] Stop vaultwarden manually → dashboard tile flips to `STOPPED`; `docker compose up -d` restores it; `restart: unless-stopped` re-attaches after host reboot
 
-### Vault — LAN HTTPS (Caddy + local CA)
+### Vault — LAN HTTPS (Caddy + box CA)
 
 - [ ] `caddy` container reaches healthy within 30 s of first boot
-- [ ] In local mode `VAULT_DOMAIN` is `https://homebrain.local:8443`
-- [ ] `curl -k https://homebrain.local:8443/healthz` returns HTTP 200
-- [ ] Browser at `https://homebrain.local:8443/` shows the Bitwarden web vault (cert warning expected until CA is installed)
-- [ ] `/api/vault/local-ca` returns a PEM file (mode 600 disposition); installing it on a phone removes the warning
-- [ ] After CA install, Bitwarden Android app at `https://homebrain.local:8443` connects without trust errors
+- [ ] In local mode `VAULT_DOMAIN` is `https://vault-homebrain.local`
+- [ ] `curl -k https://homebrain.local/healthz` returns HTTP 200
+- [ ] Browser at `https://vault-homebrain.local/` shows the Bitwarden web vault (cert warning expected until CA is installed)
+- [ ] `/api/vault/local-ca` returns a PEM (`homebrain-ca.pem`) in **both** modes; installing it on a phone removes the warning
+- [ ] After CA install, Bitwarden Android app at `https://vault-homebrain.local` connects without trust errors
 - [ ] WebSocket sync works: edit a credential in browser ext → mobile updates within 2 s
-- [ ] Mode flip local → remote → `redeploy_tunnels.sh` restarts caddy + vaultwarden; `VAULT_DOMAIN` updates
-- [ ] In remote mode, `/api/vault/local-ca` returns 404 (Pangolin's public chain is used)
+- [ ] Mode flip local → remote → `redeploy_tunnels.sh` keeps Caddy up; `VAULT_DOMAIN` updates; LAN names still work
+- [ ] `nc-homebrain.local` / `vault-homebrain.local` / `ha-homebrain.local` resolve (Avahi) to the box's LAN IP
+- [ ] Nextcloud pairing QR in local mode is `https://nc-homebrain.local` (no port)
 
 ### Vault — encrypted documents (Nextcloud E2EE)
 
@@ -279,11 +280,16 @@ default Vault bootstrap.
       (`disabled`) until the Settings toggle flips it on.
 - [ ] Proton account: `docker compose --profile proton-bridge up -d`
       starts Bridge; `imap_host=127.0.0.1`, `imap_port=12143` works.
+- [ ] Flagged account chip shows **Agent mailbox**. `email.list_accounts`
+      returns `role: "agent_mailbox"` and the address; the agent can name
+      it on a fresh Telegram turn.
 
 ### Channel linking — Telegram (stock upstream OpenClaw)
 
 HomeBrain runs **stock npm `openclaw`** (no fork, no channel plugins).
-Telegram is the only supported channel and is bundled in core.
+Telegram is the only OpenClaw channel and is bundled in core. Email
+prompts are a HomeBrain daemon (`email_channel.json`), not
+`.channels.email`.
 
 - [ ] Paste a bot token → row flips to configured; daemon restarts.
 - [ ] Send `/pair` from the bot, approve the code in the dashboard
@@ -293,6 +299,23 @@ Telegram is the only supported channel and is bundled in core.
       `~/.openclaw/openclaw.json` has no `.channels.whatsapp` /
       `.plugins.entries.whatsapp` keys (one-shot migration in
       `patch_openclaw_config` + `remove_whatsapp_plugins`).
+
+### Email prompts (GPU only)
+
+Plan: [`plans/AGENT_EMAIL.md`](plans/AGENT_EMAIL.md). Isolated session
+`email-in`; agent replies via `email.draft` (or `email.send_direct` if
+that toggle is on). HomeBrain does not SMTP the model's last token.
+
+- [ ] `systemctl is-active homebrain-email-watch` → `active` (OpenClaw present)
+- [ ] Flag a dedicated agent mailbox, `allow_from` = `CLOUD_EMAIL`
+      (distinct address), Enable on Messaging Channels → Email.
+- [ ] Enable with From = agent mailbox address is refused.
+- [ ] Mail from `CLOUD_EMAIL` to the agent address starts an isolated
+      `email-in` turn; Telegram DM session is untouched. Reply path is a
+      draft (or send_direct). The woken message is IMAP `\Seen` so
+      `email.list_unread` no longer lists it.
+- [ ] Unflag the agent mailbox: further mail does not wake.
+- [ ] `email_channel.json` is mode 0600 and in the backup archive.
 
 ### Cross-cutting
 

@@ -60,10 +60,20 @@
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
                     <a href="{{ ha_url }}" target="_blank" class="link-out">Home Assistant<span aria-hidden="true">↗</span></a>
                     <a id="vault-launch" href="#" target="_blank" class="link-out" style="display:none;">Vault<span aria-hidden="true">↗</span></a>
+                    <a href="/api/vault/local-ca" class="link-out" title="Install on each phone so this box's HTTPS names are trusted">This box's certificate<span aria-hidden="true">↓</span></a>
                     {% if has_gpu %}
                     <a id="openclaw-launch" href="#" target="_blank" class="link-out" style="display:none;">OpenClaw<span aria-hidden="true">↗</span></a>
                     {% endif %}
                 </div>
+                <details class="small">
+                    <summary>Trust this box on your phone</summary>
+                    <p>Download this box's certificate and install it as a trusted CA on each device.
+                        On iPhone or iPad, also enable full trust in Settings → General → About → Certificate Trust Settings.
+                        Verify that both your browser and each app connect without a certificate warning.</p>
+                    <p>Use the main home Wi-Fi. If local names do not resolve, turn off VPN or DNS filtering;
+                        your network administrator may need to enable local name discovery. Old app URLs with
+                        ports must be replaced with the service links above.</p>
+                </details>
             </div>
 
             {% if has_gpu %}
@@ -587,7 +597,8 @@
             <section class="section" id="network-card">
                 <h3>Network <span class="h-note">— a stable address for cameras and devices</span></h3>
                 <p class="lede">Cameras and many smart devices can't resolve <code>homebrain.local</code> — they need
-                    a numeric IP. Pin a fixed address so the target never changes.</p>
+                    a numeric IP. Pin a fixed address so the target never changes. Phones and computers use the names
+                    (<code>https://nc-homebrain.local</code> and the others), not the IP.</p>
                 <div id="net-status" class="small"><span class="skeleton sk-wide"></span></div>
 
                 <div id="net-pin-form" class="inline-row mt" style="display:none; flex-wrap:wrap; align-items:end;">
@@ -726,14 +737,18 @@
 
                 <div hidden id="details-email" class="conn-form">
                     <div class="form-grid fields-2">
-                        <input type="text"     id="em-name"      placeholder="Account label (e.g. Personal)">
-                        <input type="email"    id="em-user"      placeholder="user@example.com">
+                        <input type="text"     id="em-name"      placeholder="Label (e.g. Agent)">
+                        <input type="email"    id="em-user"      placeholder="agent@example.com">
                         <input type="text"     id="em-imap-host" placeholder="IMAP host">
                         <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
                         <input type="text"     id="em-smtp-host" placeholder="SMTP host">
                         <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
                     </div>
                     <input type="password" id="em-pass" class="mt" placeholder="App password">
+                    <label class="check small muted mt">
+                        <input type="checkbox" id="em-agent-mailbox" checked>
+                        This mailbox belongs exclusively to the agent
+                    </label>
                     <div class="form-actions">
                         <button class="btn-primary" onclick="connEmailAdd()">Add</button>
                         <button onclick="closeForm('details-email')">Cancel</button>
@@ -742,7 +757,7 @@
                             Allow the agent to send mail directly (off = drafts only)
                         </label>
                     </div>
-                    <small class="hint">{% if platform.proton_bridge %}For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
+                    <small class="hint">The agent will treat a flagged mailbox as its own. Leave the box off if this is a personal inbox it may only read and draft. {% if platform.proton_bridge %}For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
                         127.0.0.1:12025 SMTP. {% else %}Protonmail is not available on this machine — Proton Bridge ships
                         for x86_64 only. {% endif %}For Gmail, iCloud or Fastmail use an app-specific password.</small>
                 </div>
@@ -810,6 +825,18 @@
                     <small class="hint">Send any message to your bot on Telegram. It replies with a pairing code —
                         paste it above to approve.</small>
                 </div>
+
+                <div hidden id="details-email-channel" class="conn-form">
+                    <p class="small muted" id="em-ch-to"></p>
+                    <label for="em-ch-from">Owner From addresses (who may prompt)</label>
+                    <input type="text" id="em-ch-from" placeholder="you@example.com, other@example.com"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelEmailSave(true); }">
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="channelEmailSave(true)">Enable</button>
+                        <button onclick="closeForm('details-email-channel')">Cancel</button>
+                    </div>
+                    <small class="hint">Write to the agent address from one of these personal addresses — not from the agent mailbox itself. A reply to a healthcheck alert from an allowlisted address also wakes the agent. HomeBrain does not send the reply; the agent drafts (or sends, if you enabled that).</small>
+                </div>
             </section>
 
             <section class="section">
@@ -855,9 +882,6 @@
 
                 <div class="link-row">
                     <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
-                    {% if deployment_mode == 'local' %}
-                    <a href="/api/vault/local-ca" class="link-out" title="Install on each LAN client to trust the Vault HTTPS cert">Local CA cert<span aria-hidden="true">↓</span></a>
-                    {% endif %}
                 </div>
 
                 <hr>

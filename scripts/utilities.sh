@@ -1531,9 +1531,9 @@ patch_openclaw_config() {
     lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     local origins_jq='['
     origins_jq+='"http://localhost","http://127.0.0.1",'
-    origins_jq+='"http://homebrain.local","http://homebrain.local:80",'
+    origins_jq+='"https://homebrain.local","https://homebrain.local:443",'
     if [[ -n "${lan_ip:-}" ]]; then
-        origins_jq+="\"http://${lan_ip}\",\"http://${lan_ip}:80\","
+        origins_jq+="\"https://${lan_ip}\",\"https://${lan_ip}:443\","
     fi
     if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
         origins_jq+="\"https://${PANGOLIN_DOMAIN}\","
@@ -2045,6 +2045,7 @@ seed_openclaw_workspace() {
     local ws="${HOMEBRAIN_HOME}/.openclaw/workspace"
     local src="${SCRIPT_DIR}/../config/openclaw-workspace"
     local marker="## HomeBrain memory"
+    local identity_marker="## HomeBrain identity"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2088,6 +2089,17 @@ seed_openclaw_workspace() {
         cp "${src}/AGENTS.md" "${ws}/AGENTS.md"
         _own "${ws}/AGENTS.md"
         log_info "Seeded OpenClaw workspace AGENTS.md"
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$identity_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$identity_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            # Append from the identity marker onward so upgrades that already
+            # have the memory block still get the role rules once.
+            awk "index(\$0, \"$identity_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain identity block to OpenClaw AGENTS.md"
+        fi
     fi
 }
 
@@ -2327,6 +2339,8 @@ setup_openclaw() {
             # so we do not wait for the next reboot.
             systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
                 || log_warn "homebrain-ha-watch.service did not start."
+            systemctl enable --now homebrain-email-watch.service 2>/dev/null \
+                || log_warn "homebrain-email-watch.service did not start."
             return 0
         fi
         sleep 2

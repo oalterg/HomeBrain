@@ -97,9 +97,12 @@ systemctl disable --now apache2 2>/dev/null || true
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; then
     log_info "Opening firewall ports for HomeBrain services..."
-    ufw allow 80/tcp    # Dashboard
-    ufw allow 8080/tcp  # Nextcloud
-    ufw allow 8123/tcp  # Home Assistant
+    ufw allow 80/tcp    # Caddy HTTP → HTTPS
+    ufw allow 443/tcp   # Caddy HTTPS (the LAN face)
+    # Caddy and Pangolin reach the manager via the Docker bridge, not the LAN.
+    ufw delete allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
+    ufw delete allow 8080/tcp >/dev/null 2>&1 || true
+    ufw delete allow 8123/tcp >/dev/null 2>&1 || true
     # No 18789 rule: the OpenClaw gateway binds loopback only and is
     # reached through the manager's authenticated proxy.
 fi
@@ -273,6 +276,12 @@ systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
     && log_info "HA watcher service enabled." \
     || log_warn "HA watcher service not started (OpenClaw not present yet is OK)."
 
+cp "${SCRIPT_DIR}/../config/homebrain-email-watch.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-email-watch.service 2>/dev/null \
+    && log_info "Email watcher service enabled." \
+    || log_warn "Email watcher service not started (OpenClaw not present yet is OK)."
+
 # Rotate /var/log/homebrain. Without this it grows for the life of the box.
 cp "${SCRIPT_DIR}/../config/logrotate-homebrain" /etc/logrotate.d/homebrain
 chmod 644 /etc/logrotate.d/homebrain
@@ -290,6 +299,28 @@ systemctl daemon-reload
 systemctl enable --now homebrain-offsite.timer 2>/dev/null \
     && log_info "Off-site resume timer enabled." \
     || log_warn "Failed to enable off-site resume timer."
+
+# mDNS aliases for nc/vault/ha-homebrain.local. homebrain.local is the
+# machine hostname; these three do not exist until we publish them.
+cp "${SCRIPT_DIR}/../config/homebrain-mdns.service" /etc/systemd/system/
+chmod +x "${SCRIPT_DIR}/publish_mdns.sh"
+ensure_lan_hosts
+systemctl daemon-reload
+systemctl enable --now avahi-daemon.service 2>/dev/null || true
+systemctl enable homebrain-mdns.service 2>/dev/null \
+    && systemctl restart homebrain-mdns.service \
+    && log_info "mDNS aliases published." \
+    || log_warn "mDNS aliases not started (avahi missing is OK on a non-appliance test)."
+
+# Caddy is the LAN edge. Bring it up so the wizard is https://homebrain.local
+# before the rest of the stack exists (--no-deps: no Nextcloud/Vault yet).
+_lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+if ( cd "$INSTALL_DIR" && VAULT_LAN_IP="${_lan_ip:-127.0.0.2}" \
+        docker compose -f "$INSTALL_DIR/docker-compose.yml" up -d --no-deps caddy ); then
+    log_info "Caddy is up — wizard at https://homebrain.local"
+else
+    log_warn "Caddy did not start — inspect docker compose logs caddy locally before continuing."
+fi
 
 # --- 6. OpenClaw integration scaffold ---
 # Make sure /home/homebrain/.openclaw/ exists with the right ownership before
@@ -365,7 +396,7 @@ echo "HomeBrain Provisioning Complete."
 echo "======================================================="
 echo "   PROVISIONING COMPLETE"
 echo "======================================================="
-echo "   Setup wizard is running. Open http://<server-ip> in a browser."
+echo "   Setup wizard is running. Open https://homebrain.local in a browser."
 # Repeat the generated password HERE, not only where it was minted. It is
 # minted a few hundred lines of apt/venv/docker output before this point, on
 # stderr, so on a `curl | sudo bash` install the one credential needed to
