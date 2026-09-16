@@ -399,7 +399,7 @@ def test_fetch_html_only_forward_returns_html(em):
     assert out["ok"] is True
     assert "Coolblue invoice" in out["body"]
     assert out["attachments"][0]["filename"] == "invoice.pdf"
-    assert imap.readonly is True
+    assert imap.readonly is False
     assert any("BODY.PEEK[]" in spec for spec in imap.fetch_specs)
 
 
@@ -442,4 +442,61 @@ def test_list_accounts_roles_no_hosts(em):
         assert "imap_host" not in a
         assert "smtp_host" not in a
         assert "user" in a
+
+
+def _seen_stores(imap):
+    return [
+        cmd for cmd in imap.uid_commands
+        if str(cmd[0]).upper() == "STORE" and "Seen" in "".join(map(str, cmd))
+    ]
+
+
+def test_fetch_marks_seen(em):
+    imap = FakeIMAP(_msg())
+    em._imap = lambda acc: imap
+    out = _fetch(em, {"id": "1"})
+    assert out["ok"] is True
+    assert imap.readonly is False
+    assert _seen_stores(imap)
+    assert any("BODY.PEEK[]" in spec for spec in imap.fetch_specs)
+
+
+def test_fetch_missing_does_not_mark_seen(em):
+    imap = FakeIMAP(b"", missing=True)
+    em._imap = lambda acc: imap
+    out = _fetch(em, {"id": "99"})
+    assert out["ok"] is False
+    assert _seen_stores(imap) == []
+
+
+def test_attachment_marks_seen_after_save(em):
+    imap = FakeIMAP(_msg(("photo.jpg", "image/jpeg", JPEG)))
+    em._imap = lambda acc: imap
+    out = _attach(em, {"id": "1"})
+    assert out["ok"] is True
+    assert out.get("path")
+    assert imap.readonly is False
+    assert _seen_stores(imap)
+
+
+def test_attachment_catalog_only_does_not_mark_seen(em):
+    imap = FakeIMAP(_msg(
+        ("a.pdf", "application/pdf", PDF),
+        ("b.pdf", "application/pdf", PDF),
+    ))
+    em._imap = lambda acc: imap
+    out = _attach(em, {"id": "1"})
+    assert out["ok"] is True
+    assert "path" not in out
+    assert _seen_stores(imap) == []
+
+
+def test_list_unread_does_not_mark_seen(em):
+    imap = FakeIMAP(_msg(), structure=None, unseen=b"7")
+    em._imap = lambda acc: imap
+    out = em.dispatch("email.list_unread", {})
+    assert out["ok"] is True
+    assert imap.readonly is True
+    assert _seen_stores(imap) == []
+    assert any("PEEK" in spec for spec in imap.fetch_specs)
 

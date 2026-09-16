@@ -931,9 +931,10 @@ verify_newt_connected() {
 # Print the Pangolin org-side resources the operator must create for a tunnel
 # domain. provision.sh cannot configure the Pangolin server, and the targets are
 # easy to get wrong: newt runs on the homebrain_default Docker network, so it
-# reaches the service containers by NAME on their INTERNAL ports — NOT the host-
-# published ports (nc's host 8080 maps to container :80; vault's 8082 is even
-# loopback-only). The manager is a host process, reached via the bridge gateway.
+# reaches the service containers by NAME on their INTERNAL ports — NOT the host
+# ports (nc's 8080 and HA's 8123 are loopback-only). The manager is a host
+# process on :8000, reached via the bridge gateway. Caddy owns LAN 80/443;
+# do not target those.
 print_pangolin_resource_guide() {
     local dom="$1"
     local gw
@@ -941,7 +942,7 @@ print_pangolin_resource_guide() {
             --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
     gw="${gw:-172.18.0.1}"
     log_warn "Pangolin resources to configure for https://${dom} (targets are HTTP; TLS ends at the edge):"
-    log_warn "  ${dom} (root, manager) -> ${gw}:80        (host process — use the bridge gateway, not a name)"
+    log_warn "  ${dom} (root, manager) -> ${gw}:8000      (host process — use the bridge gateway, not a name)"
     log_warn "  nc.${dom}              -> nextcloud:80     (container internal port — NOT host 8080)"
     log_warn "  ha.${dom}              -> homeassistant:8123"
     log_warn "  vault.${dom}           -> vaultwarden:80   (host 8082 is loopback-only — use the name)"
@@ -994,26 +995,60 @@ wait_for_apt_lock() {
     done
 }
 
+# Point nc/vault/ha-homebrain.local at loopback so tools on this box
+# (bw CLI, curl) resolve the names without waiting on mDNS. Phones get
+# the LAN IP from the Avahi publisher, not from here.
+#
+# Dest is overridable so the unit test can point at a temp file.
+ensure_lan_hosts() {
+    local dest="${LAN_HOSTS_FILE:-/etc/hosts}"
+    local begin="# BEGIN homebrain-lan"
+    [[ -f "$dest" && -w "$dest" ]] || return 0
+    local contents
+    contents=$(sed '/^# BEGIN homebrain-lan$/,/^# END homebrain-lan$/d' "$dest")
+    printf '%s\n' "$contents" > "$dest"
+    printf '\n%s\n127.0.0.1 nc-homebrain.local vault-homebrain.local ha-homebrain.local\n%s\n' \
+        "$begin" "# END homebrain-lan" >> "$dest"
+    return 0
+}
+
 # Re-derive VAULT_LAN_IP from the current address.
 #
 # Caddy takes it as a TLS SAN ({$VAULT_LAN_IP} in config/Caddyfile) so a browser
-# reaching the box by raw IP gets a valid cert. It used to be written exactly
-# once, at vault provisioning time, and never revisited — so a box that changed
-# subnet (new router, or a bare-metal restore onto a different LAN) kept naming
-# an address it no longer held, and LAN HTTPS by IP failed the handshake.
-# Observed on a restored RPi5: .env said 192.168.1.105, the box was on
-# 192.168.178.112.
+# reaching the box by raw IP gets a valid cert (the dashboard — one service).
+# It used to be written exactly once, at vault provisioning time, and never
+# revisited — so a box that changed subnet (new router, or a bare-metal restore
+# onto a different LAN) kept naming an address it no longer held, and LAN HTTPS
+# by IP failed the handshake. Observed on a restored RPi5: .env said
+# 192.168.1.105, the box was on 192.168.178.112.
+#
+# Also republishes the three mDNS aliases (same moment: the LAN IP changed)
+# and heals a local-mode VAULT_DOMAIN left on the old :8443 URL.
 #
 # Always returns 0. A box whose network is not up yet must not abort the restore
 # or update that called us.
 refresh_vault_lan_ip() {
+    ensure_lan_hosts
+    # Local-mode vault URL: names, not ports. Heal boxes that still carry
+    # https://homebrain.local:8443 from before LAN HTTPS.
+    if is_local_mode; then
+        case "${VAULT_DOMAIN:-}" in
+            ''|https://homebrain.local:8443|https://homebrain.local|https://vault.homebrain.local)
+                update_env_var "VAULT_DOMAIN" "https://vault-homebrain.local"
+                export VAULT_DOMAIN="https://vault-homebrain.local"
+                ;;
+        esac
+    fi
     local lan_ip
     lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [[ -n "$lan_ip" ]] || return 0
-    [[ "$lan_ip" == "${VAULT_LAN_IP:-}" ]] && return 0
+    if [[ "$lan_ip" == "${VAULT_LAN_IP:-}" ]]; then
+        return 0
+    fi
     update_env_var "VAULT_LAN_IP" "$lan_ip"
     export VAULT_LAN_IP="$lan_ip"
-    log_info "LAN address for the Vault certificate is now ${lan_ip}."
+    log_info "LAN address for the box certificate is now ${lan_ip}."
+    systemctl try-restart homebrain-mdns.service 2>/dev/null || true
     return 0
 }
 
@@ -1056,7 +1091,7 @@ install_deps_enable_docker() {
     # Observed on the RPi4 test box (lists from March, glib2.0 404s, rc=100).
     apt-get update -qq
     # qrencode draws the phone-pairing code for Nextcloud's mobile apps.
-    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode"
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode avahi-daemon avahi-utils libnss-mdns"
     apt-get install -y -qq $common_pkgs
 
     # Headless browser for the OpenClaw browser tool (non-fatal)
@@ -1405,34 +1440,40 @@ configure_nc_ha_proxy_settings() {
     fi
     log_info "Detected Docker Subnet: $subnet"
 
+    # Both entry points forward Host. Remove the old LAN-only override so
+    # switching modes keeps LAN and public links on the requested hostname.
     # 1. Update Nextcloud Trusted Proxies
     if [[ -n "$nc_cid" ]]; then
+        docker exec --user www-data "$nc_cid" php occ config:system:delete overwritehost || die "Failed to clear overwritehost."
         if is_local_mode; then
-            # Local mode: HTTP only, trust LAN addresses, no tunnel domain required
+            # Local mode: HTTPS names on 443, no ports. Pairing is
+            # https://nc-homebrain.local for the life of that pairing.
             local lan_ip
             lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=http || die "Failed to set overwriteprotocol."
-            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="http://homebrain.local:8080" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
+            docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://nc-homebrain.local" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="localhost" || die "Failed to set trusted_domains localhost."
-            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || die "Failed to set trusted_domains homebrain.local."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc-homebrain.local" || die "Failed to set trusted_domains nc-homebrain.local."
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="homebrain.local" || die "Failed to set trusted_domains homebrain.local."
             if [[ -n "$lan_ip" ]]; then
-                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || die "Failed to set trusted_domains LAN IP."
-                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="${lan_ip}:8080" || true
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="$lan_ip" || die "Failed to set trusted_domains LAN IP."
             fi
             # If an explicit trusted domain was set anyway, honour it at slot 5
             if [[ -n "${NEXTCLOUD_TRUSTED_DOMAINS:-}" ]]; then
                 docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 5 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || true
             fi
         else
-            # Remote mode: HTTPS via tunnel + LAN access via homebrain.local / LAN IP
+            # Remote mode: HTTPS via tunnel. LAN names still work (Caddy + CA)
+            # but the Nextcloud app stores one URL — the tunnel.
             local lan_ip
             lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
             docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."
             docker exec --user www-data "$nc_cid" php occ config:system:set overwrite.cli.url --value="https://${NEXTCLOUD_TRUSTED_DOMAINS}" || true
             docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 1 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || die "Failed to set trusted_domains 1."
-            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="homebrain.local" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 2 --value="nc-homebrain.local" || true
+            docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="homebrain.local" || true
             if [[ -n "$lan_ip" ]]; then
-                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 3 --value="$lan_ip" || true
+                docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 4 --value="$lan_ip" || true
             fi
         fi
         docker exec --user www-data "$nc_cid" php occ config:system:set trusted_proxies 0 --value="$TRUSTED_PROXIES_0" || die "Failed to set trusted_proxies 0."

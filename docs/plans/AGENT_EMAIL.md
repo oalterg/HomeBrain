@@ -331,11 +331,10 @@ Proton.
 - Auth-fail backoff so a bad password or Proton Bridge blip does not
   lock the account.
 - Disk UID cursor is the source of truth (`UIDVALIDITY` + last UID per
-  account; `UID SEARCH UID last+1:*`). Do **not** `SEARCH UNSEEN` (we
-  are not marking Seen). `$HomeBrainHandled` is optional and not
-  portable — do not depend on it.
-- Do **not** mark Seen — Seen is user-visible if the admin also opens
-  the mailbox.
+  account; `UID SEARCH UID last+1:*`). Do **not** `SEARCH UNSEEN`.
+  `$HomeBrainHandled` is optional and not portable — do not depend on it.
+- After a wake, `STORE +FLAGS (\Seen)` on that UID. Peek/list stay
+  unseen. Ignored From stays unseen; the cursor still advances.
 - One in-flight `email-in`. Same GPU as Telegram. Further matches wait
   for the next poll; do not stampede.
 - New UID, From in `allow_from` (`parseaddr`, lowercase exact), not
@@ -431,10 +430,11 @@ Unit, no live IMAP (mirror `test_ha_watch.py` / `test_mcp_email.py`):
 - Channel enable 400 with zero agent mailboxes.
 - Channel enable 400 when every `allow_from` is an agent-mailbox
   `user`; 200 when at least one From is not.
-- Watcher: allowlisted From wakes; other From does not; From agent
-  address does not; quoted history stripped; `parseaddr` on
-  `"Name" <addr>`; prompting off → no IMAP login; one in-flight wake;
-  cursor is `UID last+1:*` not `UNSEEN`; auth-fail does not tight-loop.
+- Watcher: allowlisted From wakes and marks `\Seen`; other From does
+  not wake or mark seen; From agent address does not; quoted history
+  stripped; `parseaddr` on `"Name" <addr>`; prompting off → no IMAP
+  login; one in-flight wake; cursor is `UID last+1:*` not `UNSEEN`;
+  auth-fail does not tight-loop.
 - No SMTP assertions in P2.
 
 Hardware (TESTING.md): flag a dedicated mailbox, `allow_from` =
