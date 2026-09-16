@@ -307,7 +307,8 @@ that toggle is on). HomeBrain does not SMTP the model's last token.
 - [ ] Enable with From = agent mailbox address is refused.
 - [ ] Mail from `CLOUD_EMAIL` to the agent address starts an isolated
       `email-in` turn; Telegram DM session is untouched. Reply path is a
-      draft (or send_direct).
+      draft (or send_direct). The woken message is IMAP `\Seen` so
+      `email.list_unread` no longer lists it.
 - [ ] Unflag the agent mailbox: further mail does not wake.
 - [ ] `email_channel.json` is mode 0600 and in the backup archive.
 

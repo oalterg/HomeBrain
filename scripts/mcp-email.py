@@ -258,6 +258,11 @@ def _peek_message(conn, uid):
     return email.message_from_bytes(raw)
 
 
+def _mark_seen(conn, uid) -> None:
+    """Explicit \\Seen. Yahoo FETCH RFC822 does not reliably set it."""
+    conn.uid("STORE", _uid_bytes(uid), "+FLAGS", r"(\Seen)")
+
+
 def _list_from_imap(conn, uids: list) -> list[dict]:
     out = []
     for uid in reversed(uids):
@@ -385,12 +390,13 @@ def t_fetch(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX", readonly=True)
+        conn.select("INBOX")
         msg = _peek_message(conn, redeemed["id"])
         if msg is None:
             return err("message not found")
         body = _message_body(msg)
         parts = _attachment_catalog(msg)
+        _mark_seen(conn, redeemed["id"])
         audit("email", "fetch", account=redeemed["account"], id=redeemed["id"])
         return ok(
             id=redeemed["id"],
@@ -540,78 +546,79 @@ def t_attachment(args: dict) -> dict:
     if not conn:
         return unavailable("could not connect to IMAP")
     try:
-        conn.select("INBOX", readonly=True)
+        conn.select("INBOX")
         msg = _peek_message(conn, redeemed["id"])
         if msg is None:
             return err("message not found")
+        parts = _attachment_catalog(msg)
+        catalog = [{"filename": n, "size": len(body)} for _, n, body in parts]
+        if not parts:
+            audit("email", "attachment.none", account=redeemed["account"],
+                  id=redeemed["id"])
+            return err("no attachments")
+        chosen = None
+        if want:
+            needle = want.lower()
+            matches = [(p, n, b) for p, n, b in parts if needle in n.lower()]
+            if not matches:
+                return err("attachment not found", attachments=catalog)
+            chosen = matches[0]
+        elif len(parts) == 1:
+            chosen = parts[0]
+        else:
+            return ok(id=redeemed["id"], attachments=catalog,
+                      hint="Several attachments; call again with filename.")
+        _part, fname, body = chosen
+        if len(body) > MAX_ATTACHMENT_BYTES:
+            audit("email", "attachment.too_large", account=redeemed["account"],
+                  id=redeemed["id"], filename=fname, bytes=len(body))
+            return err(
+                f"file is {len(body)} bytes (cap {MAX_ATTACHMENT_BYTES})",
+                filename=fname,
+            )
+        if not body:
+            return err("attachment is empty", filename=fname)
+        dest_dir = _media_dir()
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            try:
+                os.chmod(dest_dir, 0o700)
+            except OSError:
+                pass
+        except OSError:
+            return err("could not write file to the OpenClaw workspace")
+        dest = os.path.join(dest_dir, f"{int(time.time())}_{_safe_basename(fname)}")
+        try:
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, body)
+            finally:
+                os.close(fd)
+        except OSError:
+            return err("could not write file to the OpenClaw workspace")
+        mime = _sniff_mime(body[:64], _part.get_content_type(), fname)
+        try:
+            _prune_media(dest_dir)
+        except OSError:
+            pass
+        _mark_seen(conn, redeemed["id"])
+        audit("email", "attachment", account=redeemed["account"],
+              id=redeemed["id"], filename=fname, bytes=len(body))
+        return ok(
+            account=redeemed["account"],
+            id=redeemed["id"],
+            path=dest,
+            media=_agent_media_path(dest),
+            filename=_safe_basename(fname),
+            mime_type=mime,
+            size=len(body),
+            hint=_SEND_FILE_HINT,
+        )
     finally:
         try:
             conn.logout()
         except Exception:
             pass
-    parts = _attachment_catalog(msg)
-    catalog = [{"filename": n, "size": len(body)} for _, n, body in parts]
-    if not parts:
-        audit("email", "attachment.none", account=redeemed["account"],
-              id=redeemed["id"])
-        return err("no attachments")
-    chosen = None
-    if want:
-        needle = want.lower()
-        matches = [(p, n, b) for p, n, b in parts if needle in n.lower()]
-        if not matches:
-            return err("attachment not found", attachments=catalog)
-        chosen = matches[0]
-    elif len(parts) == 1:
-        chosen = parts[0]
-    else:
-        return ok(id=redeemed["id"], attachments=catalog,
-                  hint="Several attachments; call again with filename.")
-    _part, fname, body = chosen
-    if len(body) > MAX_ATTACHMENT_BYTES:
-        audit("email", "attachment.too_large", account=redeemed["account"],
-              id=redeemed["id"], filename=fname, bytes=len(body))
-        return err(
-            f"file is {len(body)} bytes (cap {MAX_ATTACHMENT_BYTES})",
-            filename=fname,
-        )
-    if not body:
-        return err("attachment is empty", filename=fname)
-    dest_dir = _media_dir()
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-        try:
-            os.chmod(dest_dir, 0o700)
-        except OSError:
-            pass
-    except OSError:
-        return err("could not write file to the OpenClaw workspace")
-    dest = os.path.join(dest_dir, f"{int(time.time())}_{_safe_basename(fname)}")
-    try:
-        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, body)
-        finally:
-            os.close(fd)
-    except OSError:
-        return err("could not write file to the OpenClaw workspace")
-    mime = _sniff_mime(body[:64], _part.get_content_type(), fname)
-    try:
-        _prune_media(dest_dir)
-    except OSError:
-        pass
-    audit("email", "attachment", account=redeemed["account"],
-          id=redeemed["id"], filename=fname, bytes=len(body))
-    return ok(
-        account=redeemed["account"],
-        id=redeemed["id"],
-        path=dest,
-        media=_agent_media_path(dest),
-        filename=_safe_basename(fname),
-        mime_type=mime,
-        size=len(body),
-        hint=_SEND_FILE_HINT,
-    )
 
 
 def _save_draft(account: dict, to: str, subject: str, body: str) -> tuple[bool, str]:
@@ -842,8 +849,7 @@ TOOLS = [
                      "required": ["query"]}},
     {"name": "email.fetch",
      "description": (
-         "Body by IMAP UID (plain, else HTML). Lists filenames. Does not "
-         "mark seen."
+         "Body by IMAP UID (plain, else HTML). Lists filenames. Marks seen."
      ),
      "inputSchema": {"type": "object",
                      "properties": {"account": {"type": "string"},
@@ -853,7 +859,7 @@ TOOLS = [
     {"name": "email.attachment",
      "description": (
          "Save one file by IMAP UID, including inline PDFs. Returns media=. "
-         "Several: pass filename."
+         "Several: pass filename. Marks seen when a file is saved."
      ),
      "inputSchema": {"type": "object",
                      "properties": {

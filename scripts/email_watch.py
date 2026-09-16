@@ -428,6 +428,11 @@ def _fetch_bytes(conn, uid: int, spec: str) -> bytes | None:
     return None
 
 
+def mark_seen(conn, uid: int) -> None:
+    """Explicit \\Seen after a wake. Yahoo FETCH does not reliably set it."""
+    conn.uid("STORE", str(int(uid)).encode(), "+FLAGS", r"(\Seen)")
+
+
 def pick_wake(candidates: list[dict], in_flight: bool) -> dict | None:
     """First matching candidate, or None if a wake is already running."""
     if in_flight or not candidates:
@@ -472,7 +477,7 @@ def poll_account(account: dict, channel: dict, agent_addrs: list[str],
     rec = (state.get("accounts") or {}).get(name) or {}
     conn = _imap(account, key_b64)
     try:
-        typ, _data = conn.select("INBOX", readonly=True)
+        typ, _data = conn.select("INBOX")
         if typ != "OK":
             raise RuntimeError(f"select INBOX failed: {typ}")
         known = _uid_list(conn, "UID", "1:*")
@@ -517,6 +522,7 @@ def poll_account(account: dict, channel: dict, agent_addrs: list[str],
                 _send_direct_enabled(),
             )
             log(f"[INFO] {name}: wake uid={uid} from={normalize_email(from_h)}")
+            mark_seen(conn, uid)
             _wake_async(prompt)
             last = max(last, uid)
             woken = True
