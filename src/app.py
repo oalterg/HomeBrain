@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -23,6 +25,7 @@ import migration
 import selftest
 import integrations
 import recovery
+import activation
 import household
 import vault_account
 import member_escrow
@@ -1954,6 +1957,37 @@ def backup_internal():
     return jsonify({"status": "success"})
 
 
+def apply_backup_schedule(retention, hour, minute, day_week, day_month):
+    """Write schedule env keys and enable the systemd timer. Returns (dict, status)."""
+    try:
+        if not (0 <= int(minute) <= 59) or not (0 <= int(hour) <= 23):
+            raise ValueError("Invalid time format")
+        if day_month != "*" and not (1 <= int(day_month) <= 31):
+            raise ValueError("Invalid day of month")
+        if day_week != "*" and not (0 <= int(day_week) <= 6):
+            raise ValueError("Invalid day of week")
+    except ValueError as e:
+        return {"error": str(e)}, 400
+
+    update_env_var("BACKUP_RETENTION", str(retention))
+    update_env_var("BACKUP_HOUR", str(hour))
+    update_env_var("BACKUP_MINUTE", str(minute))
+    update_env_var("BACKUP_DAY_WEEK", str(day_week))
+    update_env_var("BACKUP_DAY_MONTH", str(day_month))
+
+    try:
+        subprocess.run(
+            ["bash", SCRIPT_UTILITIES, "backup_timer"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        return {"status": "success"}, 200
+    except subprocess.CalledProcessError as e:
+        logging.error(f"backup_timer failed: {e.stderr}")
+        return {"error": "Failed to apply backup schedule"}, 500
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
 @app.route("/api/backup/config", methods=["GET", "POST"])
 @limiter.limit("10 per minute")
 def backup_config():
@@ -1969,47 +2003,15 @@ def backup_config():
             }
         )
 
-    # POST: Save Settings
-    data = request.json
-    retention = data.get("retention", "8")
-    hour = data.get("hour", "3")
-    minute = data.get("minute", "0")
-    day_week = data.get("day_week", "*")
-    day_month = data.get("day_month", "*")
-
-    # Validate Inputs
-    try:
-        # Ensure numeric values are integers within valid ranges
-        if not (0 <= int(minute) <= 59) or not (0 <= int(hour) <= 23):
-            raise ValueError("Invalid time format")
-        if day_month != "*" and not (1 <= int(day_month) <= 31):
-            raise ValueError("Invalid day of month")
-        if day_week != "*" and not (0 <= int(day_week) <= 6):
-            raise ValueError("Invalid day of week")
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    # Update .env for persistence
-    update_env_var("BACKUP_RETENTION", retention)
-    update_env_var("BACKUP_HOUR", hour)
-    update_env_var("BACKUP_MINUTE", minute)
-    update_env_var("BACKUP_DAY_WEEK", day_week)
-    update_env_var("BACKUP_DAY_MONTH", day_month)
-
-    # Apply as a persistent systemd timer (fires missed runs on next boot —
-    # plain cron silently skips backups the box sleeps through). The helper
-    # also removes the legacy cron files it replaces.
-    try:
-        subprocess.run(
-            ["bash", SCRIPT_UTILITIES, "backup_timer"],
-            check=True, capture_output=True, text=True, timeout=30,
-        )
-        return jsonify({"status": "success"})
-    except subprocess.CalledProcessError as e:
-        logging.error(f"backup_timer failed: {e.stderr}")
-        return jsonify({"error": "Failed to apply backup schedule"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    data = request.json or {}
+    body, code = apply_backup_schedule(
+        data.get("retention", "8"),
+        data.get("hour", "3"),
+        data.get("minute", "0"),
+        data.get("day_week", "*"),
+        data.get("day_month", "*"),
+    )
+    return jsonify(body), code
 
 
 @app.route("/api/backup/offsite", methods=["GET", "POST"])
@@ -4235,6 +4237,26 @@ def vault_docs_setup():
         return jsonify({"error": str(e)}), 500
 
 
+def caddy_ca_pem():
+    """Caddy internal CA root. Returns (pem_bytes, error, http_status)."""
+    try:
+        cid = compose_ps_q("caddy")
+        if not cid:
+            return b"", "Caddy container not running.", 503
+        pem = subprocess.check_output(
+            ["docker", "exec", cid, "cat",
+             "/data/caddy/pki/authorities/local/root.crt"],
+            stderr=subprocess.DEVNULL, timeout=5,
+        )
+        if not pem.strip().startswith(b"-----BEGIN"):
+            return b"", "CA not yet generated — try again in 30 s.", 503
+        return pem, "", 200
+    except subprocess.CalledProcessError:
+        return b"", "CA not available yet.", 503
+    except Exception as e:
+        return b"", f"Error: {e}", 500
+
+
 @app.route("/api/vault/local-ca")
 @limiter.limit("20 per minute")
 def vault_local_ca():
@@ -4244,30 +4266,16 @@ def vault_local_ca():
     if Caddy hasn't minted the CA yet (first boot)."""
     if not session.get("authenticated"):
         abort(401)
-    try:
-        cid = compose_ps_q("caddy")
-        if not cid:
-            return "Caddy container not running.", 503
-        # Caddy stores its internal CA root at a known path inside the
-        # caddy_data volume.
-        pem = subprocess.check_output(
-            ["docker", "exec", cid, "cat",
-             "/data/caddy/pki/authorities/local/root.crt"],
-            stderr=subprocess.DEVNULL, timeout=5,
-        )
-        if not pem.strip().startswith(b"-----BEGIN"):
-            return "CA not yet generated — try again in 30 s.", 503
-        return Response(
-            pem,
-            mimetype="application/x-pem-file",
-            headers={
-                "Content-Disposition": 'attachment; filename="homebrain-ca.pem"',
-            },
-        )
-    except subprocess.CalledProcessError:
-        return "CA not available yet.", 503
-    except Exception as e:
-        return f"Error: {e}", 500
+    pem, err, status = caddy_ca_pem()
+    if status != 200:
+        return err, status
+    return Response(
+        pem,
+        mimetype="application/x-pem-file",
+        headers={
+            "Content-Disposition": 'attachment; filename="homebrain-ca.pem"',
+        },
+    )
 
 
 @app.route("/api/vault/bootstrap", methods=["POST"])
@@ -4588,6 +4596,88 @@ def _recovery_configured():
     env = get_env_config()
     return bool(env.get("RECOVERY_SCRYPT_HASH") and env.get("RECOVERY_SCRYPT_SALT")
                 and env.get("RECOVERY_PARAMS"))
+
+
+def _activation_phone_counts():
+    """Household members and how many have a Nextcloud device.
+
+    Nextcloud down → unknown, so the phone row stays rather than lying as done.
+    """
+    env = get_env_config()
+    admin = env.get("NEXTCLOUD_ADMIN_USER", "")
+    try:
+        accounts = nc_occ_json("user:list", "--info") or {}
+    except NextcloudError:
+        return 0, 0, True
+    members = [uid for uid in accounts
+               if uid != admin and uid not in RESERVED_MEMBERS]
+    with_device = 0
+    for uid in members:
+        try:
+            tokens = nc_occ_json("user:auth-tokens:list", uid) or []
+            if tokens:
+                with_device += 1
+        except NextcloudError:
+            pass
+    return len(members), with_device, False
+
+
+def activation_household_list():
+    """Names and device counts — not issued passwords. Returns (dict, status)."""
+    env = get_env_config()
+    admin = env.get("NEXTCLOUD_ADMIN_USER", "")
+    try:
+        accounts = nc_occ_json("user:list", "--info") or {}
+    except NextcloudError as e:
+        return {"ok": False, "unavailable": True, "hint": str(e)}, 503
+    members = []
+    for uid, acct in accounts.items():
+        if uid == admin or uid in RESERVED_MEMBERS:
+            continue
+        devices = 0
+        try:
+            tokens = nc_occ_json("user:auth-tokens:list", uid) or []
+            devices = len(tokens)
+        except NextcloudError:
+            pass
+        members.append({
+            "user": uid,
+            "name": (acct or {}).get("display_name") or uid,
+            "devices": devices,
+        })
+    return {"ok": True, "members": members}, 200
+
+
+def activation_status():
+    env = get_env_config()
+    members, with_device, unknown = _activation_phone_counts()
+    return activation.payload(
+        has_gpu=has_gpu(),
+        recovery_configured=_recovery_configured(),
+        wordlist_ok=recovery.wordlist_ok(),
+        telegram_paired=activation.telegram_is_paired(),
+        backup_scheduled=activation.backup_is_scheduled(),
+        offsite_enabled=activation.offsite_is_enabled(env),
+        skips=activation.load_skips(),
+        phone_members=members,
+        phone_with_device=with_device,
+        phone_unknown=unknown,
+    )
+
+
+@app.route("/api/activation")
+def api_activation():
+    return jsonify(activation_status())
+
+
+@app.route("/api/activation/skip", methods=["POST"])
+@limiter.limit("20 per minute")
+def api_activation_skip():
+    step = ((request.get_json(silent=True) or {}).get("step") or "").strip()
+    ok, err = activation.set_skip(step)
+    if not ok:
+        return jsonify({"error": err}), 400
+    return jsonify({"status": "ok", **activation_status()})
 
 
 def _recovery_origin_allowed():
@@ -5397,61 +5487,55 @@ def _taken_in_home_assistant(user, env):
     return None
 
 
-@app.route("/api/household/members", methods=["POST"])
-@limiter.limit("10 per minute")
-def add_household_member():
-    """Create a person. Files always; vault and home only if ticked."""
-    body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
-    user = (body.get("user") or name).strip().lower().replace(" ", "")
+def create_household_member(name, user, services, pair=True):
+    """Create a person. Files always; vault and home only if in services.
+
+    Returns (payload_dict, http_status). The dashboard and the self-MCP
+    share this so the agent cannot mint a different shape of account.
+
+    pair=False skips the one-time QR and password. The agent path uses
+    that so a household password never reaches Telegram; the owner
+    issues the sheet from Household → New password.
+    """
     if not MEMBER_ID.match(user) or user in RESERVED_MEMBERS:
-        return jsonify({"error": "Use 2-32 letters or digits — no spaces"}), 400
+        return {"error": "Use 2-32 letters or digits — no spaces"}, 400
 
     env = get_env_config()
     if user == env.get("NEXTCLOUD_ADMIN_USER", ""):
-        return jsonify({"error": "That is the owner's account"}), 400
+        return {"error": "That is the owner's account"}, 400
 
-    services = _services_from_body(body, default=("files",))
+    services = list(services)
     if "files" not in services:
         services.insert(0, "files")
     if "vault" in services and not env.get("RECOVERY_BACKUP_KEY"):
-        return jsonify({"error": "Backup unlock is not enabled — HomeBrain cannot "
-                                 "create a recoverable vault"}), 409
+        return {"error": "Backup unlock is not enabled — HomeBrain cannot "
+                         "create a recoverable vault"}, 409
     if "home" in services and env.get("HA_PASSWORD_MANAGED") != "true":
-        return jsonify({"error": "Home Assistant manages its own login — "
-                                 "HomeBrain cannot add people to it"}), 409
+        return {"error": "Home Assistant manages its own login — "
+                         "HomeBrain cannot add people to it"}, 409
 
-    # Refuse a duplicate before sealing anything. Sealing first and rolling
-    # back on the occ failure overwrites the existing person's blob and then
-    # deletes it, so "did I already add Alex?" costs Alex their vault
-    # recovery — for an action that changes nothing else.
     try:
         if user in (nc_occ_json("user:list") or {}):
-            return jsonify({"error": f'The account "{user}" already exists.'}), 400
+            return {"error": f'The account "{user}" already exists.'}, 400
     except NextcloudError as e:
-        return jsonify({"error": str(e)}), 502
+        return {"error": str(e)}, 502
 
-    # Free in Nextcloud is not free. Checked whether or not that service was
-    # ticked: the merge happens on the next roster refresh either way, and
-    # when it was not ticked nothing else would have made a sound.
     try:
         clash = _taken_outside_nextcloud(user, env)
     except household.HouseholdError as e:
-        return jsonify({"error": str(e)}), 502
+        return {"error": str(e)}, 502
     if clash:
-        return jsonify({"error": clash}), 400
+        return {"error": clash}, 400
 
     password = member_password()
     results = {}
-    # Only a blob this request created may be rolled back.
     sealed_here = False
     try:
         _seal_password(user, password, env)
         sealed_here = True
     except household.HouseholdError as e:
         if "vault" in services:
-            return jsonify({"error": str(e)}), 409
-        # Files-only on a box without backup-unlock: no escrow, still create.
+            return {"error": str(e)}, 409
 
     try:
         ensure_default_quota()
@@ -5461,15 +5545,15 @@ def add_household_member():
         if proc.returncode != 0:
             if sealed_here:
                 member_escrow.drop(user)
-            return jsonify({"error": (proc.stderr.strip() or proc.stdout.strip()
-                                      or "Could not add the user")[:200]}), 400
+            return {"error": (proc.stderr.strip() or proc.stdout.strip()
+                              or "Could not add the user")[:200]}, 400
         ensure_photo_settings()
-        payload = pairing_payload(user, password, env)
+        payload = pairing_payload(user, password, env) if pair else {"user": user}
         results["files"] = "ok"
     except NextcloudError as e:
         if sealed_here:
             member_escrow.drop(user)
-        return jsonify({"error": str(e)}), 502
+        return {"error": str(e)}, 502
 
     if "vault" in services:
         try:
@@ -5485,13 +5569,31 @@ def add_household_member():
         except household.HouseholdError as e:
             results["home"] = str(e)
 
-    payload["password"] = password
     payload["name"] = name or user
     payload["services"] = results
     payload["vault_email"] = vault_account.vault_email(user)
     payload["vault_url"] = _vault_public_url()
     payload["home_url"] = _ha_public_url()
-    return jsonify(payload)
+    if pair:
+        payload["password"] = password
+    else:
+        payload["hint"] = (
+            "Password is on the dashboard Household tab — New password. "
+            "It is not sent in chat."
+        )
+    return payload, 200
+
+
+@app.route("/api/household/members", methods=["POST"])
+@limiter.limit("10 per minute")
+def add_household_member():
+    """Create a person. Files always; vault and home only if ticked."""
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    user = (body.get("user") or name).strip().lower().replace(" ", "")
+    services = _services_from_body(body, default=("files",))
+    payload, code = create_household_member(name, user, services)
+    return jsonify(payload), code
 
 
 @app.route("/api/household/members/<user>/services", methods=["POST"])

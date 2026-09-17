@@ -2046,6 +2046,7 @@ seed_openclaw_workspace() {
     local src="${SCRIPT_DIR}/../config/openclaw-workspace"
     local marker="## HomeBrain memory"
     local identity_marker="## HomeBrain identity"
+    local setup_marker="## HomeBrain setup"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2099,6 +2100,15 @@ seed_openclaw_workspace() {
                 >> "${ws}/AGENTS.md"
             _own "${ws}/AGENTS.md"
             log_info "Appended HomeBrain identity block to OpenClaw AGENTS.md"
+        fi
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$setup_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$setup_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            awk "index(\$0, \"$setup_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain setup block to OpenClaw AGENTS.md"
         fi
     fi
 }

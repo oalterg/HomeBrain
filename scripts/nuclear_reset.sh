@@ -183,6 +183,7 @@ rm -f "$INSTALL_DIR/docker-compose.override.yml" 2>/dev/null || true
 rm -f "$INSTALL_DIR/.restoring" 2>/dev/null || true
 rm -f /var/lib/homebrain/member_escrow.json 2>/dev/null || true
 rm -f /var/lib/homebrain/member_escrow.wrap 2>/dev/null || true
+rm -f /var/lib/homebrain/activation.json 2>/dev/null || true
 
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true

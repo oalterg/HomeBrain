@@ -192,3 +192,101 @@ def test_watcher_delete_prunes_runtime_state(hb):
     state = hb.ha_watch.load_runtime_state()
     assert "front-person" not in state
     assert "other" not in state
+
+
+def test_setup_skip_does_not_execute_on_the_first_call(hb, monkeypatch):
+    calls = []
+
+    def capture(method, path, body=None, timeout=10):
+        calls.append((method, path, body))
+        return 200, {"status": "ok", "remaining": []}
+
+    monkeypatch.setattr(hb, "_http", capture)
+    monkeypatch.setenv("HOMEBRAIN_MCP_CONSENT", "false")
+    first = hb.dispatch("homebrain.setup_skip", {"step": "offsite"})
+    assert first.get("requires_confirmation") is True
+    assert first.get("no_auto_confirm") is True
+    assert calls == []
+    redeemed = mcp_common.maybe_auto_confirm(
+        hb.dispatch, "homebrain.setup_skip", {"step": "offsite"}, first)
+    assert redeemed.get("requires_confirmation") is True
+    assert calls == []
+
+
+def test_setup_skip_executes_only_after_a_second_call(hb, monkeypatch):
+    calls = []
+
+    def capture(method, path, body=None, timeout=10):
+        calls.append((method, path, body))
+        return 200, {"status": "ok", "skipped": ["offsite"]}
+
+    monkeypatch.setattr(hb, "_http", capture)
+    first = hb.dispatch("homebrain.setup_skip", {"step": "offsite"})
+    out = hb.dispatch("homebrain.setup_skip", {
+        "step": "phone",
+        "confirmation_token": first["action_id"],
+    })
+    assert out.get("ok") is True
+    assert calls == [("POST", "/api/integrations/self/skip", {"step": "offsite"})]
+
+
+def test_setup_status_is_a_read(hb, monkeypatch):
+    monkeypatch.setattr(hb, "_http", lambda method, path, body=None, timeout=10: (
+        200, {"complete": False, "has_gpu": True,
+              "remaining": [{"id": "telegram"}], "skipped": []}))
+    out = hb.dispatch("homebrain.setup_status", {})
+    assert out["ok"] is True
+    assert out["next"] == "telegram"
+    assert out["complete"] is False
+
+
+def test_backup_schedule_set_does_not_auto_redeem(hb, monkeypatch):
+    calls = []
+
+    def capture(method, path, body=None, timeout=10):
+        calls.append((method, path, body))
+        return 200, {"status": "success"}
+
+    monkeypatch.setattr(hb, "_http", capture)
+    monkeypatch.setenv("HOMEBRAIN_MCP_CONSENT", "false")
+    first = hb.dispatch("homebrain.backup_schedule_set", {"hour": "4", "minute": "15"})
+    assert first.get("no_auto_confirm") is True
+    assert calls == []
+    out = hb.dispatch("homebrain.backup_schedule_set", {
+        "hour": "9", "minute": "0",
+        "confirmation_token": first["action_id"],
+    })
+    assert out.get("ok") is True
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == "/api/integrations/self/backup-schedule"
+    assert calls[0][2]["hour"] == "4"
+    assert calls[0][2]["minute"] == "15"
+
+
+def test_household_add_strips_password_from_the_tool_result(hb, monkeypatch):
+    monkeypatch.setattr(hb, "_http", lambda method, path, body=None, timeout=10: (
+        200, {"user": "alex", "password": "secret", "qr": "data:x",
+              "services": {"files": "ok"}}))
+    first = hb.dispatch("homebrain.household_add", {"name": "Alex"})
+    out = hb.dispatch("homebrain.household_add", {
+        "name": "Alex", "confirmation_token": first["action_id"],
+    })
+    assert out.get("ok") is True
+    assert "password" not in out
+    assert "qr" not in out
+    assert out.get("user") == "alex"
+
+
+def test_watcher_set_still_auto_redeems_when_consent_is_off(monkeypatch):
+    """Watchers keep today's behaviour. Config writes are the ones that must not."""
+    result = {"ok": False, "requires_confirmation": True, "action_id": "abc"}
+    seen = []
+
+    def dispatch(name, args):
+        seen.append(args)
+        return {"ok": True}
+
+    monkeypatch.setenv("HOMEBRAIN_MCP_CONSENT", "false")
+    out = mcp_common.maybe_auto_confirm(dispatch, "homebrain.watcher_set", {}, result)
+    assert out == {"ok": True}
+    assert seen == [{"confirmation_token": "abc"}]

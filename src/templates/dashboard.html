@@ -39,12 +39,10 @@
     <!-- ============================ STATUS ============================ -->
     <div id="status" class="tab-content active">
 
-        <div id="recovery-prompt" class="notice notice-warning" style="display:none; margin-bottom:20px;">
-            <strong>Set up your recovery phrase</strong>
-            <p class="small">This device has no recovery phrase. If you forget your master password there is no way
-                back into the Dashboard, Nextcloud or Home Assistant short of wiping the device. Setting one up takes
-                a few seconds — it is shown only once, so write it down.</p>
-            <button class="btn-warning" onclick="return goTo('settings', 'recovery-card')">Set up recovery phrase</button>
+        <div id="activation-card" class="notice notice-warning" style="display:none; margin-bottom:20px;">
+            <strong>Finish setting up this box</strong>
+            <p class="small" id="activation-lede"></p>
+            <div id="activation-rows" class="row-list mt"></div>
         </div>
 
         <div class="grid">
@@ -242,7 +240,7 @@
     <div id="backup" class="tab-content">
         <div class="stack">
 
-            <section class="section">
+            <section class="section" id="backup-schedule-card">
                 <h3>Backup Schedule</h3>
                 <form onsubmit="saveBackupConfig(event)">
                     <div class="fields fields-2">
@@ -329,7 +327,7 @@
                 </div>
             </section>
 
-            <section class="section">
+            <section class="section" id="offsite-card">
                 <h3>Off-site Copy</h3>
                 <p class="lede">Mirror the encrypted archives to another machine or cloud storage after each backup.</p>
                 <p id="os-sync-status" class="small mono" style="display:none; margin-bottom:10px;"></p>

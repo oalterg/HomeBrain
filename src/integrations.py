@@ -1175,6 +1175,8 @@ def _channel_status(channel_id: str) -> dict:
     }
     if channel_id == "telegram" and configured:
         info["has_token"] = bool(ch.get("botToken"))
+        allow = ch.get("allowFrom") or []
+        info["paired"] = bool(allow)
     return info
 
 
@@ -1542,6 +1544,95 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         logging.info("Self-MCP restarted service: %s", name)
         return jsonify({"status": "restarted", "service": name})
 
+    def self_activation():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import activation_status
+        return jsonify(activation_status())
+
+    def self_backup_config():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        import activation as act
+        from app import get_env_config
+        return jsonify({"ok": True, **act.backup_snapshot(get_env_config())})
+
+    def self_backup_schedule():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import apply_backup_schedule
+        body = request.get_json(silent=True) or {}
+        payload, code = apply_backup_schedule(
+            body.get("retention", "8"),
+            body.get("hour", "3"),
+            body.get("minute", "0"),
+            body.get("day_week", "*"),
+            body.get("day_month", "*"),
+        )
+        return jsonify(payload), code
+
+    def self_setup_skip():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        import activation as act
+        from app import activation_status
+        step = ((request.get_json(silent=True) or {}).get("step") or "").strip()
+        ok, err = act.set_skip(step)
+        if not ok:
+            return jsonify({"error": err}), 400
+        return jsonify({"status": "ok", **activation_status()})
+
+    def self_household_list():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import activation_household_list
+        payload, code = activation_household_list()
+        return jsonify(payload), code
+
+    def self_household_add():
+        # Files only. Vault and HA stay a dashboard tick — HA is whole-house.
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import create_household_member
+        body = request.get_json(silent=True) or {}
+        name = (body.get("name") or "").strip()
+        user = (body.get("user") or name).strip().lower().replace(" ", "")
+        payload, code = create_household_member(name, user, ["files"], pair=False)
+        if isinstance(payload, dict):
+            payload = {k: v for k, v in payload.items() if k not in ("password", "qr")}
+        return jsonify(payload), code
+
+    def self_nc_add_local():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        body = request.get_json(silent=True) or {}
+        user = (body.get("user") or "").strip()
+        password = body.get("password") or None
+        ok, msg = bootstrap_local_nextcloud(user=user or None, password=password)
+        if not ok:
+            return jsonify({"error": msg}), 400
+        reconcile_one("nextcloud")
+        return jsonify({"status": "added"})
+
+    def self_ca():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        import activation as act
+        from app import caddy_ca_pem
+        pem, err, status = caddy_ca_pem()
+        if status != 200:
+            return jsonify({"ok": False, "error": err}), status
+        return jsonify({
+            "ok": True,
+            "filename": "homebrain-ca.pem",
+            "pem": pem.decode(),
+            "names": list(act.LAN_NAMES),
+            "ios_hint": (
+                "After install, enable full trust in Settings → General → "
+                "About → Certificate Trust Settings."
+            ),
+        })
+
     # ---- Pending consent inspection (for dashboard) -----------------------
     def pending_actions():
         """List currently outstanding consent tokens. The dashboard surfaces
@@ -1654,6 +1745,30 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "self_backup_now", self_backup_now, methods=["POST"])
     app.add_url_rule("/api/integrations/self/logs/<target>",
                      "self_logs", self_logs, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/activation",
+                     "self_activation", self_activation, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/backup-config",
+                     "self_backup_config", self_backup_config, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/backup-schedule",
+                     "self_backup_schedule",
+                     limiter.limit("10 per minute")(self_backup_schedule),
+                     methods=["POST"])
+    app.add_url_rule("/api/integrations/self/skip",
+                     "self_setup_skip",
+                     limiter.limit("20 per minute")(self_setup_skip),
+                     methods=["POST"])
+    app.add_url_rule("/api/integrations/self/household",
+                     "self_household_list", self_household_list, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/household",
+                     "self_household_add",
+                     limiter.limit("10 per minute")(self_household_add),
+                     methods=["POST"])
+    app.add_url_rule("/api/integrations/self/nc-add-local",
+                     "self_nc_add_local",
+                     limiter.limit("5 per minute")(self_nc_add_local),
+                     methods=["POST"])
+    app.add_url_rule("/api/integrations/self/ca",
+                     "self_ca", self_ca, methods=["GET"])
 
     app.add_url_rule("/api/integrations/pending-actions",
                      "integrations_pending_actions",

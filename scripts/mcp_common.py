@@ -51,14 +51,18 @@ def unavailable(hint: str = "") -> dict:
 def locked(hint: str = "") -> dict:
     return {"ok": False, "locked": True, "hint": hint}
 
-def consent_required(action_id: str, summary: str, expires_in: int = 60) -> dict:
-    return {
+def consent_required(action_id: str, summary: str, expires_in: int = 60,
+                    no_auto_confirm: bool = False) -> dict:
+    out = {
         "ok": False,
         "requires_confirmation": True,
         "action_id": action_id,
         "summary": summary,
         "expires_in_seconds": expires_in,
     }
+    if no_auto_confirm:
+        out["no_auto_confirm"] = True
+    return out
 
 
 def mcp_image(data: bytes, mime_type: str = "image/jpeg") -> dict:
@@ -68,6 +72,23 @@ def mcp_image(data: bytes, mime_type: str = "image/jpeg") -> dict:
         "data": base64.b64encode(data).decode("ascii"),
         "mimeType": mime_type,
     }
+
+
+def maybe_auto_confirm(dispatch: Callable, name: str, args: dict,
+                      result: dict) -> dict:
+    """When MCP consent is off, redeem the token in the same tools/call.
+
+    Config writes set no_auto_confirm so a prompt-injected turn cannot
+    skip off-site or set a schedule without a second call the owner sees.
+    """
+    if (result.get("requires_confirmation")
+            and result.get("action_id")
+            and not result.get("no_auto_confirm")
+            and os.environ.get("HOMEBRAIN_MCP_CONSENT", "true").lower() == "false"):
+        nxt = dict(args)
+        nxt["confirmation_token"] = result["action_id"]
+        return dispatch(name, nxt)
+    return result
 
 
 def tool_call_result(result: dict) -> dict:
@@ -298,15 +319,7 @@ def serve(server_name: str,
             args = params.get("arguments") or {}
             try:
                 result = dispatch(name, args)
-                # Auto-confirm when consent is disabled: if the tool
-                # returned a consent envelope but Consent.issue returned
-                # None (disabled), re-dispatch with confirmation_token
-                # so the tool executes directly.
-                if (result.get("requires_confirmation")
-                        and result.get("action_id")
-                        and os.environ.get("HOMEBRAIN_MCP_CONSENT", "true").lower() == "false"):
-                    args["confirmation_token"] = result["action_id"]
-                    result = dispatch(name, args)
+                result = maybe_auto_confirm(dispatch, name, args, result)
             except Exception as e:
                 result = err(f"unhandled exception: {e}")
             _write({

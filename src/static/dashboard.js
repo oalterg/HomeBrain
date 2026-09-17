@@ -279,7 +279,8 @@ async function init() {
         // populate immediately instead of staying skeleton until someone
         // opens the Settings tab.
         await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(),
-            vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(), loadRecoveryStatus()]);
+            vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(),
+            loadRecoveryStatus(), loadActivation()]);
     } catch (err) {
         console.error('Initial fetch failed:', err);
     }
@@ -301,6 +302,7 @@ const POLLERS = [
     [vaultMcpRefresh, 30000],
     [connRefresh, 15000],
     [channelRefresh, 15000],
+    [loadActivation, 15000],
     [pollLogsIfVisible, 3000],
     [pollOffsiteStatusIfVisible, 15000],
 ];
@@ -589,6 +591,7 @@ async function channelTelegramPair() {
             msg.innerText = 'Paired! You can now chat with your agent on Telegram.';
             closeForm('details-telegram-pair');
             document.getElementById('tg-pair-code').value = '';
+            loadActivation();
         } else {
             msg.innerText = d.error || 'Pairing failed';
         }
@@ -2009,6 +2012,7 @@ async function addMember(e) {
             }
         }
         loadHousehold();
+        loadActivation();
     } catch (e) { hbToast('Could not add them — see the browser console.', 'error'); }
 }
 
@@ -2532,6 +2536,7 @@ async function saveBackupConfig(e) {
     if (res.ok) {
         hbToast('Backup schedule saved.');
         fetchHealth();
+        loadActivation();
     } else {
         hbToast('Could not save the backup schedule.', 'error');
     }
@@ -2664,6 +2669,7 @@ async function saveOffsiteConfig(e) {
     }
     if (!enabled) {
         status.innerText = 'Off-site copy disabled.';
+        loadActivation();
         return;
     }
     status.innerText = 'Testing connection...';
@@ -2674,6 +2680,7 @@ async function saveOffsiteConfig(e) {
         status.innerText = 'Connected — backups are copied off-site after each run.';
         document.getElementById('os-pass').value = '';
         document.getElementById('os-pass').placeholder = '(unchanged)';
+        loadActivation();
     } else {
         status.style.color = 'var(--danger)';
         status.innerText = td.error || 'Connection test failed.';
@@ -3022,18 +3029,92 @@ function renderLogs() {
 }
 
 /* =====================================================================
+   Day-2 activation
+   ===================================================================== */
+
+async function loadActivation() {
+    const card = document.getElementById('activation-card');
+    if (!card) return;
+    try {
+        const r = await fetch('/api/activation', { credentials: 'include' });
+        if (!r.ok) { card.style.display = 'none'; return; }
+        const d = await r.json();
+        const rows = d.remaining || [];
+        if (!rows.length) {
+            card.style.display = 'none';
+            return;
+        }
+        const ids = rows.map(s => s.id);
+        const lede = document.getElementById('activation-lede');
+        if (lede) {
+            if (ids.includes('recovery')) {
+                lede.textContent = 'Write the recovery phrase down. It is shown only once.';
+            } else if (ids.includes('telegram')) {
+                lede.textContent = 'Pair Telegram first — then the agent can finish the rest from chat.';
+            } else {
+                lede.textContent = 'These jobs are still open.';
+            }
+        }
+        const box = document.getElementById('activation-rows');
+        if (!box) return;
+        box.innerHTML = rows.map(s => {
+            const skip = s.skip
+                ? `<button onclick="activationSkip('${s.skip}')">${escapeHtml(s.skip_cta || 'Skip')}</button>`
+                : '';
+            const extra = s.id === 'phone'
+                ? `<a class="link-out" href="/api/vault/local-ca">This box's certificate</a>`
+                : '';
+            return `<div class="row-item">
+                <div class="row-main">
+                  <strong>${escapeHtml(s.title)}</strong>
+                  <span class="row-meta">${escapeHtml(s.detail)}</span>
+                  ${extra}
+                </div>
+                <div class="row-actions">
+                  <button class="btn-primary" onclick="return goTo('${s.tab}','${s.card}')">${escapeHtml(s.cta)}</button>
+                  ${skip}
+                </div>
+              </div>`;
+        }).join('');
+        card.style.display = 'block';
+    } catch (e) {
+        card.style.display = 'none';
+    }
+}
+
+async function activationSkip(step) {
+    const costs = {
+        offsite: 'If this box burns, the copy on it burns with it.',
+        phone: 'Phones will show a certificate warning and cannot back up photos.',
+    };
+    if (!await hbConfirm({
+        title: step === 'offsite' ? 'Skip off-site copy?' : 'Skip phone setup?',
+        body: costs[step] || '',
+        confirm: 'Skip',
+        danger: true,
+    })) return;
+    try {
+        const r = await fetch('/api/activation/skip', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ step }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { hbToast(d.error || 'Could not skip.', 'error'); return; }
+        loadActivation();
+    } catch (e) {
+        hbToast('Could not skip.', 'error');
+    }
+}
+
+/* =====================================================================
    Recovery phrase
    ===================================================================== */
 
 async function loadRecoveryStatus() {
     const line = document.getElementById('recovery-status-line');
     const btn = document.getElementById('recovery-gen-btn');
-    const banner = document.getElementById('recovery-prompt');
     if (!line) return;
-    // The Status-tab banner only nags when a phrase is genuinely missing and
-    // can be generated; default to hidden so a failed status probe never
-    // strands a stale warning on screen.
-    if (banner) banner.style.display = 'none';
     try {
         const r = await fetch('/api/recovery/status', { credentials: 'include' });
         const d = await r.json();
@@ -3062,7 +3143,6 @@ async function loadRecoveryStatus() {
         } else {
             line.textContent = 'No recovery phrase is set. Generate one now so you can recover access if you forget your master password.';
             if (btn) btn.textContent = 'Generate recovery phrase';
-            if (banner) banner.style.display = 'block';
             const enable = document.getElementById('recovery-enable-unlock');
             if (enable) enable.style.display = 'none';
         }
@@ -3091,6 +3171,7 @@ async function regenerateRecovery() {
             document.getElementById('recovery-reveal').style.display = 'block';
             msg.textContent = '';
             await loadRecoveryStatus();
+            loadActivation();
         } else {
             msg.textContent = d.error || 'Failed to generate phrase';
         }
