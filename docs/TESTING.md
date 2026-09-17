@@ -601,6 +601,19 @@ On real hardware, verify read-only (no update is executed):
 - [ ] **Override path:** `sudo ALLOW_DOWNGRADE=1 bash scripts/update.sh stable v1.1.0`
       logs the override warning and proceeds (only with a backup in hand).
 
+OS security updates are nightly `unattended-upgrades` (no automatic reboot).
+The dashboard **Run now** button is the same path, on demand — not a full
+`apt-get upgrade`. After a kernel/libc patch the health banner asks for a
+restart; **Restart box** is the button for that.
+
+- [ ] Dashboard *Check now* on a box newer than GitHub `latest` does **not**
+      offer an install. *Run now* writes `=== Upgrade complete ===` only if
+      `unattended-upgrade` succeeded. A forced `false` in the chain must show
+      as a failed task, not success.
+- [ ] With `/var/run/reboot-required` present, the health banner shows the
+      restart nag (not hidden) and **Restart now** / **Restart box** confirms
+      then reboots. Stop the test before confirming on a box you cannot lose.
+
 ---
 
 ## Sign-off checklist

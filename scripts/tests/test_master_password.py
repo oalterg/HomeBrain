@@ -52,18 +52,22 @@ class Harness:
         with open(self.env_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
+        fd, self.status_path = tempfile.mkstemp(prefix="hb_test_status_")
+        os.close(fd)
         self.env_writes = []
         self.rotations = []
         self._saved = {
             "ENV_FILE": hb.ENV_FILE,
+            "STATUS_FILE": hb.STATUS_FILE,
             "update_env_var": hb.update_env_var,
             "_launch_master_rotation": hb._launch_master_rotation,
             "task": dict(hb.current_task_status),
             "limiter_enabled": hb.limiter.enabled,
         }
         hb.ENV_FILE = self.env_path
+        hb.STATUS_FILE = self.status_path
         hb.update_env_var = lambda k, v: self.env_writes.append((k, v))
-        hb._launch_master_rotation = lambda pw: self.rotations.append(pw)
+        hb._launch_master_rotation = lambda pw: self.rotations.append(pw) or True
         hb.current_task_status.update({"status": "idle", "message": "", "log_type": "setup"})
         hb.limiter.enabled = False  # these tests exercise logic, not the buckets
         hb.app.config["TESTING"] = True
@@ -83,11 +87,17 @@ class Harness:
 
     def close(self):
         hb.ENV_FILE = self._saved["ENV_FILE"]
+        hb.STATUS_FILE = self._saved["STATUS_FILE"]
         hb.update_env_var = self._saved["update_env_var"]
         hb._launch_master_rotation = self._saved["_launch_master_rotation"]
         hb.current_task_status.update(self._saved["task"])
         hb.limiter.enabled = self._saved["limiter_enabled"]
         os.unlink(self.env_path)
+        for p in (self.status_path, self.status_path + ".lock"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def test_change_requires_a_session():
@@ -139,7 +149,7 @@ def test_change_refuses_while_a_task_runs():
     h = Harness()
     h.login()
     try:
-        hb.current_task_status["status"] = "running"
+        hb.write_status({"status": "running", "message": "busy", "log_type": "setup"})
         r = h.change()
         assert r.status_code == 409, r.status_code
         assert h.rotations == []
@@ -304,7 +314,11 @@ def test_launcher_hands_password_over_in_a_0600_file():
         def start(self):
             pass
 
-    saved_thread, saved_run = hb.threading.Thread, hb.subprocess.run
+    saved_thread, saved_run, saved_status = (
+        hb.threading.Thread, hb.subprocess.run, hb.STATUS_FILE)
+    fd, status = tempfile.mkstemp(prefix="hb_rotate_status_")
+    os.close(fd)
+    hb.STATUS_FILE = status
     hb.threading.Thread = FakeThread
     hb.subprocess.run = lambda *a, **k: None
     try:
@@ -317,7 +331,13 @@ def test_launcher_hands_password_over_in_a_0600_file():
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         os.unlink(path)
     finally:
-        hb.threading.Thread, hb.subprocess.run = saved_thread, saved_run
+        hb.threading.Thread, hb.subprocess.run, hb.STATUS_FILE = (
+            saved_thread, saved_run, saved_status)
+        for p in (status, status + ".lock"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def test_recovery_status_reports_backup_unlock():

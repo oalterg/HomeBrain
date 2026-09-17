@@ -293,12 +293,34 @@ STATUS_FILE = os.path.join(tempfile.gettempdir(), "homebrain_task_status.json")
 # appended so nothing in scripts/ can shadow a stdlib or site-packages module.
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 try:
-    from healthcheck import tunnel_state_from_logs
+    from healthcheck import (
+        beta_ahead,
+        stable_update_offer,
+        tunnel_state_from_logs,
+    )
 except ImportError:
     # Degrade to today's behaviour rather than taking the whole dashboard down
     # over the tunnel badge.
     def tunnel_state_from_logs(_tail):
         return "unknown"
+
+    def stable_update_offer(installed_ref, latest_tag):
+        latest_tag = (latest_tag or "").strip()
+        installed_ref = (installed_ref or "").strip()
+        if not latest_tag:
+            return False, "No releases found."
+        if latest_tag != installed_ref:
+            return True, f"New Release Available: {latest_tag}"
+        return False, f"Up to date ({latest_tag})"
+
+    def beta_ahead(installed_ref, remote_sha):
+        remote = (remote_sha or "").strip()
+        local = (installed_ref or "").strip()
+        if not remote:
+            return False
+        if not local or local in ("main", "unknown"):
+            return True
+        return local[:7] != remote[:7]
 
 LOG_FILES = {
     "setup": f"{LOG_DIR}/main_setup.log",
@@ -521,6 +543,7 @@ task_lock = threading.Lock()
 current_task_status = {"status": "idle", "message": "", "log_type": "setup"}
 
 def write_status(status):
+    global current_task_status
     try:
         # Use mkstemp for secure file creation (prevents race conditions)
         # Use system temp dir to ensure write permissions regardless of user (root/www-data)
@@ -531,8 +554,60 @@ def write_status(status):
         os.rename(temp_path, STATUS_FILE) # Atomic replacement
     except Exception as e:
         logging.error(f"Failed to write status file: {e}. Using in-memory fallback.")
-        global current_task_status
         current_task_status = status  # Fallback to global if file fails
+    else:
+        current_task_status = status
+
+
+def task_running():
+    """True when a background task is in flight.
+
+    Reads the status file (shared across gunicorn workers), not only the
+    in-process global that write_status used to leave stale.
+    """
+    return read_status().get("status") == "running"
+
+
+def claim_task(status):
+    """Atomically reserve the long-job slot across gunicorn workers.
+
+    `task_running()` then `write_status()` is a race: two workers can both
+    see idle and both start. Hold a file lock around the check+write so
+    only one running job exists. Returns False if the slot is taken.
+    """
+    lock_path = STATUS_FILE + ".lock"
+    try:
+        with open(lock_path, "a+") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            try:
+                if task_running():
+                    return False
+                write_status(status)
+                return True
+            finally:
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+    except OSError as e:
+        logging.error(f"Failed to claim task slot: {e}")
+        with task_lock:
+            if task_running():
+                return False
+            write_status(status)
+            return True
+
+
+def start_background_task(task_name, command, log_type):
+    """Reserve the shared slot, then run. False if another job holds it."""
+    if not claim_task({
+        "status": "running",
+        "message": f"{task_name} in progress...",
+        "log_type": log_type,
+    }):
+        return False
+    threading.Thread(
+        target=run_background_task, args=(task_name, command, log_type)
+    ).start()
+    return True
+
 
 def read_status():
     # 1. Try reading from file (Active Background Task)
@@ -702,9 +777,8 @@ def cleanup_credentials():
     # Now, start the remaining profile tunnel containers
     subprocess.run(["chmod", "+x", SCRIPT_UTILITIES])
     cmd = f"bash {SCRIPT_UTILITIES} activate_tunnels >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=("Activating Tunnels", cmd, "setup")
-    ).start()
+    if not start_background_task("Activating Tunnels", cmd, "setup"):
+        logging.warning("Tunnel activation skipped: another task is running")
 
     return jsonify({"status": "ok"})
 
@@ -731,13 +805,12 @@ def run_background_task(task_name, command, log_type):
     # The one deliberate shell=True in this codebase: callers hand over
     # internally-built command strings with log redirection (>> file 2>&1) and
     # shlex.quote() at every interpolation. Never pass request data here
-    # unquoted.
+    # unquoted. The shared slot is already reserved by start_background_task.
     status = {
              "status": "running",
              "message": f"{task_name} in progress...",
              "log_type": log_type,
          }
-    write_status(status)
 
     try:
         result = subprocess.run(
@@ -1237,9 +1310,8 @@ def start_setup():
         )
         task_name = ("Restore From Backup Drive" if restore_source == "local"
                      else "Restore From Off-site")
-    threading.Thread(
-        target=run_background_task, args=(task_name, cmd, "setup")
-    ).start()
+    if not start_background_task(task_name, cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     # Session already established by login
     return jsonify({"status": "started"})
 
@@ -1294,7 +1366,7 @@ def register_cloud():
 @app.route("/api/drives/mount", methods=["POST"])
 @limiter.limit("5 per minute")
 def mount_drive():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     drive_path = request.json.get("path")
@@ -1358,9 +1430,8 @@ def mount_drive():
         f"mount -a"
     )
 
-    threading.Thread(
-        target=run_background_task, args=("Mount Existing Drive", cmd, "setup")
-    ).start()
+    if not start_background_task("Mount Existing Drive", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -1472,10 +1543,11 @@ def health_status():
         with open(HEALTH_FILE) as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return jsonify({"overall": "unknown", "checks": []})
+        return jsonify({"overall": "unknown", "checks": [], "stale": True})
     # A stale report (timer dead > 2h) is itself a signal — surface it.
     if time.time() - data.get("ts", 0) > 2 * 3600:
         data["overall"] = "unknown"
+        data["stale"] = True
     # health.json is up to 30 minutes old. Saving a schedule writes the timer
     # immediately, so this snapshot can keep warning "not set up" after it is.
     if os.path.exists(BACKUP_CRON_FILE) or os.path.exists(BACKUP_TIMER_FILE):
@@ -1784,7 +1856,7 @@ def list_drives():
 @app.route("/api/drives/format", methods=["POST"])
 @limiter.limit("3 per minute")
 def format_drive():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     drive_path = request.json.get("path")
@@ -1809,9 +1881,8 @@ def format_drive():
         f"mount -a"
     )
 
-    threading.Thread(
-        target=run_background_task, args=("Format Drive", cmd, "setup")
-    ).start()
+    if not start_background_task("Format Drive", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -1891,7 +1962,7 @@ def nextcloud_storage():
 @app.route("/api/drives/nextcloud-data", methods=["POST"])
 @limiter.limit("3 per minute")
 def move_nextcloud_data():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     body = request.json or {}
@@ -1908,9 +1979,8 @@ def move_nextcloud_data():
     # reachable from a shell and must refuse there too.
     cmd = (f"bash {shlex.quote(SCRIPT_MOVE_NC_DATA)} {shlex.quote(arg)} "
            f">> {LOG_FILES['storage']} 2>&1")
-    threading.Thread(
-        target=run_background_task, args=("Move Nextcloud Data", cmd, "storage")
-    ).start()
+    if not start_background_task("Move Nextcloud Data", cmd, "storage"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -2260,7 +2330,7 @@ def backup_replica():
 @app.route("/api/backup/now", methods=["POST"])
 @limiter.limit("3 per minute")
 def trigger_backup():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     # 'full' = Database + NC Data + NC Config + HA Config
@@ -2277,9 +2347,8 @@ def trigger_backup():
 
     label = "Full System Backup" if strategy == "full" else "Data-Only Backup"
     
-    threading.Thread(
-        target=run_background_task, args=(label, cmd, "backup")
-    ).start()
+    if not start_background_task(label, cmd, "backup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -2578,7 +2647,7 @@ def list_offsite_backups():
 @app.route("/api/restore", methods=["POST"])
 @limiter.limit("3 per minute")
 def trigger_restore():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     filename = request.json.get("filename")
@@ -2618,9 +2687,8 @@ def trigger_restore():
     cmd = f"{pass_env}bash {SCRIPT_RESTORE} {shlex.quote(target)} --no-prompt{offsite_flag} >> {LOG_FILES['restore']} 2>&1"
     task_name = "Off-site Restore" if source == "offsite" else "System Restore"
 
-    threading.Thread(
-        target=run_background_task, args=(task_name, cmd, "restore")
-    ).start()
+    if not start_background_task(task_name, cmd, "restore"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -2676,7 +2744,7 @@ def update_openclaw_backup_settings():
 @app.route("/api/tunnel", methods=["POST"])
 @limiter.limit("5 per minute")
 def update_tunnel():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
@@ -2715,9 +2783,8 @@ def update_tunnel():
     # Trigger deploy script to update stack logic
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=("Update Tunnel (Pangolin)", cmd, "setup")
-    ).start()
+    if not start_background_task("Update Tunnel (Pangolin)", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -2725,7 +2792,7 @@ def update_tunnel():
 @app.route("/api/tunnel/cloudflare", methods=["POST"])
 @limiter.limit("5 per minute")
 def update_tunnel_cloudflare():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     domain = sanitize_domain(request.json.get("domain"))
@@ -2749,16 +2816,15 @@ def update_tunnel_cloudflare():
 
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=("Update Tunnel (Cloudflare)", cmd, "setup")
-    ).start()
+    if not start_background_task("Update Tunnel (Cloudflare)", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
 @app.route("/api/tunnel/revert", methods=["POST"])
 @limiter.limit("3 per minute")
 def revert_tunnel_provider():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     # To revert to factory (Pangolin)
@@ -2785,9 +2851,8 @@ def revert_tunnel_provider():
 
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=("Revert to Factory Settings", cmd, "setup")
-    ).start()
+    if not start_background_task("Revert to Factory Settings", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -2896,67 +2961,82 @@ services:
         logging.error(f"Zigbee update error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+def os_upgrade_command(log_path):
+    """Manual trigger of the same path unattended-upgrades runs nightly.
+
+    Security origin only (distro unattended-upgrade policy), new kernel
+    packages allowed, no docker compose, no apt-get upgrade of every
+    installed package. `&&` so a failed apt-get cannot still report success.
+    """
+    safe_log = shlex.quote(log_path)
+    confold = (
+        "-o Dpkg::Options::=--force-confdef "
+        "-o Dpkg::Options::=--force-confold"
+    )
+    return (
+        f"echo '=== Starting OS upgrade ===' > {safe_log} && "
+        "export DEBIAN_FRONTEND=noninteractive && "
+        "export APT_LISTCHANGES_FRONTEND=none && "
+        f"echo '[1/2] Fetching package lists...' >> {safe_log} && "
+        f"apt-get update >> {safe_log} 2>&1 && "
+        f"echo '[2/2] Applying security updates...' >> {safe_log} && "
+        f"apt-get install -y -qq {confold} unattended-upgrades >> {safe_log} 2>&1 && "
+        f"unattended-upgrade -v >> {safe_log} 2>&1 && "
+        f"if [ -f /var/run/reboot-required ]; then "
+        f"echo 'Restart this box to finish kernel/libc updates.' >> {safe_log}; "
+        f"fi && "
+        f"echo '=== Upgrade complete ===' >> {safe_log}"
+    )
+
+
 @app.route("/api/upgrade", methods=["POST"])
 @limiter.limit("2 per minute") # Very expensive operation
 def trigger_upgrade():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
-    # 1. Fetch Active Profiles (Critical for Tunnels)
-    # We reuse the bash logic to ensure consistency with deploy.sh
-    try:
-        profiles = subprocess.check_output(
-            ["bash", "-c",
-             f"source {INSTALL_DIR}/scripts/common.sh; load_env; get_tunnel_profiles"],
-        ).decode().strip()
-    except Exception as e:
-        logging.error(f"Failed to fetch profiles: {e}")
-        # Fail safe: don't proceed if we can't determine the profile, 
-        # otherwise we might start the stack without the tunnel.
-        return jsonify({"error": "Could not determine system profile. Upgrade aborted."}), 500
-
-    # 2. Construct Docker Arguments
-    safe_env = shlex.quote(ENV_FILE)
-    safe_compose = shlex.quote(COMPOSE_FILE)
-    safe_log = shlex.quote(LOG_FILES["setup"])
-    
-    # Handle Override File
-    compose_args = f"-f {safe_compose}"
-    if os.path.exists(OVERRIDE_FILE):
-        safe_override = shlex.quote(OVERRIDE_FILE)
-        compose_args += f" -f {safe_override}"
-
-    # 3. Build the Command Chain
-    # Note: 'profiles' variable contains flags (e.g. --profile cloudflare), so it cannot be quoted as a single string.
-    cmd = (
-        f"echo '=== Starting System & Stack Upgrade ===' > {safe_log}; "
-        
-        # Step A: OS Updates
-        f"echo '[1/4] Updating System Packages...' >> {safe_log}; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        f"apt-get update >> {safe_log} 2>&1; "
-        f"apt-get upgrade -y >> {safe_log} 2>&1; "
-        f"apt-get autoremove -y >> {safe_log} 2>&1; "
-
-        # Step B: Docker Pull (Updates Images)
-        f"echo '[2/4] Pulling Docker Images...' >> {safe_log}; "
-        f"docker compose --env-file {safe_env} {compose_args} {profiles} pull >> {safe_log} 2>&1; "
-
-        # Step C: Docker Up (Recreates Containers)
-        f"echo '[3/4] Restarting Stack...' >> {safe_log}; "
-        f"docker compose --env-file {safe_env} {compose_args} {profiles} up -d --remove-orphans >> {safe_log} 2>&1; "
-        
-        # Step D: Cleanup
-        f"echo '[4/4] Cleaning up...' >> {safe_log}; "
-        f"docker image prune -f >> {safe_log} 2>&1; "
-        
-        f"echo '=== Upgrade Complete ===' >> {safe_log}"
-    )
-
-    threading.Thread(
-        target=run_background_task, args=("System Upgrade", cmd, "setup")
-    ).start()
+    cmd = os_upgrade_command(LOG_FILES["setup"])
+    if not start_background_task("OS Upgrade", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
+
+
+@app.route("/api/system/reboot", methods=["POST"])
+@limiter.limit("1 per 5 minutes")
+def trigger_reboot():
+    """Finish kernel/libc updates. Health nags; this is the button for it."""
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    if not claim_task({
+        "status": "running",
+        "message": "Restarting this box...",
+        "log_type": "setup",
+    }):
+        return jsonify({"error": "Task running"}), 409
+
+    def _reboot():
+        time.sleep(2)
+        try:
+            result = subprocess.run(["systemctl", "reboot"], check=False)
+            if result.returncode == 0:
+                return
+            write_status({
+                "status": "error",
+                "message": "Restart failed. The box is still up.",
+                "log_type": "setup",
+            })
+        except Exception as e:
+            write_status({
+                "status": "error",
+                "message": str(e),
+                "log_type": "setup",
+            })
+
+    threading.Thread(target=_reboot, daemon=True).start()
+    return jsonify({
+        "status": "started",
+        "message": "Restarting. This page will drop; wait a minute and refresh.",
+    })
 
 @app.route("/api/manager/check_update", methods=["GET"])
 def check_manager_update():
@@ -2969,28 +3049,17 @@ def check_manager_update():
         update_available = False
 
         if channel == "stable":
-            # Check Latest Release
             resp = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
             if resp.status_code == 200:
-                data = resp.json()
-                remote_ref = data.get("tag_name", "")
-                # Compare tags (Simple string comparison, semantic versioning library is better but heavy)
-                if remote_ref != local_ver.get("ref"):
-                    update_available = True
-                    message = f"New Release Available: {remote_ref}"
-                else:
-                    message = f"Up to date ({remote_ref})"
-            else:
-                 # Fallback if no releases exist yet
-                 message = "No releases found."
+                remote_ref = resp.json().get("tag_name", "")
+            update_available, message = stable_update_offer(
+                local_ver.get("ref"), remote_ref)
 
         else: # Beta / Dev
-            # Check Main Branch Commit
             resp = requests.get(f"{REPO_API_URL}/commits/main", timeout=5)
             if resp.status_code == 200:
-                data = resp.json()
-                remote_ref = data.get("sha", "")[:7] # Short SHA
-                if remote_ref != local_ver.get("ref"):
+                remote_ref = (resp.json().get("sha") or "")[:7]
+                if beta_ahead(local_ver.get("ref"), remote_ref):
                     update_available = True
                     message = f"New Beta Commit: {remote_ref}"
                 else:
@@ -3013,7 +3082,7 @@ def check_manager_update():
 @app.route("/api/manager/update", methods=["POST"])
 @limiter.limit("3 per minute")
 def do_manager_update():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
@@ -3050,13 +3119,47 @@ def do_manager_update():
     except Exception:
         pass
 
-    # Fire and forget thread, as the service will restart
+    if not claim_task({
+        "status": "running",
+        "message": f"Updating to {channel} {target_ref}...",
+        "log_type": "update",
+    }):
+        return jsonify({"error": "Task running"}), 409
+
     def _run_update():
-        with open(LOG_FILES["update"], "w") as log:
-            log.write(f"Starting Manager Update ({channel})...\n")
-            log.flush()
-            subprocess.run(["bash", SCRIPT_UPDATE, channel, target_ref],
-                           stdout=log, stderr=subprocess.STDOUT)
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(LOG_FILES["update"], "w") as log:
+                log.write(f"Starting Manager Update ({channel} {target_ref})...\n")
+                log.flush()
+                result = subprocess.run(
+                    ["bash", SCRIPT_UPDATE, channel, target_ref],
+                    stdout=log, stderr=subprocess.STDOUT,
+                )
+            if result.returncode != 0:
+                write_status({
+                    "status": "error",
+                    "message": "Update failed. Check the update log.",
+                    "log_type": "update",
+                })
+            else:
+                write_status({
+                    "status": "success",
+                    "message": f"Updated to {channel} {target_ref}.",
+                    "log_type": "update",
+                })
+        except Exception as e:
+            write_status({
+                "status": "error",
+                "message": str(e),
+                "log_type": "update",
+            })
+        time.sleep(10)
+        current = read_status()
+        if current.get("status") != "running":
+            current["status"] = "idle"
+            write_status(current)
+
     threading.Thread(target=_run_update).start()
 
     return jsonify({
@@ -3131,7 +3234,7 @@ def delete_ai_model(filename):
     the disk whether or not the GPU still works, and a box that has lost its
     GPU is exactly where reclaiming 30 GB should not be blocked.
     """
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     # basename() strips any traversal; comparing the resolved parent to the
@@ -3192,7 +3295,7 @@ def switch_ai_model():
     """Switch to a different AI model (updates .env, restarts services) (GPU-gated)."""
     if not has_gpu():
         return jsonify({"error": "no_gpu", "message": "AI features require a GPU"}), 503
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "A task is already running"}), 409
 
     data = request.json
@@ -3215,9 +3318,8 @@ def switch_ai_model():
         update_env_var("AI_MODEL_MIN_SIZE", str(model["min_size_bytes"]))
 
         cmd = f"bash {shlex.quote(SCRIPT_UTILITIES)} switch_model >> {LOG_FILES['setup']} 2>&1"
-        threading.Thread(
-            target=run_background_task, args=(f"Switch AI model to {model_id}", cmd, "setup")
-        ).start()
+        if not start_background_task(f"Switch AI model to {model_id}", cmd, "setup"):
+            return jsonify({"error": "A task is already running"}), 409
 
         return jsonify({"status": "started", "model": model_id})
     except Exception as e:
@@ -3247,7 +3349,7 @@ def get_system_config():
 @limiter.limit("5 per minute")
 def update_system_config():
     """Generic endpoint to toggle system settings."""
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
@@ -3291,9 +3393,8 @@ def update_system_config():
 
     # Execute
     cmd += f" >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=(label, cmd, "setup")
-    ).start()
+    if not start_background_task(label, cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     
     return jsonify({"status": "started"})
 
@@ -4338,13 +4439,12 @@ def redis_status():
 @app.route("/api/redis/configure", methods=["POST"])
 @limiter.limit("5 per minute")
 def redis_configure():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     cmd = f"bash {SCRIPT_UTILITIES} redis_configure >> {LOG_FILES['setup']} 2>&1"
-    threading.Thread(
-        target=run_background_task, args=("Configure Redis", cmd, "setup")
-    ).start()
+    if not start_background_task("Configure Redis", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -4356,7 +4456,7 @@ def nuclear_reset():
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
 
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Another task is already running"}), 409
 
     data = request.get_json(silent=True) or {}
@@ -4391,10 +4491,8 @@ def nuclear_reset():
         f">> {shlex.quote(nuclear_log)} 2>&1"
     )
 
-    threading.Thread(
-        target=run_background_task,
-        args=("Nuclear Reset (Factory Wipe)", cmd, "setup")
-    ).start()
+    if not start_background_task("Nuclear Reset (Factory Wipe)", cmd, "setup"):
+        return jsonify({"error": "Another task is already running"}), 409
 
     # Immediately invalidate this session (device will reboot anyway)
     session.clear()
@@ -4430,10 +4528,13 @@ def _launch_master_rotation(new_password):
         f"bash {shlex.quote(SCRIPT_ROTATE)} {shlex.quote(secrets_path)} "
         f">> {shlex.quote(LOG_FILES['setup'])} 2>&1"
     )
-    threading.Thread(
-        target=run_background_task,
-        args=("Master Password Rotation", cmd, "setup")
-    ).start()
+    if start_background_task("Master Password Rotation", cmd, "setup"):
+        return True
+    try:
+        os.remove(secrets_path)
+    except OSError:
+        pass
+    return False
 
 
 @app.route("/api/system/master-password", methods=["POST"])
@@ -4463,7 +4564,7 @@ def change_master_password():
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
 
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Another task is already running"}), 409
 
     data = request.get_json(silent=True) or {}
@@ -4487,7 +4588,8 @@ def change_master_password():
     if hmac.compare_digest(new_password.encode(), current_pw.encode()):
         return jsonify({"error": "That is already your current password."}), 400
 
-    _launch_master_rotation(new_password)
+    if not _launch_master_rotation(new_password):
+        return jsonify({"error": "Another task is already running"}), 409
 
     logging.warning("SECURITY: master password changed by an authenticated user from %s",
                     request.remote_addr)
@@ -4631,7 +4733,7 @@ def recovery_reset():
         return jsonify({"error": "Recovery is restricted to local network access."}), 403
     if not _recovery_configured():
         return jsonify({"error": "No recovery phrase is configured on this device."}), 404
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Another task is already running"}), 409
 
     data = request.get_json(silent=True) or {}
@@ -4680,7 +4782,8 @@ def recovery_reset():
     session.clear()
 
     # 2. Rotate the rest of the stack in the background.
-    _launch_master_rotation(new_password)
+    if not _launch_master_rotation(new_password):
+        logging.error("Recovery accepted but rotation could not start: another task is running")
 
     # Out-of-band security event: the root credential was reset via recovery.
     logging.warning("SECURITY: master password reset via recovery phrase from %s",
@@ -4733,14 +4836,8 @@ def recovery_enable_backup_unlock():
     rec = recovery.backup_unlock_record(phrase)
     for k, v in rec.items():
         update_env_var(k, v)
-    backup_started = False
-    if current_task_status["status"] != "running":
-        cmd = f"bash {SCRIPT_BACKUP} --strategy full >> {LOG_FILES['backup']} 2>&1"
-        threading.Thread(
-            target=run_background_task,
-            args=("Full System Backup", cmd, "backup"),
-        ).start()
-        backup_started = True
+    cmd = f"bash {SCRIPT_BACKUP} --strategy full >> {LOG_FILES['backup']} 2>&1"
+    backup_started = start_background_task("Full System Backup", cmd, "backup")
     return jsonify({
         "status": "ok",
         "backup_unlock": True,
@@ -5793,7 +5890,7 @@ def list_ftp_users():
 @app.route("/api/ftp/setup", methods=["POST"])
 @limiter.limit("5 per minute")
 def setup_ftp():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     data = request.json
@@ -5827,15 +5924,18 @@ def setup_ftp():
         f">> {LOG_FILES['setup']} 2>&1"
     )
 
-    threading.Thread(
-        target=run_background_task, args=("Setup FTP Server", cmd, "setup")
-    ).start()
+    if not start_background_task("Setup FTP Server", cmd, "setup"):
+        try:
+            os.remove(pass_file)
+        except OSError:
+            pass
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 @app.route("/api/ftp/delete", methods=["POST"])
 @limiter.limit("5 per minute")
 def delete_ftp():
-    if current_task_status["status"] == "running":
+    if task_running():
         return jsonify({"error": "Task running"}), 409
 
     ftp_user = request.json.get("ftp_user")
@@ -5844,9 +5944,8 @@ def delete_ftp():
 
     cmd = f"bash {SCRIPT_UTILITIES} delete {shlex.quote(ftp_user)} >> {LOG_FILES['setup']} 2>&1"
 
-    threading.Thread(
-        target=run_background_task, args=("Delete FTP User", cmd, "setup")
-    ).start()
+    if not start_background_task("Delete FTP User", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
 
@@ -6282,7 +6381,8 @@ def resume_incomplete_setup():
             except: pass
             
             cmd = f"bash {SCRIPT_DEPLOY} >> {LOG_FILES['setup']} 2>&1"
-            threading.Thread(target=run_background_task, args=("Resumed Setup", cmd, "setup")).start()
+            if not start_background_task("Resumed Setup", cmd, "setup"):
+                logging.warning("Resumed setup skipped: another task is running")
     except Exception as e:
         logging.error(f"Failed to resume setup: {e}")
 

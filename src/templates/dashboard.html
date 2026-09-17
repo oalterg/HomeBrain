@@ -914,20 +914,22 @@
                     <div>
                         <label>App update</label>
                         <div class="inline-row" style="flex-wrap:wrap;">
+                            <select id="update-channel" onchange="resetUpdateUI()">
+                                <option value="stable">Stable (releases)</option>
+                                <option value="beta">Beta (main branch)</option>
+                            </select>
                             <button id="btn-check-update" onclick="checkManagerUpdate()">Check now</button>
                             <button id="btn-do-update" class="btn-primary" onclick="doManagerUpdate()" style="display:none;">Install update</button>
                         </div>
                         <small id="update-msg" class="hint"></small>
                     </div>
                     <div>
-                        <label for="update-channel">System update channel</label>
-                        <div class="inline-row">
-                            <select id="update-channel" class="grow" onchange="resetUpdateUI()">
-                                <option value="stable">Stable (releases)</option>
-                                <option value="beta">Beta (main branch)</option>
-                            </select>
-                            <button onclick="triggerAction('/api/upgrade', 'System Upgrade')">Run OS upgrade</button>
+                        <label>OS security updates</label>
+                        <div class="inline-row" style="flex-wrap:wrap;">
+                            <button onclick="triggerAction('/api/upgrade', 'OS Upgrade')">Run now</button>
+                            <button onclick="rebootBox()">Restart box</button>
                         </div>
+                        <small class="hint">Nightly security patches apply themselves. Run now if you don’t want to wait; restart if the health banner asks.</small>
                     </div>
                 </div>
             </section>

@@ -426,10 +426,12 @@ log_info "Updating Docker Stack..."
 # on. Re-derive before `up`, which then recreates caddy with the right SAN.
 refresh_vault_lan_ip
 cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
+# Runtime profiles so a running proton-bridge is pulled and is not treated as
+# an orphan by `up --remove-orphans`.
+profiles=$(get_runtime_profiles)
 # Pull latest images defined in compose
-docker compose --env-file "$ENV_FILE" $(get_compose_args) pull || { log_error "Docker pull failed"; exit 1; }
+docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} pull || { log_error "Docker pull failed"; exit 1; }
 # Restart containers (recreates them if image changed or compose file changed)
-profiles=$(get_tunnel_profiles)
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || { log_error "Docker up failed"; exit 1; }
 
 # Teach Nextcloud the HTTPS names. A box that still has overwriteprotocol=http

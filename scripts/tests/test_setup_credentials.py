@@ -63,10 +63,13 @@ class Harness:
         self._saved = {k: getattr(hb, k) for k in (
             "ENV_FILE", "update_env_var", "is_setup_complete",
             "SETUP_STARTED_MARKER", "STAGING_CREDS_PATH", "RESTORING_MARKER",
-            "get_factory_config")}
+            "get_factory_config", "STATUS_FILE")}
         self._saved_thread = hb.threading.Thread
         self._saved_limiter = hb.limiter.enabled
 
+        fd, self.status_path = tempfile.mkstemp(prefix="hb_setup_status_")
+        os.close(fd)
+        hb.STATUS_FILE = self.status_path
         hb.ENV_FILE = self.env_path
         hb.SETUP_STARTED_MARKER = self.marker
         hb.STAGING_CREDS_PATH = self.creds
@@ -97,7 +100,8 @@ class Harness:
             setattr(hb, k, v)
         hb.threading.Thread = self._saved_thread
         hb.limiter.enabled = self._saved_limiter
-        for p in (self.env_path, self.marker, self.creds, self.restoring):
+        for p in (self.env_path, self.marker, self.creds, self.restoring,
+                  self.status_path, self.status_path + ".lock"):
             try:
                 os.unlink(p)
             except OSError:
