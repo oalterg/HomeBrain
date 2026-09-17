@@ -52,6 +52,7 @@ jobs:
                             scripts/tests/test_mcp_homeassistant.py \
                             scripts/tests/test_mcp_homebrain.py \
                             scripts/tests/test_ha_watch.py \
+                            scripts/tests/test_mcp_nextcloud.py \
                             scripts/tests/test_email_watch.py \
                             scripts/tests/test_email_channel.py \
                             scripts/tests/test_mcp_email.py \

@@ -8,17 +8,18 @@ HomeBrain-shipped NC, or pasted in from an external NC's
 Personal → Security → App passwords flow.
 
 Privacy posture (see INTEGRATIONS_PLAN.md §3.2):
-  * `nc.files_list` returns paths and sizes only, never contents.
-  * `nc.files_search` returns paths matching the query, never bodies.
+  * `nc.files_list` / `nc.files_search` return paths and sizes only,
+    never contents. Search is filename LIKE, not full text. Lists cap.
   * `nc.files_download` is REVEAL tier — capped at 20 MB and audited.
     It writes the file onto THIS HomeBrain under the OpenClaw workspace
     and returns a `media` path for the message tool. The envelope never
     carries base64 or file bytes (except small UTF-8 text ≤ TEXT_INGEST_MAX).
-  * `nc.files_upload` is ACT tier — capped at 20 MB, audited. Reads a
-    file already on THIS box (Telegram inbound or workspace) and PUTs it
-    to WebDAV. The envelope never carries base64 or file bytes.
-  * Bigger files: use `nc.files_share`; the user opens the link themselves
-    so the LM never ingests the bytes.
+  * `nc.files_upload` / `mkdir` / `move` / `delete` are ACT tier.
+    Upload reads a file already on THIS box (Telegram inbound or workspace)
+    and PUTs it to WebDAV. The envelope never carries base64 or file bytes.
+  * Shares: `share_with` is a Nextcloud username (works with no public URL).
+    A public link on a LAN-only box is not reachable from Telegram — send
+    the file with the message tool instead. expireDate is actually set.
 
 Environment:
   NC_ACCOUNTS_FILE             path to ~/.openclaw/nc_accounts.json
@@ -42,6 +43,7 @@ Legacy fallback (single-account installs pre-multi-account):
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import sys
@@ -49,7 +51,8 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from urllib.parse import quote, unquote
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
@@ -71,8 +74,21 @@ MAX_UPLOAD_BYTES = MAX_DOWNLOAD_BYTES
 TEXT_INGEST_MAX = 20_000  # characters
 DOWNLOAD_TIMEOUT = 60
 UPLOAD_TIMEOUT = 120
+LIST_MAX = 100
+NOTES_LIST_MAX = 100
+SHAREES_MAX = 10
+EXPIRE_DAYS_DEFAULT = 7
+EXPIRE_DAYS_MAX = 90
+MOVE_TIMEOUT = 60
 
 DAV_NS = "{DAV:}"
+_LAN_SHARE_HINT = (
+    "This link is only reachable on the home LAN. Telegram cannot open it. "
+    "Pass share_with (nc.sharees) or nc.files_download and send in chat."
+)
+_USER_SHARE_HINT = (
+    "They will see this in their Nextcloud. It is not a Telegram link."
+)
 
 
 def _decrypt(blob: str) -> str:
@@ -462,16 +478,109 @@ def _local_file_meta(path: str) -> tuple[int, str, dict | None]:
     return size, mime, None
 
 
-def _dest_forbidden(norm: str) -> str | None:
+def _encrypted_path(norm: str) -> bool:
     lower = (norm or "").lower()
-    if (lower == "/documents (encrypted)"
-            or lower.startswith("/documents (encrypted)/")):
+    return (lower == "/documents (encrypted)"
+            or lower.startswith("/documents (encrypted)/"))
+
+
+def _dest_forbidden(norm: str) -> str | None:
+    if _encrypted_path(norm):
         return ("dest is an end-to-end encrypted folder; "
                 "the app-password user cannot write there")
+    lower = (norm or "").lower()
     if lower == "/instantupload" or lower.startswith("/instantupload/"):
         return ("dest is the phone auto-upload folder; "
                 "use /Photos/From chat/ or /Documents/From chat/")
     return None
+
+
+def _xml_text(value: str) -> str:
+    return (value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;"))
+
+
+def _like_contains_literal(query: str) -> str | None:
+    """Strip LIKE wildcards, then XML-escape. None if nothing searchable."""
+    q = (query or "").replace("\\", "").replace("%", "").replace("_", "").strip()
+    if not q:
+        return None
+    return _xml_text(q)
+
+
+def _expire_days(raw) -> tuple[int | None, dict | None]:
+    if raw is None or raw == "":
+        days = EXPIRE_DAYS_DEFAULT
+    else:
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            return None, err("expire_days must be an integer")
+    if days < 1 or days > EXPIRE_DAYS_MAX:
+        return None, err(f"expire_days must be 1–{EXPIRE_DAYS_MAX}")
+    return days, None
+
+
+def _expire_iso(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=int(days))).date().isoformat()
+
+
+def link_scope(url: str) -> str:
+    """'lan' if Telegram cannot fetch this host; 'internet' otherwise."""
+    host = (urlparse(url or "").hostname or "").lower().strip("[]")
+    if not host:
+        return "unknown"
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return "lan"
+    if host.endswith(".local") or host.endswith(".localhost") or host.endswith(".lan"):
+        return "lan"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "internet"
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified:
+        return "lan"
+    return "internet"
+
+
+def _ocs_data(code: int, body: bytes) -> tuple[object | None, dict | None]:
+    try:
+        parsed = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    if code in (401, 0):
+        return None, unavailable("Nextcloud unreachable or unauthorised")
+    ocs = parsed.get("ocs") if isinstance(parsed, dict) else None
+    meta = (ocs or {}).get("meta") or {}
+    statuscode = meta.get("statuscode")
+    ok_http = code in (200, 201)
+    ok_ocs = statuscode in (None, 100, 200, 201) or meta.get("status") == "ok"
+    if not ok_http or not ok_ocs:
+        msg = meta.get("message") or f"OCS failed: {code}"
+        return None, err(msg)
+    return (ocs or {}).get("data"), None
+
+
+def _share_row(item: dict) -> dict:
+    url = item.get("url") or ""
+    row = {
+        "id": item.get("id"),
+        "share_type": item.get("share_type"),
+        "share_with": item.get("share_with") or "",
+        "path": item.get("path") or "",
+        "url": url,
+        "expiration": item.get("expiration") or "",
+        "permissions": item.get("permissions"),
+    }
+    if url and link_scope(url) == "lan":
+        row["link_scope"] = "lan"
+        row["hint"] = _LAN_SHARE_HINT
+    elif url:
+        row["link_scope"] = "internet"
+    return row
 
 
 def _as_bool(v, default: bool = False) -> bool:
@@ -581,11 +690,10 @@ def t_files_list(args: dict) -> dict:
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
-    path = (args.get("path") or "/").strip()
-    if not path.startswith("/"):
-        path = "/" + path
-    prefix = _dav_files_prefix(account)
-    dav_path = f"{prefix}{path}"
+    path = _normalize_nc_path(args.get("path") or "/")
+    if not path:
+        return err("path is invalid")
+    dav_path = _dav_path(account, path)
     code, body, _ = _http(account, "PROPFIND", dav_path, PROPFIND_BODY,
                           headers={"Depth": "1",
                                    "Content-Type": "application/xml"})
@@ -598,18 +706,25 @@ def t_files_list(args: dict) -> dict:
         root = ET.fromstring(body)
     except ET.ParseError:
         return err("could not parse PROPFIND response")
+    prefix = _dav_files_prefix(account)
+    self_norm = path.rstrip("/") or "/"
     entries = []
+    truncated = False
     for resp in root.findall(f"{DAV_NS}response"):
         href = unquote((resp.findtext(f"{DAV_NS}href") or "").rstrip("/"))
-        if not href or href.endswith(f"{prefix}{path.rstrip('/')}"):
-            continue  # skip the directory itself
+        if not href:
+            continue
         propstat = resp.find(f"{DAV_NS}propstat/{DAV_NS}prop")
         if propstat is None:
+            continue
+        rel = href[len(prefix):] if href.startswith(prefix) else href
+        if not rel.startswith("/"):
+            rel = "/" + rel
+        if _normalize_nc_path(rel) == self_norm:
             continue
         is_dir = propstat.find(f"{DAV_NS}resourcetype/{DAV_NS}collection") is not None
         size = propstat.findtext(f"{DAV_NS}getcontentlength") or ""
         modified = propstat.findtext(f"{DAV_NS}getlastmodified") or ""
-        rel = href[len(prefix):] if href.startswith(prefix) else href
         entries.append({
             "path": rel,
             "name": rel.rsplit("/", 1)[-1],
@@ -617,29 +732,37 @@ def t_files_list(args: dict) -> dict:
             "size": int(size) if size.isdigit() else None,
             "modified": modified,
         })
-    return ok(account=account["name"], entries=entries, total=len(entries))
+        if len(entries) >= LIST_MAX:
+            truncated = True
+            break
+    return ok(account=account["name"], entries=entries, total=len(entries),
+              truncated=truncated)
 
 
 def t_files_search(args: dict) -> dict:
-    """Use Nextcloud's WebDAV SEARCH against the full file index."""
+    """Use Nextcloud's WebDAV SEARCH against the file name index."""
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
     q = (args.get("query") or "").strip()
     if not q:
         return err("query is required")
+    literal = _like_contains_literal(q)
+    if not literal:
+        return err("query is required")
+    user = _xml_text(account.get("user") or "")
     body = (
-        f'<?xml version="1.0" encoding="UTF-8"?>'
-        f'<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
-        f'  <d:basicsearch>'
-        f'    <d:select><d:prop><oc:fileid/><d:displayname/>'
-        f'      <d:getcontentlength/><d:resourcetype/></d:prop></d:select>'
-        f'    <d:from><d:scope><d:href>/files/{account.get("user", "")}</d:href>'
-        f'      <d:depth>infinity</d:depth></d:scope></d:from>'
-        f'    <d:where><d:like><d:prop><d:displayname/></d:prop>'
-        f'      <d:literal>%{q}%</d:literal></d:like></d:where>'
-        f'  </d:basicsearch>'
-        f'</d:searchrequest>'
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<d:searchrequest xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
+        '  <d:basicsearch>'
+        '    <d:select><d:prop><oc:fileid/><d:displayname/>'
+        '      <d:getcontentlength/><d:resourcetype/></d:prop></d:select>'
+        f'    <d:from><d:scope><d:href>/files/{user}</d:href>'
+        '      <d:depth>infinity</d:depth></d:scope></d:from>'
+        '    <d:where><d:like><d:prop><d:displayname/></d:prop>'
+        f'      <d:literal>%{literal}%</d:literal></d:like></d:where>'
+        '  </d:basicsearch>'
+        '</d:searchrequest>'
     ).encode()
     code, resp, _ = _http(account, "SEARCH", "/remote.php/dav",
                           body, headers={"Content-Type": "application/xml"})
@@ -652,6 +775,7 @@ def t_files_search(args: dict) -> dict:
         return err("could not parse search response")
     prefix = _dav_files_prefix(account)
     matches = []
+    truncated = False
     for r in root.findall(f"{DAV_NS}response"):
         href = unquote((r.findtext(f"{DAV_NS}href") or "").rstrip("/"))
         prop = r.find(f"{DAV_NS}propstat/{DAV_NS}prop")
@@ -665,9 +789,11 @@ def t_files_search(args: dict) -> dict:
             "is_dir": is_dir,
             "size": int(size) if size.isdigit() else None,
         })
-        if len(matches) >= 100:
+        if len(matches) >= LIST_MAX:
+            truncated = True
             break
-    return ok(account=account["name"], results=matches, total=len(matches))
+    return ok(account=account["name"], results=matches, total=len(matches),
+              truncated=truncated)
 
 
 _FOLDER_HINT = "Pick a file, or use nc.files_share for a folder link."
@@ -941,51 +1067,87 @@ def t_files_upload(args: dict) -> dict:
 
 
 def t_files_share(args: dict) -> dict:
-    """Create a public read-only share link. Just call this directly."""
+    """Public link, or a user share when share_with is set. Consent-gated."""
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
     path = (args.get("path") or "").strip()
-    expire_days = int(args.get("expire_days") or 7)
+    share_with = (args.get("share_with") or "").strip()
+    days, ebody = _expire_days(args.get("expire_days"))
+    if ebody is not None:
+        return ebody
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
     if not path:
         return err("path is required")
-    summary = (f"Nextcloud ({account['name']}): create public share link for "
-               f"{path} (expires in {expire_days} days)")
+    norm = _normalize_nc_path(path)
+    if not norm or norm == "/":
+        return err("path is invalid")
+    if _encrypted_path(norm):
+        return err("path is an end-to-end encrypted folder")
+    dav = _dav_path(account, norm)
+    code, _, _ = _http(account, "HEAD", dav, timeout=15)
+    if code == 404:
+        return err("file not found")
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
+    kind = f"user {share_with}" if share_with else "public link"
+    summary = (f"Nextcloud ({account['name']}): share {norm} with {kind} "
+               f"(expires {_expire_iso(days)})")
     if not confirm:
         action_id = Consent.issue("nextcloud", summary,
-                                  {"account": account["name"], "path": path,
-                                   "expire_days": expire_days}, chat_id)
+                                  {"account": account["name"], "path": norm,
+                                   "share_with": share_with,
+                                   "expire_days": days}, chat_id)
         return consent_required(action_id, summary)
     redeemed = Consent.verify(confirm, "nextcloud", chat_id)
     if not redeemed:
         return err("confirmation_token invalid or expired")
     redeem_account = _pick_account(redeemed.get("account")) or account
-
-    from urllib.parse import urlencode
-    form = urlencode({
-        "path": redeemed["path"],
-        "shareType": "3",  # public link
-        "permissions": "1",  # read-only
-    }).encode()
-    code, body, _ = _http(redeem_account, "POST",
-                          "/ocs/v2.php/apps/files_sharing/api/v1/shares",
-                          body=form,
-                          headers={"Content-Type": "application/x-www-form-urlencoded"},
-                          ocs=True)
-    if code not in (200, 100):
-        return err(f"share creation failed: {code}",
-                   body=body[:200].decode("utf-8", "replace"))
-    try:
-        data = json.loads(body)
-        url = ((data.get("ocs") or {}).get("data") or {}).get("url", "")
-    except json.JSONDecodeError:
-        url = ""
+    dest = _normalize_nc_path(redeemed.get("path") or "")
+    if not dest or dest == "/":
+        return err("path is invalid")
+    if _encrypted_path(dest):
+        return err("path is an end-to-end encrypted folder")
+    with_user = (redeemed.get("share_with") or "").strip()
+    days = int(redeemed.get("expire_days") or days)
+    expire = _expire_iso(days)
+    form = {
+        "path": dest,
+        "shareType": "0" if with_user else "3",
+        "permissions": "1",
+        "expireDate": expire,
+    }
+    if with_user:
+        form["shareWith"] = with_user
+    code, body, _ = _http(
+        redeem_account, "POST",
+        "/ocs/v2.php/apps/files_sharing/api/v1/shares",
+        body=urlencode(form).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        ocs=True)
+    data, ebody = _ocs_data(code, body)
+    if ebody is not None:
+        return ebody
+    item = data if isinstance(data, dict) else {}
     audit("nextcloud", "share", account=redeem_account["name"],
-          path=redeemed["path"], expire_days=expire_days)
-    return ok(account=redeem_account["name"], share_url=url,
-              expire_days=expire_days, path=redeemed["path"])
+          path=dest, expire_days=days, share_with=with_user or None)
+    row = _share_row(item)
+    row["account"] = redeem_account["name"]
+    row["expire_days"] = days
+    if row.get("url"):
+        row["share_url"] = row["url"]
+    if with_user and not row.get("hint"):
+        row["hint"] = _USER_SHARE_HINT
+    elif not with_user and not row.get("url"):
+        row["hint"] = _LAN_SHARE_HINT
+    return ok(**row)
 
 
 # --- Notes -----------------------------------------------------------------
@@ -994,7 +1156,12 @@ def t_notes_list(args: dict) -> dict:
     account, ebody = _account_or_err(args)
     if ebody is not None:
         return ebody
-    code, body, _ = _http(account, "GET", "/index.php/apps/notes/api/v1/notes",
+    query = {"exclude": "content"}
+    category = (args.get("category") or "").strip()
+    if category:
+        query["category"] = category
+    path = "/index.php/apps/notes/api/v1/notes?" + urlencode(query)
+    code, body, _ = _http(account, "GET", path,
                           headers={"Accept": "application/json"})
     if code != 200:
         return unavailable(f"Notes API returned {code}")
@@ -1002,10 +1169,15 @@ def t_notes_list(args: dict) -> dict:
         data = json.loads(body)
     except json.JSONDecodeError:
         return err("could not parse notes response")
+    if not isinstance(data, list):
+        data = []
+    truncated = len(data) > NOTES_LIST_MAX
     summaries = [{"id": n.get("id"), "title": n.get("title"),
                   "category": n.get("category"),
-                  "modified": n.get("modified")} for n in data]
-    return ok(account=account["name"], notes=summaries, total=len(summaries))
+                  "modified": n.get("modified")}
+                 for n in data[:NOTES_LIST_MAX]]
+    return ok(account=account["name"], notes=summaries, total=len(summaries),
+              truncated=truncated)
 
 
 def t_notes_get(args: dict) -> dict:
@@ -1076,17 +1248,20 @@ def t_notes_update(args: dict) -> dict:
     nid = args.get("id")
     if nid is None:
         return err("id is required")
-    title = args.get("title") or ""
-    content = args.get("content") or ""
-    category = args.get("category")
     confirm = args.get("confirmation_token")
     chat_id = args.get("_chat_id")
+    payload: dict = {"account": account["name"], "id": int(nid)}
+    if "title" in args:
+        payload["title"] = args.get("title") or ""
+    if "content" in args:
+        payload["content"] = "" if args.get("content") is None else str(args.get("content"))
+    if "category" in args:
+        payload["category"] = args.get("category") or ""
+    if not any(k in payload for k in ("title", "content", "category")):
+        return err("nothing to update")
+    title = payload.get("title") or ""
     summary = (f"Nextcloud ({account['name']}): update note {nid}"
                f"{f' ({title})' if title else ''}")
-    payload = {"account": account["name"], "id": int(nid),
-               "title": title, "content": content}
-    if category is not None:
-        payload["category"] = category
     if not confirm:
         action_id = Consent.issue("nextcloud", summary, payload, chat_id)
         return consent_required(action_id, summary)
@@ -1095,12 +1270,14 @@ def t_notes_update(args: dict) -> dict:
         return err("confirmation_token invalid or expired")
     redeem_account = _pick_account(redeemed.get("account")) or account
     body_dict: dict = {}
-    if redeemed.get("title"):
+    if "title" in redeemed:
         body_dict["title"] = redeemed["title"]
-    if redeemed.get("content"):
+    if "content" in redeemed:
         body_dict["content"] = redeemed["content"]
     if "category" in redeemed:
         body_dict["category"] = redeemed["category"]
+    if not body_dict:
+        return err("nothing to update")
     body = json.dumps(body_dict).encode()
     code, resp, _ = _http(redeem_account, "PUT",
                           f"/index.php/apps/notes/api/v1/notes/{int(redeemed['id'])}",
@@ -1117,6 +1294,294 @@ def t_notes_update(args: dict) -> dict:
     return ok(account=redeem_account["name"], id=n.get("id"), title=n.get("title"))
 
 
+def t_files_mkdir(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    dest_raw = (args.get("dest") or "").strip()
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not dest_raw:
+        return err("dest is required")
+    dest = _normalize_nc_path(dest_raw)
+    if not dest or dest == "/":
+        return err("dest is invalid")
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+    summary = f"Nextcloud ({account['name']}): create folder {dest}"
+    if not confirm:
+        action_id = Consent.issue("nextcloud", summary,
+                                  {"account": account["name"], "dest": dest},
+                                  chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    dest = _normalize_nc_path(redeemed.get("dest") or dest)
+    if not dest or dest == "/":
+        return err("dest is invalid")
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+    mk = _ensure_dav_parents(redeem_account, dest)
+    if mk is not None:
+        return mk
+    code, body, _ = _http(redeem_account, "MKCOL", _dav_path(redeem_account, dest))
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 405:
+        return err("folder already exists")
+    if code == 403:
+        return err(
+            "access denied",
+            hint="This path may be end-to-end encrypted or not shared "
+                 "with the app-password user.",
+        )
+    if code not in (201, 200, 301):
+        return err(f"mkdir failed: {code}",
+                   body=(body[:200].decode("utf-8", "replace") if body else ""))
+    audit("nextcloud", "mkdir", account=redeem_account["name"], path=dest)
+    return ok(account=redeem_account["name"], nc_path=dest)
+
+
+def t_files_move(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    src_raw = (args.get("src") or "").strip()
+    dest_raw = (args.get("dest") or "").strip()
+    overwrite = _as_bool(args.get("overwrite"), False)
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not src_raw:
+        return err("src is required")
+    if not dest_raw:
+        return err("dest is required")
+    src = _normalize_nc_path(src_raw)
+    if not src or src == "/":
+        return err("src is invalid")
+    dest_is_folder = dest_raw.endswith("/")
+    dest = _normalize_nc_path(dest_raw)
+    if not dest:
+        return err("dest is invalid")
+    if dest_is_folder:
+        dest = _normalize_nc_path(dest + "/" + src.rsplit("/", 1)[-1])
+        if not dest:
+            return err("dest is invalid")
+    if dest == "/":
+        return err("dest is invalid")
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+    dav_src = _dav_path(account, src)
+    code, _, _ = _http(account, "HEAD", dav_src, timeout=15)
+    if code == 404:
+        return err("src not found")
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err("access denied")
+    summary = f"Nextcloud ({account['name']}): move {src} → {dest}"
+    if overwrite:
+        summary += " (overwrite)"
+    if not confirm:
+        action_id = Consent.issue(
+            "nextcloud", summary,
+            {"account": account["name"], "src": src, "dest": dest,
+             "overwrite": overwrite},
+            chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    src = _normalize_nc_path(redeemed.get("src") or src)
+    dest = _normalize_nc_path(redeemed.get("dest") or dest)
+    if not src or not dest or src == "/" or dest == "/":
+        return err("path is invalid")
+    blocked = _dest_forbidden(dest)
+    if blocked:
+        return err(blocked)
+    mk = _ensure_dav_parents(redeem_account, dest)
+    if mk is not None:
+        return mk
+    base = (redeem_account.get("base_url") or "").rstrip("/")
+    dest_url = f"{base}{_dav_path(redeem_account, dest)}"
+    ovw = "T" if redeemed.get("overwrite") else "F"
+    code, body, _ = _http(
+        redeem_account, "MOVE", _dav_path(redeem_account, src),
+        headers={"Destination": dest_url, "Overwrite": ovw},
+        timeout=MOVE_TIMEOUT)
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 404:
+        return err("src not found")
+    if code == 412:
+        return err("dest already exists", hint="Pass overwrite=true to replace it.")
+    if code == 403:
+        return err("access denied")
+    if code not in (201, 204, 200):
+        return err(f"move failed: {code}",
+                   body=(body[:200].decode("utf-8", "replace") if body else ""))
+    audit("nextcloud", "move", account=redeem_account["name"],
+          src=src, dest=dest)
+    return ok(account=redeem_account["name"], src=src, nc_path=dest)
+
+
+def t_files_delete(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    path = (args.get("path") or "").strip()
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not path:
+        return err("path is required")
+    norm = _normalize_nc_path(path)
+    if not norm or norm == "/":
+        return err("path is invalid")
+    if _encrypted_path(norm):
+        return err("path is an end-to-end encrypted folder")
+    dav = _dav_path(account, norm)
+    code, _, _ = _http(account, "HEAD", dav, timeout=15)
+    if code == 404:
+        return err("file not found")
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 403:
+        return err("access denied")
+    summary = (f"Nextcloud ({account['name']}): delete {norm} "
+               "(folders are recursive)")
+    if not confirm:
+        action_id = Consent.issue("nextcloud", summary,
+                                  {"account": account["name"], "path": norm},
+                                  chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    dest = _normalize_nc_path(redeemed.get("path") or norm)
+    if not dest or dest == "/":
+        return err("path is invalid")
+    if _encrypted_path(dest):
+        return err("path is an end-to-end encrypted folder")
+    code, body, _ = _http(redeem_account, "DELETE",
+                          _dav_path(redeem_account, dest), timeout=60)
+    if code in (401, 0):
+        return unavailable("Nextcloud unreachable or unauthorised")
+    if code == 404:
+        return err("file not found")
+    if code == 403:
+        return err("access denied")
+    if code not in (200, 204):
+        return err(f"delete failed: {code}",
+                   body=(body[:200].decode("utf-8", "replace") if body else ""))
+    audit("nextcloud", "delete", account=redeem_account["name"], path=dest)
+    return ok(account=redeem_account["name"], deleted=dest)
+
+
+def t_shares_list(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    query = {}
+    path = (args.get("path") or "").strip()
+    if path:
+        norm = _normalize_nc_path(path)
+        if not norm:
+            return err("path is invalid")
+        query["path"] = norm
+    qs = ("?" + urlencode(query)) if query else ""
+    code, body, _ = _http(
+        account, "GET",
+        "/ocs/v2.php/apps/files_sharing/api/v1/shares" + qs,
+        ocs=True)
+    data, ebody = _ocs_data(code, body)
+    if ebody is not None:
+        return ebody
+    items = data if isinstance(data, list) else []
+    truncated = len(items) > LIST_MAX
+    shares = [_share_row(i) for i in items[:LIST_MAX] if isinstance(i, dict)]
+    return ok(account=account["name"], shares=shares, total=len(shares),
+              truncated=truncated)
+
+
+def t_share_delete(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    sid = args.get("id")
+    if sid is None or str(sid).strip() == "":
+        return err("id is required")
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    summary = f"Nextcloud ({account['name']}): revoke share {sid}"
+    if not confirm:
+        action_id = Consent.issue("nextcloud", summary,
+                                  {"account": account["name"], "id": str(sid)},
+                                  chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "nextcloud", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    redeem_account = _pick_account(redeemed.get("account")) or account
+    rid = quote(str(redeemed.get("id") or sid), safe="")
+    code, body, _ = _http(
+        redeem_account, "DELETE",
+        f"/ocs/v2.php/apps/files_sharing/api/v1/shares/{rid}",
+        ocs=True)
+    _, ebody = _ocs_data(code, body)
+    if ebody is not None:
+        return ebody
+    audit("nextcloud", "share.delete", account=redeem_account["name"], id=rid)
+    return ok(account=redeem_account["name"], deleted=rid)
+
+
+def t_sharees(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    q = (args.get("query") or "").strip()
+    if not q:
+        return err("query is required")
+    qs = urlencode({
+        "search": q,
+        "itemType": "file",
+        "lookup": "false",
+        "perPage": str(SHAREES_MAX),
+    })
+    code, body, _ = _http(
+        account, "GET",
+        "/ocs/v2.php/apps/files_sharing/api/v1/sharees?" + qs,
+        ocs=True)
+    data, ebody = _ocs_data(code, body)
+    if ebody is not None:
+        return ebody
+    users = []
+    seen: set[str] = set()
+    if isinstance(data, dict):
+        buckets = []
+        exact = data.get("exact") or {}
+        if isinstance(exact, dict):
+            buckets.extend(exact.get("users") or [])
+        buckets.extend(data.get("users") or [])
+        for row in buckets:
+            if not isinstance(row, dict):
+                continue
+            val = row.get("value") or {}
+            uid = val.get("shareWith") or ""
+            if not uid or uid in seen:
+                continue
+            seen.add(uid)
+            users.append({"share_with": uid, "label": row.get("label") or uid})
+            if len(users) >= SHAREES_MAX:
+                break
+    return ok(account=account["name"], users=users, total=len(users))
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": "Nextcloud account name. Required if several are configured.",
@@ -1131,7 +1596,7 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"account": _ACCOUNT_PROP}}},
     {"name": "nc.files_list",
-     "description": "List a folder (paths, sizes, mtimes). Not contents.",
+     "description": "List a folder (paths, sizes, mtimes). Not contents. Capped.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "path": {"type": "string",
@@ -1139,7 +1604,7 @@ TOOLS = [
                          "account": _ACCOUNT_PROP,
                      }}},
     {"name": "nc.files_search",
-     "description": "Search files by name. Paths only — not contents.",
+     "description": "Search by filename, not contents. Paths only. Capped.",
      "inputSchema": {"type": "object",
                      "properties": {"query": {"type": "string"},
                                     "account": _ACCOUNT_PROP},
@@ -1178,18 +1643,90 @@ TOOLS = [
                          "confirmation_token": {"type": "string"},
                      },
                      "required": ["local_path", "dest"]}},
+    {"name": "nc.files_mkdir",
+     "description": "Create a folder. Missing parents are created.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "dest": {"type": "string",
+                                  "description": "Folder path, e.g. /Documents/Taxes."},
+                         "account": _ACCOUNT_PROP,
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["dest"]}},
+    {"name": "nc.files_move",
+     "description": "Move or rename a file or folder.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "src": {"type": "string"},
+                         "dest": {"type": "string",
+                                  "description": "New path, or a folder ending in /."},
+                         "overwrite": {
+                             "type": "boolean",
+                             "description": "Replace existing dest. Default false.",
+                         },
+                         "account": _ACCOUNT_PROP,
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["src", "dest"]}},
+    {"name": "nc.files_delete",
+     "description": "Delete a file or folder (folders are recursive).",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "path": {"type": "string"},
+                         "account": _ACCOUNT_PROP,
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["path"]}},
     {"name": "nc.files_share",
-     "description": "Create a public read-only share link.",
+     "description": (
+         "Share a path. share_with=NC user (no public URL). Else a public "
+         "link — LAN-only boxes: Telegram cannot open it; send in chat."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {"path": {"type": "string"},
-                                    "expire_days": {"type": "integer"},
+                                    "share_with": {
+                                        "type": "string",
+                                        "description": "NC username. Prefer on LAN-only boxes.",
+                                    },
+                                    "expire_days": {
+                                        "type": "integer",
+                                        "description": "Days until expiry (1–90, default 7).",
+                                    },
                                     "account": _ACCOUNT_PROP,
                                     "confirmation_token": {"type": "string"}},
                      "required": ["path"]}},
-    {"name": "nc.notes_list",
-     "description": "List Nextcloud Notes (titles and metadata only).",
+    {"name": "nc.shares_list",
+     "description": "List shares this account created. Optional path filter.",
      "inputSchema": {"type": "object",
-                     "properties": {"account": _ACCOUNT_PROP}}},
+                     "properties": {
+                         "path": {"type": "string"},
+                         "account": _ACCOUNT_PROP,
+                     }}},
+    {"name": "nc.share_delete",
+     "description": "Revoke a share by id from nc.shares_list.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "id": {"type": "string",
+                                "description": "Share id from nc.shares_list."},
+                         "account": _ACCOUNT_PROP,
+                         "confirmation_token": {"type": "string"},
+                     },
+                     "required": ["id"]}},
+    {"name": "nc.sharees",
+     "description": "Look up Nextcloud users to pass as share_with.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "query": {"type": "string"},
+                         "account": _ACCOUNT_PROP,
+                     },
+                     "required": ["query"]}},
+    {"name": "nc.notes_list",
+     "description": "List Nextcloud Notes (titles only). Optional category. Capped.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "category": {"type": "string"},
+                         "account": _ACCOUNT_PROP,
+                     }}},
     {"name": "nc.notes_get",
      "description": "Fetch full content of one note by id.",
      "inputSchema": {"type": "object",
@@ -1225,7 +1762,13 @@ DISPATCH = {
     "nc.files_search": t_files_search,
     "nc.files_download": t_files_download,
     "nc.files_upload": t_files_upload,
+    "nc.files_mkdir": t_files_mkdir,
+    "nc.files_move": t_files_move,
+    "nc.files_delete": t_files_delete,
     "nc.files_share": t_files_share,
+    "nc.shares_list": t_shares_list,
+    "nc.share_delete": t_share_delete,
+    "nc.sharees": t_sharees,
     "nc.notes_list": t_notes_list,
     "nc.notes_get": t_notes_get,
     "nc.notes_create": t_notes_create,
@@ -1241,4 +1784,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-nextcloud", "0.5.0", TOOLS, dispatch)
+    serve("homebrain-nextcloud", "0.6.0", TOOLS, dispatch)
