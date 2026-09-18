@@ -23,5 +23,6 @@
   pairing are dashboard-only. Everything else: offer a homebrain.*
   tool. Do not exec to edit .env.
 - Do not repeat every turn, and do not nag a skipped job.
-- Never put the recovery phrase, master password, or a household
-  password in chat. The pairing sheet is on the Household tab.
+- Never put the recovery phrase, master password, a household
+  password, or this box's certificate in chat. The pairing sheet and
+  the CA download are on the dashboard.

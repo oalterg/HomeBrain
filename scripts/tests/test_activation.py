@@ -301,7 +301,7 @@ def test_init_loads_activation():
     assert "loadActivation()" in js
     boot = js[js.index("async function init()"):js.index("const POLLERS")]
     assert "loadActivation()" in boot
-    assert re.search(r"\[loadActivation,\s*15000\]", js)
+    assert re.search(r"\[loadActivation,\s*60000\]", js)
 
 
 def test_go_to_targets_exist():
@@ -324,3 +324,24 @@ def test_workspace_setup_block_keeps_secrets_off_telegram():
     assert "homebrain.setup_status" in text
     assert "dashboard-only" in text
     assert "household" in text.lower()
+    assert "certificate" in text.lower()
+
+
+def test_self_ca_does_not_return_pem(monkeypatch):
+    monkeypatch.setattr(integrations, "_self_token", lambda: "tok")
+    monkeypatch.setattr(hb, "caddy_ca_pem", lambda: (
+        b"-----BEGIN CERTIFICATE-----\nMII\n-----END CERTIFICATE-----\n",
+        "", 200,
+    ))
+    hb.app.config["TESTING"] = True
+    hb.limiter.enabled = False
+    c = hb.app.test_client()
+    r = c.get("/api/integrations/self/ca",
+              headers={"Authorization": "Bearer tok"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    assert "pem" not in body
+    blob = json.dumps(body)
+    assert "BEGIN CERTIFICATE" not in blob
+    assert body["download"] == "/api/vault/local-ca"
+    assert "homebrain.local" in body["names"]

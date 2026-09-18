@@ -302,7 +302,7 @@ const POLLERS = [
     [vaultMcpRefresh, 30000],
     [connRefresh, 15000],
     [channelRefresh, 15000],
-    [loadActivation, 15000],
+    [loadActivation, 60000],
     [pollLogsIfVisible, 3000],
     [pollOffsiteStatusIfVisible, 15000],
 ];

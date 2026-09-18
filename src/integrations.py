@@ -1602,31 +1602,23 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             payload = {k: v for k, v in payload.items() if k not in ("password", "qr")}
         return jsonify(payload), code
 
-    def self_nc_add_local():
-        if not _check_bearer():
-            return jsonify({"error": "unauthorised"}), 401
-        body = request.get_json(silent=True) or {}
-        user = (body.get("user") or "").strip()
-        password = body.get("password") or None
-        ok, msg = bootstrap_local_nextcloud(user=user or None, password=password)
-        if not ok:
-            return jsonify({"error": msg}), 400
-        reconcile_one("nextcloud")
-        return jsonify({"status": "added"})
-
     def self_ca():
         if not _check_bearer():
             return jsonify({"error": "unauthorised"}), 401
         import activation as act
         from app import caddy_ca_pem
-        pem, err, status = caddy_ca_pem()
+        _pem, err, status = caddy_ca_pem()
         if status != 200:
             return jsonify({"ok": False, "error": err}), status
         return jsonify({
             "ok": True,
             "filename": "homebrain-ca.pem",
-            "pem": pem.decode(),
+            "download": "/api/vault/local-ca",
             "names": list(act.LAN_NAMES),
+            "hint": (
+                "The owner downloads this box's certificate from the "
+                "dashboard. Do not paste it in chat."
+            ),
             "ios_hint": (
                 "After install, enable full trust in Settings → General → "
                 "About → Certificate Trust Settings."
@@ -1762,10 +1754,6 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/self/household",
                      "self_household_add",
                      limiter.limit("10 per minute")(self_household_add),
-                     methods=["POST"])
-    app.add_url_rule("/api/integrations/self/nc-add-local",
-                     "self_nc_add_local",
-                     limiter.limit("5 per minute")(self_nc_add_local),
                      methods=["POST"])
     app.add_url_rule("/api/integrations/self/ca",
                      "self_ca", self_ca, methods=["GET"])

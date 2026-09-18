@@ -277,14 +277,22 @@ def t_setup_status(_args: dict) -> dict:
     if not isinstance(body, dict):
         return err("activation payload was not JSON")
     remaining = [s.get("id") for s in (body.get("remaining") or [])]
+    nxt = remaining[0] if remaining else None
+    if nxt in ("recovery", "telegram"):
+        hint = ("Recovery and Telegram pairing are dashboard-only. "
+                "Do not exec to edit .env.")
+    elif nxt:
+        hint = ("Offer a homebrain.* tool for the first remaining job. "
+                "Do not exec to edit .env.")
+    else:
+        hint = "Setup is complete. Do not exec to edit .env."
     return ok(
         complete=bool(body.get("complete")),
         has_gpu=bool(body.get("has_gpu")),
         remaining=body.get("remaining") or [],
         skipped=body.get("skipped") or [],
-        hint=("Do the first remaining job with a homebrain.* tool. "
-              "Do not exec to edit .env."),
-        next=(remaining[0] if remaining else None),
+        hint=hint,
+        next=nxt,
     )
 
 
@@ -299,6 +307,8 @@ def t_ca_info(_args: dict) -> dict:
     code, body = _http("GET", "/api/integrations/self/ca")
     if code == 0:
         return unavailable("dashboard unreachable")
+    if isinstance(body, dict):
+        body = {k: v for k, v in body.items() if k != "pem"}
     return _body(code, body, fail="CA unavailable")
 
 
@@ -348,7 +358,9 @@ def t_setup_skip(args: dict) -> dict:
     gate, redeemed = _config_gate(args, summary, {"step": step})
     if gate is not None:
         return gate
-    step = (redeemed or {}).get("step") or step
+    step = (redeemed or {}).get("step")
+    if step not in ("offsite", "phone"):
+        return err("confirmation_token invalid or expired")
     code, body = _http("POST", "/api/integrations/self/skip", {"step": step})
     if code != 200:
         return _body(code, body, fail="skip failed")
@@ -367,34 +379,16 @@ def t_household_add(args: dict) -> dict:
     gate, redeemed = _config_gate(args, summary, payload)
     if gate is not None:
         return gate
-    name = (redeemed or {}).get("name") or name
+    name = ((redeemed or {}).get("name") or "").strip()
+    if not name:
+        return err("confirmation_token invalid or expired")
     code, body = _http("POST", "/api/integrations/self/household",
-                       redeemed, timeout=60)
+                       {"name": name}, timeout=60)
     if code != 200:
         return _body(code, body, fail="could not add member")
     if isinstance(body, dict):
         body = {k: v for k, v in body.items() if k not in ("password", "qr")}
     audit("homebrain", "household_add", name=name)
-    return _body(code, body)
-
-
-def t_nc_add_local(args: dict) -> dict:
-    user = (args.get("user") or "").strip()
-    password = args.get("password") or ""
-    if not user:
-        return err("user is required")
-    if not password:
-        return err("password is required")
-    summary = f"HomeBrain: let the agent use Nextcloud as '{user}'"
-    gate, redeemed = _config_gate(args, summary, {"user": user})
-    if gate is not None:
-        return gate
-    user = (redeemed or {}).get("user") or user
-    code, body = _http("POST", "/api/integrations/self/nc-add-local",
-                       {"user": user, "password": password}, timeout=30)
-    if code != 200:
-        return _body(code, body, fail="could not wire Nextcloud user")
-    audit("homebrain", "nc_add_local", user=user)
     return _body(code, body)
 
 
@@ -463,7 +457,7 @@ TOOLS = [
      "description": "Backup schedule and off-site host. Never a password.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.ca_info",
-     "description": "This box's CA PEM and LAN names for phone trust.",
+     "description": "LAN names and where to download this box's certificate.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.household_list",
      "description": "Household members and how many devices each has.",
@@ -493,14 +487,6 @@ TOOLS = [
                          "name": {"type": "string"},
                          "confirmation_token": {"type": "string"}},
                      "required": ["name"]}},
-    {"name": "homebrain.nc_add_local",
-     "description": "Let the agent use a local Nextcloud user. Needs confirmation.",
-     "inputSchema": {"type": "object",
-                     "properties": {
-                         "user": {"type": "string"},
-                         "password": {"type": "string"},
-                         "confirmation_token": {"type": "string"}},
-                     "required": ["user", "password"]}},
 ]
 
 
@@ -522,7 +508,6 @@ DISPATCH = {
     "homebrain.backup_schedule_set": t_backup_schedule_set,
     "homebrain.setup_skip": t_setup_skip,
     "homebrain.household_add": t_household_add,
-    "homebrain.nc_add_local": t_nc_add_local,
 }
 
 

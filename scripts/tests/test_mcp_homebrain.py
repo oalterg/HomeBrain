@@ -238,6 +238,51 @@ def test_setup_status_is_a_read(hb, monkeypatch):
     assert out["ok"] is True
     assert out["next"] == "telegram"
     assert out["complete"] is False
+    assert "dashboard-only" in out["hint"]
+
+
+def test_setup_status_offers_a_tool_when_next_is_backup(hb, monkeypatch):
+    monkeypatch.setattr(hb, "_http", lambda method, path, body=None, timeout=10: (
+        200, {"complete": False, "has_gpu": True,
+              "remaining": [{"id": "backup"}], "skipped": []}))
+    out = hb.dispatch("homebrain.setup_status", {})
+    assert out["next"] == "backup"
+    assert "homebrain.*" in out["hint"]
+    assert "dashboard-only" not in out["hint"]
+
+
+def test_setup_skip_fails_closed_when_redeemed_payload_has_no_step(hb, monkeypatch):
+    calls = []
+
+    def capture(method, path, body=None, timeout=10):
+        calls.append((method, path, body))
+        return 200, {"status": "ok"}
+
+    monkeypatch.setattr(hb, "_http", capture)
+    monkeypatch.setattr(hb.Consent, "verify", lambda *a, **k: {})
+    out = hb.dispatch("homebrain.setup_skip", {
+        "step": "phone", "confirmation_token": "tok",
+    })
+    assert out.get("ok") is False
+    assert calls == []
+
+
+def test_ca_info_does_not_return_the_pem(hb, monkeypatch):
+    monkeypatch.setattr(hb, "_http", lambda method, path, body=None, timeout=10: (
+        200, {"ok": True, "pem": "-----BEGIN CERTIFICATE-----\nMII\n",
+              "names": ["homebrain.local"],
+              "download": "/api/vault/local-ca"}))
+    out = hb.dispatch("homebrain.ca_info", {})
+    assert out.get("ok") is True
+    assert "pem" not in out
+    assert "BEGIN CERTIFICATE" not in str(out)
+    assert out.get("download") == "/api/vault/local-ca"
+
+
+def test_nc_add_local_is_not_an_mcp_tool(hb):
+    names = [t["name"] for t in hb.TOOLS]
+    assert "homebrain.nc_add_local" not in names
+    assert "homebrain.nc_add_local" not in hb.DISPATCH
 
 
 def test_backup_schedule_set_does_not_auto_redeem(hb, monkeypatch):
