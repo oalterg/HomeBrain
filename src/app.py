@@ -151,6 +151,8 @@ def get_gpu_stats() -> dict:
         return _gpu_stats_amdgpu()
     if driver == "nvidia":
         return _gpu_stats_nvidia()
+    if driver in ("xe", "i915"):
+        return _gpu_stats_intel()
     return {"available": False}
 
 def _gpu_stats_amdgpu() -> dict:
@@ -212,6 +214,42 @@ def _gpu_stats_nvidia() -> dict:
             result["temp_c"] = float(temp)
         result["available"] = True
     except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return result
+
+def _gpu_stats_intel() -> dict:
+    """Package temperature from the xe/i915 hwmon node.
+
+    These drivers do not publish mem_info_vram_*. The 32 GB PCI BAR on an Arc
+    Pro B60 is the resized window, not a used-byte counter, so used/total stay
+    absent and the dashboard leaves that meter alone.
+    """
+    import glob as _glob
+    result = {"available": False}
+    try:
+        base = None
+        for card in _glob.glob("/sys/class/drm/card[0-9]*/device"):
+            driver = os.path.basename(os.path.realpath(os.path.join(card, "driver")))
+            if driver in ("xe", "i915"):
+                base = card
+                break
+        if not base:
+            return result
+        temp_c = None
+        for label_path in _glob.glob(f"{base}/hwmon/hwmon*/temp*_label"):
+            if open(label_path).read().strip() != "pkg":
+                continue
+            raw = open(label_path.replace("_label", "_input")).read().strip()
+            temp_c = round(int(raw) / 1000, 1)
+            break
+        if temp_c is None:
+            return result
+        result["temp_c"] = temp_c
+        result["memory_label"] = (
+            "VRAM" if get_platform().get("gpu_memory") == "discrete" else "GPU memory"
+        )
+        result["available"] = True
+    except (OSError, ValueError):
         pass
     return result
 

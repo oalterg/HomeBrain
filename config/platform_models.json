@@ -43,6 +43,26 @@
       "default": false
     },
     {
+      "id": "Qwen3.8-27B-UD-Q5_K_XL",
+      "filename": "Qwen3.8-27B-UD-Q5_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q5_K_XL.gguf",
+      "min_size_bytes": 20000000000,
+      "context_window": 8192,
+      "max_tokens": 16384,
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
+      "profiles": {
+        "x86_64-vulkan-xe": {
+          "context_window": 131072,
+          "notes": "UNMEASURED. Arc Pro B60 (24 GB, xe/ANV) only — resolved when the driver is xe, so the RX 9060 XT never selects it. Weights are 20,876,938,144 bytes (19.4 GiB). The IQ4_XS sibling uses 16,083 MiB at ctx 81920 q8 on 16 GB; this file is 6,328 MiB heavier, so that same context is about 22.4 GiB. 131072 q8 is the next step the 16 GB card cannot take (98304 already spills there). min_healthy_vram_mb is omitted until an idle reading exists on the B60. Same DeltaNet rules as UD-IQ4_XS: -ngl 99, no -ot, no nkvo, --threads 6, -ub 1024. -fa on is kept from the AMD line; drop it here only if ANV refuses to load."
+        }
+      },
+      "benchmark": {
+        "measured_on": "unmeasured",
+        "notes": "UNMEASURED — catalog entry for the Arc Pro B60's 24 GB window. Do not treat 131072 as a result until BENCHMARKS.md has a run on this card. Not the default; Muse-Glimmer stays the 16 GB default."
+      },
+      "default": false
+    },
+    {
       "id": "Muse-Glimmer-30B-UD-Q4_K_XL",
       "filename": "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
       "url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
