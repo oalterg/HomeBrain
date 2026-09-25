@@ -119,6 +119,27 @@ case_is "x86_64 + i915 -> vulkan/unified (iGPU shares system RAM)" \
     "x86_64 i915 vulkan unified x86_64-vulkan true" \
     "$(fixture intel i915)" "$(stub_path x86_64)"
 
+# Arc Pro B60: xe plus a prefetchable BAR over 4 GiB is discrete VRAM.
+# No resource file stays unified, matching the iGPU answer.
+xe_small="$(fixture xe_small xe)"
+printf '0x00000000c0000000 0x00000000cfffffff 0x000000000014220c\n' \
+    > "$xe_small/sys/class/drm/renderD128/device/resource"
+case_is "x86_64 + xe with a 256 MB BAR -> vulkan/unified" \
+    "x86_64 xe vulkan unified x86_64-vulkan true" \
+    "$xe_small" "$(stub_path x86_64)"
+
+xe_big="$(fixture xe_big xe)"
+# 32 GiB window: start 0x100000000 (4 GiB), end 0x8ffffffff.
+printf '0x0000000100000000 0x00000008ffffffff 0x000000000014220c\n' \
+    > "$xe_big/sys/class/drm/renderD128/device/resource"
+case_is "x86_64 + xe with a 32 GiB BAR -> vulkan/discrete" \
+    "x86_64 xe vulkan discrete x86_64-vulkan true" \
+    "$xe_big" "$(stub_path x86_64)"
+
+case_is "x86_64 + xe with no resource file -> vulkan/unified" \
+    "x86_64 xe vulkan unified x86_64-vulkan true" \
+    "$(fixture xe_none xe)" "$(stub_path x86_64)"
+
 echo "== hybrid boxes (node order != card preference) =="
 
 # The iGPU takes renderD128 and would win a naive first-match scan. It is not
@@ -203,9 +224,11 @@ if ! command -v jq >/dev/null 2>&1; then
 elif [[ ! -f "$MODELS" ]]; then
     bad "platform_models.json not found at $MODELS"
 else
-    resolve() {  # resolve <id> <tag> <field>
-        jq -r --arg id "$1" --arg tag "$2" \
-            ".models[] | select(.id == \$id) | (.profiles[\$tag] // {}).$3 // .$3 // \"\"" "$MODELS"
+    resolve() {  # resolve <id> <tag> <field> [driver]
+        local dtag="$2"
+        [[ -n "${4:-}" ]] && dtag="$2-$4"
+        jq -r --arg id "$1" --arg tag "$2" --arg dtag "$dtag" \
+            ".models[] | select(.id == \$id) | (.profiles[\$dtag] // .profiles[\$tag] // {}).$3 // .$3 // \"\"" "$MODELS"
     }
     unprofiled() { jq -r --arg id "$1" ".models[] | select(.id == \$id) | .$2 // \"\"" "$MODELS"; }
 
@@ -241,6 +264,16 @@ else
         ok "model without a profile falls back to its top-level values"
     else
         bad "unprofiled model did not fall back on an unknown tag"
+    fi
+
+    # Q5 is the Arc window. The shared tag must not pick it up, or the 9060 XT
+    # would grow a 131072 context it cannot hold.
+    q5_amd="$(resolve Qwen3.8-27B-UD-Q5_K_XL x86_64-vulkan context_window amdgpu)"
+    q5_xe="$(resolve Qwen3.8-27B-UD-Q5_K_XL x86_64-vulkan context_window xe)"
+    if [[ "$q5_amd" == "8192" && "$q5_xe" == "131072" ]]; then
+        ok "Qwen3.8 Q5 context is 131072 on xe and 8192 on amdgpu"
+    else
+        bad "Qwen3.8 Q5 context: want amdgpu 8192 / xe 131072, got ${q5_amd}/${q5_xe}"
     fi
 fi
 

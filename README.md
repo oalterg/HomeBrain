@@ -99,10 +99,10 @@ Versions are pinned and updated from the dashboard in one click.
 | CPU | AMD Ryzen 5 / Intel i5 or better | Raspberry Pi 5 |
 | RAM | 32 GB | 8 GB |
 | Storage | 512 GB NVMe | SSD |
-| GPU | AMD Radeon RX 9060 XT (16 GB VRAM) | — |
-| OS | Ubuntu 24.04 LTS | Raspberry Pi OS Trixie 64-bit |
+| GPU | AMD Radeon RX 9060 XT (16 GB) or Intel Arc Pro B60 (24 GB) | — |
+| OS | Ubuntu 24.04 LTS or 26.04 LTS | Raspberry Pi OS Trixie 64-bit |
 
-Inference is Vulkan via Mesa RADV — no ROCm. Throughput and tuning: [BENCHMARKS.md](docs/BENCHMARKS.md).
+Inference is Vulkan via Mesa — RADV on AMD, ANV on Intel Arc. No ROCm. The Arc Pro B60 is an x8 card, so it trains at PCIe 4.0 x8 on a B550 board. Its BIOS needs Above 4G Decoding and Resizable BAR on, and CSM off, or the VRAM window stays 256 MB and provisioning stops. Throughput and tuning: [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ---
 

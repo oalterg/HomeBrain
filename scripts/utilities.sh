@@ -898,6 +898,12 @@ generate_llama_service() {
         -e "s@__EXTRA_FLAGS__@${extra_flags}@g" \
         -e "s|__HOMEBRAIN_USER__|${HOMEBRAIN_USER}|g" \
         "$template" > "$service_dest"
+    # RADV_PERFTEST is an AMD Vulkan knob. The template carries it because the
+    # RX 9060 XT needs it; an Arc box must not inherit it.
+    if [[ "${HB_GPU_DRIVER:-none}" != "amdgpu" ]]; then
+        grep -v 'RADV_PERFTEST' "$service_dest" > "${service_dest}.tmp" \
+            && mv "${service_dest}.tmp" "$service_dest"
+    fi
     chmod 644 "$service_dest"
 }
 
@@ -1028,17 +1034,21 @@ setup_llama_server() {
         local model_id
         model_id=$(echo "$MODEL_NAME" | sed 's/\.gguf$//')
         local _sel='.models[] | select(.id == $id)'
-        local _prof='(.profiles[$tag] // {})'
-        CTX_SIZE=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+        # Driver-specific key first (x86_64-vulkan-xe), then the shared tag.
+        # Both AMD and Intel Arc are x86_64-vulkan; a profile under that tag
+        # would change the RX 9060 XT.
+        local _prof='(.profiles[$dtag] // .profiles[$tag] // {})'
+        local _dtag="${HB_PLATFORM_TAG}-${HB_GPU_DRIVER:-none}"
+        CTX_SIZE=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
             "($_sel | ${_prof}.context_window // .context_window) // .llama_server.ctx_size // 8192" \
             "$MODELS_FILE" 2>/dev/null || echo "8192")
-        EXTRA_FLAGS=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+        EXTRA_FLAGS=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
             "($_sel | ${_prof}.extra_flags // .extra_flags) // .llama_server.extra_flags // \"\"" \
             "$MODELS_FILE" 2>/dev/null || echo "")
         # Optional: healthy-allocation memory watermark. When set, a successful
         # start that comes up well below this value means the compute buffer was
         # starved by memory pressure (see verify_llama_allocation).
-        MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" \
+        MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
             "($_sel | ${_prof}.min_healthy_vram_mb // .min_healthy_vram_mb) // empty" \
             "$MODELS_FILE" 2>/dev/null || echo "")
     fi
@@ -1590,8 +1600,9 @@ patch_openclaw_config() {
     local max_tokens=""
     if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
         max_tokens=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" \
             '(.models[] | select(.id == $id)
-              | ((.profiles[$tag] // {}).max_tokens // .max_tokens)) // empty' \
+              | ((.profiles[$dtag] // .profiles[$tag] // {}).max_tokens // .max_tokens)) // empty' \
             "$models_file" 2>/dev/null || echo "")
     fi
     [[ "$max_tokens" =~ ^[0-9]+$ ]] || max_tokens=8192
@@ -1620,8 +1631,9 @@ patch_openclaw_config() {
     local think_level=""
     if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
         think_level=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" \
             '(.models[] | select(.id == $id)
-              | ((.profiles[$tag] // {}).extra_flags // .extra_flags)) // empty' \
+              | ((.profiles[$dtag] // .profiles[$tag] // {}).extra_flags // .extra_flags)) // empty' \
             "$models_file" 2>/dev/null \
             | grep -oE '"reasoning_(strength|effort)"[[:space:]]*:[[:space:]]*"[a-z]+"' \
             | grep -oE '"[a-z]+"$' | tr -d '"' || echo "")
@@ -2046,6 +2058,7 @@ seed_openclaw_workspace() {
     local src="${SCRIPT_DIR}/../config/openclaw-workspace"
     local marker="## HomeBrain memory"
     local identity_marker="## HomeBrain identity"
+    local setup_marker="## HomeBrain setup"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2099,6 +2112,15 @@ seed_openclaw_workspace() {
                 >> "${ws}/AGENTS.md"
             _own "${ws}/AGENTS.md"
             log_info "Appended HomeBrain identity block to OpenClaw AGENTS.md"
+        fi
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$setup_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$setup_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            awk "index(\$0, \"$setup_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain setup block to OpenClaw AGENTS.md"
         fi
     fi
 }
