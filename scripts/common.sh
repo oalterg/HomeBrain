@@ -125,21 +125,45 @@ detect_downgrade() {
 #   HB_ARCH         x86_64 | aarch64 | ...
 #   HB_GPU_DRIVER   amdgpu | nvidia | i915 | xe | none
 #   HB_GPU_BACKEND  vulkan | cuda | none
-#   HB_GPU_MEMORY   discrete | unified | none   (only affects how memory is reported)
+#   HB_GPU_MEMORY   discrete | unified | none   (how memory is reported; a large xe BAR is discrete)
+#   HB_GPU_BAR_BYTES  largest prefetchable BAR, bytes. 0 when the device has no resource file.
 #   HB_PLATFORM_TAG "${HB_ARCH}-${HB_GPU_BACKEND}", the key used in config files
 #   HAS_GPU         derived: driver != none. Unchanged meaning, unchanged callers.
 #
 # HB_SYSFS_ROOT prefixes every sysfs read so the fixture tests can point this at
 # a fake tree — the only way any of this is verifiable without owning the hardware.
+# Largest prefetchable memory BAR in a PCI `resource` file, in bytes.
+# Echoes 0 when the file is missing or has no such region. 0x200 is
+# IORESOURCE_MEM and 0x2000 is IORESOURCE_PREFETCH.
+_largest_prefetch_bar_bytes() {
+    local res="$1" start end flags best=0 size
+    [[ -n "$res" && -r "$res" ]] || { echo 0; return 0; }
+    while read -r start end flags _; do
+        [[ -n "${start:-}" && "$start" != 0x0000000000000000 ]] || continue
+        flags=$((flags))
+        if (( (flags & 512) == 0 || (flags & 8192) == 0 )); then
+            continue
+        fi
+        start=$((start))
+        end=$((end))
+        size=$((end - start + 1))
+        if (( size > best )); then
+            best=$size
+        fi
+    done < "$res"
+    echo "$best"
+}
+
 detect_platform() {
   local sysfs="${HB_SYSFS_ROOT:-}"
   HB_ARCH="$(uname -m)"
   HB_GPU_DRIVER="none"
+  HB_GPU_BAR_BYTES=0
 
   # Driver identity comes from the render node's bound driver, not from the
   # architecture. Display-only engines (RPi VideoCore vc4/v3d) expose a render
   # node too, so only compute-capable drivers count.
-  local link drv found=""
+  local link drv found="" devdir bar xe_dev="" i915_dev=""
   for link in "${sysfs}"/sys/class/drm/renderD*/device/driver; do
     [[ -L "$link" ]] || continue
     # sysfs always makes this a symlink into .../bus/pci/drivers/<name>; plain
@@ -147,6 +171,22 @@ detect_platform() {
     drv="$(basename "$(readlink "$link")")"
     case "$drv" in
       amdgpu|nvidia|i915|xe) found+=" ${drv} " ;;
+      *) continue ;;
+    esac
+    # Two nodes can share a driver. Keep the one with the larger VRAM window.
+    devdir="$(dirname "$link")"
+    bar="$(_largest_prefetch_bar_bytes "$devdir/resource")"
+    case "$drv" in
+      xe)
+        if [[ -z "$xe_dev" ]] || [[ "$bar" -gt "$(_largest_prefetch_bar_bytes "$xe_dev/resource")" ]]; then
+          xe_dev="$devdir"
+        fi
+        ;;
+      i915)
+        if [[ -z "$i915_dev" ]] || [[ "$bar" -gt "$(_largest_prefetch_bar_bytes "$i915_dev/resource")" ]]; then
+          i915_dev="$devdir"
+        fi
+        ;;
     esac
   done
 
@@ -184,13 +224,29 @@ detect_platform() {
               else
                   HB_GPU_MEMORY="discrete"
               fi ;;
-    i915|xe)  HB_GPU_BACKEND="vulkan"; HB_GPU_MEMORY="unified" ;;
-    *)        HB_GPU_BACKEND="none";   HB_GPU_MEMORY="none" ;;
+    i915|xe)
+      HB_GPU_BACKEND="vulkan"
+      # An iGPU shares system RAM and exposes a small BAR. A discrete Arc opens
+      # a multi-gigabyte prefetchable BAR once Resizable BAR is on. No resource
+      # file keeps the unified answer, so a fixture that only names the driver
+      # does not change meaning.
+      case "$HB_GPU_DRIVER" in
+        xe)  devdir="$xe_dev" ;;
+        i915) devdir="$i915_dev" ;;
+      esac
+      HB_GPU_BAR_BYTES="$(_largest_prefetch_bar_bytes "${devdir:-}/resource")"
+      if [[ "${HB_GPU_BAR_BYTES:-0}" -ge 4294967296 ]]; then
+        HB_GPU_MEMORY="discrete"
+      else
+        HB_GPU_MEMORY="unified"
+      fi
+      ;;
+    *)        HB_GPU_BACKEND="none";   HB_GPU_MEMORY="none"; HB_GPU_BAR_BYTES=0 ;;
   esac
 
   HB_PLATFORM_TAG="${HB_ARCH}-${HB_GPU_BACKEND}"
   if [[ "$HB_GPU_DRIVER" == "none" ]]; then HAS_GPU=false; else HAS_GPU=true; fi
-  export HB_ARCH HB_GPU_DRIVER HB_GPU_BACKEND HB_GPU_MEMORY HB_PLATFORM_TAG HAS_GPU
+  export HB_ARCH HB_GPU_DRIVER HB_GPU_BACKEND HB_GPU_MEMORY HB_GPU_BAR_BYTES HB_PLATFORM_TAG HAS_GPU
 }
 detect_platform
 
@@ -236,9 +292,21 @@ harden_gpu() {
     case "$HB_GPU_DRIVER" in
         amdgpu) _harden_gpu_amdgpu "$config_dir" ;;
         nvidia) _harden_gpu_nvidia ;;
+        xe)     _harden_gpu_xe ;;
         none)   log_info "No compute GPU detected — skipping GPU hardening." ;;
         *)      log_info "GPU driver '${HB_GPU_DRIVER}' needs no host hardening." ;;
     esac
+}
+
+# A discrete Arc with Resizable BAR off still probes, and its VRAM window stays
+# 256 MB. Installing the agent on that window looks like success and then
+# cannot load a model. An unreadable BAR is left alone.
+_harden_gpu_xe() {
+    local bar="${HB_GPU_BAR_BYTES:-0}"
+    if [[ "$bar" -gt 0 && "$bar" -lt 4294967296 ]]; then
+        die "Intel Arc VRAM window is $(( bar / 1048576 )) MB. Enable Above 4G Decoding and Resizable BAR, disable CSM, and reboot before provisioning."
+    fi
+    log_info "Intel Arc VRAM window: $(( bar / 1073741824 )) GiB. No AMD host hardening applied."
 }
 
 _harden_gpu_amdgpu() {

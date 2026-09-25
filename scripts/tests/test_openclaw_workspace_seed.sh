@@ -131,6 +131,12 @@ else
     bad "seeded AGENTS.md includes the identity block" \
         "missing ## HomeBrain identity"
 fi
+if grep -q '## HomeBrain setup' "$ws/AGENTS.md"; then
+    ok "seeded AGENTS.md includes the setup block"
+else
+    bad "seeded AGENTS.md includes the setup block" \
+        "missing ## HomeBrain setup"
+fi
 printf '# Agent\n\nBe brief.\n' > "$ws/AGENTS.md"
 seed_openclaw_workspace 1
 if grep -q '## HomeBrain memory' "$ws/AGENTS.md" && grep -q 'Be brief' "$ws/AGENTS.md"; then
@@ -165,6 +171,26 @@ if cmp -s "$TMP_ROOT/agents.identity" "$ws/AGENTS.md"; then
     ok "a second seed does not duplicate the identity block"
 else
     bad "a second seed does not duplicate the identity block" \
+        "AGENTS.md changed on the second pass"
+fi
+
+echo "== AGENTS.md setup block on upgrade =="
+printf '# Agent\n\n## HomeBrain memory\n\n- Durable facts.\n\n## HomeBrain identity\n\n- You are the clerk.\n' > "$ws/AGENTS.md"
+seed_openclaw_workspace 1
+if grep -q '## HomeBrain setup' "$ws/AGENTS.md" \
+        && grep -q 'You are the clerk' "$ws/AGENTS.md" \
+        && grep -q 'Durable facts' "$ws/AGENTS.md"; then
+    ok "appends the setup block without dropping identity"
+else
+    bad "appends the setup block without dropping identity" \
+        "$(cat "$ws/AGENTS.md")"
+fi
+cp "$ws/AGENTS.md" "$TMP_ROOT/agents.setup"
+seed_openclaw_workspace 1
+if cmp -s "$TMP_ROOT/agents.setup" "$ws/AGENTS.md"; then
+    ok "a second seed does not duplicate the setup block"
+else
+    bad "a second seed does not duplicate the setup block" \
         "AGENTS.md changed on the second pass"
 fi
 
