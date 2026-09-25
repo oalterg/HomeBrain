@@ -18,6 +18,12 @@
 	auto_https disable_redirects
 	admin off
 	default_sni homebrain.local
+	# HTTP/3 is advertised with Alt-Svc even when UDP 443 is not published.
+	# Safari follows that hint for homebrain.local and then never loads.
+	# The raw IP stays on TCP, which is why only the IP appeared to work.
+	servers {
+		protocols h1 h2
+	}
 	log {
 		output stdout
 		format console
