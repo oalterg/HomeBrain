@@ -56,6 +56,11 @@ if grep -q 'redir https://{host}{uri}' "$CADDY"; then
 else
     bad "HTTP on 80 redirects to HTTPS"
 fi
+if grep -q 'protocols h1 h2' "$CADDY"; then
+    ok "Caddy does not advertise HTTP/3"
+else
+    bad "Caddy does not advertise HTTP/3"
+fi
 
 echo "== compose does not publish the apps on the LAN =="
 
