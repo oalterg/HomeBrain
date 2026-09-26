@@ -1218,7 +1218,8 @@ error or a CPU device mismatch.
 
 Q5_K_XL was not re-run on SYCL. Its profile keeps `-b 2048 -ub 1024` because
 the file is 3 GiB heavier and the 21.3 GiB reading is the Q4 file.
-The B60 standard is UD-Q5_K_M, below.
+UD-Q5_K_M was the next B60 standard; Glimmer Q5 replaces it at the end of
+this file.
 
 ## 2026-09-26 — Arc Pro B60 standard: Qwen3.8-27B UD-Q5_K_M
 
@@ -1247,3 +1248,33 @@ Text holds: decode 16.3 t/s (16.95 without it), 813-token prefill 487
 GTT from 33 MiB to 919 MiB. The projector does not fit in the remaining
 VRAM; that 885 MiB sits in GTT. It is not part of the shipped flags.
 No quantized mmproj is published, only F16 and BF16. An image was not run.
+
+## 2026-09-26 — Arc Pro B60 standard: Muse Glimmer 30B UD-Q5_K_M
+
+`Muse-Glimmer-30B-UD-Q5_K_M.gguf`, 19,194,274,848 bytes (17.86 GiB). Same SYCL
+build as the Qwen point: llama.cpp 2145525, `-ngl 99 -fa on -t 6 -b 4096 -ub 2048`,
+q8_0 KV. Sampler stays Glimmer's (`top-k 64`, `reasoning_strength` xhigh).
+Trained context is 131072. Global layers are NoPE and the other layers are a
+2048 sliding window, so a longer window is cheap in KV and is a memory fit,
+not a quality measurement. The server logs a training-context overflow warning
+above 131072.
+
+llama-bench at ctx fitting the prompt, q8: pp512 ~760, pp2048 905, pp4096 ~790,
+tg128 19.85. ubatch 1024 drops pp2048 to 849. ubatch 2048, 4096, and 8192 match.
+Threads 4/6/12, batch 2048/8192, and q4_0 KV all decode at 19.8 t/s.
+
+Server, greedy, the same short prompts:
+
+| ctx | TG | PP (814 tok) | VRAM | GTT | fit warning | VRAM left |
+|---:|---:|---:|---:|---:|---|---:|
+| 131072 | 19.8 | 626 | 19.2 GiB | 684 MiB | no | 4.7 GiB |
+| 262144 | 19.6 | 576 | 20.6 GiB | 1.17 GiB | no | 3.3 GiB |
+| **393216** | **19.8** | **624** | **22.0 GiB** | **1.67 GiB** | **no** | **2.0 GiB** |
+| 524288 | 19.4 | 578 | 23.4 GiB | 33 MiB | yes | 0.5 GiB |
+
+**Shipped for the B60: ctx 393216, q8_0 KV.** 524288 is the Qwen-style ceiling
+(fit warning, half a gigabyte left) and is not the shipped point. A 110k-token
+fill at ctx 131072 ran at 250 t/s prefill with resident memory unchanged.
+DFlash fits only at `--spec-draft-n-max 4` (14.8 t/s, 79/186 drafted tokens
+accepted, 22.3 GiB) and runs out of device memory at n_max 8, including at
+ctx 8192. It is not shipped. UD-Q4_K_XL stays the 16 GB default.

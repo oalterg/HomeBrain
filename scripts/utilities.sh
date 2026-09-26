@@ -1083,10 +1083,10 @@ setup_llama_server() {
     fi
 
     # Q5_K_XL was the Arc placeholder. On a discrete Arc the measured standard
-    # is UD-Q5_K_M; leave any other explicit selection alone.
+    # is Glimmer UD-Q5_K_M; leave any other explicit selection alone.
     if [[ "${HB_PLATFORM_TAG:-}" == "x86_64-sycl" && "${HB_GPU_DRIVER:-}" == "xe" \
         && "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" ]] && [[ -f "$MODELS_FILE" ]]; then
-        local _arc_id="Qwen3.8-27B-UD-Q5_K_M"
+        local _arc_id="Muse-Glimmer-30B-UD-Q5_K_M"
         local _af _au _am
         _af=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
         _au=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .url // empty' "$MODELS_FILE" 2>/dev/null)

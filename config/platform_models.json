@@ -1,7 +1,7 @@
 {
   "default": "Muse-Glimmer-30B-UD-Q4_K_XL",
   "platform_defaults": {
-    "x86_64-sycl-xe": "Qwen3.8-27B-UD-Q5_K_M"
+    "x86_64-sycl-xe": "Muse-Glimmer-30B-UD-Q5_K_M"
   },
   "models": [
     {
@@ -61,7 +61,7 @@
       },
       "benchmark": {
         "measured_on": "unmeasured",
-        "notes": "Vulkan on the Arc Pro B60 decoded this file at about 4.4 t/s (ctx 131072, q8 KV, b10361). SYCL was not re-run on it. The B60 standard is Qwen3.8-27B-UD-Q5_K_M. Muse-Glimmer stays the 16 GB default."
+        "notes": "Vulkan on the Arc Pro B60 decoded this file at about 4.4 t/s (ctx 131072, q8 KV, b10361). SYCL was not re-run on it. The B60 standard is Muse-Glimmer-30B-UD-Q5_K_M. Muse-Glimmer UD-Q4_K_XL stays the 16 GB default."
       },
       "default": false
     },
@@ -77,14 +77,14 @@
         "x86_64-sycl-xe": {
           "context_window": 131072,
           "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
-          "notes": "Headroom alternative to the B60 standard Q5_K_M. Same SYCL build, q8 KV, ctx 131072: 16.1 t/s decode, 498 t/s on an 813-token prompt, 21.3 GiB resident, 644 MiB GTT, no fit warning. llama-bench tg128 was 15.50 at every ubatch and thread count. Batch sweeping does not move decode on this card."
+          "notes": "Headroom alternative to Qwen3.8-27B-UD-Q5_K_M. The B60 standard is Muse-Glimmer-30B-UD-Q5_K_M. Same SYCL build, q8 KV, ctx 131072: 16.1 t/s decode, 498 t/s on an 813-token prompt, 21.3 GiB resident, 644 MiB GTT, no fit warning. llama-bench tg128 was 15.50 at every ubatch and thread count. Batch sweeping does not move decode on this card."
         }
       },
       "benchmark": {
         "tg_ts": 16.1,
         "pp_ts": 498.2,
         "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
-        "notes": "Roomier than Q5_K_M on the same card (21.3 GiB at ctx 131072 versus 23.4 GiB). Decode 16.1 t/s. The B60 standard is Q5_K_M at q8 KV. See docs/BENCHMARKS.md (2026-09-26)."
+        "notes": "Roomier than Q5_K_M on the same card (21.3 GiB at ctx 131072 versus 23.4 GiB). Decode 16.1 t/s. The B60 standard is Muse-Glimmer-30B-UD-Q5_K_M. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },
@@ -100,14 +100,14 @@
         "x86_64-sycl-xe": {
           "context_window": 131072,
           "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
-          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,771,509,664 bytes (18.40 GiB). q8_0 KV at ctx 131072 decodes at 16.95 t/s (813-token prefill 520) in 23.4 GiB, with a fit warning and about 0.5 GiB left. q4_0 KV reaches ctx 196608 at the same speed and is not shipped. mmproj-F16 (885 MiB) loads on this config and text stays at 16.3 t/s, but the extra memory lands in GTT (~900 MiB) rather than the remaining VRAM, so it is not part of the shipped flags. DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on. The RX 9060 XT never selects this profile. Muse-Glimmer stays the 16 GB default."
+          "notes": "Previous B60 standard (2026-09-26), superseded by Muse-Glimmer-30B-UD-Q5_K_M. Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,771,509,664 bytes (18.40 GiB). q8_0 KV at ctx 131072 decodes at 16.95 t/s (813-token prefill 520) in 23.4 GiB, with a fit warning and about 0.5 GiB left. q4_0 KV reaches ctx 196608 at the same speed and is not shipped. mmproj-F16 (885 MiB) loads on this config and text stays at 16.3 t/s, but the extra memory lands in GTT (~900 MiB) rather than the remaining VRAM, so it is not part of the shipped flags. DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on. The RX 9060 XT never selects this profile. Muse-Glimmer UD-Q4_K_XL stays the 16 GB default."
         }
       },
       "benchmark": {
         "tg_ts": 16.8,
         "pp_ts": 515.1,
         "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
-        "notes": "Standard model for a discrete Arc. 16.95 t/s decode, 520 t/s on an 813-token prompt, 23.4 GiB resident. q4_0 reaches ctx 196608 at the same speed and is not the shipped point. See docs/BENCHMARKS.md (2026-09-26)."
+        "notes": "Previous discrete-Arc standard, superseded by Muse-Glimmer-30B-UD-Q5_K_M. 16.95 t/s decode, 520 t/s on an 813-token prompt, 23.4 GiB resident. q4_0 reaches ctx 196608 at the same speed and is not the shipped point. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },
@@ -127,6 +127,30 @@
         "notes": "DEFAULT (2026-08-14). Selectable as of the b10361 pin. muse-glimmer support merged upstream 2026-08-10 (PR #26841) and first reached a release tag on 2026-08-11 (b10356+); the earlier b10107 pin could not load this file at all. b10361 was measured against the master build it was validated on and is identical: idle 15968 vs 15969 MiB, TG 18.79 vs 18.83, PP 480.0 vs 479.5. Dense 30B + 1.8B ViT perception encoder. The whole 131072 window fits in 16 GB because the KV is unusually cheap: 52 layers of which only 13 are full-attention (the rest sliding-window 2048) and GQA with 2 KV heads. -ub 1024 is the lever that matters -- it sizes the compute buffer, and -ub 2048 costs ~460 MiB more for the same throughput. Headroom is 335 MiB idle / 275 MiB after a 108292-token fill, just above the ~250 MiB knee where TG and PP collapse together; 3/3 byte-identical starts and TG recovered to 18.81 t/s after the deep fill, but there is little room for a heavier future build (b9672 once idled +545 MiB at an identical config). If that happens, q4_0 KV holds the same 131072 window at 720 MiB headroom for ~1% TG. The shipped DFlash drafter (dflash-kquant.gguf, --spec-type draft-dflash) is a LOSS here: it costs ~2.3 GiB, dropping TG 21.6 -> 15.3 and PP 425 -> 39 t/s at 21% acceptance -- it wants the 24 GB card the model card targets. UD-Q3_K_XL is the roomier alternative at 21.61 t/s TG / 2977 MiB headroom (ctx 81920, -ub 2048) if throughput matters more than quantization quality. reasoning_strength (low/medium/high/xhigh) is a chat-template kwarg; shipped at xhigh. high spends ~900 reasoning tokens on even a trivial question; xhigh can stall multi-call turns on the 16 GB box. See docs/BENCHMARKS.md (2026-08-10)."
       },
       "default": true
+    },
+    {
+      "id": "Muse-Glimmer-30B-UD-Q5_K_M",
+      "filename": "Muse-Glimmer-30B-UD-Q5_K_M.gguf",
+      "url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/Muse-Glimmer-30B-UD-Q5_K_M.gguf",
+      "min_size_bytes": 19000000000,
+      "context_window": 8192,
+      "max_tokens": 16384,
+      "min_healthy_vram_mb": 20000,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
+      "profiles": {
+        "x86_64-sycl-xe": {
+          "context_window": 393216,
+          "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
+          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,194,274,848 bytes (17.86 GiB). q8_0 KV, -b 4096 -ub 2048. At ctx 131072: 19.8 t/s decode, 905 t/s pp2048, 626 t/s on an 814-token prompt, 19.2 GiB resident, 4.7 GiB free. ctx 393216 holds that speed (19.8 t/s, 624 t/s on the same prompt) in 22.0 GiB with 1.7 GiB GTT, no fit warning, and about 2.0 GiB free. ctx 524288 still decodes at 19.4 t/s but logs a fit warning and leaves 0.5 GiB, so it is not shipped. Trained context is 131072; the server warns on the longer window. Global layers are NoPE and local layers are a 2048 sliding window, so the extra context is a memory fit, not a quality measurement. Batch, threads, and q4 KV do not move decode. DFlash only fits at n_max 4, at 14.8 t/s, and is not shipped. The RX 9060 XT never selects this profile. UD-Q4_K_XL stays the 16 GB default."
+        }
+      },
+      "benchmark": {
+        "tg_ts": 19.8,
+        "pp_ts": 624,
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 393216",
+        "notes": "Standard model for a discrete Arc. 19.8 t/s decode and 624 t/s on an 814-token prompt at ctx 393216, 22.0 GiB resident, about 2.0 GiB free. Trained context is 131072. See docs/BENCHMARKS.md (2026-09-26)."
+      },
+      "default": false
     }
   ],
   "llama_server": {
