@@ -27,8 +27,9 @@ explicit platform record rather than adding a second code path.
 - No driver-registry / plugin architecture. There are three drivers (`amdgpu`, `nvidia`, `none`)
   and a `case` statement is the right shape. Do not build for a fourth we do not have.
 - No autotuning of llama.cpp flags. Profiles stay hand-measured and committed, exactly as today.
-- No ROCm, Metal, Intel oneAPI, or CPU-inference backend until someone has the hardware to
-  benchmark. Vulkan and CUDA only.
+- No ROCm, Metal, or CPU-inference backend. Vulkan and CUDA, plus SYCL on a
+  discrete Arc once that card had been measured (Arc Pro B60, 2026-09-26).
+  Integrated Intel stays on Vulkan.
 - Not making HomeCloud (no-GPU) run the AI stack. `HAS_GPU=false` keeps meaning what it means.
 - Not solving Proton Bridge on arm64 (§6). Surfacing it honestly is in scope; fixing it is not.
 - Not buying a DGX Spark. Phase 6 is contingent, not committed.

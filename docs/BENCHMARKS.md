@@ -1173,3 +1173,77 @@ as q4 @ 131072 — KV quality, not speed. q4 @ 131072 remains the
 max-context alternative (half the KV bits, 60% more window). Worst-case
 OpenClaw turn is 81920/266.3 + 16384/18.8 ≈ 1179 s (66% of the 1800 s
 ceiling).
+
+## 2026-09-26 — Arc Pro B60, Qwen3.8-27B UD-Q4_K_XL on SYCL
+
+Card: Intel Arc Pro B60 (xe, 23.9 GiB usable), Ryzen 5 5600. File:
+`Qwen3.8-27B-UD-Q4_K_XL.gguf`, 17,559,178,144 bytes. Flags unless noted:
+`-ngl 99 -fa on`, q8_0 KV, no `-ot`, no `-nkvo`. Vulkan numbers are the
+pinned b10361 binary. SYCL is llama.cpp master `2145525`, built with
+oneAPI 2025.3, `GGML_SYCL_F16=ON`, Level Zero 26.35 unpacked beside the
+distro driver (Ubuntu's 26.05 libze aborts on this card).
+
+Vulkan Q5 on the same box was about 4.4 t/s decode. Vulkan Q4 is the
+baseline below. SYCL Q4:
+
+llama-bench, `-b 4096 -t 6 -r 1`. Decode does not move. Prefill does.
+
+| ubatch | pp512 | pp2048 | pp4096 | tg128 |
+|---:|---:|---:|---:|---:|
+| 512 | 552 | 523 | 484 | 15.50 |
+| 1024 | 532 | 645 | 590 | 15.50 |
+| 2048 | 532 | 738 | 666 | 15.50 |
+| 4096 | 531 | 737 | 705 | 15.50 |
+
+Threads 4 / 6 / 12 at `-b 2048 -ub 1024` all decode at 15.5 t/s
+(pp2048 645–661). The same Vulkan sweep on b10361 sat at 7.3–7.5 t/s
+decode and 256–273 t/s pp2048.
+
+Server, ctx 131072, greedy, the same 64-token and 813-token prompts
+used for the Vulkan check:
+
+| backend | -b / -ub | TG | PP (813 tok) | VRAM | GTT |
+|---|---:|---:|---:|---:|---:|
+| Vulkan b10361 | 2048 / 1024 | 7.7 | 244 | 20.3 GiB | 299 MiB |
+| SYCL 2145525 | 2048 / 1024 | 16.1 | 511 | — | — |
+| SYCL 2145525 | 4096 / 2048 | 16.1 | 498 | 21.3 GiB | 644 MiB |
+
+`-b 4096 -ub 2048` is the shipped Arc point: it is the pp2048 peak, it
+fits at ctx 131072 with no device-fit warning and about 2.6 GiB of VRAM
+left, and decode matches every other batch. `-ub 4096` was the pp4096
+peak in llama-bench (705 vs 666) and was not fit-checked at 131072.
+Both fused Gated DeltaNet paths (autoregressive and chunked) are on by
+default in this master build; the run did not log an unsupported-op
+error or a CPU device mismatch.
+
+Q5_K_XL was not re-run on SYCL. Its profile keeps `-b 2048 -ub 1024` because
+the file is 3 GiB heavier and the 21.3 GiB reading is the Q4 file.
+The B60 standard is UD-Q5_K_M, below.
+
+## 2026-09-26 — Arc Pro B60 standard: Qwen3.8-27B UD-Q5_K_M
+
+`Qwen3.8-27B-UD-Q5_K_M.gguf`, 19,771,509,664 bytes (18.40 GiB). Same SYCL
+build and the same `-b 4096 -ub 2048 -t 6 -ngl 99 -fa on` as the Q4
+point. Native context is 262,144. Batch and thread sweeps were not
+repeated: on the Q4 sibling, decode stayed at 15.5 t/s across ubatch
+512–4096 and threads 4/6/12.
+
+| KV | ctx | TG | PP (813 tok) | VRAM | GTT | fit warning |
+|---|---:|---:|---:|---:|---:|---|
+| q8_0 | 131072 | 16.95 | 520 | 23.4 GiB | 33 MiB | yes |
+| q4_0 | 131072 | 17.06 | 538 | 21.4 GiB | 630 MiB | no |
+| q4_0 | 196608 | 16.78 | 515 | 23.0 GiB | 32 MiB | yes |
+| q4_0 | 262144 | — | — | — | — | does not finish loading |
+
+llama-bench at q8, `-b 4096 -ub 2048`: pp512 579, pp2048 743, pp4096 691,
+tg128 16.79. KV type does not move decode. q4_0 reaches ctx 196608 at
+the same speed. **Shipped for the B60: ctx 131072, q8_0 KV.** 262144
+does not come up.
+
+`mmproj-F16.gguf` (927,607,488 bytes, 885 MiB) loads on the shipped
+q8 / 131072 config. The server reports the multimodal model loaded.
+Text holds: decode 16.3 t/s (16.95 without it), 813-token prefill 487
+(520 without it). Resident VRAM goes from 23.4 GiB to 23.6 GiB, and
+GTT from 33 MiB to 919 MiB. The projector does not fit in the remaining
+VRAM; that 885 MiB sits in GTT. It is not part of the shipped flags.
+No quantized mmproj is published, only F16 and BF16. An image was not run.

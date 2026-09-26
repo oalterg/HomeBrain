@@ -21,8 +21,11 @@ load_versions() {
     export LLAMA_TAG WHISPER_GIT_REF OPENCLAW_VERSION
 }
 
-# How llama.cpp is obtained on this platform. Echoes "prebuilt<TAB><url>" or
-# "source<TAB><cmake_flags>"; returns 1 when the platform is unsupported.
+# How llama.cpp is obtained on this platform. Echoes
+# "prebuilt<TAB><url><TAB><ref>" or "source<TAB><cmake_flags><TAB><ref>";
+# returns 1 when the platform is unsupported. A source recipe may pin its own
+# git_ref (the SYCL build tracks llama.cpp master); otherwise the ref is the
+# shared llama_cpp.tag.
 #
 # Order: the exact platform tag's prebuilt asset, then its source recipe, then
 # the Vulkan build for this architecture as a universal fallback — NVIDIA ships
@@ -30,21 +33,23 @@ load_versions() {
 # rather than a failed provision.
 _resolve_llama_source() {
     local versions_file="${SCRIPT_DIR}/../config/versions.json"
-    local url flags
+    local url flags ref
     url=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.assets[$t] // empty' "$versions_file" 2>/dev/null)
     if [[ -n "$url" ]]; then
-        printf 'prebuilt\t%s\n' "$url"
+        printf 'prebuilt\t%s\t%s\n' "$url" "$LLAMA_TAG"
         return 0
     fi
     flags=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.source_build[$t].cmake_flags // empty' "$versions_file" 2>/dev/null)
     if [[ -n "$flags" ]]; then
-        printf 'source\t%s\n' "$flags"
+        ref=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.source_build[$t].git_ref // empty' "$versions_file" 2>/dev/null)
+        [[ -n "$ref" ]] || ref="$LLAMA_TAG"
+        printf 'source\t%s\t%s\n' "$flags" "$ref"
         return 0
     fi
     url=$(jq -r --arg t "${HB_ARCH}-vulkan" '.llama_cpp.assets[$t] // empty' "$versions_file" 2>/dev/null)
     if [[ -n "$url" ]]; then
         log_warn "No llama.cpp build pinned for '${HB_PLATFORM_TAG}'; using the ${HB_ARCH}-vulkan build instead. Inference will work but will not use the ${HB_GPU_BACKEND} backend."
-        printf 'prebuilt\t%s\n' "$url"
+        printf 'prebuilt\t%s\t%s\n' "$url" "$LLAMA_TAG"
         return 0
     fi
     return 1
@@ -772,32 +777,35 @@ install_llamacpp() {
         installed_tag=$(jq -r '.llama_cpp.tag // empty' "$installed_file" 2>/dev/null || echo "")
     fi
 
-    # Always (re)apply the RADV drop-in so existing devices pick it up on the
+    # Always (re)apply the driver drop-in so existing devices pick it up on the
     # first dashboard update after this change, even when the binary itself is
     # already current and the install short-circuits below.
     _install_llama_radv_dropin
+    _install_sycl_runtime
 
-    if [[ "$force" != "true" ]] && [[ "$installed_tag" == "$LLAMA_TAG" ]] && [[ -x "$bin_path" ]]; then
-        log_info "llama.cpp already at ${LLAMA_TAG}, skipping."
-        return 0
-    fi
-
-    local resolved kind payload
+    local resolved kind payload ref
     resolved=$(_resolve_llama_source) \
         || die "No llama.cpp build available for platform '${HB_PLATFORM_TAG}'. Add an entry under llama_cpp.assets or llama_cpp.source_build in config/versions.json."
     kind="${resolved%%$'\t'*}"
+    ref="${resolved##*$'\t'}"
     payload="${resolved#*$'\t'}"
+    payload="${payload%$'\t'*}"
 
-    log_info "Installing llama.cpp ${LLAMA_TAG} for ${HB_PLATFORM_TAG} (${kind})..."
+    if [[ "$force" != "true" ]] && [[ "$installed_tag" == "$ref" ]] && [[ -x "$bin_path" ]]; then
+        log_info "llama.cpp already at ${ref}, skipping."
+        return 0
+    fi
+
+    log_info "Installing llama.cpp ${ref} for ${HB_PLATFORM_TAG} (${kind})..."
     mkdir -p "$install_dir"
 
     if [[ "$kind" == "source" ]]; then
-        _build_llamacpp_from_source "$LLAMA_TAG" "$payload" "$install_dir"
+        _build_llamacpp_from_source "$ref" "$payload" "$install_dir"
     else
         local tmp_archive
         tmp_archive=$(mktemp /tmp/llama-XXXXXX.tar.gz)
         curl -fsSL --retry 3 -o "$tmp_archive" "$payload" \
-            || die "Failed to download llama.cpp ${LLAMA_TAG} from ${payload}"
+            || die "Failed to download llama.cpp ${ref} from ${payload}"
         # Extract all files flat into install_dir so binary and .so backends are co-located
         tar -xzf "$tmp_archive" --strip-components=1 -C "$install_dir"
         rm -f "$tmp_archive"
@@ -806,8 +814,8 @@ install_llamacpp() {
     [[ -f "$bin_path" ]] || die "llama-server binary not found after install at $bin_path"
     [[ -x "$bin_path" ]] || chmod +x "$bin_path"
 
-    update_installed_version '.llama_cpp.tag' "$LLAMA_TAG"
-    log_info "Installed llama.cpp ${LLAMA_TAG} at ${bin_path}"
+    update_installed_version '.llama_cpp.tag' "$ref"
+    log_info "Installed llama.cpp ${ref} at ${bin_path}"
 }
 
 # Build llama-server from source at a pinned tag. Needed where upstream ships no
@@ -830,8 +838,19 @@ _build_llamacpp_from_source() {
 
     if [[ -d "$src_dir/.git" ]]; then
         log_info "Updating existing llama.cpp source to ${tag}..."
-        git -C "$src_dir" fetch --depth 1 origin "$tag" 2>/dev/null || true
-        git -C "$src_dir" checkout -q "$tag" 2>/dev/null || true
+        git -C "$src_dir" fetch --depth 1 origin "$tag" \
+            || die "Failed to fetch llama.cpp at ${tag}"
+        git -C "$src_dir" checkout -q --detach FETCH_HEAD \
+            || die "Failed to check out llama.cpp at ${tag}"
+    elif [[ "$tag" =~ ^[0-9a-f]{40}$ ]]; then
+        rm -rf "$src_dir"
+        log_info "Fetching llama.cpp commit ${tag}..."
+        git init -q "$src_dir"
+        git -C "$src_dir" remote add origin https://github.com/ggml-org/llama.cpp.git
+        git -C "$src_dir" fetch --depth 1 origin "$tag" \
+            || die "Failed to fetch llama.cpp at ${tag}"
+        git -C "$src_dir" checkout -q --detach FETCH_HEAD \
+            || die "Failed to check out llama.cpp at ${tag}"
     else
         rm -rf "$src_dir"
         log_info "Cloning llama.cpp at ${tag}..."
@@ -845,6 +864,13 @@ _build_llamacpp_from_source() {
     # signals with `exit` and the single die is out here where it can stop us.
     log_info "Building llama-server (${cmake_flags})..."
     (
+        if [[ "${HB_GPU_BACKEND:-}" == "sycl" ]]; then
+            # setvars.sh reads OCL_ICD_FILENAMES, which is unset here.
+            set +u
+            # shellcheck disable=SC1091
+            source "$(jq -r '.llama_cpp.source_build["x86_64-sycl"].oneapi.setvars' \
+                "${SCRIPT_DIR}/../config/versions.json")" >/dev/null
+        fi
         cd "$src_dir" || exit 1
         rm -rf build
         # shellcheck disable=SC2086  # cmake_flags is a deliberate flag list from versions.json
@@ -876,6 +902,83 @@ Environment="RADV_PERFTEST=rm_kq=1"
 EOF
     chmod 644 "$dropin_file"
     systemctl daemon-reload 2>/dev/null || true
+}
+
+# oneAPI compiler plus a side-by-side Level Zero. Ubuntu's libze-intel-gpu
+# aborts on the B60, and compute-runtime 26.35 aborts unless the preemption
+# surface is forced. The debs are unpacked under neo_prefix and never
+# dpkg-installed, so Mesa's Vulkan stack is left on the distro packages.
+_install_sycl_runtime() {
+    local dropin_dir="/etc/systemd/system/llama-server.service.d"
+    local dropin_file="${dropin_dir}/10-sycl.conf"
+    if [[ "${HB_GPU_BACKEND:-}" != "sycl" ]]; then
+        if [[ -f "$dropin_file" ]]; then
+            rm -f "$dropin_file"
+            systemctl daemon-reload 2>/dev/null || true
+        fi
+        return 0
+    fi
+
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    local spec='.llama_cpp.source_build["x86_64-sycl"]'
+    local pkg icpx key_url repo prefix
+    pkg=$(jq -r "${spec}.oneapi.package" "$versions_file")
+    icpx=$(jq -r "${spec}.oneapi.icpx" "$versions_file")
+    key_url=$(jq -r "${spec}.oneapi.key_url" "$versions_file")
+    repo=$(jq -r "${spec}.oneapi.repo" "$versions_file")
+    prefix=$(jq -r "${spec}.neo_prefix" "$versions_file")
+
+    if [[ ! -x "$icpx" ]]; then
+        log_info "Installing Intel oneAPI (${pkg})..."
+        wait_for_apt_lock
+        export DEBIAN_FRONTEND=noninteractive
+        if ! command -v gpg >/dev/null 2>&1; then
+            apt-get update -qq
+            apt-get install -y -qq gnupg ca-certificates curl
+        fi
+        if [[ ! -f /usr/share/keyrings/oneapi-archive-keyring.gpg ]]; then
+            curl -fsSL "$key_url" | gpg --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg \
+                || die "Failed to install the Intel apt key"
+        fi
+        if [[ ! -f /etc/apt/sources.list.d/oneAPI.list ]]; then
+            printf '%s\n' "$repo" > /etc/apt/sources.list.d/oneAPI.list
+        fi
+        apt-get update -qq
+        apt-get install -y "$pkg" || die "Failed to install ${pkg}"
+    fi
+    [[ -x "$icpx" ]] || die "oneAPI installed but ${icpx} is missing"
+
+    local ze="${prefix}/usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1"
+    local igc="${prefix}/usr/local/lib/libigc.so.2"
+    if [[ ! -e "$ze" || ! -e "$igc" ]]; then
+        log_info "Unpacking Intel Level Zero into ${prefix}..."
+        local tmp url base
+        tmp=$(mktemp -d)
+        while IFS= read -r url; do
+            [[ -n "$url" ]] || continue
+            base=$(basename "$url")
+            curl -fsSL --retry 3 -o "$tmp/$base" "$url" || die "Failed to download ${url}"
+            dpkg-deb -x "$tmp/$base" "$prefix" || die "Failed to unpack ${base}"
+        done < <(jq -r "${spec}.neo_debs[]" "$versions_file")
+        rm -rf "$tmp"
+    fi
+    [[ -e "$ze" && -e "$igc" ]] || die "Level Zero unpack did not produce ${ze} and ${igc}"
+
+    local libs workdir key val
+    libs=$(jq -r "${spec}.runtime_libs | join(\":\")" "$versions_file")
+    workdir=$(dirname "$(get_llama_bin_path)")
+    mkdir -p "$dropin_dir"
+    {
+        echo '[Service]'
+        echo "Environment=\"LD_LIBRARY_PATH=${libs}:${workdir}\""
+        while IFS=$'\t' read -r key val; do
+            [[ -n "$key" ]] || continue
+            echo "Environment=\"${key}=${val}\""
+        done < <(jq -r "${spec}.env | to_entries[] | [.key, .value] | @tsv" "$versions_file")
+    } > "$dropin_file"
+    chmod 644 "$dropin_file"
+    systemctl daemon-reload 2>/dev/null || true
+    log_info "SYCL runtime ready (${prefix})."
 }
 
 # Generate the systemd service file at runtime from model/platform config.
@@ -979,6 +1082,27 @@ setup_llama_server() {
         fi
     fi
 
+    # Q5_K_XL was the Arc placeholder. On a discrete Arc the measured standard
+    # is UD-Q5_K_M; leave any other explicit selection alone.
+    if [[ "${HB_PLATFORM_TAG:-}" == "x86_64-sycl" && "${HB_GPU_DRIVER:-}" == "xe" \
+        && "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" ]] && [[ -f "$MODELS_FILE" ]]; then
+        local _arc_id="Qwen3.8-27B-UD-Q5_K_M"
+        local _af _au _am
+        _af=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
+        _au=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .url // empty' "$MODELS_FILE" 2>/dev/null)
+        _am=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .min_size_bytes // empty' "$MODELS_FILE" 2>/dev/null)
+        if [[ -n "$_af" && -n "$_au" ]]; then
+            log_info "Arc standard model is $_arc_id; moving off Qwen3.8-27B-UD-Q5_K_XL."
+            update_env_var "AI_MODEL_ID" "$_arc_id"
+            update_env_var "AI_MODEL_FILENAME" "$_af"
+            update_env_var "AI_MODEL_URL" "$_au"
+            update_env_var "AI_MODEL_MIN_SIZE" "${_am:-19000000000}"
+            export AI_MODEL_ID="$_arc_id" AI_MODEL_FILENAME="$_af" AI_MODEL_URL="$_au" AI_MODEL_MIN_SIZE="${_am:-19000000000}"
+            MODEL_NAME="$_af"
+            MODEL_URL="$_au"
+        fi
+    fi
+
     # Self-heal: when the dashboard's "Start AI" path fires without first POSTing
     # /api/ai/model (e.g. binary present but service was 'disabled' after a system
     # upgrade), .env is missing AI_MODEL_FILENAME/URL. Rather than dying, look up
@@ -993,7 +1117,9 @@ setup_llama_server() {
             resolved_id="$AI_MODEL_ID"
             log_warn "AI_MODEL_FILENAME/URL missing from .env; rehydrating from platform_models.json for id='$resolved_id'."
         else
-            resolved_id=$(jq -r '.default // (.models[] | select(.default == true) | .id) // empty' "$MODELS_FILE" 2>/dev/null)
+            resolved_id=$(jq -r --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" --arg tag "${HB_PLATFORM_TAG:-}" \
+                '.platform_defaults[$dtag] // .platform_defaults[$tag] // .default // (.models[] | select(.default == true) | .id) // empty' \
+                "$MODELS_FILE" 2>/dev/null)
             [[ -z "$resolved_id" ]] && resolved_id=$(jq -r '.models[0].id // empty' "$MODELS_FILE" 2>/dev/null)
             log_warn "No AI model selected in .env; defaulting to '$resolved_id' from platform_models.json."
         fi
@@ -1034,9 +1160,8 @@ setup_llama_server() {
         local model_id
         model_id=$(echo "$MODEL_NAME" | sed 's/\.gguf$//')
         local _sel='.models[] | select(.id == $id)'
-        # Driver-specific key first (x86_64-vulkan-xe), then the shared tag.
-        # Both AMD and Intel Arc are x86_64-vulkan; a profile under that tag
-        # would change the RX 9060 XT.
+        # Driver-specific key first (x86_64-sycl-xe), then the shared tag,
+        # so an Arc profile cannot change the RX 9060 XT.
         local _prof='(.profiles[$dtag] // .profiles[$tag] // {})'
         local _dtag="${HB_PLATFORM_TAG}-${HB_GPU_DRIVER:-none}"
         CTX_SIZE=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \

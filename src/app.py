@@ -3459,8 +3459,15 @@ def get_ai_models():
         on_disk = models_on_disk()
         for m in on_disk:
             m["active"] = m["filename"] == active
+        plat = get_platform()
+        tag = plat.get("platform_tag") or ""
+        dtag = f"{tag}-{plat.get('gpu_driver') or 'none'}"
+        defaults = data.get("platform_defaults") or {}
+        platform_default = defaults.get(dtag) or defaults.get(tag) or data.get("default") or ""
         return jsonify({
             "models": data.get("models", []),
+            "default": data.get("default", ""),
+            "platform_default": platform_default,
             "llama_server": data.get("llama_server", {}),
             "whisper_models": data.get("whisper", {}).get("models", []),
             "on_disk": on_disk,

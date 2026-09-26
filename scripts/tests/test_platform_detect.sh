@@ -132,8 +132,8 @@ xe_big="$(fixture xe_big xe)"
 # 32 GiB window: start 0x100000000 (4 GiB), end 0x8ffffffff.
 printf '0x0000000100000000 0x00000008ffffffff 0x000000000014220c\n' \
     > "$xe_big/sys/class/drm/renderD128/device/resource"
-case_is "x86_64 + xe with a 32 GiB BAR -> vulkan/discrete" \
-    "x86_64 xe vulkan discrete x86_64-vulkan true" \
+case_is "x86_64 + xe with a 32 GiB BAR -> sycl/discrete" \
+    "x86_64 xe sycl discrete x86_64-sycl true" \
     "$xe_big" "$(stub_path x86_64)"
 
 case_is "x86_64 + xe with no resource file -> vulkan/unified" \
@@ -266,14 +266,39 @@ else
         bad "unprofiled model did not fall back on an unknown tag"
     fi
 
-    # Q5 is the Arc window. The shared tag must not pick it up, or the 9060 XT
-    # would grow a 131072 context it cannot hold.
+    # Q5 is the Arc window, and only on the SYCL tag. The shared Vulkan tag must
+    # not pick it up, or the 9060 XT would grow a 131072 context it cannot hold.
     q5_amd="$(resolve Qwen3.8-27B-UD-Q5_K_XL x86_64-vulkan context_window amdgpu)"
-    q5_xe="$(resolve Qwen3.8-27B-UD-Q5_K_XL x86_64-vulkan context_window xe)"
+    q5_xe="$(resolve Qwen3.8-27B-UD-Q5_K_XL x86_64-sycl context_window xe)"
     if [[ "$q5_amd" == "8192" && "$q5_xe" == "131072" ]]; then
-        ok "Qwen3.8 Q5 context is 131072 on xe and 8192 on amdgpu"
+        ok "Qwen3.8 Q5 context is 131072 on sycl/xe and 8192 on amdgpu"
     else
-        bad "Qwen3.8 Q5 context: want amdgpu 8192 / xe 131072, got ${q5_amd}/${q5_xe}"
+        bad "Qwen3.8 Q5 context: want amdgpu 8192 / sycl-xe 131072, got ${q5_amd}/${q5_xe}"
+    fi
+
+    q4_ctx="$(resolve Qwen3.8-27B-UD-Q4_K_XL x86_64-sycl context_window xe)"
+    q4_flags="$(resolve Qwen3.8-27B-UD-Q4_K_XL x86_64-sycl extra_flags xe)"
+    if [[ "$q4_ctx" == "131072" && "$q4_flags" == *"-b 4096 -ub 2048"* ]]; then
+        ok "Qwen3.8 Q4 on sycl/xe is ctx 131072 with -b 4096 -ub 2048"
+    else
+        bad "Qwen3.8 Q4 sycl profile: want ctx 131072 and -b 4096 -ub 2048, got ctx ${q4_ctx} flags ${q4_flags}"
+    fi
+
+    q5m_ctx="$(resolve Qwen3.8-27B-UD-Q5_K_M x86_64-sycl context_window xe)"
+    q5m_amd="$(resolve Qwen3.8-27B-UD-Q5_K_M x86_64-vulkan context_window amdgpu)"
+    q5m_flags="$(resolve Qwen3.8-27B-UD-Q5_K_M x86_64-sycl extra_flags xe)"
+    if [[ "$q5m_ctx" == "131072" && "$q5m_amd" == "8192" && "$q5m_flags" == *"-b 4096 -ub 2048"* && "$q5m_flags" == *"q8_0"* ]]; then
+        ok "Qwen3.8 Q5_K_M is ctx 131072 q8_0 on sycl/xe and 8192 on amdgpu"
+    else
+        bad "Qwen3.8 Q5_K_M profile: want sycl 131072 q8_0 / amd 8192, got ctx ${q5m_ctx}/${q5m_amd} flags ${q5m_flags}"
+    fi
+
+    cat_default="$(jq -r '.default' "$MODELS")"
+    arc_default="$(jq -r '.platform_defaults["x86_64-sycl-xe"]' "$MODELS")"
+    if [[ "$cat_default" == "Muse-Glimmer-30B-UD-Q4_K_XL" && "$arc_default" == "Qwen3.8-27B-UD-Q5_K_M" ]]; then
+        ok "catalog default stays Glimmer; Arc standard is Q5_K_M"
+    else
+        bad "defaults: want Glimmer / Q5_K_M, got ${cat_default} / ${arc_default}"
     fi
 fi
 
