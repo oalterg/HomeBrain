@@ -293,12 +293,21 @@ else
         bad "Qwen3.8 Q5_K_M profile: want sycl 131072 q8_0 / amd 8192, got ctx ${q5m_ctx}/${q5m_amd} flags ${q5m_flags}"
     fi
 
+    gl_ctx="$(resolve Muse-Glimmer-30B-UD-Q5_K_M x86_64-sycl context_window xe)"
+    gl_amd="$(resolve Muse-Glimmer-30B-UD-Q5_K_M x86_64-vulkan context_window amdgpu)"
+    gl_flags="$(resolve Muse-Glimmer-30B-UD-Q5_K_M x86_64-sycl extra_flags xe)"
+    if [[ "$gl_ctx" == "393216" && "$gl_amd" == "8192" && "$gl_flags" == *"-b 4096 -ub 2048"* && "$gl_flags" == *"q8_0"* && "$gl_flags" == *"reasoning_strength"* ]]; then
+        ok "Glimmer Q5_K_M is ctx 393216 q8_0 on sycl/xe and 8192 on amdgpu"
+    else
+        bad "Glimmer Q5_K_M profile: want sycl 393216 q8_0 / amd 8192, got ctx ${gl_ctx}/${gl_amd} flags ${gl_flags}"
+    fi
+
     cat_default="$(jq -r '.default' "$MODELS")"
     arc_default="$(jq -r '.platform_defaults["x86_64-sycl-xe"]' "$MODELS")"
-    if [[ "$cat_default" == "Muse-Glimmer-30B-UD-Q4_K_XL" && "$arc_default" == "Qwen3.8-27B-UD-Q5_K_M" ]]; then
-        ok "catalog default stays Glimmer; Arc standard is Q5_K_M"
+    if [[ "$cat_default" == "Muse-Glimmer-30B-UD-Q4_K_XL" && "$arc_default" == "Muse-Glimmer-30B-UD-Q5_K_M" ]]; then
+        ok "catalog default stays Glimmer Q4; Arc standard is Glimmer Q5_K_M"
     else
-        bad "defaults: want Glimmer / Q5_K_M, got ${cat_default} / ${arc_default}"
+        bad "defaults: want Glimmer Q4 / Glimmer Q5_K_M, got ${cat_default} / ${arc_default}"
     fi
 fi
 
