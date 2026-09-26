@@ -1216,5 +1216,31 @@ Both fused Gated DeltaNet paths (autoregressive and chunked) are on by
 default in this master build; the run did not log an unsupported-op
 error or a CPU device mismatch.
 
-Q5 was not re-run on SYCL. Its profile keeps `-b 2048 -ub 1024` because
+Q5_K_XL was not re-run on SYCL. Its profile keeps `-b 2048 -ub 1024` because
 the file is 3 GiB heavier and the 21.3 GiB reading is the Q4 file.
+The B60 standard is UD-Q5_K_M, below.
+
+## 2026-09-26 — Arc Pro B60 standard: Qwen3.8-27B UD-Q5_K_M
+
+`Qwen3.8-27B-UD-Q5_K_M.gguf`, 19,771,509,664 bytes (18.40 GiB). Same SYCL
+build and the same `-b 4096 -ub 2048 -t 6 -ngl 99 -fa on` as the Q4
+point. Native context is 262,144. Batch and thread sweeps were not
+repeated: on the Q4 sibling, decode stayed at 15.5 t/s across ubatch
+512–4096 and threads 4/6/12.
+
+| KV | ctx | TG | PP (813 tok) | VRAM | GTT | fit warning |
+|---|---:|---:|---:|---:|---:|---|
+| q8_0 | 131072 | 16.95 | 520 | 23.4 GiB | 33 MiB | yes |
+| q4_0 | 131072 | 17.06 | 538 | 21.4 GiB | 630 MiB | no |
+| q4_0 | 196608 | 16.78 | 515 | 23.0 GiB | 32 MiB | yes |
+| q4_0 | 262144 | — | — | — | — | does not finish loading |
+
+llama-bench at q8, `-b 4096 -ub 2048`: pp512 579, pp2048 743, pp4096 691,
+tg128 16.79. KV type does not move decode. q4_0 is the context lever.
+**Shipped for the B60: ctx 196608, q4_0 KV.** 262144 does not come up.
+
+`mmproj-F16.gguf` is published next to the weights (927,607,488 bytes,
+885 MiB). It is not on the box and not passed to llama-server. The
+196608 window has about 0.9 GiB left and already logs a fit warning, so
+the projector is not part of this config. There is no quantized mmproj
+in the Unsloth repo, only F16 and BF16.

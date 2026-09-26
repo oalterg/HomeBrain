@@ -1469,11 +1469,12 @@ async function loadAIModels(currentModelId) {
         const res = await fetch('/api/ai/models', { credentials: 'include' });
         const data = await res.json();
         select.innerHTML = '';
+        const preferred = currentModelId || data.platform_default || '';
         (data.models || []).forEach(m => {
             const opt = document.createElement('option');
             opt.value = m.id;
             opt.textContent = `${m.id} (${(m.min_size_bytes / 1073741824).toFixed(0)} GB)`;
-            if (currentModelId ? m.id === currentModelId : m.default) opt.selected = true;
+            if (preferred ? m.id === preferred : m.default) opt.selected = true;
             select.appendChild(opt);
         });
         // A box can be running a model this build no longer offers. Show what

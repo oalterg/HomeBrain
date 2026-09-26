@@ -1082,6 +1082,27 @@ setup_llama_server() {
         fi
     fi
 
+    # Q5_K_XL was the Arc placeholder. On a discrete Arc the measured standard
+    # is UD-Q5_K_M; leave any other explicit selection alone.
+    if [[ "${HB_PLATFORM_TAG:-}" == "x86_64-sycl" && "${HB_GPU_DRIVER:-}" == "xe" \
+        && "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" ]] && [[ -f "$MODELS_FILE" ]]; then
+        local _arc_id="Qwen3.8-27B-UD-Q5_K_M"
+        local _af _au _am
+        _af=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
+        _au=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .url // empty' "$MODELS_FILE" 2>/dev/null)
+        _am=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .min_size_bytes // empty' "$MODELS_FILE" 2>/dev/null)
+        if [[ -n "$_af" && -n "$_au" ]]; then
+            log_info "Arc standard model is $_arc_id; moving off Qwen3.8-27B-UD-Q5_K_XL."
+            update_env_var "AI_MODEL_ID" "$_arc_id"
+            update_env_var "AI_MODEL_FILENAME" "$_af"
+            update_env_var "AI_MODEL_URL" "$_au"
+            update_env_var "AI_MODEL_MIN_SIZE" "${_am:-19000000000}"
+            export AI_MODEL_ID="$_arc_id" AI_MODEL_FILENAME="$_af" AI_MODEL_URL="$_au" AI_MODEL_MIN_SIZE="${_am:-19000000000}"
+            MODEL_NAME="$_af"
+            MODEL_URL="$_au"
+        fi
+    fi
+
     # Self-heal: when the dashboard's "Start AI" path fires without first POSTing
     # /api/ai/model (e.g. binary present but service was 'disabled' after a system
     # upgrade), .env is missing AI_MODEL_FILENAME/URL. Rather than dying, look up
@@ -1096,7 +1117,9 @@ setup_llama_server() {
             resolved_id="$AI_MODEL_ID"
             log_warn "AI_MODEL_FILENAME/URL missing from .env; rehydrating from platform_models.json for id='$resolved_id'."
         else
-            resolved_id=$(jq -r '.default // (.models[] | select(.default == true) | .id) // empty' "$MODELS_FILE" 2>/dev/null)
+            resolved_id=$(jq -r --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" --arg tag "${HB_PLATFORM_TAG:-}" \
+                '.platform_defaults[$dtag] // .platform_defaults[$tag] // .default // (.models[] | select(.default == true) | .id) // empty' \
+                "$MODELS_FILE" 2>/dev/null)
             [[ -z "$resolved_id" ]] && resolved_id=$(jq -r '.models[0].id // empty' "$MODELS_FILE" 2>/dev/null)
             log_warn "No AI model selected in .env; defaulting to '$resolved_id' from platform_models.json."
         fi

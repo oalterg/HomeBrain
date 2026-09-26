@@ -210,7 +210,9 @@ auto_setup_ai() {
         local models_file="$INSTALL_DIR/config/platform_models.json"
         if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
             local default_model
-            default_model=$(jq -r '.models[] | select(.default == true) | .id' "$models_file" | head -1)
+            default_model=$(jq -r --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" --arg tag "${HB_PLATFORM_TAG:-}" \
+                '.platform_defaults[$dtag] // .platform_defaults[$tag] // (.models[] | select(.default == true) | .id) // empty' \
+                "$models_file" | head -1)
             if [[ -n "$default_model" ]]; then
                 log_info "Auto-selecting default model: $default_model"
                 local m_file m_url m_min
