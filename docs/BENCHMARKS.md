@@ -1236,11 +1236,14 @@ repeated: on the Q4 sibling, decode stayed at 15.5 t/s across ubatch
 | q4_0 | 262144 | — | — | — | — | does not finish loading |
 
 llama-bench at q8, `-b 4096 -ub 2048`: pp512 579, pp2048 743, pp4096 691,
-tg128 16.79. KV type does not move decode. q4_0 is the context lever.
-**Shipped for the B60: ctx 196608, q4_0 KV.** 262144 does not come up.
+tg128 16.79. KV type does not move decode. q4_0 reaches ctx 196608 at
+the same speed. **Shipped for the B60: ctx 131072, q8_0 KV.** 262144
+does not come up.
 
-`mmproj-F16.gguf` is published next to the weights (927,607,488 bytes,
-885 MiB). It is not on the box and not passed to llama-server. The
-196608 window has about 0.9 GiB left and already logs a fit warning, so
-the projector is not part of this config. There is no quantized mmproj
-in the Unsloth repo, only F16 and BF16.
+`mmproj-F16.gguf` (927,607,488 bytes, 885 MiB) loads on the shipped
+q8 / 131072 config. The server reports the multimodal model loaded.
+Text holds: decode 16.3 t/s (16.95 without it), 813-token prefill 487
+(520 without it). Resident VRAM goes from 23.4 GiB to 23.6 GiB, and
+GTT from 33 MiB to 919 MiB. The projector does not fit in the remaining
+VRAM; that 885 MiB sits in GTT. It is not part of the shipped flags.
+No quantized mmproj is published, only F16 and BF16. An image was not run.

@@ -84,7 +84,7 @@
         "tg_ts": 16.1,
         "pp_ts": 498.2,
         "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
-        "notes": "Roomier than Q5_K_M on the same card (21.3 GiB at ctx 131072 versus 23.0 GiB). Decode 16.1 t/s. The B60 standard is Q5_K_M. See docs/BENCHMARKS.md (2026-09-26)."
+        "notes": "Roomier than Q5_K_M on the same card (21.3 GiB at ctx 131072 versus 23.4 GiB). Decode 16.1 t/s. The B60 standard is Q5_K_M at q8 KV. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },
@@ -98,16 +98,16 @@
       "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
       "profiles": {
         "x86_64-sycl-xe": {
-          "context_window": 196608,
-          "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q4_0 --cache-type-v q4_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
-          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,771,509,664 bytes (18.40 GiB). Native context is 262144. q8 KV at ctx 131072 decodes at 16.95 t/s (813-token prefill 520) in 23.4 GiB with a fit warning and about 0.5 GiB left. q4_0 KV does not change speed and is what buys context: ctx 131072 is 17.1 t/s / 538 t/s prefill / 21.4 GiB and no fit warning; ctx 196608 is 16.8 t/s / 515 t/s prefill / 23.0 GiB with a fit warning and about 0.9 GiB left; ctx 262144 never finishes loading. Batch and thread sweeps on the Q4 sibling were flat, so they were not repeated. DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on. mmproj-F16.gguf (885 MiB) is published and is not loaded: this window has no room for it. The RX 9060 XT never selects this profile. Muse-Glimmer stays the 16 GB default."
+          "context_window": 131072,
+          "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
+          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,771,509,664 bytes (18.40 GiB). q8_0 KV at ctx 131072 decodes at 16.95 t/s (813-token prefill 520) in 23.4 GiB, with a fit warning and about 0.5 GiB left. q4_0 KV reaches ctx 196608 at the same speed and is not shipped. mmproj-F16 (885 MiB) loads on this config and text stays at 16.3 t/s, but the extra memory lands in GTT (~900 MiB) rather than the remaining VRAM, so it is not part of the shipped flags. DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on. The RX 9060 XT never selects this profile. Muse-Glimmer stays the 16 GB default."
         }
       },
       "benchmark": {
         "tg_ts": 16.8,
         "pp_ts": 515.1,
-        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q4_0 KV, -b 4096 -ub 2048, ctx 196608",
-        "notes": "Standard model for a discrete Arc. Same 16.8 t/s as q8 KV at ctx 131072 (16.95 t/s), with the longer window. 262144 does not load. Vision projector is not part of this config. See docs/BENCHMARKS.md (2026-09-26)."
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
+        "notes": "Standard model for a discrete Arc. 16.95 t/s decode, 520 t/s on an 813-token prompt, 23.4 GiB resident. q4_0 reaches ctx 196608 at the same speed and is not the shipped point. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },
