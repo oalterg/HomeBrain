@@ -249,10 +249,26 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
     # rsync above already put the current update-deps.sh in place under INSTALL_DIR.
     UPDATE_DEPS_SCRIPT="$INSTALL_DIR/scripts/update-deps.sh"
     if [[ -f "$UPDATE_DEPS_SCRIPT" ]] && [[ "${HAS_GPU:-false}" == "true" ]]; then
-        if [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]]; then
-            log_info "llama.cpp: ${old_llama_tag} → ${new_llama_tag}. Updating binary..."
-            bash "$UPDATE_DEPS_SCRIPT" llama_cpp || log_warn "llama.cpp update failed — check logs."
-            systemctl restart llama-server 2>/dev/null || true
+        # The shared tag stays put when only a source recipe moves (SYCL tracks
+        # a llama.cpp commit while Vulkan stays on the release asset). Compare
+        # the pin this platform actually installs, and regenerate the unit so
+        # a backend change picks up its flags rather than only swapping the binary.
+        llama_want="$new_llama_tag"
+        llama_src=""
+        if [[ -n "${HB_PLATFORM_TAG:-}" ]]; then
+            llama_src=$(jq -r --arg t "$HB_PLATFORM_TAG" \
+                '.llama_cpp.source_build[$t].git_ref // empty' \
+                "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+            [[ -n "$llama_src" ]] && llama_want="$llama_src"
+        fi
+        llama_have=""
+        if [[ -f "$INSTALL_DIR/.installed_versions.json" ]]; then
+            llama_have=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/.installed_versions.json" 2>/dev/null || echo "")
+        fi
+        if { [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]] \
+            || [[ -n "$llama_src" && "$llama_src" != "$llama_have" ]]; }; then
+            log_info "llama.cpp: ${llama_have:-${old_llama_tag:-unset}} → ${llama_want}. Updating binary..."
+            bash "$INSTALL_DIR/scripts/utilities.sh" update_llama || log_warn "llama.cpp update failed — check logs."
         fi
         if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]]; then
             log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."

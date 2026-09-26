@@ -51,14 +51,37 @@
       "max_tokens": 16384,
       "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
       "profiles": {
-        "x86_64-vulkan-xe": {
+        "x86_64-sycl-xe": {
           "context_window": 131072,
-          "notes": "UNMEASURED. Arc Pro B60 (24 GB, xe/ANV) only — resolved when the driver is xe, so the RX 9060 XT never selects it. Weights are 20,876,938,144 bytes (19.4 GiB). The IQ4_XS sibling uses 16,083 MiB at ctx 81920 q8 on 16 GB; this file is 6,328 MiB heavier, so that same context is about 22.4 GiB. 131072 q8 is the next step the 16 GB card cannot take (98304 already spills there). min_healthy_vram_mb is omitted until an idle reading exists on the B60. Same DeltaNet rules as UD-IQ4_XS: -ngl 99, no -ot, no nkvo, --threads 6, -ub 1024. -fa on is kept from the AMD line; drop it here only if ANV refuses to load."
+          "notes": "Arc Pro B60. Weights are 20,876,938,144 bytes (19.4 GiB). Vulkan on this card decoded at about 4.4 t/s; the measured fast path is Qwen3.8-27B-UD-Q4_K_XL on SYCL. This heavier file keeps the inherited -b 2048 -ub 1024, because ubatch 2048 at ctx 131072 was fit-checked only on the Q4 file (21.3 GiB of 23.9). Same DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on, q8_0 KV, --threads 6. The RX 9060 XT never selects this profile."
         }
       },
       "benchmark": {
         "measured_on": "unmeasured",
-        "notes": "UNMEASURED — catalog entry for the Arc Pro B60's 24 GB window. Do not treat 131072 as a result until BENCHMARKS.md has a run on this card. Not the default; Muse-Glimmer stays the 16 GB default."
+        "notes": "Vulkan on the Arc Pro B60 decoded this file at about 4.4 t/s (ctx 131072, q8 KV, b10361). SYCL was not re-run on it; the measured fast path is Qwen3.8-27B-UD-Q4_K_XL. Not the default; Muse-Glimmer stays the 16 GB default."
+      },
+      "default": false
+    },
+    {
+      "id": "Qwen3.8-27B-UD-Q4_K_XL",
+      "filename": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+      "min_size_bytes": 17000000000,
+      "context_window": 8192,
+      "max_tokens": 16384,
+      "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 2048 -ub 1024 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
+      "profiles": {
+        "x86_64-sycl-xe": {
+          "context_window": 131072,
+          "extra_flags": "-ngl 99 --parallel 1 --jinja -fa on --cache-type-k q8_0 --cache-type-v q8_0 -t 6 -b 4096 -ub 2048 --temp 1.0 --top-k 20 --top-p 0.95 --min-p 0.0 --presence-penalty 0.0 --reasoning-preserve --chat-template-kwargs '{\"reasoning_effort\": \"xhigh\"}'",
+          "notes": "Measured 2026-09-26 on an Arc Pro B60 (23.9 GiB, xe) with llama.cpp master 2145525, SYCL FP16, Level Zero 26.35, oneAPI 2025.3. llama-bench tg128 is 15.50 t/s at every ubatch and thread count tried; pp2048 peaks at 738 t/s with -b 4096 -ub 2048. The same flags at ctx 131072 fit with no device-fit warning: resident VRAM 21.3 GiB, GTT 644 MiB, decode 16.1 t/s, 813-token prefill 498 t/s. Threads 4/6/12 were identical, so --threads 6 stays. ubatch 4096 was the pp4096 peak in a short context (705 vs 666) and was not fit-checked at 131072. DeltaNet rules: -ngl 99, no -ot, no nkvo, -fa on, q8_0 KV. Not the 16 GB default."
+        }
+      },
+      "benchmark": {
+        "tg_ts": 16.1,
+        "pp_ts": 498.2,
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
+        "notes": "Best measured Arc config. Decode is flat across batch, ubatch, and threads (15.5 t/s tg128; 16.1 t/s on the 128k server). Prefill in llama-bench wants -ub 2048 (pp2048 738, pp4096 666); -ub 4096 adds pp4096 705 and was not re-checked at ctx 131072. The 813-token server prompt was 498 t/s, against 244 t/s for the same prompt on Vulkan b10361. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },

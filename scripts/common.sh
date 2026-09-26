@@ -124,7 +124,7 @@ detect_downgrade() {
 #
 #   HB_ARCH         x86_64 | aarch64 | ...
 #   HB_GPU_DRIVER   amdgpu | nvidia | i915 | xe | none
-#   HB_GPU_BACKEND  vulkan | cuda | none
+#   HB_GPU_BACKEND  vulkan | cuda | sycl | none
 #   HB_GPU_MEMORY   discrete | unified | none   (how memory is reported; a large xe BAR is discrete)
 #   HB_GPU_BAR_BYTES  largest prefetchable BAR, bytes. 0 when the device has no resource file.
 #   HB_PLATFORM_TAG "${HB_ARCH}-${HB_GPU_BACKEND}", the key used in config files
@@ -225,7 +225,6 @@ detect_platform() {
                   HB_GPU_MEMORY="discrete"
               fi ;;
     i915|xe)
-      HB_GPU_BACKEND="vulkan"
       # An iGPU shares system RAM and exposes a small BAR. A discrete Arc opens
       # a multi-gigabyte prefetchable BAR once Resizable BAR is on. No resource
       # file keeps the unified answer, so a fixture that only names the driver
@@ -239,6 +238,13 @@ detect_platform() {
         HB_GPU_MEMORY="discrete"
       else
         HB_GPU_MEMORY="unified"
+      fi
+      # Discrete Arc. SYCL was about 2× Vulkan on the Pro B60 (docs/BENCHMARKS.md,
+      # 2026-09-26). Integrated xe/i915 was not measured and stays on Vulkan.
+      if [[ "$HB_GPU_DRIVER" == "xe" && "$HB_GPU_MEMORY" == "discrete" ]]; then
+        HB_GPU_BACKEND="sycl"
+      else
+        HB_GPU_BACKEND="vulkan"
       fi
       ;;
     *)        HB_GPU_BACKEND="none";   HB_GPU_MEMORY="none"; HB_GPU_BAR_BYTES=0 ;;

@@ -1173,3 +1173,48 @@ as q4 @ 131072 — KV quality, not speed. q4 @ 131072 remains the
 max-context alternative (half the KV bits, 60% more window). Worst-case
 OpenClaw turn is 81920/266.3 + 16384/18.8 ≈ 1179 s (66% of the 1800 s
 ceiling).
+
+## 2026-09-26 — Arc Pro B60, Qwen3.8-27B UD-Q4_K_XL on SYCL
+
+Card: Intel Arc Pro B60 (xe, 23.9 GiB usable), Ryzen 5 5600. File:
+`Qwen3.8-27B-UD-Q4_K_XL.gguf`, 17,559,178,144 bytes. Flags unless noted:
+`-ngl 99 -fa on`, q8_0 KV, no `-ot`, no `-nkvo`. Vulkan numbers are the
+pinned b10361 binary. SYCL is llama.cpp master `2145525`, built with
+oneAPI 2025.3, `GGML_SYCL_F16=ON`, Level Zero 26.35 unpacked beside the
+distro driver (Ubuntu's 26.05 libze aborts on this card).
+
+Vulkan Q5 on the same box was about 4.4 t/s decode. Vulkan Q4 is the
+baseline below. SYCL Q4:
+
+llama-bench, `-b 4096 -t 6 -r 1`. Decode does not move. Prefill does.
+
+| ubatch | pp512 | pp2048 | pp4096 | tg128 |
+|---:|---:|---:|---:|---:|
+| 512 | 552 | 523 | 484 | 15.50 |
+| 1024 | 532 | 645 | 590 | 15.50 |
+| 2048 | 532 | 738 | 666 | 15.50 |
+| 4096 | 531 | 737 | 705 | 15.50 |
+
+Threads 4 / 6 / 12 at `-b 2048 -ub 1024` all decode at 15.5 t/s
+(pp2048 645–661). The same Vulkan sweep on b10361 sat at 7.3–7.5 t/s
+decode and 256–273 t/s pp2048.
+
+Server, ctx 131072, greedy, the same 64-token and 813-token prompts
+used for the Vulkan check:
+
+| backend | -b / -ub | TG | PP (813 tok) | VRAM | GTT |
+|---|---:|---:|---:|---:|---:|
+| Vulkan b10361 | 2048 / 1024 | 7.7 | 244 | 20.3 GiB | 299 MiB |
+| SYCL 2145525 | 2048 / 1024 | 16.1 | 511 | — | — |
+| SYCL 2145525 | 4096 / 2048 | 16.1 | 498 | 21.3 GiB | 644 MiB |
+
+`-b 4096 -ub 2048` is the shipped Arc point: it is the pp2048 peak, it
+fits at ctx 131072 with no device-fit warning and about 2.6 GiB of VRAM
+left, and decode matches every other batch. `-ub 4096` was the pp4096
+peak in llama-bench (705 vs 666) and was not fit-checked at 131072.
+Both fused Gated DeltaNet paths (autoregressive and chunked) are on by
+default in this master build; the run did not log an unsupported-op
+error or a CPU device mismatch.
+
+Q5 was not re-run on SYCL. Its profile keeps `-b 2048 -ub 1024` because
+the file is 3 GiB heavier and the 21.3 GiB reading is the Q4 file.

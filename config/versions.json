@@ -8,6 +8,37 @@
     "source_build": {
       "aarch64-cuda": {
         "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
+      },
+      "x86_64-sycl": {
+        "git_ref": "2145525a4081d66ff1a87cf43ef809f95a85ac0c",
+        "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
+        "oneapi": {
+          "package": "intel-deep-learning-essentials-2025.3",
+          "key_url": "https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB",
+          "repo": "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main",
+          "setvars": "/opt/intel/oneapi/setvars.sh",
+          "icpx": "/opt/intel/oneapi/compiler/2025.3/bin/icpx"
+        },
+        "runtime_libs": [
+          "/opt/intel/neo-26.35/usr/local/lib",
+          "/opt/intel/neo-26.35/usr/lib/x86_64-linux-gnu",
+          "/opt/intel/oneapi/compiler/2025.3/lib",
+          "/opt/intel/oneapi/dnnl/2025.3/lib"
+        ],
+        "neo_prefix": "/opt/intel/neo-26.35",
+        "neo_debs": [
+          "https://github.com/intel/compute-runtime/releases/download/26.35.39758.10/libigdgmm12_22.10.0_amd64.deb",
+          "https://github.com/intel/compute-runtime/releases/download/26.35.39758.10/libze-intel-gpu1_26.35.39758.10-0_amd64.deb",
+          "https://github.com/intel/compute-runtime/releases/download/26.35.39758.10/intel-ocloc_26.35.39758.10-0_amd64.deb",
+          "https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5/intel-igc-core-2_2.41.5+22716_amd64.deb",
+          "https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5/intel-igc-opencl-2_2.41.5+22716_amd64.deb"
+        ],
+        "env": {
+          "OverrideCsrAllocationSize": "1048576",
+          "NEOReadDebugKeys": "1",
+          "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
+          "SYCL_CACHE_PERSISTENT": "0"
+        }
       }
     }
   },
