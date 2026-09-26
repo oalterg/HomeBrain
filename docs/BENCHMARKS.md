@@ -1278,3 +1278,22 @@ fill at ctx 131072 ran at 250 t/s prefill with resident memory unchanged.
 DFlash fits only at `--spec-draft-n-max 4` (14.8 t/s, 79/186 drafted tokens
 accepted, 22.3 GiB) and runs out of device memory at n_max 8, including at
 ctx 8192. It is not shipped. UD-Q4_K_XL stays the 16 GB default.
+UD-Q5_K_XL supersedes this point on the B60, at the trained context, below.
+
+## 2026-09-26 — Arc Pro B60 standard: Muse Glimmer 30B UD-Q5_K_XL
+
+`Muse-Glimmer-30B-UD-Q5_K_XL.gguf`, 21,789,618,976 bytes (20.29 GiB). Same SYCL
+build and flags as UD-Q5_K_M: llama.cpp 2145525, `-ngl 99 -fa on -t 6 -b 4096 -ub 2048`,
+q8_0 KV, Glimmer sampler (`top-k 64`, `reasoning_strength` xhigh). Context is
+the trained window, 131072. The server does not log a training-context overflow.
+
+Server, greedy, the same short prompts used for UD-Q5_K_M:
+
+| | TG | PP (814 tok) | VRAM | GTT | fit warning | VRAM left |
+|---|---:|---:|---:|---:|---|---:|
+| ctx 131072 | 16.4 | 548 | 21.6 GiB | 682 MiB | no | 2.3 GiB |
+
+UD-Q5_K_M at this same context was 19.8 t/s in 19.2 GiB. The XL file is the
+heavier quant, so decode is slower, and the extra weight uses the headroom
+that previously held ctx 393216. **Shipped for the B60: UD-Q5_K_XL, ctx 131072,
+q8_0 KV.** UD-Q4_K_XL stays the 16 GB default.

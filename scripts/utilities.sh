@@ -1082,22 +1082,24 @@ setup_llama_server() {
         fi
     fi
 
-    # Q5_K_XL was the Arc placeholder. On a discrete Arc the measured standard
-    # is Glimmer UD-Q5_K_M; leave any other explicit selection alone.
+    # Qwen Q5_K_XL was the Arc placeholder. Glimmer UD-Q5_K_M was the previous
+    # discrete-Arc standard. Both move to Glimmer UD-Q5_K_XL. Leave any other
+    # explicit selection alone.
     if [[ "${HB_PLATFORM_TAG:-}" == "x86_64-sycl" && "${HB_GPU_DRIVER:-}" == "xe" \
-        && "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" ]] && [[ -f "$MODELS_FILE" ]]; then
-        local _arc_id="Muse-Glimmer-30B-UD-Q5_K_M"
+        && ( "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" || "${AI_MODEL_ID:-}" == "Muse-Glimmer-30B-UD-Q5_K_M" ) ]] && [[ -f "$MODELS_FILE" ]]; then
+        local _arc_from="${AI_MODEL_ID}"
+        local _arc_id="Muse-Glimmer-30B-UD-Q5_K_XL"
         local _af _au _am
         _af=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .filename // empty' "$MODELS_FILE" 2>/dev/null)
         _au=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .url // empty' "$MODELS_FILE" 2>/dev/null)
         _am=$(jq -r --arg id "$_arc_id" '.models[] | select(.id == $id) | .min_size_bytes // empty' "$MODELS_FILE" 2>/dev/null)
         if [[ -n "$_af" && -n "$_au" ]]; then
-            log_info "Arc standard model is $_arc_id; moving off Qwen3.8-27B-UD-Q5_K_XL."
+            log_info "Arc standard model is $_arc_id; moving off ${_arc_from}."
             update_env_var "AI_MODEL_ID" "$_arc_id"
             update_env_var "AI_MODEL_FILENAME" "$_af"
             update_env_var "AI_MODEL_URL" "$_au"
-            update_env_var "AI_MODEL_MIN_SIZE" "${_am:-19000000000}"
-            export AI_MODEL_ID="$_arc_id" AI_MODEL_FILENAME="$_af" AI_MODEL_URL="$_au" AI_MODEL_MIN_SIZE="${_am:-19000000000}"
+            update_env_var "AI_MODEL_MIN_SIZE" "${_am:-21000000000}"
+            export AI_MODEL_ID="$_arc_id" AI_MODEL_FILENAME="$_af" AI_MODEL_URL="$_au" AI_MODEL_MIN_SIZE="${_am:-21000000000}"
             MODEL_NAME="$_af"
             MODEL_URL="$_au"
         fi
