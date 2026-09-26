@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import re
+import struct
 import sys
 import time
 import base64
@@ -142,9 +144,10 @@ def _amdgpu_compute_util() -> int:
 def get_gpu_stats() -> dict:
     """GPU utilisation, memory and temperature, read the way this driver exposes them.
 
-    The JSON keys are shared across drivers so the dashboard needs no per-driver
-    branch; `memory_label` carries the wording, because on a unified-memory part
-    "VRAM" is a category error — the GPU is using a slice of system RAM.
+    The JSON keys are shared across drivers, so the dashboard has no per-card
+    branch. An RX 9060 XT and an Arc Pro B60 publish the same object; which
+    reader runs comes only from the platform record. `memory_label` is the
+    wording, because on a unified-memory part "VRAM" is the wrong noun.
     """
     driver = get_platform().get("gpu_driver", "none")
     if driver == "amdgpu":
@@ -217,34 +220,231 @@ def _gpu_stats_nvidia() -> dict:
         pass
     return result
 
-def _gpu_stats_intel() -> dict:
-    """Package temperature from the xe/i915 hwmon node.
+# xe publishes neither mem_info_vram_* nor a usable size in the PCI BAR.
+# The BAR is the resized window (32 GB on an Arc Pro B60), not the 24 GB of
+# VRAM. Used and total come from DRM_XE_DEVICE_QUERY memory regions.
+_XE_CLASS_VRAM = 1
+_XE_QUERY_MEM_REGIONS = 1
+_XE_REGION = struct.Struct("=HHIQQQQ6Q")  # drm_xe_mem_region, 88 bytes
+_xe_util_cache: dict = {"ts": 0.0, "busy": {}, "total": {}, "pct": 0}
+_xe_ioctl = None
 
-    These drivers do not publish mem_info_vram_*. The 32 GB PCI BAR on an Arc
-    Pro B60 is the resized window, not a used-byte counter, so used/total stay
-    absent and the dashboard leaves that meter alone.
+
+class _XeDeviceQuery(ctypes.Structure):
+    """drm_xe_device_query. Size is part of the ioctl number, so it stays here."""
+    _fields_ = [
+        ("extensions", ctypes.c_uint64),
+        ("query", ctypes.c_uint32),
+        ("size", ctypes.c_uint32),
+        ("data", ctypes.c_uint64),
+        ("reserved", ctypes.c_uint64 * 2),
+    ]
+
+
+# DRM_IOWR('d', DRM_COMMAND_BASE + DRM_XE_DEVICE_QUERY, struct drm_xe_device_query)
+_XE_DEVICE_QUERY = (
+    (3 << 30) | (ctypes.sizeof(_XeDeviceQuery) << 16) | (ord("d") << 8) | 0x40
+)
+
+def _intel_drm_devices() -> list:
+    """(driver, PCI sysfs dir, render node) for xe and i915 render nodes."""
+    import glob as _glob
+    found = []
+    for node in sorted(_glob.glob("/sys/class/drm/renderD*")):
+        name = os.path.basename(node)
+        try:
+            device = os.path.realpath(os.path.join(node, "device"))
+            driver = os.path.basename(os.path.realpath(os.path.join(device, "driver")))
+        except OSError:
+            continue
+        if driver in ("xe", "i915"):
+            found.append((driver, device, f"/dev/dri/{name}"))
+    return found
+
+def _xe_vram_totals(blob: bytes):
+    """(used, total) bytes across VRAM-class regions, or None.
+
+    drm_xe_query_mem_regions is a u32 count, a u32 pad, then 88-byte regions.
+    System memory is a different class and is not VRAM.
+    """
+    if len(blob) < 8:
+        return None
+    num = struct.unpack_from("=I", blob, 0)[0]
+    if not 0 < num <= 16:
+        return None
+    used = total = 0
+    found = False
+    off = 8
+    stride = _XE_REGION.size
+    for _ in range(num):
+        if off + stride > len(blob):
+            return None
+        mem_class, _inst, _page, total_size, used_size = _XE_REGION.unpack_from(blob, off)[:5]
+        off += stride
+        if mem_class != _XE_CLASS_VRAM or total_size <= 0:
+            continue
+        found = True
+        used += used_size
+        total += total_size
+    return (used, total) if found else None
+
+def _linux_ioctl(fd, request, arg):
+    """ioctl via a private libc handle.
+
+    Setting argtypes on CDLL(None).ioctl would change the prototype seen by
+    the rest of the process. libc.so.6 is a separate handle.
+    """
+    global _xe_ioctl
+    if _xe_ioctl is None:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.ioctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p]
+        libc.ioctl.restype = ctypes.c_int
+        _xe_ioctl = libc.ioctl
+    ctypes.set_errno(0)
+    rc = _xe_ioctl(fd, ctypes.c_ulong(request & 0xFFFFFFFF), arg)
+    if rc < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+
+def _xe_query_vram(node: str):
+    """(used, total) VRAM bytes from DRM_XE_DEVICE_QUERY, or None.
+
+    `used` stays zero unless the caller is root or has CAP_PERFMON. The
+    manager unit runs as root, which is what makes the figure real.
+    """
+    try:
+        fd = os.open(node, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        query = _XeDeviceQuery(query=_XE_QUERY_MEM_REGIONS)
+        _linux_ioctl(fd, _XE_DEVICE_QUERY, ctypes.byref(query))
+        if query.size <= 0 or query.size > 1_000_000:
+            return None
+        buf = ctypes.create_string_buffer(query.size)
+        query.data = ctypes.addressof(buf)
+        _linux_ioctl(fd, _XE_DEVICE_QUERY, ctypes.byref(query))
+        return _xe_vram_totals(buf.raw[:query.size])
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+def _xe_util_percent(pdev: str) -> int:
+    """Busy fraction of the render and compute engines, from xe fdinfo.
+
+    drm-total-cycles is the GT timestamp; drm-engine-capacity is how many
+    instances share that class. The first sample has no baseline and reports
+    the previous value (0 until a second poll).
     """
     import glob as _glob
+    seen: set = set()
+    busy = {"rcs": 0, "ccs": 0}
+    total: dict = {}
+    cap: dict = {}
+    for fd_path in _glob.glob("/proc/[0-9]*/fdinfo/*"):
+        try:
+            with open(fd_path) as fh:
+                text = fh.read()
+            if "drm-driver:" not in text:
+                continue
+            fields = {}
+            for line in text.splitlines():
+                if ":" not in line:
+                    continue
+                key, val = line.split(":", 1)
+                fields[key.strip()] = val.strip()
+            if fields.get("drm-driver") != "xe" or fields.get("drm-pdev") != pdev:
+                continue
+            client = fields.get("drm-client-id")
+            if not client or client in seen:
+                continue
+            seen.add(client)
+            for eng in ("rcs", "ccs"):
+                cycles = fields.get(f"drm-cycles-{eng}")
+                elapsed = fields.get(f"drm-total-cycles-{eng}")
+                if not cycles or not elapsed:
+                    continue
+                busy[eng] += int(cycles.split()[0])
+                total[eng] = max(total.get(eng, 0), int(elapsed.split()[0]))
+                raw_cap = fields.get(f"drm-engine-capacity-{eng}")
+                if raw_cap:
+                    cap[eng] = max(cap.get(eng, 1), int(raw_cap.split()[0]) or 1)
+        except (OSError, ValueError):
+            continue
+    now = time.monotonic()
+    prev_ts = _xe_util_cache["ts"]
+    pct = _xe_util_cache["pct"]
+    if prev_ts > 0:
+        ratios = []
+        for eng, b in busy.items():
+            prev_total = _xe_util_cache["total"].get(eng)
+            if eng not in total or prev_total is None:
+                continue
+            dtot = total[eng] - prev_total
+            dbusy = b - _xe_util_cache["busy"].get(eng, 0)
+            if dtot <= 0 or dbusy < 0:
+                continue
+            ratios.append(dbusy / dtot / cap.get(eng, 1))
+        pct = min(100, round(max(ratios) * 100)) if ratios else 0
+    _xe_util_cache["ts"] = now
+    _xe_util_cache["busy"] = busy
+    _xe_util_cache["total"] = total
+    _xe_util_cache["pct"] = pct
+    return pct
+
+def _intel_pkg_temp(device: str):
+    """Package temperature in °C. Any other hwmon temp is a fallback, so a
+    missing 'pkg' label does not leave the dashboard shimmering."""
+    import glob as _glob
+    fallback = None
+    for label_path in _glob.glob(f"{device}/hwmon/hwmon*/temp*_label"):
+        try:
+            label = open(label_path).read().strip()
+            raw = int(open(label_path.replace("_label", "_input")).read().strip())
+        except (OSError, ValueError):
+            continue
+        temp = round(raw / 1000, 1)
+        if label == "pkg":
+            return temp
+        if fallback is None:
+            fallback = temp
+    return fallback
+
+def _gpu_stats_intel() -> dict:
+    """Temperature, engine utilisation and VRAM for xe. i915 is temperature only.
+
+    Same keys as the amdgpu reader when the card has discrete VRAM. The
+    memory-region query is that counter; a missing query leaves the meter unset
+    rather than inventing a total from the PCI BAR.
+    """
     result = {"available": False}
     try:
-        base = None
-        for card in _glob.glob("/sys/class/drm/card[0-9]*/device"):
-            driver = os.path.basename(os.path.realpath(os.path.join(card, "driver")))
-            if driver in ("xe", "i915"):
-                base = card
-                break
-        if not base:
+        devices = _intel_drm_devices()
+        if not devices:
             return result
-        temp_c = None
-        for label_path in _glob.glob(f"{base}/hwmon/hwmon*/temp*_label"):
-            if open(label_path).read().strip() != "pkg":
+        xe_devs = [device for driver, device, _node in devices if driver == "xe"]
+        chosen = xe_devs[0] if xe_devs else devices[0][1]
+        best = None
+        for driver, device, node in devices:
+            if driver != "xe":
                 continue
-            raw = open(label_path.replace("_label", "_input")).read().strip()
-            temp_c = round(int(raw) / 1000, 1)
-            break
-        if temp_c is None:
-            return result
-        result["temp_c"] = temp_c
+            totals = _xe_query_vram(node)
+            if totals and (best is None or totals[1] > best[1]):
+                best = totals
+                chosen = device
+        if best:
+            used, total = best
+            result["vram_used_gb"] = round(used / (1024 ** 3), 1)
+            result["vram_total_gb"] = round(total / (1024 ** 3), 1)
+            result["vram_percent"] = round(used / total * 100) if total else 0
+            try:
+                result["util_percent"] = _xe_util_percent(os.path.basename(chosen))
+            except (OSError, ValueError):
+                pass
+        temp = _intel_pkg_temp(chosen)
+        if temp is not None:
+            result["temp_c"] = temp
         result["memory_label"] = (
             "VRAM" if get_platform().get("gpu_memory") == "discrete" else "GPU memory"
         )
@@ -1072,6 +1272,13 @@ def is_local_mode():
     return env.get("DEPLOYMENT_MODE", "remote") == "local"
 
 
+def present_tunnel_status(status: str, local: bool) -> str:
+    """A LAN-only box has no tunnel process. Calling that 'stopped' paints it red."""
+    if local and status == "stopped":
+        return "deactivated"
+    return status
+
+
 def get_lan_ip():
     """Returns the primary LAN IP of this machine."""
     import socket
@@ -1667,7 +1874,7 @@ def system_status():
             except Exception:
                 pass
 
-        services["tunnel"] = tunnel_status
+        services["tunnel"] = present_tunnel_status(tunnel_status, is_local_mode())
 
         # Maintenance Mode Check
         try:

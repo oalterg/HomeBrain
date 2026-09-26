@@ -174,17 +174,19 @@ const STATUS_LABELS = {
     enabled: 'Enabled', unlocked: 'Unlocked', installed: 'Installed', present: 'Present',
     stopped: 'Stopped', offline: 'Offline', disabled: 'Disabled', missing: 'Missing',
     starting: 'Starting', unconfigured: 'Not configured', unknown: 'Unknown',
-    not_installed: 'Not installed', locked: 'Locked',
+    not_installed: 'Not installed', locked: 'Locked', deactivated: 'Deactivated',
 };
 
 const GOOD = ['running', 'healthy', 'active', 'connected', 'enabled', 'unlocked', 'installed', 'present', 'created'];
 const BAD = ['stopped', 'offline', 'disabled', 'missing', 'error'];
 const PENDING = ['starting', 'unconfigured', 'pending'];
+const NEUTRAL = ['deactivated'];
 
 function statusClass(raw) {
     if (GOOD.includes(raw)) return 'running';
     if (BAD.includes(raw)) return 'stopped';
     if (PENDING.includes(raw)) return 'starting';
+    if (NEUTRAL.includes(raw)) return 'deactivated';
     return 'unknown';
 }
 
@@ -443,12 +445,16 @@ async function fetchStatus() {
                 `${data.root_percent}% used · ${data.root_free_gb} GB free`);
         }
         if (data.gpu && data.gpu.available) {
-            if (data.gpu.util_percent !== undefined) fillText('gpu-util', data.gpu.util_percent + '%');
-            if (data.gpu.temp_c !== undefined) fillText('gpu-temp', data.gpu.temp_c + '°C');
-            if (data.gpu.memory_label) fillText('gpu-mem-label', data.gpu.memory_label);
-            if (data.gpu.vram_percent !== undefined && data.gpu.vram_percent !== null) {
-                setMeter('gpu-vram-bar', 'gpu-vram-text', data.gpu.vram_percent,
-                    `${data.gpu.vram_used_gb} / ${data.gpu.vram_total_gb} GB`);
+            const g = data.gpu;
+            // A missing reading is a dash. Leaving the skeleton up reads as a load that never finishes.
+            fillText('gpu-util', g.util_percent != null ? g.util_percent + '%' : '—');
+            fillText('gpu-temp', g.temp_c != null ? g.temp_c + '°C' : '—');
+            if (g.memory_label) fillText('gpu-mem-label', g.memory_label);
+            if (g.vram_percent != null) {
+                setMeter('gpu-vram-bar', 'gpu-vram-text', g.vram_percent,
+                    `${g.vram_used_gb} / ${g.vram_total_gb} GB`);
+            } else {
+                setMeter('gpu-vram-bar', 'gpu-vram-text', 0, '—');
             }
         }
     } catch (e) { /* transient — next poll retries */ }
