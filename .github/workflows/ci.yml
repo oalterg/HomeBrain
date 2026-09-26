@@ -62,6 +62,7 @@ jobs:
                             scripts/tests/test_member_id_collision.py \
                             scripts/tests/test_health_banner.py \
                             scripts/tests/test_update_health.py \
+                            scripts/tests/test_dashboard_hardware.py \
                             scripts/tests/test_activation.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
       - name: recovery sheet text + DOM contract

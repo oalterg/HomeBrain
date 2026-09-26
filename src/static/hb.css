@@ -421,13 +421,14 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .status-running::before { background: var(--accent); }
 
 /* Exceptions — these earn the pill. */
-.status-stopped, .status-starting, .status-unknown {
+.status-stopped, .status-starting, .status-unknown, .status-deactivated {
   padding: 3px 10px 3px 8px;
   border: 1px solid currentColor;
 }
 .status-stopped  { color: var(--danger);  background: var(--danger-soft); }
 .status-starting { color: var(--warning); background: var(--warning-soft); }
-.status-unknown  { color: var(--text-dim); background: var(--neutral-soft); border-color: var(--border-strong); }
+.status-unknown,
+.status-deactivated { color: var(--text-dim); background: var(--neutral-soft); border-color: var(--border-strong); }
 .status-starting::before { animation: hb-pulse 1.4s ease-in-out infinite; }
 
 @keyframes hb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
