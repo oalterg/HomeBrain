@@ -641,7 +641,7 @@ tbody tr:hover td { background: var(--accent-soft); }
   margin-top: 8px;
 }
 .picture-grid figure { margin: 0; }
-.picture-grid img {
+.picture-grid img, .picture-grid video {
   width: 100%;
   height: auto;
   border-radius: var(--radius-input);

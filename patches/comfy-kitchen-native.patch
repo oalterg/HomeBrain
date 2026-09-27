@@ -1,0 +1,15 @@
+--- a/comfy_kitchen/tensor/int8_utils.py
++++ b/comfy_kitchen/tensor/int8_utils.py
+@@ -39,7 +39,11 @@
+ 
+ 
+ def _matmul_groups(grouped: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+-    """Hadamard gemm. Arc oneDNN cannot build this primitive, so it runs on CPU."""
++    """Try the native rotation before falling back on older Arc runtimes."""
++    try:
++        return torch.matmul(grouped, h)
++    except RuntimeError:
++        pass
+     out = torch.matmul(grouped.to("cpu"), h.to("cpu"))
+     return out.to(device=grouped.device, dtype=grouped.dtype)
+ 

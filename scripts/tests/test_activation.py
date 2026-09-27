@@ -45,6 +45,12 @@ def _ids(p):
     return [s["id"] for s in p["remaining"]]
 
 
+def test_telegram_step_opens_the_ai_tab():
+    step = activation.STEPS["telegram"]
+    assert step["tab"] == "ai"
+    assert step["card"] == "channels-card"
+
+
 def test_fresh_gpu_box_asks_for_telegram_backup_offsite_phone():
     p = _payload()
     assert _ids(p) == ["telegram", "backup", "offsite", "phone"]

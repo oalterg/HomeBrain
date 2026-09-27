@@ -769,7 +769,7 @@ class AccessLogFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
         # Filter out frequent polling endpoints to prevent log flooding
-        if any(x in msg for x in ["GET /api/task_status", "GET /api/status", "GET /api/logs/", "GET /api/picture"]):
+        if any(x in msg for x in ["GET /api/task_status", "GET /api/status", "GET /api/logs/", "GET /api/picture", "GET /api/video"]):
             return False
         return True
 
@@ -801,11 +801,11 @@ def write_status(status):
         current_task_status = status
 
 
-def picture_unit_active():
-    """True while the picture oneshot is in progress, even if the manager restarted."""
+def picture_unit_active(kind="picture"):
+    """True while a media oneshot is in progress, even if the manager restarted."""
     try:
         result = subprocess.run(
-            ["systemctl", "is-active", "homebrain-picture.service"],
+            ["systemctl", "is-active", f"homebrain-{kind}.service"],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
@@ -822,7 +822,7 @@ def task_running():
     """
     if read_status().get("status") == "running":
         return True
-    return picture_unit_active()
+    return picture_unit_active() or picture_unit_active("video")
 
 
 def claim_task(status):
@@ -3601,57 +3601,70 @@ def picture_ready():
     return picture.runtime_ready(get_platform())
 
 
+def video_ready():
+    return picture.runtime_ready(get_platform(), kind="video")
+
+
 def start_picture_task(payload):
-    """Claim the long-job slot, then let systemd own the picture.
+    return _start_media_task(payload, "picture")
+
+
+def start_video_task(payload):
+    return _start_media_task(payload, "video")
+
+
+def _start_media_task(payload, kind):
+    """Claim the long-job slot, then let systemd own the media job.
 
     The request file is written only after the slot is held, so a second
     click cannot replace the prompt of a job that already started.
     """
-    if picture_unit_active():
+    if picture_unit_active() or picture_unit_active("video"):
         return False
     if not claim_task({
         "status": "running",
-        "message": "Making a picture. Chat is paused.",
+        "message": f"Making a {kind}. Chat is paused.",
         "log_type": "setup",
     }):
         return False
     try:
-        picture.write_request(payload)
+        picture.write_request(payload, kind=kind)
     except OSError as exc:
-        logging.error("picture request: %s", exc)
+        logging.error("%s request: %s", kind, exc)
         write_status({
             "status": "error",
-            "message": "Could not start the picture.",
+            "message": f"Could not start the {kind}.",
             "log_type": "setup",
         })
         return False
     cmd = (
-        "systemctl reset-failed homebrain-picture.service; "
-        "systemctl start homebrain-picture.service"
+        f"systemctl reset-failed homebrain-{kind}.service; "
+        f"systemctl start homebrain-{kind}.service"
     )
     threading.Thread(
-        target=run_background_task, args=("Making a picture", cmd, "setup")
+        target=run_background_task, args=(f"Making a {kind}", cmd, "setup")
     ).start()
     return True
 
 
-@app.route("/api/picture", methods=["GET"])
+@app.route("/api/picture", methods=["GET"], defaults={"kind": "picture"})
+@app.route("/api/video", methods=["GET"], defaults={"kind": "video"})
 @limiter.limit("120 per minute")
-def picture_state():
-    ready = picture_ready()
-    status = picture.read_status()
+def picture_state(kind="picture"):
+    ready = video_ready() if kind == "video" else picture_ready()
+    status = picture.read_status(kind=kind)
     # The oneshot is still in its cleanup while chat restarts. Keep showing
     # the pause until the unit has actually exited.
-    if picture_unit_active():
+    if picture_unit_active(kind):
         status = {
             "state": "running",
-            "message": status.get("message") or "Chat is paused while the picture is made.",
+            "message": status.get("message") or f"Chat is paused while the {kind} is made.",
             "id": status.get("id") or "",
         }
     elif status.get("state") == "running":
         status = {
             "state": "error",
-            "message": "The picture was interrupted.",
+            "message": f"The {kind} was interrupted.",
             "id": status.get("id") or "",
         }
     return jsonify({
@@ -3659,44 +3672,48 @@ def picture_state():
         "state": status.get("state") or "idle",
         "message": status.get("message") or "",
         "id": status.get("id") or "",
-        "images": picture.list_images() if ready else [],
+        "images": picture.list_images(kind=kind) if ready else [],
     })
 
 
-@app.route("/api/picture", methods=["POST"])
+@app.route("/api/picture", methods=["POST"], defaults={"kind": "picture"})
+@app.route("/api/video", methods=["POST"], defaults={"kind": "video"})
 @limiter.limit("5 per minute")
-def picture_start():
+def picture_start(kind="picture"):
     body = request.get_json(silent=True)
     err = picture.prompt_error(body)
     if err:
         return jsonify({"error": err}), 400
-    if not picture_ready():
-        return jsonify({"error": "Pictures are not available on this box."}), 404
+    if not (video_ready() if kind == "video" else picture_ready()):
+        return jsonify({"error": f"{kind.capitalize()}s are not available on this box."}), 404
     image_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(4)
     payload = {
         "id": image_id,
         "prompt": body["prompt"].strip(),
         "seed": secrets.randbelow(2**31 - 1) + 1,
     }
-    if not start_picture_task(payload):
+    start = start_video_task if kind == "video" else start_picture_task
+    if not start(payload):
         return jsonify({"error": "A task is already running"}), 409
     return jsonify({"status": "started", "id": image_id})
 
 
-@app.route("/api/picture/images/<image_id>", methods=["GET"])
+@app.route("/api/picture/images/<image_id>", methods=["GET"], defaults={"kind": "picture"})
+@app.route("/api/video/clips/<image_id>", methods=["GET"], defaults={"kind": "video"})
 @limiter.limit("120 per minute")
-def picture_image(image_id):
-    path = picture.image_file(image_id)
+def picture_image(image_id, kind="picture"):
+    path = picture.image_file(image_id, kind=kind)
     if path is None:
         abort(404)
-    return send_file(path, mimetype="image/png")
+    return send_file(path, mimetype="video/mp4" if kind == "video" else "image/png")
 
 
-@app.route("/api/picture/<image_id>", methods=["DELETE"])
+@app.route("/api/picture/<image_id>", methods=["DELETE"], defaults={"kind": "picture"})
+@app.route("/api/video/<image_id>", methods=["DELETE"], defaults={"kind": "video"})
 @limiter.limit("30 per minute")
-def picture_delete(image_id):
-    if not picture.delete_image(image_id):
-        return jsonify({"error": "That picture is already gone"}), 404
+def picture_delete(image_id, kind="picture"):
+    if not picture.delete_image(image_id, kind=kind):
+        return jsonify({"error": f"That {kind} is already gone"}), 404
     return jsonify({"status": "deleted"})
 
 

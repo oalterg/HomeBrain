@@ -1,5 +1,5 @@
 #!/bin/bash
-# One Krea 2 picture on a discrete Arc. Stops chat, runs the frozen workflow,
+# One picture or video on a discrete Arc. Stops chat, runs the frozen workflow,
 # and always starts chat again. The dashboard owns the request file; this
 # script never takes a prompt on the command line.
 set -u
@@ -12,6 +12,12 @@ COMFY_REV="79be670e2d9be63e238785af307369d2b9039ed1"
 LAUNCHER="${HOMEBRAIN_HOME}/comfy-xpu.sh"
 # homebrain has to be able to create this. /var/log/homebrain is root-only.
 COMFY_LOG="${HOMEBRAIN_HOME}/picture-comfy.log"
+MEDIA_KIND=picture
+if [[ "${1:-}" == "run-video" ]]; then
+    MEDIA_KIND=video
+    COMFY_LOG="${HOMEBRAIN_HOME}/video-comfy.log"
+fi
+export HB_MEDIA_KIND="$MEDIA_KIND"
 
 say() { echo "$(date -Is) $*"; }
 
@@ -136,12 +142,20 @@ install_comfy() {
         "$COMFY_HOME/comfy/ops.py" \
         "$ROOT/patches/comfyui-arc-b60.patch" \
         "$COMFY_HOME" || exit 1
+    apply_if_missing 'dict.fromkeys((rows,' \
+        "$COMFY_HOME/comfy/ops.py" \
+        "$ROOT/patches/comfyui-arc-native.patch" \
+        "$COMFY_HOME" || exit 1
     local int8
     int8="$(find "$COMFY_HOME/.venv" -path '*/comfy_kitchen/tensor/int8_utils.py' | head -1)"
     [[ -n "$int8" ]] || { echo "comfy-kitchen is not installed" >&2; exit 1; }
     apply_if_missing "_matmul_groups" \
         "$int8" \
         "$ROOT/patches/comfy-kitchen-int8.patch" \
+        "$(dirname "$(dirname "$(dirname "$int8")")")" || exit 1
+    apply_if_missing 'return torch.matmul(grouped, h)' \
+        "$int8" \
+        "$ROOT/patches/comfy-kitchen-native.patch" \
         "$(dirname "$(dirname "$(dirname "$int8")")")" || exit 1
     if ! grep -q "flat1.cpu()" "$COMFY_HOME/comfy/weight_adapter/lora.py"; then
         echo "LoRA patch did not apply" >&2
@@ -150,8 +164,10 @@ install_comfy() {
 
     install -o homebrain -g homebrain -m 755 "$ROOT/config/comfy-xpu.sh" "$LAUNCHER"
     install -d -o homebrain -g homebrain -m 750 "${HOMEBRAIN_HOME}/pictures"
+    install -d -o homebrain -g homebrain -m 750 "${HOMEBRAIN_HOME}/videos"
     install -d -m 755 /var/lib/homebrain
     install -m 644 "$ROOT/config/homebrain-picture.service" /etc/systemd/system/homebrain-picture.service
+    install -m 644 "$ROOT/config/homebrain-video.service" /etc/systemd/system/homebrain-video.service
     systemctl daemon-reload
     # No [Install] section: this unit never starts at boot.
     say "picture runtime installed"
@@ -177,11 +193,11 @@ cmd_install() {
 cmd_run() {
     need_root
     if ! python check; then
-        python status error "The picture could not start."
+        python status error "The ${MEDIA_KIND} could not start."
         exit 1
     fi
     trap cleanup EXIT
-    python status running "Chat is paused while the picture is made."
+    python status running "Chat is paused while the ${MEDIA_KIND} is made."
     if ! stop_llama; then
         python status error "Chat did not release the graphics card."
         exit 1
@@ -192,7 +208,7 @@ cmd_run() {
     echo 3 > /proc/sys/vm/drop_caches || true
     stop_comfy
     if ! start_comfy; then
-        python status error "The picture runtime did not start."
+        python status error "The ${MEDIA_KIND} runtime did not start."
         exit 1
     fi
     python execute
@@ -204,6 +220,6 @@ cmd_run() {
 
 case "${1:-}" in
     install) cmd_install ;;
-    run) cmd_run ;;
-    *) echo "usage: picture.sh install|run" >&2; exit 2 ;;
+    run|run-video) cmd_run ;;
+    *) echo "usage: picture.sh install|run|run-video" >&2; exit 2 ;;
 esac
