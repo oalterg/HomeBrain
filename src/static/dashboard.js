@@ -173,13 +173,13 @@ const STATUS_LABELS = {
     running: 'Running', healthy: 'Healthy', active: 'Active', connected: 'Connected',
     enabled: 'Enabled', unlocked: 'Unlocked', installed: 'Installed', present: 'Present',
     stopped: 'Stopped', offline: 'Offline', disabled: 'Disabled', missing: 'Missing',
-    starting: 'Starting', unconfigured: 'Not configured', unknown: 'Unknown',
-    not_installed: 'Not installed', locked: 'Locked', deactivated: 'Deactivated',
+    starting: 'Starting', installing: 'Installing', unconfigured: 'Not configured', unknown: 'Unknown',
+    not_installed: 'Not installed', failed: 'Failed', locked: 'Locked', deactivated: 'Deactivated',
 };
 
 const GOOD = ['running', 'healthy', 'active', 'connected', 'enabled', 'unlocked', 'installed', 'present', 'created'];
-const BAD = ['stopped', 'offline', 'disabled', 'missing', 'error'];
-const PENDING = ['starting', 'unconfigured', 'pending'];
+const BAD = ['stopped', 'offline', 'disabled', 'missing', 'error', 'failed'];
+const PENDING = ['starting', 'installing', 'unconfigured', 'pending'];
 const NEUTRAL = ['deactivated'];
 
 function statusClass(raw) {
@@ -1427,7 +1427,10 @@ function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStat
         btn.style.opacity = '';
         if (llamaStatus === 'not_installed' && openclawStatus === 'not_installed') btn.innerText = 'Install';
         else if (llamaStatus === 'running' && openclawStatus === 'running') btn.innerText = 'Disable';
-        else if (llamaStatus === 'starting' || openclawStatus === 'starting') {
+        else if (llamaStatus === 'installing' || openclawStatus === 'installing') {
+            btn.innerText = 'Installing…';
+            btn.disabled = true;
+        } else if (llamaStatus === 'starting' || openclawStatus === 'starting') {
             btn.innerText = 'Starting…';
             btn.disabled = true;
         } else btn.innerText = 'Enable';
