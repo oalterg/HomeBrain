@@ -1101,11 +1101,11 @@ setup_llama_server() {
         fi
     fi
 
-    # Qwen Q5_K_XL was the Arc placeholder. Glimmer UD-Q5_K_M was the previous
-    # discrete-Arc standard. Both move to Glimmer UD-Q5_K_XL. Leave any other
-    # explicit selection alone.
+    # Qwen Q5_K_XL was the Arc placeholder and moves to Glimmer UD-Q5_K_XL.
+    # Glimmer UD-Q5_K_M stays selectable: at ctx 131072 the B60 has room for
+    # its vision projector. Leave any other explicit selection alone.
     if [[ "${HB_PLATFORM_TAG:-}" == "x86_64-sycl" && "${HB_GPU_DRIVER:-}" == "xe" \
-        && ( "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" || "${AI_MODEL_ID:-}" == "Muse-Glimmer-30B-UD-Q5_K_M" ) ]] && [[ -f "$MODELS_FILE" ]]; then
+        && "${AI_MODEL_ID:-}" == "Qwen3.8-27B-UD-Q5_K_XL" ]] && [[ -f "$MODELS_FILE" ]]; then
         local _arc_from="${AI_MODEL_ID}"
         local _arc_id="Muse-Glimmer-30B-UD-Q5_K_XL"
         local _af _au _am
@@ -1176,6 +1176,7 @@ setup_llama_server() {
     local CTX_SIZE="8192"
     local EXTRA_FLAGS=""
     local MIN_HEALTHY_VRAM=""
+    local MMPROJ_NAME="" MMPROJ_URL="" MMPROJ_MIN=""
     if [[ -f "$MODELS_FILE" ]] && [[ -n "$MODEL_NAME" ]]; then
         # Derive model id from filename (strip extension)
         local model_id
@@ -1197,6 +1198,28 @@ setup_llama_server() {
         MIN_HEALTHY_VRAM=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
             "($_sel | ${_prof}.min_healthy_vram_mb // .min_healthy_vram_mb) // empty" \
             "$MODELS_FILE" 2>/dev/null || echo "")
+        # Optional sidecar vision projector. A profile can carry one without
+        # the shared catalog entry doing so, so an Arc vision quant does not
+        # attach the encoder on the 16 GB card. Without --mmproj the language
+        # model still loads and images do not.
+        MMPROJ_NAME=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
+            "($_sel | ${_prof}.mmproj_filename // .mmproj_filename) // empty" "$MODELS_FILE" 2>/dev/null || echo "")
+        MMPROJ_URL=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
+            "($_sel | ${_prof}.mmproj_url // .mmproj_url) // empty" "$MODELS_FILE" 2>/dev/null || echo "")
+        MMPROJ_MIN=$(jq -r --arg id "$model_id" --arg tag "$HB_PLATFORM_TAG" --arg dtag "$_dtag" \
+            "($_sel | ${_prof}.mmproj_min_size_bytes // .mmproj_min_size_bytes) // empty" "$MODELS_FILE" 2>/dev/null || echo "")
+    fi
+    # Download before the fast path: a language GGUF already on disk must not
+    # skip a projector that is not there yet, or the restarted server comes up
+    # blind to images.
+    if [[ -n "$MMPROJ_NAME" && -n "$MMPROJ_URL" ]]; then
+        local mmproj_path="${HOMEBRAIN_HOME}/models/${MMPROJ_NAME}"
+        log_info "Vision projector configured: ${MMPROJ_NAME}"
+        download_model "$MMPROJ_NAME" "$MMPROJ_URL" "$mmproj_path" "${MMPROJ_MIN:-1}"
+        case " $EXTRA_FLAGS " in
+            *" --mmproj "*) ;;
+            *) EXTRA_FLAGS="${EXTRA_FLAGS} --mmproj ${mmproj_path}" ;;
+        esac
     fi
     local MIN_SIZE="${AI_MODEL_MIN_SIZE:-1000000000}"
     local LLAMA_BIN

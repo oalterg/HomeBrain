@@ -139,16 +139,19 @@
       "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 2048 -ub 1024 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
       "profiles": {
         "x86_64-sycl-xe": {
-          "context_window": 393216,
+          "context_window": 131072,
           "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
-          "notes": "Previous B60 standard (2026-09-26), superseded by Muse-Glimmer-30B-UD-Q5_K_XL. Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 19,194,274,848 bytes (17.86 GiB). q8_0 KV, -b 4096 -ub 2048. At ctx 131072: 19.8 t/s decode, 905 t/s pp2048, 626 t/s on an 814-token prompt, 19.2 GiB resident, 4.7 GiB free. ctx 393216 holds that speed (19.8 t/s, 624 t/s on the same prompt) in 22.0 GiB with 1.7 GiB GTT, no fit warning, and about 2.0 GiB free. ctx 524288 still decodes at 19.4 t/s but logs a fit warning and leaves 0.5 GiB, so it is not shipped. Trained context is 131072; the server warns on the longer window. Global layers are NoPE and local layers are a 2048 sliding window, so the extra context is a memory fit, not a quality measurement. Batch, threads, and q4 KV do not move decode. DFlash only fits at n_max 4, at 14.8 t/s, and is not shipped. The RX 9060 XT never selects this profile. UD-Q4_K_XL stays the 16 GB default."
+          "mmproj_filename": "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+          "mmproj_url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+          "mmproj_min_size_bytes": 2000000000,
+          "notes": "Arc vision option (2026-09-27). Same SYCL point as the ctx 131072 row: 19.8 t/s, 19.2 GiB resident, 4.7 GiB free, no fit warning. mmproj-Muse-Glimmer-30B-Q8_0.gguf is 2,051,685,088 bytes (1.91 GiB) and fits in that leftover with about 2.8 GiB left. ctx 393216 only has 2.0 GiB free, so it is not the profile. The RX 9060 XT never selects this profile. UD-Q5_K_XL stays the Arc text default. UD-Q4_K_XL stays the 16 GB default."
         }
       },
       "benchmark": {
         "tg_ts": 19.8,
         "pp_ts": 624,
-        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 393216",
-        "notes": "Previous discrete-Arc standard, superseded by Muse-Glimmer-30B-UD-Q5_K_XL. 19.8 t/s decode and 624 t/s on an 814-token prompt at ctx 393216, 22.0 GiB resident, about 2.0 GiB free. Trained context is 131072. See docs/BENCHMARKS.md (2026-09-26)."
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, -b 4096 -ub 2048, ctx 131072",
+        "notes": "Selectable Arc vision quant at the trained context. 19.8 t/s decode at ctx 131072 in 19.2 GiB, 4.7 GiB free, with the Q8 projector (1.91 GiB) in that leftover. UD-Q5_K_XL stays the text default. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
     },
@@ -165,7 +168,7 @@
         "x86_64-sycl-xe": {
           "context_window": 131072,
           "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
-          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 21,789,618,976 bytes (20.29 GiB). q8_0 KV, -b 4096 -ub 2048, ctx 131072, the trained context. 16.4 t/s decode, 548 t/s on an 814-token prompt, 21.6 GiB resident, 682 MiB GTT, no fit warning, about 2.3 GiB free. The larger file does not leave room for the 393216 window shipped on UD-Q5_K_M. The RX 9060 XT never selects this profile. UD-Q4_K_XL stays the 16 GB default."
+          "notes": "B60 standard (2026-09-26). Arc Pro B60, llama.cpp 2145525 SYCL FP16, Level Zero 26.35, oneAPI 2025.3. File is 21,789,618,976 bytes (20.29 GiB). q8_0 KV, -b 4096 -ub 2048, ctx 131072, the trained context. 16.4 t/s decode, 548 t/s on an 814-token prompt, 21.6 GiB resident, 682 MiB GTT, no fit warning, about 2.3 GiB free. That leftover does not hold the Glimmer Q8 projector (1.91 GiB) the way UD-Q5_K_M at the same context does. The RX 9060 XT never selects this profile. UD-Q4_K_XL stays the 16 GB default."
         }
       },
       "benchmark": {

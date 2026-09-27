@@ -323,8 +323,8 @@ start_ai_auto_setup() {
     fi
 
     # Platform default only when the owner has not chosen a model. An existing
-    # AI_MODEL_ID is left alone; setup_llama_server still remaps the two retired
-    # Arc placeholders onto the current Arc standard.
+    # AI_MODEL_ID is left alone; setup_llama_server still remaps the withdrawn
+    # Qwen Arc placeholder onto Glimmer UD-Q5_K_XL.
     if [[ -z "${AI_MODEL_ID:-}" ]]; then
         local models_file="$INSTALL_DIR/config/platform_models.json"
         if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then

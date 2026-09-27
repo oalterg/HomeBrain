@@ -1269,11 +1269,14 @@ Server, greedy, the same short prompts:
 |---:|---:|---:|---:|---:|---|---:|
 | 131072 | 19.8 | 626 | 19.2 GiB | 684 MiB | no | 4.7 GiB |
 | 262144 | 19.6 | 576 | 20.6 GiB | 1.17 GiB | no | 3.3 GiB |
-| **393216** | **19.8** | **624** | **22.0 GiB** | **1.67 GiB** | **no** | **2.0 GiB** |
+| 393216 | 19.8 | 624 | 22.0 GiB | 1.67 GiB | no | 2.0 GiB |
 | 524288 | 19.4 | 578 | 23.4 GiB | 33 MiB | yes | 0.5 GiB |
 
-**Shipped for the B60: ctx 393216, q8_0 KV.** 524288 is the Qwen-style ceiling
-(fit warning, half a gigabyte left) and is not the shipped point. A 110k-token
+The selectable Arc profile is ctx 131072, q8_0 KV, plus
+`mmproj-Muse-Glimmer-30B-Q8_0.gguf` (2,051,685,088 bytes, 1.91 GiB). That row
+has 4.7 GiB free, so the projector fits in VRAM with about 2.8 GiB left.
+ctx 393216 only has 2.0 GiB free and does not hold it. 524288 is the
+Qwen-style ceiling (fit warning, half a gigabyte left). A 110k-token
 fill at ctx 131072 ran at 250 t/s prefill with resident memory unchanged.
 DFlash fits only at `--spec-draft-n-max 4` (14.8 t/s, 79/186 drafted tokens
 accepted, 22.3 GiB) and runs out of device memory at n_max 8, including at
