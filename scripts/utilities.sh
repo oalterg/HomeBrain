@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Load Common Library
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "$SCRIPT_DIR/common.sh"
 
 # --- Version Management ---
@@ -1000,6 +1000,35 @@ _install_sycl_runtime() {
     log_info "SYCL runtime ready (${prefix})."
 }
 
+# oneAPI's setvars.sh is what makes Level Zero visible. A unit that only sets
+# LD_LIBRARY_PATH and ONEAPI_DEVICE_SELECTOR still exits with "No device of
+# requested type available" on the B60. The launcher sources setvars, then
+# puts the side-by-side Level Zero ahead of Ubuntu's libze.
+_write_sycl_launcher() {
+    local bin_path="$1"
+    local work_dir launcher versions_file spec setvars prefix key val
+    work_dir=$(dirname "$bin_path")
+    launcher="${work_dir}/llama-sycl-server.sh"
+    versions_file="${SCRIPT_DIR}/../config/versions.json"
+    spec='.llama_cpp.source_build["x86_64-sycl"]'
+    setvars=$(jq -r "${spec}.oneapi.setvars" "$versions_file")
+    prefix=$(jq -r "${spec}.neo_prefix" "$versions_file")
+    mkdir -p "$work_dir"
+    {
+        echo '#!/bin/bash'
+        echo 'set +u'
+        echo "source \"${setvars}\" >/dev/null"
+        echo "export LD_LIBRARY_PATH=\"${prefix}/usr/local/lib:${prefix}/usr/lib/x86_64-linux-gnu:\${LD_LIBRARY_PATH:-}\""
+        while IFS=$'\t' read -r key val; do
+            [[ -n "$key" ]] || continue
+            printf 'export %s=%q\n' "$key" "$val"
+        done < <(jq -r "${spec}.env | to_entries[] | [.key, .value] | @tsv" "$versions_file")
+        printf 'exec %q "$@"\n' "$bin_path"
+    } > "$launcher"
+    chmod 755 "$launcher"
+    printf '%s\n' "$launcher"
+}
+
 # Generate the systemd service file at runtime from model/platform config.
 # Uses config/llama-server.service as the canonical template so the GPU-wait
 # ExecStartPre and dependency ordering are always in sync with the committed file.
@@ -1007,14 +1036,18 @@ generate_llama_service() {
     local bin_path="$1" model_path="$2" ctx_size="$3" extra_flags="$4"
     local service_dest="/etc/systemd/system/llama-server.service"
     local template="${SCRIPT_DIR}/../config/llama-server.service"
-    local work_dir
+    local work_dir exec_bin
     work_dir=$(dirname "$bin_path")
+    exec_bin="$bin_path"
+    if [[ "${HB_GPU_BACKEND:-}" == "sycl" ]]; then
+        exec_bin=$(_write_sycl_launcher "$bin_path")
+    fi
 
     [[ -f "$template" ]] || die "llama-server service template not found at $template"
 
     sed \
         -e "s|__WORKDIR__|${work_dir}|g" \
-        -e "s|__LLAMA_BIN__|${bin_path}|g" \
+        -e "s|__LLAMA_BIN__|${exec_bin}|g" \
         -e "s|__LLAMA_MODEL__|${model_path}|g" \
         -e "s|__CTX_SIZE__|${ctx_size}|g" \
         -e "s@__EXTRA_FLAGS__@${extra_flags}@g" \
@@ -1394,7 +1427,7 @@ install_whisper_server() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq cmake g++ git ffmpeg \
-        mesa-vulkan-drivers libvulkan1 vulkan-tools glslc 2>/dev/null \
+        mesa-vulkan-drivers libvulkan-dev libvulkan1 vulkan-tools glslc 2>/dev/null \
         || log_warn "Some dependency installs returned non-zero."
 
     local src_dir="/tmp/whisper.cpp"
@@ -1417,9 +1450,9 @@ install_whisper_server() {
         -DGGML_VULKAN=ON \
         -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_BUILD_TYPE=Release \
-        || die "CMake configure failed"
+        || { log_error "CMake configure failed"; return 1; }
     cmake --build build --target whisper-server -j"$(nproc)" \
-        || die "whisper-server build failed"
+        || { log_error "whisper-server build failed"; return 1; }
 
     mkdir -p "$WHISPER_INSTALL_DIR"
     cp build/bin/whisper-server "$WHISPER_BIN"
