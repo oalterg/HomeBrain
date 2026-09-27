@@ -1,0 +1,32 @@
+--- a/comfy_kitchen/tensor/int8_utils.py
++++ b/comfy_kitchen/tensor/int8_utils.py
+@@ -38,6 +38,12 @@
+     return h_normalized
+ 
+ 
++def _matmul_groups(grouped: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
++    """Hadamard gemm. Arc oneDNN cannot build this primitive, so it runs on CPU."""
++    out = torch.matmul(grouped.to("cpu"), h.to("cpu"))
++    return out.to(device=grouped.device, dtype=grouped.dtype)
++
++
+ def _rotate_weight(
+     weight: torch.Tensor,
+     h: torch.Tensor,
+@@ -51,7 +57,7 @@
+ 
+     weight_grouped = weight.reshape(out_f, n_groups, group_size)
+     h_t = h.T.to(dtype=weight.dtype, device=weight.device)
+-    weight_rotated = torch.matmul(weight_grouped, h_t)
++    weight_rotated = _matmul_groups(weight_grouped, h_t)
+     return weight_rotated.reshape(out_f, in_f)
+ 
+ 
+@@ -69,6 +75,6 @@
+ 
+     x_grouped = x.reshape(-1, n_groups, group_size)
+     h = h.to(dtype=x.dtype, device=x.device)
+-    x_rotated = torch.matmul(x_grouped, h)
++    x_rotated = _matmul_groups(x_grouped, h)
+ 
+     return x_rotated.reshape(orig_shape)

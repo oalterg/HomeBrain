@@ -22,13 +22,14 @@ import platform
 import requests
 import fcntl
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, Response, session, abort, stream_with_context
+from flask import Flask, render_template, jsonify, request, Response, session, abort, send_file, stream_with_context
 import migration
 import selftest
 import integrations
 import recovery
 import activation
 import household
+import picture
 import vault_account
 import member_escrow
 from flask_limiter import Limiter
@@ -768,7 +769,7 @@ class AccessLogFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
         # Filter out frequent polling endpoints to prevent log flooding
-        if any(x in msg for x in ["GET /api/task_status", "GET /api/status", "GET /api/logs/"]):
+        if any(x in msg for x in ["GET /api/task_status", "GET /api/status", "GET /api/logs/", "GET /api/picture"]):
             return False
         return True
 
@@ -800,13 +801,28 @@ def write_status(status):
         current_task_status = status
 
 
+def picture_unit_active():
+    """True while the picture oneshot is in progress, even if the manager restarted."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "homebrain-picture.service"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.stdout.strip() in ("activating", "active")
+
+
 def task_running():
     """True when a background task is in flight.
 
     Reads the status file (shared across gunicorn workers), not only the
-    in-process global that write_status used to leave stale.
+    in-process global that write_status used to leave stale. A picture job
+    is owned by systemd, so it still counts after the manager process restarts.
     """
-    return read_status().get("status") == "running"
+    if read_status().get("status") == "running":
+        return True
+    return picture_unit_active()
 
 
 def claim_task(status):
@@ -3578,6 +3594,111 @@ def switch_ai_model():
         return jsonify({"status": "started", "model": model_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def picture_ready():
+    """Discrete Arc, patched ComfyUI, and the Krea 2 weights."""
+    return picture.runtime_ready(get_platform())
+
+
+def start_picture_task(payload):
+    """Claim the long-job slot, then let systemd own the picture.
+
+    The request file is written only after the slot is held, so a second
+    click cannot replace the prompt of a job that already started.
+    """
+    if picture_unit_active():
+        return False
+    if not claim_task({
+        "status": "running",
+        "message": "Making a picture. Chat is paused.",
+        "log_type": "setup",
+    }):
+        return False
+    try:
+        picture.write_request(payload)
+    except OSError as exc:
+        logging.error("picture request: %s", exc)
+        write_status({
+            "status": "error",
+            "message": "Could not start the picture.",
+            "log_type": "setup",
+        })
+        return False
+    cmd = (
+        "systemctl reset-failed homebrain-picture.service; "
+        "systemctl start homebrain-picture.service"
+    )
+    threading.Thread(
+        target=run_background_task, args=("Making a picture", cmd, "setup")
+    ).start()
+    return True
+
+
+@app.route("/api/picture", methods=["GET"])
+@limiter.limit("120 per minute")
+def picture_state():
+    ready = picture_ready()
+    status = picture.read_status()
+    # The oneshot is still in its cleanup while chat restarts. Keep showing
+    # the pause until the unit has actually exited.
+    if picture_unit_active():
+        status = {
+            "state": "running",
+            "message": status.get("message") or "Chat is paused while the picture is made.",
+            "id": status.get("id") or "",
+        }
+    elif status.get("state") == "running":
+        status = {
+            "state": "error",
+            "message": "The picture was interrupted.",
+            "id": status.get("id") or "",
+        }
+    return jsonify({
+        "available": ready,
+        "state": status.get("state") or "idle",
+        "message": status.get("message") or "",
+        "id": status.get("id") or "",
+        "images": picture.list_images() if ready else [],
+    })
+
+
+@app.route("/api/picture", methods=["POST"])
+@limiter.limit("5 per minute")
+def picture_start():
+    body = request.get_json(silent=True)
+    err = picture.prompt_error(body)
+    if err:
+        return jsonify({"error": err}), 400
+    if not picture_ready():
+        return jsonify({"error": "Pictures are not available on this box."}), 404
+    image_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(4)
+    payload = {
+        "id": image_id,
+        "prompt": body["prompt"].strip(),
+        "seed": secrets.randbelow(2**31 - 1) + 1,
+    }
+    if not start_picture_task(payload):
+        return jsonify({"error": "A task is already running"}), 409
+    return jsonify({"status": "started", "id": image_id})
+
+
+@app.route("/api/picture/images/<image_id>", methods=["GET"])
+@limiter.limit("120 per minute")
+def picture_image(image_id):
+    path = picture.image_file(image_id)
+    if path is None:
+        abort(404)
+    return send_file(path, mimetype="image/png")
+
+
+@app.route("/api/picture/<image_id>", methods=["DELETE"])
+@limiter.limit("30 per minute")
+def picture_delete(image_id):
+    if not picture.delete_image(image_id):
+        return jsonify({"error": "That picture is already gone"}), 404
+    return jsonify({"status": "deleted"})
+
 
 @app.route("/api/system/capabilities", methods=["GET"])
 @limiter.limit("30 per minute")

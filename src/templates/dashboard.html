@@ -855,6 +855,20 @@
                     <div id="models-on-disk-list"></div>
                 </div>
 
+                <div id="picture-card" style="display:none;">
+                    <hr>
+                    <h4>Picture</h4>
+                    <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
+                        then comes back.</p>
+                    <textarea id="picture-prompt" rows="3" maxlength="500"
+                              placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
+                    <div class="form-actions">
+                        <button class="btn-primary" id="picture-generate" onclick="pictureGenerate()">Generate</button>
+                    </div>
+                    <small id="picture-msg" class="hint"></small>
+                    <div id="picture-gallery" class="picture-grid"></div>
+                </div>
+
                 <div class="inline-row mt" style="justify-content:space-between;">
                     <a id="openclaw-open" href="/openclaw/" target="_blank" rel="noopener" class="btn-primary link-out"
                        style="display:none;">Open AI Assistant<span aria-hidden="true">↗</span></a>
