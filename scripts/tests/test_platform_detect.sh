@@ -442,6 +442,21 @@ else
           $(cat "$status_log/err" 2>/dev/null)"
 fi
 
+printf '\n== sycl launcher ==\n'
+export LOG_DIR="$TMP/log"
+mkdir -p "$LOG_DIR"
+# shellcheck source=../utilities.sh disable=SC1091
+source "$SCRIPT_DIR/../utilities.sh"
+HB_GPU_BACKEND=sycl
+fake_bin="$TMP/llama-server"
+: > "$fake_bin"
+launcher="$(_write_sycl_launcher "$fake_bin")"
+if [[ -x "$launcher" ]] && grep -q 'setvars.sh' "$launcher" && grep -qF "exec $(printf %q "$fake_bin")" "$launcher" && grep -q 'neo-26.35' "$launcher"; then
+    ok "sycl launcher sources setvars and execs the real binary"
+else
+    bad "sycl launcher missing setvars or exec: $(cat "$launcher" 2>/dev/null)"
+fi
+
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
