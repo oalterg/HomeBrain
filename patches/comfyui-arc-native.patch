@@ -1,0 +1,49 @@
+--- a/comfy/ops.py
++++ b/comfy/ops.py
+@@ -29,7 +29,7 @@
+ _xpu_linear_chunk = {}
+ 
+ def _xpu_chunked_linear(input, weight, bias=None):
+-    # oneDNN on Arc Pro B60 rejects many GEMM shapes, including short prompts.
++    # Try native GEMM first; older Arc runtimes can reject some shapes.
+     # The row slice is exact. A shape that fails every GPU size falls back to CPU.
+     if (type(input) is not torch.Tensor or getattr(input, "device", None) is None
+             or input.device.type != "xpu" or weight is None or weight.dim() != 2):
+@@ -48,7 +48,7 @@
+     in_f = input.shape[-1]
+     rows = input.numel() // in_f
+     flat = input.reshape(rows, in_f)
+-    key = (int(weight.shape[0]), int(weight.shape[1]), str(weight.dtype))
++    key = (rows, int(weight.shape[0]), int(weight.shape[1]), str(input.device), str(input.dtype), str(weight.dtype))
+ 
+     def apply(chunk):
+         if chunk == "cpu":
+@@ -63,7 +63,7 @@
+     mode = _xpu_linear_chunk.get(key)
+     if mode is not None:
+         return apply(mode)
+-    for chunk in (128, 64, 32, 16, 8, 1, "cpu"):
++    for chunk in dict.fromkeys((rows, 128, 64, 32, 16, 8, 1, "cpu")):
+         if chunk != "cpu" and chunk > rows:
+             continue
+         try:
+@@ -115,7 +115,7 @@
+         return torch.matmul(a.detach().to("cpu"), b.detach().to("cpu")).to(device=a.device, dtype=a.dtype)
+ 
+ def _xpu_attention(q, k, v, attn_mask=None, is_causal=False, scale=None):
+-    """Per-head attention. Arc oneDNN cannot build an SDPA primitive; the matmuls work."""
++    """Per-head fallback for Arc runtimes that cannot build an SDPA primitive."""
+     squeeze = q.dim() == 3
+     if squeeze:
+         q, k, v = q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
+@@ -154,6 +154,10 @@
+         k, v = repeat_kv_for_gqa(k, v, q.shape[-3], -3)
+         kwargs["enable_gqa"] = False
+     if q.device.type == "xpu":
++        try:
++            return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
++        except RuntimeError:
++            pass
+         return _xpu_attention(q, k, v, attn_mask=attn_mask, is_causal=kwargs.get("is_causal", False), scale=kwargs.get("scale"))
+     return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
+ 

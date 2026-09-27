@@ -99,6 +99,48 @@ def test_opening_the_tab_loads_the_roster():
         "loadHousehold() is still wired to the connectivity tab"
 
 
+def test_ai_tab_holds_the_assistant_and_stays_off_a_pi():
+    """GPU boxes get one AI tab. A Pi must not grow an empty one."""
+    plain = _dashboard_html()
+    assert 'data-tab="ai"' not in plain
+    assert '<div id="ai"' not in plain
+
+    saved = os.environ.get("HAS_GPU")
+    os.environ["HAS_GPU"] = "true"
+    try:
+        html = _dashboard_html()
+    finally:
+        if saved is None:
+            os.environ.pop("HAS_GPU", None)
+        else:
+            os.environ["HAS_GPU"] = saved
+
+    buttons = re.findall(r'tab-btn[^>]*data-tab="([a-z]+)"', html)
+    panels = re.findall(r'<div id="([a-z]+)" class="tab-content', html)
+    assert buttons == panels
+    assert buttons[1] == "ai"
+
+    start = html.index('<div id="ai" class="tab-content')
+    end = html.index('<div id="household" class="tab-content')
+    panel = html[start:end]
+    for marker in ("picture-card", "video-card", "integrations-card", "channels-card",
+                   "ai-model-select", "Personal AI Assistant"):
+        assert marker in panel, marker
+    settings = html[html.index('<div id="settings" class="tab-content'):]
+    for marker in ("picture-card", "video-card", "integrations-card", "channels-card"):
+        assert marker not in settings, marker
+
+    js = open(DASHBOARD_JS, encoding="utf-8").read()
+    body = js[js.index("function openTab("):]
+    body = body[:body.index("\n}\n")]
+    ai = re.search(r"id === 'ai'\) \{(.*?)\}", body, re.S)
+    assert ai and "loadModelsOnDisk()" in ai.group(1)
+    settings_branch = re.search(r"id === 'settings'\) \{(.*?)\}", body, re.S)
+    assert settings_branch and "loadModelsOnDisk" not in settings_branch.group(1)
+    assert "mediaGenerate('video')" in html
+    assert "refreshMedia" in js
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

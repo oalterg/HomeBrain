@@ -1,8 +1,8 @@
-"""One frozen Krea 2 picture.
+"""Frozen Krea 2 picture and MiniMax H3 video jobs.
 
 The dashboard accepts a prompt string. It does not accept a Comfy graph.
 ComfyUI stays on localhost; this module posts the checked workflow and
-copies the PNG out.
+copies the generated media out.
 """
 from __future__ import annotations
 
@@ -30,6 +30,14 @@ WEIGHTS = (
     ("vae/qwen_image_vae.safetensors", 253806246),
 )
 
+VIDEO_WEIGHTS = (
+    ("diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors", 20970379616),
+    ("text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", 15687142551),
+    ("vae/minimax_h3_video_vae_int8_convrot.safetensors", 2811065184),
+    ("vae/minimax_h3_audio_vae_fp32.safetensors", 605254808),
+    ("loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", 1956193000),
+)
+
 FROZEN_NODES = {
     "1": "UNETLoader",
     "2": "CLIPLoader",
@@ -42,8 +50,20 @@ FROZEN_NODES = {
     "9": "SaveImage",
 }
 
+VIDEO_NODES = dict(zip(map(str, range(1, 16)), (
+    "UNETLoader", "CLIPLoader", "VAELoader", "VAELoader", "LoraLoaderModelOnly",
+    "MiniMaxH3ImageToVideo", "KSamplerSelect", "BasicScheduler", "BasicGuider",
+    "RandomNoise", "SamplerCustomAdvanced", "VAEDecode", "VAEDecodeAudio",
+    "CreateVideo", "SaveVideo",
+)))
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.normpath(os.path.join(_HERE, os.pardir, "config", "picture", "krea2.json"))
+VIDEO_TEMPLATE_PATH = os.path.join(os.path.dirname(TEMPLATE_PATH), "minimax-h3.json")
+
+
+def extension(kind: str) -> str:
+    return {"picture": ".png", "video": ".mp4"}[kind]
 
 
 def home() -> str:
@@ -54,20 +74,20 @@ def comfy_root() -> str:
     return os.environ.get("HB_COMFY_ROOT", os.path.join(home(), "ComfyUI"))
 
 
-def pictures_dir() -> str:
-    return os.environ.get("HB_PICTURES_DIR", os.path.join(home(), "pictures"))
+def pictures_dir(kind: str = "picture") -> str:
+    return os.environ.get(f"HB_{kind.upper()}S_DIR", os.path.join(home(), kind + "s"))
 
 
-def request_path() -> str:
-    return os.environ.get("HB_PICTURE_REQUEST", "/var/lib/homebrain/picture-request.json")
+def request_path(kind: str = "picture") -> str:
+    return os.environ.get(f"HB_{kind.upper()}_REQUEST", f"/var/lib/homebrain/{kind}-request.json")
 
 
-def status_path() -> str:
-    return os.environ.get("HB_PICTURE_STATUS", "/var/lib/homebrain/picture-status.json")
+def status_path(kind: str = "picture") -> str:
+    return os.environ.get(f"HB_{kind.upper()}_STATUS", f"/var/lib/homebrain/{kind}-status.json")
 
 
-def unit_path() -> str:
-    return os.environ.get("HB_PICTURE_UNIT", "/etc/systemd/system/homebrain-picture.service")
+def unit_path(kind: str = "picture") -> str:
+    return os.environ.get(f"HB_{kind.upper()}_UNIT", f"/etc/systemd/system/homebrain-{kind}.service")
 
 
 def arc_discrete(platform: dict) -> bool:
@@ -98,15 +118,23 @@ def prompt_error(body) -> str | None:
     return None
 
 
-def load_template(path: str | None = None) -> dict:
-    with open(path or TEMPLATE_PATH, encoding="utf-8") as f:
+def load_template(path: str | None = None, kind: str = "picture") -> dict:
+    expected = VIDEO_NODES if kind == "video" else FROZEN_NODES
+    with open(path or (VIDEO_TEMPLATE_PATH if kind == "video" else TEMPLATE_PATH), encoding="utf-8") as f:
         template = json.load(f)
-    if not isinstance(template, dict) or set(template) != set(FROZEN_NODES):
-        raise ValueError("picture workflow was modified")
-    for node_id, class_type in FROZEN_NODES.items():
+    if not isinstance(template, dict) or set(template) != set(expected):
+        raise ValueError(f"{kind} workflow was modified")
+    for node_id, class_type in expected.items():
         node = template.get(node_id)
         if not isinstance(node, dict) or node.get("class_type") != class_type:
-            raise ValueError("picture workflow was modified")
+            raise ValueError(f"{kind} workflow was modified")
+    if kind == "video":
+        inputs = template["6"]["inputs"]
+        if (inputs.get("width"), inputs.get("height"), inputs.get("length")) != (672, 384, 56):
+            raise ValueError("video workflow was modified")
+        if template["8"]["inputs"].get("steps") != 8:
+            raise ValueError("video workflow was modified")
+        return template
     if template["6"]["inputs"].get("width") != 1024 or template["6"]["inputs"].get("height") != 1024:
         raise ValueError("picture workflow was modified")
     if template["7"]["inputs"].get("steps") != 8:
@@ -114,21 +142,26 @@ def load_template(path: str | None = None) -> dict:
     return template
 
 
-def build_workflow(template: dict, prompt: str, seed: int, filename_prefix: str) -> dict:
+def build_workflow(template: dict, prompt: str, seed: int, filename_prefix: str, kind: str = "picture") -> dict:
     """Substitute the prompt and seed. Every other knob stays the checked graph."""
-    load_template_shape = set(template) == set(FROZEN_NODES)
+    load_template_shape = set(template) == set(VIDEO_NODES if kind == "video" else FROZEN_NODES)
     if not load_template_shape:
         raise ValueError("picture workflow was modified")
     workflow = copy.deepcopy(template)
+    if kind == "video":
+        workflow["6"]["inputs"]["prompt"] = prompt
+        workflow["10"]["inputs"]["noise_seed"] = int(seed)
+        workflow["15"]["inputs"]["filename_prefix"] = filename_prefix
+        return workflow
     workflow["4"]["inputs"]["text"] = prompt
     workflow["7"]["inputs"]["seed"] = int(seed)
     workflow["9"]["inputs"]["filename_prefix"] = filename_prefix
     return workflow
 
 
-def weights_ready(root: str | None = None) -> bool:
+def weights_ready(root: str | None = None, kind: str = "picture") -> bool:
     base = os.path.join(root or comfy_root(), "models")
-    for rel, size in WEIGHTS:
+    for rel, size in (VIDEO_WEIGHTS if kind == "video" else WEIGHTS):
         path = os.path.join(base, rel)
         try:
             if os.path.getsize(path) != size:
@@ -138,10 +171,10 @@ def weights_ready(root: str | None = None) -> bool:
     return True
 
 
-def runtime_ready(platform: dict, root: str | None = None, unit: str | None = None) -> bool:
+def runtime_ready(platform: dict, root: str | None = None, unit: str | None = None, kind: str = "picture") -> bool:
     if not arc_discrete(platform):
         return False
-    if not os.path.isfile(unit or unit_path()):
+    if not os.path.isfile(unit or unit_path(kind)):
         return False
     ops = os.path.join(root or comfy_root(), "comfy", "ops.py")
     try:
@@ -150,7 +183,7 @@ def runtime_ready(platform: dict, root: str | None = None, unit: str | None = No
                 return False
     except OSError:
         return False
-    return weights_ready(root)
+    return weights_ready(root, kind)
 
 
 def _atomic_json(path: str, payload: dict) -> None:
@@ -163,23 +196,23 @@ def _atomic_json(path: str, payload: dict) -> None:
     os.replace(tmp, path)
 
 
-def write_request(payload: dict, path: str | None = None) -> None:
-    _atomic_json(path or request_path(), payload)
+def write_request(payload: dict, path: str | None = None, kind: str = "picture") -> None:
+    _atomic_json(path or request_path(kind), payload)
 
 
-def write_status(state: str, message: str = "", image_id: str = "", path: str | None = None) -> None:
-    current = read_status(path)
+def write_status(state: str, message: str = "", image_id: str = "", path: str | None = None, kind: str = "picture") -> None:
+    current = read_status(path, kind)
     payload = {
         "state": state,
         "message": message,
         "id": image_id or current.get("id") or "",
     }
-    _atomic_json(path or status_path(), payload)
+    _atomic_json(path or status_path(kind), payload)
 
 
-def read_status(path: str | None = None) -> dict:
+def read_status(path: str | None = None, kind: str = "picture") -> dict:
     try:
-        with open(path or status_path(), encoding="utf-8") as f:
+        with open(path or status_path(kind), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {"state": "idle", "message": "", "id": ""}
@@ -188,8 +221,8 @@ def read_status(path: str | None = None) -> dict:
     return data
 
 
-def load_request(path: str | None = None) -> dict:
-    with open(path or request_path(), encoding="utf-8") as f:
+def load_request(path: str | None = None, kind: str = "picture") -> dict:
+    with open(path or request_path(kind), encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError("picture request is not a prompt")
@@ -211,8 +244,8 @@ def _inside(directory: str, path: str) -> bool:
     return os.path.dirname(os.path.realpath(path)) == root
 
 
-def list_images(directory: str | None = None) -> list[dict]:
-    pictures = directory or pictures_dir()
+def list_images(directory: str | None = None, kind: str = "picture") -> list[dict]:
+    pictures = directory or pictures_dir(kind)
     if not os.path.isdir(pictures):
         return []
     found = []
@@ -222,7 +255,7 @@ def list_images(directory: str | None = None) -> list[dict]:
         image_id = name[:-5]
         if not ID_RE.match(image_id):
             continue
-        png = os.path.join(pictures, image_id + ".png")
+        png = os.path.join(pictures, image_id + extension(kind))
         meta_path = os.path.join(pictures, name)
         if not _inside(pictures, png) or not os.path.isfile(png):
             continue
@@ -243,21 +276,21 @@ def list_images(directory: str | None = None) -> list[dict]:
     return found[:24]
 
 
-def image_file(image_id: str, directory: str | None = None) -> str | None:
+def image_file(image_id: str, directory: str | None = None, kind: str = "picture") -> str | None:
     if not ID_RE.match(image_id or ""):
         return None
-    pictures = directory or pictures_dir()
-    path = os.path.join(pictures, image_id + ".png")
+    pictures = directory or pictures_dir(kind)
+    path = os.path.join(pictures, image_id + extension(kind))
     if not _inside(pictures, path) or not os.path.isfile(path):
         return None
     return path
 
 
-def delete_image(image_id: str, directory: str | None = None) -> bool:
-    path = image_file(image_id, directory)
+def delete_image(image_id: str, directory: str | None = None, kind: str = "picture") -> bool:
+    path = image_file(image_id, directory, kind)
     if path is None:
         return False
-    pictures = directory or pictures_dir()
+    pictures = directory or pictures_dir(kind)
     os.remove(path)
     meta = os.path.join(pictures, image_id + ".json")
     if _inside(pictures, meta) and os.path.isfile(meta):
@@ -277,7 +310,7 @@ def _http_json(method: str, url: str, payload: dict | None = None, timeout: int 
     return json.loads(raw)
 
 
-def _error_text(status: dict) -> str:
+def _error_text(status: dict, kind: str = "picture") -> str:
     for item in status.get("messages") or []:
         if isinstance(item, list) and len(item) == 2 and item[0] == "execution_error":
             detail = item[1] if isinstance(item[1], dict) else {}
@@ -286,25 +319,26 @@ def _error_text(status: dict) -> str:
             text = f"{node}: {message}".strip(": ")
             if text:
                 return text[:400]
-    return "ComfyUI did not finish the picture."
+    return f"ComfyUI did not finish the {kind}."
 
 
-def execute_job(timeout_s: int = JOB_TIMEOUT_S) -> None:
+def execute_job(timeout_s: int = JOB_TIMEOUT_S, kind: str = "picture") -> None:
     """Post the frozen workflow to a ComfyUI that is already listening."""
-    request = load_request()
-    template = load_template()
+    request = load_request(kind=kind)
+    template = load_template(kind=kind)
+    subdir = "hbvideo" if kind == "video" else "hbpic"
     workflow = build_workflow(
-        template, request["prompt"], request["seed"], f"hbpic/{request['id']}"
+        template, request["prompt"], request["seed"], f"{subdir}/{request['id']}", kind=kind
     )
     try:
         queued = _http_json("POST", f"{COMFY_URL}/prompt", {"prompt": workflow}, timeout=120)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:400]
-        write_status("error", body or "ComfyUI rejected the picture.", request["id"])
+        write_status("error", body or f"ComfyUI rejected the {kind}.", request["id"], kind=kind)
         raise SystemExit(1) from exc
     prompt_id = queued.get("prompt_id")
     if not prompt_id or queued.get("node_errors"):
-        write_status("error", "ComfyUI rejected the picture.", request["id"])
+        write_status("error", f"ComfyUI rejected the {kind}.", request["id"], kind=kind)
         raise SystemExit(1)
 
     deadline = time.time() + timeout_s
@@ -320,23 +354,23 @@ def execute_job(timeout_s: int = JOB_TIMEOUT_S) -> None:
             continue
         status = item.get("status") or {}
         if status.get("status_str") == "error":
-            write_status("error", _error_text(status), request["id"])
+            write_status("error", _error_text(status, kind), request["id"], kind=kind)
             raise SystemExit(1)
         if status.get("completed"):
             break
     else:
-        write_status("error", "The picture took too long and was stopped.", request["id"])
+        write_status("error", f"The {kind} took too long and was stopped.", request["id"], kind=kind)
         raise SystemExit(1)
 
-    output_dir = os.path.join(comfy_root(), "output", "hbpic")
-    matches = glob.glob(os.path.join(output_dir, request["id"] + "_*.png"))
+    output_dir = os.path.join(comfy_root(), "output", subdir)
+    matches = glob.glob(os.path.join(output_dir, request["id"] + "_*" + extension(kind)))
     matches = [path for path in matches if os.path.isfile(path)]
     if not matches:
-        write_status("error", "ComfyUI finished without an image.", request["id"])
+        write_status("error", f"ComfyUI finished without a {kind}.", request["id"], kind=kind)
         raise SystemExit(1)
     src = max(matches, key=os.path.getmtime)
-    os.makedirs(pictures_dir(), exist_ok=True)
-    dest = os.path.join(pictures_dir(), request["id"] + ".png")
+    os.makedirs(pictures_dir(kind), exist_ok=True)
+    dest = os.path.join(pictures_dir(kind), request["id"] + extension(kind))
     shutil.copy2(src, dest)
     os.chmod(dest, 0o640)
     _give(dest)
@@ -346,11 +380,11 @@ def execute_job(timeout_s: int = JOB_TIMEOUT_S) -> None:
         "seed": request["seed"],
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    meta = os.path.join(pictures_dir(), request["id"] + ".json")
+    meta = os.path.join(pictures_dir(kind), request["id"] + ".json")
     _atomic_json(meta, sidecar)
     os.chmod(meta, 0o640)
     _give(meta)
-    write_status("success", "Picture ready.", request["id"])
+    write_status("success", f"{kind.capitalize()} ready.", request["id"], kind=kind)
 
 
 def _give(path: str) -> None:
@@ -366,44 +400,48 @@ def _give(path: str) -> None:
         pass
 
 
-def settle() -> None:
+def settle(kind: str = "picture") -> None:
     """A killed job must not stay 'running' or the button spins forever."""
-    current = read_status()
+    current = read_status(kind=kind)
     if current.get("state") == "running":
-        write_status("error", "The picture was interrupted.", current.get("id") or "")
+        write_status("error", f"The {kind} was interrupted.", current.get("id") or "", kind=kind)
 
 
-def mark_chat(ok: bool) -> None:
+def mark_chat(ok: bool, kind: str = "picture") -> None:
     """Record that llama-server did not become healthy again."""
     if ok:
         return
-    current = read_status()
+    current = read_status(kind=kind)
     if current.get("state") == "success":
         write_status(
             "error",
-            "The picture was saved, but chat did not come back.",
+            f"The {kind} was saved, but chat did not come back.",
             current.get("id") or "",
+            kind=kind,
         )
     else:
-        message = (current.get("message") or "The picture failed.").rstrip(".")
-        write_status("error", message + ". Chat did not come back.", current.get("id") or "")
+        message = (current.get("message") or f"The {kind} failed.").rstrip(".")
+        write_status("error", message + ". Chat did not come back.", current.get("id") or "", kind=kind)
 
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         return 2
     cmd = argv[1]
+    kind = os.environ.get("HB_MEDIA_KIND", "picture")
+    if kind not in ("picture", "video"):
+        return 2
     if cmd == "weights":
-        return 0 if weights_ready() else 1
+        return 0 if weights_ready(kind=kind) else 1
     if cmd == "check":
         try:
-            load_request()
-            load_template()
+            load_request(kind=kind)
+            load_template(kind=kind)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(exc)
             return 1
-        if not weights_ready():
-            print("Krea 2 weights are missing.")
+        if not weights_ready(kind=kind):
+            print(f"Weights for {kind} generation are missing.")
             return 1
         return 0
     if cmd == "status":
@@ -411,22 +449,23 @@ def main(argv: list[str]) -> int:
         message = argv[3] if len(argv) > 3 else ""
         image_id = ""
         try:
-            image_id = load_request().get("id") or ""
+            image_id = load_request(kind=kind).get("id") or ""
         except (OSError, ValueError, json.JSONDecodeError):
             pass
-        write_status(state, message, image_id)
+        write_status(state, message, image_id, kind=kind)
         return 0
     if cmd == "execute":
         try:
-            execute_job()
+            timeout = int(os.environ.get("HB_VIDEO_TIMEOUT", "1800")) if kind == "video" else JOB_TIMEOUT_S
+            execute_job(timeout_s=timeout, kind=kind)
         except SystemExit as exc:
             return int(exc.code or 1)
         return 0
     if cmd == "settle":
-        settle()
+        settle(kind)
         return 0
     if cmd == "mark-chat":
-        mark_chat(argv[2] == "ok" if len(argv) > 2 else False)
+        mark_chat(argv[2] == "ok" if len(argv) > 2 else False, kind)
         return 0
     return 2
 

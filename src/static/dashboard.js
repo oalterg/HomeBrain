@@ -280,7 +280,7 @@ async function init() {
         // badges in the Status tab, so fetching it at init means those rows
         // populate immediately instead of staying skeleton until someone
         // opens the Settings tab.
-        await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), pictureRefresh(), fetchVaultStatus(),
+        await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), refreshMedia(), fetchVaultStatus(),
             vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(),
             loadRecoveryStatus(), loadActivation()]);
     } catch (err) {
@@ -299,7 +299,7 @@ const POLLERS = [
     [fetchStatus, 5000],
     [loadSystemConfig, 10000],   // AI state doesn't churn
     [pollTask, 2000],
-    [pictureRefresh, 2000],
+    [refreshMedia, 2000],
     [fetchVaultStatus, 10000],
     [vaultDocsRefresh, 30000],
     [vaultMcpRefresh, 30000],
@@ -359,12 +359,16 @@ function openTab(id) {
         loadNetworkStatus();
     }
     if (id === 'household') loadHousehold();
-    if (id === 'settings') {
+    if (id === 'ai') {
         loadSystemConfig();
         loadModelsOnDisk();
-        loadSerialDevices();
         connRefresh();
         vaultMcpRefresh();
+        channelRefresh();
+    }
+    if (id === 'settings') {
+        loadSystemConfig();
+        loadSerialDevices();
     }
 }
 
@@ -469,8 +473,9 @@ async function pollTask() {
         const banner = document.getElementById('global-status');
         if (!banner) return;
 
-        if (window._pictureRunning) {
-            banner.innerText = 'Making a picture. Chat is paused.';
+        const making = window._mediaRunning && (window._mediaRunning.picture ? 'picture' : (window._mediaRunning.video ? 'video' : ''));
+        if (making) {
+            banner.innerText = MEDIA[making].banner;
             banner.dataset.state = 'busy';
         } else if (data.status === 'idle') {
             banner.innerText = 'System Active';
@@ -1459,68 +1464,124 @@ function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStat
         whisperRow.style.display = known ? '' : 'none';
         if (known) setStatus(document.getElementById('sys-whisper-status'), whisperStatus);
     }
-    applyPicturePause();
+    applyMediaPause();
 }
 
-function applyPicturePause() {
-    if (!window._pictureRunning) return;
+const MEDIA = {
+    picture: {
+        api: '/api/picture',
+        file: (id) => '/api/picture/images/' + id,
+        remove: (id) => '/api/picture/' + id,
+        visual: 'img',
+        busy: 'Making a picture…',
+        ready: 'Picture ready. Chat is back.',
+        fail: 'The picture failed.',
+        running: 'Chat is paused while the picture is made.',
+        start: 'Chat is paused while the picture is made. This takes a couple of minutes.',
+        pause: 'Paused for a picture',
+        banner: 'Making a picture. Chat is paused.',
+    },
+    video: {
+        api: '/api/video',
+        file: (id) => '/api/video/clips/' + id,
+        remove: (id) => '/api/video/' + id,
+        visual: 'video',
+        busy: 'Making a video…',
+        ready: 'Video ready. Chat is back.',
+        fail: 'The video failed.',
+        running: 'Chat is paused while the video is made.',
+        start: 'Chat is paused while the video is made. This takes several minutes.',
+        pause: 'Paused for a video',
+        banner: 'Making a video. Chat is paused.',
+    },
+};
+window._mediaRunning = { picture: false, video: false };
+
+function mediaBusy() {
+    return window._mediaRunning.picture || window._mediaRunning.video;
+}
+
+function applyMediaPause() {
+    const kind = window._mediaRunning.picture ? 'picture' : (window._mediaRunning.video ? 'video' : '');
+    if (!kind) return;
     const el = document.getElementById('sys-llama-status');
-    if (el) setStatus(el, 'starting', 'Paused for a picture');
+    if (el) setStatus(el, 'starting', MEDIA[kind].pause);
 }
 
-async function pictureRefresh() {
-    const card = document.getElementById('picture-card');
-    if (!card) return;
-    try {
-        const res = await fetch('/api/picture', { credentials: 'include' });
-        if (!res.ok) return;
-        const data = await res.json();
-        card.style.display = data.available ? '' : 'none';
-        if (!data.available) {
-            window._pictureRunning = false;
-            return;
+async function refreshMedia() {
+    const fetched = await Promise.all(Object.keys(MEDIA).map(async (kind) => {
+        const card = document.getElementById(kind + '-card');
+        if (!card) return [kind, null];
+        try {
+            const res = await fetch(MEDIA[kind].api, { credentials: 'include' });
+            if (!res.ok) return [kind, null];
+            return [kind, await res.json()];
+        } catch (e) {
+            return [kind, null];
         }
-        window._pictureRunning = data.state === 'running';
-        const msg = document.getElementById('picture-msg');
-        const button = document.getElementById('picture-generate');
-        if (button) {
-            button.disabled = window._pictureRunning;
-            button.textContent = window._pictureRunning ? 'Making a picture…' : 'Generate';
-        }
-        if (msg) {
-            if (data.state === 'running') msg.textContent = data.message || 'Chat is paused while the picture is made.';
-            else if (data.state === 'error') msg.textContent = data.message || 'The picture failed.';
-            else if (data.state === 'success') msg.textContent = 'Picture ready. Chat is back.';
-        }
-        applyPicturePause();
-        const gallery = document.getElementById('picture-gallery');
-        if (!gallery) return;
-        const images = data.images || [];
-        const key = images.map(image => image.id).join(',');
-        if (gallery.dataset.key === key) return;
-        gallery.dataset.key = key;
-        gallery.replaceChildren();
-        for (const image of images) {
-            const figure = document.createElement('figure');
-            const img = document.createElement('img');
-            img.src = '/api/picture/images/' + image.id;
-            img.alt = image.prompt || 'Picture';
-            const caption = document.createElement('figcaption');
-            caption.textContent = image.prompt || '';
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.textContent = 'Remove';
-            remove.addEventListener('click', () => pictureDelete(image.id));
-            figure.append(img, caption, remove);
-            gallery.appendChild(figure);
-        }
-    } catch (e) { /* next poll retries */ }
+    }));
+    for (const [kind, data] of fetched) {
+        if (!data) continue;
+        window._mediaRunning[kind] = !!(data.available && data.state === 'running');
+    }
+    for (const [kind, data] of fetched) paintMedia(kind, data);
+    applyMediaPause();
 }
 
-async function pictureGenerate() {
-    const prompt = (document.getElementById('picture-prompt')?.value || '').trim();
-    const msg = document.getElementById('picture-msg');
-    const res = await fetch('/api/picture', {
+function paintMedia(kind, data) {
+    const card = document.getElementById(kind + '-card');
+    if (!card || !data) return;
+    const spec = MEDIA[kind];
+    card.style.display = data.available ? '' : 'none';
+    if (!data.available) {
+        window._mediaRunning[kind] = false;
+        return;
+    }
+    const button = document.getElementById(kind + '-generate');
+    if (button) {
+        button.disabled = mediaBusy();
+        button.textContent = window._mediaRunning[kind] ? spec.busy : 'Generate';
+    }
+    const msg = document.getElementById(kind + '-msg');
+    if (msg) {
+        if (data.state === 'running') msg.textContent = data.message || spec.running;
+        else if (data.state === 'error') msg.textContent = data.message || spec.fail;
+        else if (data.state === 'success') msg.textContent = spec.ready;
+    }
+    const gallery = document.getElementById(kind + '-gallery');
+    if (!gallery) return;
+    const images = data.images || [];
+    const key = images.map(image => image.id).join(',');
+    if (gallery.dataset.key === key) return;
+    gallery.dataset.key = key;
+    gallery.replaceChildren();
+    for (const image of images) {
+        const figure = document.createElement('figure');
+        const visual = document.createElement(spec.visual);
+        visual.src = spec.file(image.id);
+        if (spec.visual === 'video') {
+            visual.controls = true;
+            visual.preload = 'metadata';
+        } else {
+            visual.alt = image.prompt || 'Picture';
+        }
+        const caption = document.createElement('figcaption');
+        caption.textContent = image.prompt || '';
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => mediaDelete(kind, image.id));
+        figure.append(visual, caption, remove);
+        gallery.appendChild(figure);
+    }
+}
+
+async function mediaGenerate(kind) {
+    if (mediaBusy()) return;
+    const spec = MEDIA[kind];
+    const prompt = (document.getElementById(kind + '-prompt')?.value || '').trim();
+    const msg = document.getElementById(kind + '-msg');
+    const res = await fetch(spec.api, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -1532,19 +1593,20 @@ async function pictureGenerate() {
         if (msg) msg.textContent = data.error || 'Could not start.';
         return;
     }
-    if (msg) msg.textContent = 'Chat is paused while the picture is made. This takes a couple of minutes.';
-    window._pictureRunning = true;
-    applyPicturePause();
-    const button = document.getElementById('picture-generate');
-    if (button) {
+    if (msg) msg.textContent = spec.start;
+    window._mediaRunning[kind] = true;
+    applyMediaPause();
+    for (const name of Object.keys(MEDIA)) {
+        const button = document.getElementById(name + '-generate');
+        if (!button) continue;
         button.disabled = true;
-        button.textContent = 'Making a picture…';
+        if (name === kind) button.textContent = spec.busy;
     }
 }
 
-async function pictureDelete(id) {
-    const res = await fetch('/api/picture/' + id, { method: 'DELETE', credentials: 'include' });
-    if (res.ok) pictureRefresh();
+async function mediaDelete(kind, id) {
+    const res = await fetch(MEDIA[kind].remove(id), { method: 'DELETE', credentials: 'include' });
+    if (res.ok) refreshMedia();
 }
 
 let aiModelsLoaded = false;

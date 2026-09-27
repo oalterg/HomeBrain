@@ -1300,3 +1300,56 @@ UD-Q5_K_M at this same context was 19.8 t/s in 19.2 GiB. The XL file is the
 heavier quant, so decode is slower, and the extra weight uses the headroom
 that previously held ctx 393216. **Shipped for the B60: UD-Q5_K_XL, ctx 131072,
 q8_0 KV.** UD-Q4_K_XL stays the 16 GB default.
+
+## 2026-09-27 — Krea 2 Turbo on Arc Pro B60: fix OpenCL discovery
+
+Arc Pro B60 24 GB, Ryzen 5 5600, 30 GiB RAM; torch 2.14.0+xpu,
+ComfyUI `79be670e`, NEO 26.35. Frozen FP8 workflow from PR #242:
+1024×1024, eight Euler/simple steps, CFG 1, seed 1. Prompt:
+"A blue enamel cup on a wooden table beside a window, natural afternoon
+light, detailed photograph."
+
+The long CPU-only period was VAE attention: a BF16 matrix multiply of
+`[16384, 16384] @ [16384, 384]` fell back to CPU and took **105.34 s**.
+oneDNN logged `Arc Pro B60 Graphics OpenCL device not found`. The NEO GPU
+OpenCL library was unpacked, but the ICD discovery configuration exposed
+only the CPU runtime. Setting `OCL_ICD_FILENAMES` to the unpacked
+`intel-opencl/libigdrcl.so` made previously failing native GEMM and SDPA
+probes succeed. `OCL_ICD_VENDORS` pointing to the library did not work with
+the loader in this torch environment.
+
+The launcher now exposes that driver. `comfyui-arc-native.patch` tries full
+linear operations and native SDPA before the existing fallbacks, and keys
+linear fallback decisions by row count, device and dtype as well as weight
+dimensions. It applies after the original Arc patch, including on boxes
+where that patch is already installed. Run `sudo bash scripts/picture.sh install`
+to update an existing picture runtime.
+
+| Stage | Original | Fixed |
+|---|---:|---:|
+| Text encoder load | 3.10 s | 3.08 s |
+| Text encoding | 2.97 s | 2.03 s |
+| KSampler (includes model loading) | 66.43 s | 28.13 s |
+| VAE decode | 106.54 s | 1.65 s |
+| ComfyUI prompt total | **179.42 s** | **35.26 s** |
+| Picture service, including chat restoration | 214.64 s | 72.72 s |
+
+These are single cold-process runs through the normal picture service,
+which also drops file caches. GPU kernel caches were not cleared. Node
+timings synchronize XPU at boundaries; the temporary profiler intercepts
+linear and matmul calls and recorded no CPU calls for either operation in
+the fixed run. The images were visually checked: the same composition and
+detail were preserved, with small numerical/rendering differences.
+
+The baseline hardware regression check failed because a 256-row linear
+operation was split into two calls. After the patch it passes full linear,
+short-prompt CPU fallback isolation, native attention and attention fallback
+checks. The existing picture tests also pass (11 tests).
+
+For profiling, temporarily copy `scripts/comfy-picture-profile.py` into
+`/home/homebrain/ComfyUI/custom_nodes/`, run a picture, then remove the file.
+`HB_PICTURE_PROFILE` JSON records appear in
+`/home/homebrain/picture-comfy.log`; CPU seconds count CPU kernels only,
+while node seconds include transfers. The hardware regression script is
+`scripts/tests/check_comfy_arc.py`: run it with the ComfyUI venv Python,
+the environment exported by `comfy-xpu.sh`, and `comfy/ops.py` as its argument.

@@ -49,7 +49,7 @@ STEPS = {
             "Once paired, the agent can finish the rest of this list from chat."
         ),
         "cta": "Pair Telegram",
-        "tab": "settings",
+        "tab": "ai",
         "card": "channels-card",
     },
     "backup": {

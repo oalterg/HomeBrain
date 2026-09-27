@@ -25,6 +25,9 @@
 
     <div class="tabs">
         <button class="tab-btn active" data-tab="status">Status</button>
+        {% if has_gpu %}
+        <button class="tab-btn" data-tab="ai">AI</button>
+        {% endif %}
         <button class="tab-btn" data-tab="household">Household</button>
         <button class="tab-btn" data-tab="backup">Backup &amp; Storage</button>
         <button class="tab-btn" data-tab="connectivity">Connectivity</button>
@@ -91,7 +94,7 @@
                             <strong>Integrations</strong>
                             <span class="row-meta">
                                 <span id="sys-integrations-meta">What the agent can reach</span> ·
-                                <a href="#" onclick="return goTo('settings', 'integrations-card')">manage</a>
+                                <a href="#" onclick="return goTo('ai', 'integrations-card')">manage</a>
                             </span>
                         </div>
                         <span id="sys-integrations-status" class="skeleton sk-wide"></span>
@@ -167,6 +170,229 @@
             </div>
         </div>
     </div>
+
+    <!-- ============================== AI ============================== -->
+    {% if has_gpu %}
+    <div id="ai" class="tab-content">
+        <div class="stack">
+
+            <section class="section">
+                <h3>Personal AI Assistant</h3>
+                <p class="lede">A fully private assistant on your own hardware. Inference and chat never leave the
+                    device. Live status is on the Status tab.</p>
+
+                <div id="ai-model-selector" style="display:none;">
+                    <label for="ai-model-select">Model</label>
+                    <select id="ai-model-select" onchange="onModelSelectChange()"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
+                </div>
+
+                <div id="models-on-disk" class="mt" style="display:none;">
+                    <label>Downloaded models</label>
+                    <p class="lede">Switching models keeps the old one so switching back is instant. They are large;
+                        delete the ones you are not using. Any of them can be downloaded again.</p>
+                    <div id="models-on-disk-list"></div>
+                </div>
+
+                <div class="inline-row mt" style="justify-content:space-between;">
+                    <a id="openclaw-open" href="/openclaw/" target="_blank" rel="noopener" class="btn-primary link-out"
+                       style="display:none;">Open AI Assistant<span aria-hidden="true">↗</span></a>
+                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto;">Loading…</button>
+                </div>
+            </section>
+            <section class="section" id="picture-card" style="display:none;">
+                <h3>Picture</h3>
+                <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
+                    then comes back.</p>
+                <textarea id="picture-prompt" rows="3" maxlength="500"
+                          placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
+                <div class="form-actions">
+                    <button class="btn-primary" id="picture-generate" onclick="mediaGenerate('picture')">Generate</button>
+                </div>
+                <small id="picture-msg" class="hint"></small>
+                <div id="picture-gallery" class="picture-grid"></div>
+            </section>
+
+            <section class="section" id="video-card" style="display:none;">
+                <h3>Video</h3>
+                <p class="lede">Makes one short clip, about two seconds, on this Arc card. Chat pauses while it runs,
+                    then comes back.</p>
+                <textarea id="video-prompt" rows="3" maxlength="500"
+                          placeholder="A ceramic teapot on a wooden table, steam rising, soft morning light"></textarea>
+                <div class="form-actions">
+                    <button class="btn-primary" id="video-generate" onclick="mediaGenerate('video')">Generate</button>
+                </div>
+                <small id="video-msg" class="hint"></small>
+                <div id="video-gallery" class="picture-grid"></div>
+            </section>
+
+            <section class="section" id="integrations-card">
+                <h3>Agent Integrations</h3>
+                <p class="lede">What your agent can reach. Each row connects the agent to a part of your home.</p>
+                <div id="conn-rows" class="row-list"></div>
+                <small id="conn-self-note" class="hint"></small>
+                <small id="conn-msg" class="hint" style="min-height:1em;"></small>
+
+                <div hidden id="details-ha" class="conn-form">
+                    <div class="form-grid fields-2">
+                        <input type="text" id="ha-name" placeholder="Label (e.g. Home, Cabin)">
+                        <input type="text" id="ha-base-url" placeholder="https://ha.example.com">
+                    </div>
+                    <input type="text" id="ha-token-input" class="mt" placeholder="Long-lived access token"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaAdd(); }">
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="connHaAdd()">Add</button>
+                        <button onclick="closeForm('details-ha')">Cancel</button>
+                    </div>
+                    <small id="ha-local-hint" class="hint" style="display:none; color:var(--accent);"></small>
+                    <small class="hint">In each Home Assistant instance: Profile → Security → Long-lived access
+                        tokens → Create. Add one row per house; the agent picks the right one with the
+                        <code>account</code> parameter.</small>
+                </div>
+
+                <div hidden id="details-nc" class="conn-form">
+                    <div class="form-grid fields-2">
+                        <input type="text" id="nc-name" placeholder="Label (e.g. Personal)">
+                        <input type="text" id="nc-base-url" placeholder="https://nc.example.com">
+                        <input type="text" id="nc-user" placeholder="Username">
+                        <input type="password" id="nc-token" placeholder="App password">
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="connNcAdd()">Add</button>
+                        <button onclick="closeForm('details-nc')">Cancel</button>
+                    </div>
+                    <small class="hint">For your HomeBrain's own Nextcloud, the row offers a one-click
+                        <em>Add HomeBrain user</em> instead. Use this form for external instances.</small>
+                </div>
+
+                <div hidden id="details-nc-local" class="conn-form">
+                    <div class="form-grid fields-2 fields-end">
+                        <div>
+                            <label for="nc-local-user">User</label>
+                            <select id="nc-local-user" onchange="connNcLocalUserPicked()"></select>
+                        </div>
+                        <div id="nc-local-pass-wrap">
+                            <label for="nc-local-pass">Password</label>
+                            <input type="password" id="nc-local-pass" placeholder="That user's Nextcloud password"
+                                   onkeydown="if (event.key === 'Enter') { event.preventDefault(); connNcAddLocalSubmit(); }">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="connNcAddLocalSubmit()">Add</button>
+                        <button onclick="closeForm('details-nc-local')">Cancel</button>
+                        <small id="nc-local-hint" class="muted"></small>
+                    </div>
+                    <small class="hint">We mint an app password against this HomeBrain's Nextcloud — the login
+                        password is used once and never stored.</small>
+                </div>
+
+                <div hidden id="details-email" class="conn-form">
+                    <div class="form-grid fields-2">
+                        <input type="text"     id="em-name"      placeholder="Label (e.g. Agent)">
+                        <input type="email"    id="em-user"      placeholder="agent@example.com">
+                        <input type="text"     id="em-imap-host" placeholder="IMAP host">
+                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
+                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
+                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
+                    </div>
+                    <input type="password" id="em-pass" class="mt" placeholder="App password">
+                    <label class="check small muted mt">
+                        <input type="checkbox" id="em-agent-mailbox" checked>
+                        This mailbox belongs exclusively to the agent
+                    </label>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
+                        <button onclick="closeForm('details-email')">Cancel</button>
+                        <label class="check small muted">
+                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)">
+                            Allow the agent to send mail directly (off = drafts only)
+                        </label>
+                    </div>
+                    <small class="hint">The agent will treat a flagged mailbox as its own. Leave the box off if this is a personal inbox it may only read and draft. {% if platform.proton_bridge %}For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
+                        127.0.0.1:12025 SMTP. {% else %}Protonmail is not available on this machine — Proton Bridge ships
+                        for x86_64 only. {% endif %}For Gmail, iCloud or Fastmail use an app-specific password.</small>
+                </div>
+
+                <div hidden id="vault-mcp" class="conn-form">
+                    <p class="small muted">The agent only sees metadata until you explicitly approve a reveal.
+                        <span id="vault-mcp-cli-wrap" style="display:none;">Bitwarden CLI:
+                            <span id="vault-mcp-cli" class="status-badge status-unknown">…</span></span>
+                        <span id="vault-mcp-wired" hidden></span>
+                        <span id="vault-mcp-state" hidden></span>
+                    </p>
+                    <div id="vault-mcp-wire-row" class="form-actions" style="display:none;">
+                        <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()">Enable for agent</button>
+                        <button onclick="closeForm('vault-mcp')">Cancel</button>
+                    </div>
+                    <div id="vault-mcp-unlock-row" class="form-actions" style="display:none;">
+                        <input type="email" id="vault-mcp-email" placeholder="Vault account email" style="display:none;"
+                               onkeydown="if (event.key === 'Enter') { event.preventDefault(); document.getElementById('vault-mcp-pw').focus(); }">
+                        <input type="password" id="vault-mcp-pw" class="grow" placeholder="Vault master password"
+                               onkeydown="if (event.key === 'Enter') { event.preventDefault(); vaultMcpUnlock(); }">
+                        <button class="btn-primary" onclick="vaultMcpUnlock()">Unlock</button>
+                        <button onclick="closeForm('vault-mcp')">Cancel</button>
+                    </div>
+                    <div id="vault-mcp-lock-row" class="form-actions" style="display:none;">
+                        <button onclick="vaultMcpLock()">Lock</button>
+                        <button onclick="closeForm('vault-mcp')">Cancel</button>
+                    </div>
+                    <small id="vault-mcp-msg" class="hint"></small>
+                </div>
+
+                <details class="mt">
+                    <summary class="small muted">Troubleshoot</summary>
+                    <div class="form-actions">
+                        <button onclick="connReconcile()" id="conn-reconcile-btn">Re-sync agent</button>
+                        <button onclick="connRefresh()">Refresh</button>
+                    </div>
+                </details>
+            </section>
+
+            <section class="section" id="channels-card">
+                <h3>Messaging Channels</h3>
+                <p class="lede">How people reach your agent. Link a messenger so you can chat from your phone.</p>
+                <div id="channel-rows" class="row-list"></div>
+                <small id="channel-msg" class="hint" style="min-height:1em;"></small>
+
+                <div hidden id="details-telegram" class="conn-form">
+                    <input type="text" id="tg-token" placeholder="Bot token from @BotFather"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramAdd(); }">
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="channelTelegramAdd()">Link</button>
+                        <button onclick="closeForm('details-telegram')">Cancel</button>
+                    </div>
+                    <small class="hint">Open Telegram → search <strong>@BotFather</strong> → send <code>/newbot</code>
+                        → follow the prompts → paste the token above.</small>
+                </div>
+
+                <div hidden id="details-telegram-pair" class="conn-form">
+                    <input type="text" id="tg-pair-code" placeholder="Pairing code (e.g. U43BU8JG)"
+                           style="text-transform:uppercase;"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramPair(); }">
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="channelTelegramPair()">Approve</button>
+                        <button onclick="closeForm('details-telegram-pair')">Cancel</button>
+                    </div>
+                    <small class="hint">Send any message to your bot on Telegram. It replies with a pairing code —
+                        paste it above to approve.</small>
+                </div>
+
+                <div hidden id="details-email-channel" class="conn-form">
+                    <p class="small muted" id="em-ch-to"></p>
+                    <label for="em-ch-from">Owner From addresses (who may prompt)</label>
+                    <input type="text" id="em-ch-from" placeholder="you@example.com, other@example.com"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelEmailSave(true); }">
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="channelEmailSave(true)">Enable</button>
+                        <button onclick="closeForm('details-email-channel')">Cancel</button>
+                    </div>
+                    <small class="hint">Write to the agent address from one of these personal addresses — not from the agent mailbox itself. A reply to a healthcheck alert from an allowlisted address also wakes the agent. HomeBrain does not send the reply; the agent drafts (or sends, if you enabled that).</small>
+                </div>
+            </section>
+
+        </div>
+    </div>
+    {% endif %}
 
     <!-- =========================== HOUSEHOLD =========================== -->
     <!-- People, not plumbing. This was a card in Connectivity, which answers
@@ -671,211 +897,6 @@
     <!-- =========================== SETTINGS =========================== -->
     <div id="settings" class="tab-content">
         <div class="stack">
-
-            {% if has_gpu %}
-            <section class="section" id="integrations-card">
-                <h3>Agent Integrations</h3>
-                <p class="lede">What your agent can reach. Each row connects the agent to a part of your home.</p>
-                <div id="conn-rows" class="row-list"></div>
-                <small id="conn-self-note" class="hint"></small>
-                <small id="conn-msg" class="hint" style="min-height:1em;"></small>
-
-                <div hidden id="details-ha" class="conn-form">
-                    <div class="form-grid fields-2">
-                        <input type="text" id="ha-name" placeholder="Label (e.g. Home, Cabin)">
-                        <input type="text" id="ha-base-url" placeholder="https://ha.example.com">
-                    </div>
-                    <input type="text" id="ha-token-input" class="mt" placeholder="Long-lived access token"
-                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); connHaAdd(); }">
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="connHaAdd()">Add</button>
-                        <button onclick="closeForm('details-ha')">Cancel</button>
-                    </div>
-                    <small id="ha-local-hint" class="hint" style="display:none; color:var(--accent);"></small>
-                    <small class="hint">In each Home Assistant instance: Profile → Security → Long-lived access
-                        tokens → Create. Add one row per house; the agent picks the right one with the
-                        <code>account</code> parameter.</small>
-                </div>
-
-                <div hidden id="details-nc" class="conn-form">
-                    <div class="form-grid fields-2">
-                        <input type="text" id="nc-name" placeholder="Label (e.g. Personal)">
-                        <input type="text" id="nc-base-url" placeholder="https://nc.example.com">
-                        <input type="text" id="nc-user" placeholder="Username">
-                        <input type="password" id="nc-token" placeholder="App password">
-                    </div>
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="connNcAdd()">Add</button>
-                        <button onclick="closeForm('details-nc')">Cancel</button>
-                    </div>
-                    <small class="hint">For your HomeBrain's own Nextcloud, the row offers a one-click
-                        <em>Add HomeBrain user</em> instead. Use this form for external instances.</small>
-                </div>
-
-                <div hidden id="details-nc-local" class="conn-form">
-                    <div class="form-grid fields-2 fields-end">
-                        <div>
-                            <label for="nc-local-user">User</label>
-                            <select id="nc-local-user" onchange="connNcLocalUserPicked()"></select>
-                        </div>
-                        <div id="nc-local-pass-wrap">
-                            <label for="nc-local-pass">Password</label>
-                            <input type="password" id="nc-local-pass" placeholder="That user's Nextcloud password"
-                                   onkeydown="if (event.key === 'Enter') { event.preventDefault(); connNcAddLocalSubmit(); }">
-                        </div>
-                    </div>
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="connNcAddLocalSubmit()">Add</button>
-                        <button onclick="closeForm('details-nc-local')">Cancel</button>
-                        <small id="nc-local-hint" class="muted"></small>
-                    </div>
-                    <small class="hint">We mint an app password against this HomeBrain's Nextcloud — the login
-                        password is used once and never stored.</small>
-                </div>
-
-                <div hidden id="details-email" class="conn-form">
-                    <div class="form-grid fields-2">
-                        <input type="text"     id="em-name"      placeholder="Label (e.g. Agent)">
-                        <input type="email"    id="em-user"      placeholder="agent@example.com">
-                        <input type="text"     id="em-imap-host" placeholder="IMAP host">
-                        <input type="number"   id="em-imap-port" placeholder="IMAP port (993)">
-                        <input type="text"     id="em-smtp-host" placeholder="SMTP host">
-                        <input type="number"   id="em-smtp-port" placeholder="SMTP port (587)">
-                    </div>
-                    <input type="password" id="em-pass" class="mt" placeholder="App password">
-                    <label class="check small muted mt">
-                        <input type="checkbox" id="em-agent-mailbox" checked>
-                        This mailbox belongs exclusively to the agent
-                    </label>
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="connEmailAdd()">Add</button>
-                        <button onclick="closeForm('details-email')">Cancel</button>
-                        <label class="check small muted">
-                            <input type="checkbox" id="em-send-direct" onchange="connEmailSendDirect(this.checked)">
-                            Allow the agent to send mail directly (off = drafts only)
-                        </label>
-                    </div>
-                    <small class="hint">The agent will treat a flagged mailbox as its own. Leave the box off if this is a personal inbox it may only read and draft. {% if platform.proton_bridge %}For Protonmail, run Proton Bridge and use 127.0.0.1:12143 IMAP /
-                        127.0.0.1:12025 SMTP. {% else %}Protonmail is not available on this machine — Proton Bridge ships
-                        for x86_64 only. {% endif %}For Gmail, iCloud or Fastmail use an app-specific password.</small>
-                </div>
-
-                <div hidden id="vault-mcp" class="conn-form">
-                    <p class="small muted">The agent only sees metadata until you explicitly approve a reveal.
-                        <span id="vault-mcp-cli-wrap" style="display:none;">Bitwarden CLI:
-                            <span id="vault-mcp-cli" class="status-badge status-unknown">…</span></span>
-                        <span id="vault-mcp-wired" hidden></span>
-                        <span id="vault-mcp-state" hidden></span>
-                    </p>
-                    <div id="vault-mcp-wire-row" class="form-actions" style="display:none;">
-                        <button id="vault-mcp-wire-btn" onclick="vaultMcpWireToggle()">Enable for agent</button>
-                        <button onclick="closeForm('vault-mcp')">Cancel</button>
-                    </div>
-                    <div id="vault-mcp-unlock-row" class="form-actions" style="display:none;">
-                        <input type="email" id="vault-mcp-email" placeholder="Vault account email" style="display:none;"
-                               onkeydown="if (event.key === 'Enter') { event.preventDefault(); document.getElementById('vault-mcp-pw').focus(); }">
-                        <input type="password" id="vault-mcp-pw" class="grow" placeholder="Vault master password"
-                               onkeydown="if (event.key === 'Enter') { event.preventDefault(); vaultMcpUnlock(); }">
-                        <button class="btn-primary" onclick="vaultMcpUnlock()">Unlock</button>
-                        <button onclick="closeForm('vault-mcp')">Cancel</button>
-                    </div>
-                    <div id="vault-mcp-lock-row" class="form-actions" style="display:none;">
-                        <button onclick="vaultMcpLock()">Lock</button>
-                        <button onclick="closeForm('vault-mcp')">Cancel</button>
-                    </div>
-                    <small id="vault-mcp-msg" class="hint"></small>
-                </div>
-
-                <details class="mt">
-                    <summary class="small muted">Troubleshoot</summary>
-                    <div class="form-actions">
-                        <button onclick="connReconcile()" id="conn-reconcile-btn">Re-sync agent</button>
-                        <button onclick="connRefresh()">Refresh</button>
-                    </div>
-                </details>
-            </section>
-
-            <section class="section" id="channels-card">
-                <h3>Messaging Channels</h3>
-                <p class="lede">How people reach your agent. Link a messenger so you can chat from your phone.</p>
-                <div id="channel-rows" class="row-list"></div>
-                <small id="channel-msg" class="hint" style="min-height:1em;"></small>
-
-                <div hidden id="details-telegram" class="conn-form">
-                    <input type="text" id="tg-token" placeholder="Bot token from @BotFather"
-                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramAdd(); }">
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="channelTelegramAdd()">Link</button>
-                        <button onclick="closeForm('details-telegram')">Cancel</button>
-                    </div>
-                    <small class="hint">Open Telegram → search <strong>@BotFather</strong> → send <code>/newbot</code>
-                        → follow the prompts → paste the token above.</small>
-                </div>
-
-                <div hidden id="details-telegram-pair" class="conn-form">
-                    <input type="text" id="tg-pair-code" placeholder="Pairing code (e.g. U43BU8JG)"
-                           style="text-transform:uppercase;"
-                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramPair(); }">
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="channelTelegramPair()">Approve</button>
-                        <button onclick="closeForm('details-telegram-pair')">Cancel</button>
-                    </div>
-                    <small class="hint">Send any message to your bot on Telegram. It replies with a pairing code —
-                        paste it above to approve.</small>
-                </div>
-
-                <div hidden id="details-email-channel" class="conn-form">
-                    <p class="small muted" id="em-ch-to"></p>
-                    <label for="em-ch-from">Owner From addresses (who may prompt)</label>
-                    <input type="text" id="em-ch-from" placeholder="you@example.com, other@example.com"
-                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelEmailSave(true); }">
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="channelEmailSave(true)">Enable</button>
-                        <button onclick="closeForm('details-email-channel')">Cancel</button>
-                    </div>
-                    <small class="hint">Write to the agent address from one of these personal addresses — not from the agent mailbox itself. A reply to a healthcheck alert from an allowlisted address also wakes the agent. HomeBrain does not send the reply; the agent drafts (or sends, if you enabled that).</small>
-                </div>
-            </section>
-
-            <section class="section">
-                <h3>Personal AI Assistant</h3>
-                <p class="lede">A fully private assistant on your own hardware. Inference and chat never leave the
-                    device. Live status is on the Status tab.</p>
-
-                <div id="ai-model-selector" style="display:none;">
-                    <label for="ai-model-select">Model</label>
-                    <select id="ai-model-select" onchange="onModelSelectChange()"></select>
-                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
-                </div>
-
-                <div id="models-on-disk" class="mt" style="display:none;">
-                    <label>Downloaded models</label>
-                    <p class="lede">Switching models keeps the old one so switching back is instant. They are large;
-                        delete the ones you are not using. Any of them can be downloaded again.</p>
-                    <div id="models-on-disk-list"></div>
-                </div>
-
-                <div id="picture-card" style="display:none;">
-                    <hr>
-                    <h4>Picture</h4>
-                    <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
-                        then comes back.</p>
-                    <textarea id="picture-prompt" rows="3" maxlength="500"
-                              placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
-                    <div class="form-actions">
-                        <button class="btn-primary" id="picture-generate" onclick="pictureGenerate()">Generate</button>
-                    </div>
-                    <small id="picture-msg" class="hint"></small>
-                    <div id="picture-gallery" class="picture-grid"></div>
-                </div>
-
-                <div class="inline-row mt" style="justify-content:space-between;">
-                    <a id="openclaw-open" href="/openclaw/" target="_blank" rel="noopener" class="btn-primary link-out"
-                       style="display:none;">Open AI Assistant<span aria-hidden="true">↗</span></a>
-                    <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto;">Loading…</button>
-                </div>
-            </section>
-            {% endif %}
 
             <section class="section" id="vault-config-card">
                 <h3>Vault</h3>
