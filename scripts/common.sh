@@ -259,6 +259,26 @@ detect_platform
 # Back-compat alias. Callers that only want the boolean keep working.
 detect_gpu() { detect_platform; }
 
+# AMD, and a discrete Arc Pro (xe with a prefetchable BAR of at least 4 GiB).
+# Integrated Intel, NVIDIA, and a box with no compute GPU stay on the dashboard
+# Install button — HAS_GPU is a wider set than the stacks we have measured.
+# Raspberry Pi VideoCore (vc4/v3d) is not in that set: it exposes a render node
+# and still resolves to driver none, so a Pi never starts this install.
+ai_auto_install_eligible() {
+    case "${HB_GPU_DRIVER:-none}" in
+        amdgpu) return 0 ;;
+        xe) [[ "${HB_GPU_MEMORY:-none}" == "discrete" ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+# Both halves present. A stopped unit still counts: an owner who shut the
+# stack down must not have the next update start it again.
+ai_stack_installed() {
+    command -v openclaw >/dev/null 2>&1 \
+        && [[ -f /etc/systemd/system/llama-server.service ]]
+}
+
 # Write the record where app.py can read it without re-implementing the probe.
 # Called from provision.sh and on manager start; regenerating at boot is enough,
 # since the only thing that changes this is a driver that stopped loading.
@@ -274,6 +294,101 @@ emit_platform_json() {
     fi
     printf '%s' "$json" > "$dest" 2>/dev/null || { log_warn "Could not write platform record to $dest"; return 1; }
     chmod 644 "$dest" 2>/dev/null || true
+}
+
+# Unattended first install of llama-server + whisper + OpenClaw.
+# Writes ${INSTALL_DIR}/.ai_setup_state (running | failed; removed on success)
+# and detaches via systemd so a SYCL build and model download outlive deploy
+# and update. No-op unless ai_auto_install_eligible, unless the owner set
+# ENABLE_OPENCLAW=false, and unless the stack is already installed or the
+# transient unit is already in flight.
+start_ai_auto_setup() {
+    if ! ai_auto_install_eligible; then
+        log_info "No first-class GPU (${HB_GPU_DRIVER:-none}/${HB_GPU_MEMORY:-none}) — AI stack not auto-installed."
+        return 0
+    fi
+    if [[ "${ENABLE_OPENCLAW:-true}" == "false" ]]; then
+        log_info "AI stack auto-setup is off (ENABLE_OPENCLAW=false)."
+        return 0
+    fi
+    if ai_stack_installed; then
+        log_info "AI stack already installed — skipping auto-setup."
+        return 0
+    fi
+    local unit_state
+    unit_state=$(systemctl is-active homebrain-ai-setup 2>/dev/null || true)
+    if [[ "$unit_state" == "active" || "$unit_state" == "activating" ]]; then
+        log_info "AI stack auto-setup already running."
+        return 0
+    fi
+
+    # Platform default only when the owner has not chosen a model. An existing
+    # AI_MODEL_ID is left alone; setup_llama_server still remaps the two retired
+    # Arc placeholders onto the current Arc standard.
+    if [[ -z "${AI_MODEL_ID:-}" ]]; then
+        local models_file="$INSTALL_DIR/config/platform_models.json"
+        if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+            local default_model
+            default_model=$(jq -r --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" --arg tag "${HB_PLATFORM_TAG:-}" \
+                '.platform_defaults[$dtag] // .platform_defaults[$tag] // (.models[] | select(.default == true) | .id) // empty' \
+                "$models_file" | head -1)
+            if [[ -n "$default_model" ]]; then
+                log_info "Auto-selecting default model: $default_model"
+                local m_file m_url m_min key val
+                m_file=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .filename' "$models_file")
+                m_url=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .url' "$models_file")
+                m_min=$(jq -r --arg id "$default_model" '.models[] | select(.id == $id) | .min_size_bytes' "$models_file")
+                for kv in "AI_MODEL_ID=$default_model" "AI_MODEL_FILENAME=$m_file" "AI_MODEL_URL=$m_url" \
+                          "AI_MODEL_MIN_SIZE=$m_min"; do
+                    key="${kv%%=*}" val="${kv#*=}"
+                    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+                        sed -i "s|^${key}=.*|${key}='${val}'|" "$ENV_FILE"
+                    else
+                        echo "${key}='${val}'" >> "$ENV_FILE"
+                    fi
+                done
+            fi
+        fi
+    fi
+
+    local state="${INSTALL_DIR}/.ai_setup_state"
+    if ! printf 'running\n' > "$state"; then
+        log_warn "Could not record AI setup state at ${state}."
+        return 0
+    fi
+    local runner
+    runner=$(mktemp /tmp/homebrain-ai-setup.XXXXXX)
+    cat > "$runner" <<'EOF'
+set -uo pipefail
+state="${INSTALL_DIR}/.ai_setup_state"
+log="${LOG_DIR}/main_setup.log"
+printf 'running\n' > "$state"
+if bash "${INSTALL_DIR}/scripts/utilities.sh" setup_ai >> "$log" 2>&1; then
+    rm -f "$state"
+else
+    printf 'failed\n' > "$state"
+fi
+rm -f "$0"
+EOF
+    chmod 700 "$runner"
+    # Type=simple: the process lifetime is the unit lifetime, so a oneAPI
+    # unpack plus a llama.cpp build is not cut off by DefaultTimeoutStartSec.
+    # --collect drops the transient unit when it exits; the state file is what
+    # the dashboard reads after that.
+    systemctl reset-failed homebrain-ai-setup 2>/dev/null || true
+    if ! systemd-run --unit=homebrain-ai-setup --collect \
+        --property=Type=simple \
+        --property=TimeoutStartSec=infinity \
+        --setenv="INSTALL_DIR=${INSTALL_DIR}" \
+        --setenv="LOG_DIR=${LOG_DIR}" \
+        --working-directory="${INSTALL_DIR}" \
+        /bin/bash "$runner"; then
+        printf 'failed\n' > "$state"
+        rm -f "$runner"
+        log_warn "Could not start AI stack auto-setup."
+        return 0
+    fi
+    log_info "AI stack auto-setup started (homebrain-ai-setup)."
 }
 
 # --- GPU host hardening ---

@@ -238,6 +238,25 @@ get_system_config_status() {
         fi
     fi
 
+    # Unattended setup has neither binary for a long time. The state file is
+    # the signal until setup_ai finishes and removes it. A failure only
+    # relabels a component that is still absent, so a llama unit that did
+    # come up stays "disabled" or "running" while OpenClaw shows failed.
+    local ai_setup_state=""
+    if [[ -f "${INSTALL_DIR}/.ai_setup_state" ]]; then
+        ai_setup_state=$(tr -d '[:space:]' < "${INSTALL_DIR}/.ai_setup_state" 2>/dev/null || true)
+    fi
+    case "$ai_setup_state" in
+        running)
+            llama_status="installing"
+            ai_status="installing"
+            ;;
+        failed)
+            if [[ "$llama_status" == "not_installed" ]]; then llama_status="failed"; fi
+            if [[ "$ai_status" == "not_installed" ]]; then ai_status="failed"; fi
+            ;;
+    esac
+
     local current_model="${AI_MODEL_ID:-}"
     echo "{\"watchdog\": \"$wd_status\", \"pci\": \"$pci_status\", \"cron\": \"$cron_status\", \"llama_server\": \"$llama_status\", \"openclaw\": \"$ai_status\", \"whisper\": \"$whisper_status\", \"ai_model_id\": \"$current_model\"}"
 }

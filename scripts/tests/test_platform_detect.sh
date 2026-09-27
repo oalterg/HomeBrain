@@ -320,6 +320,126 @@ else
     fi
 fi
 
+echo "== AI auto-install eligibility =="
+
+# Same probe as detect_platform, then the predicate. AMD and a discrete Arc
+# Pro install themselves; everything else stays on the dashboard button.
+elig() {
+    local root="$1" bindir="$2"
+    (
+        export HB_SYSFS_ROOT="$root"
+        export PATH="$bindir"
+        export LOG_DIR="$TMP/elig-log"
+        export INSTALL_DIR="$TMP/elig-install"
+        mkdir -p "$LOG_DIR" "$INSTALL_DIR"
+        # shellcheck source=../common.sh disable=SC1091
+        source "$COMMON" >/dev/null 2>&1
+        if ai_auto_install_eligible; then echo yes; else echo no; fi
+    )
+}
+elig_is() {
+    local label="$1" want="$2" got
+    got="$(elig "$3" "$4")"
+    if [[ "$got" == "$want" ]]; then ok "$label"; else bad "$label
+          want: $want
+          got:  $got"; fi
+}
+
+elig_is "amdgpu auto-installs" yes \
+    "$(fixture elig_amd amdgpu)" "$(stub_path x86_64)"
+elig_is "discrete xe auto-installs" yes \
+    "$xe_big" "$(stub_path x86_64)"
+elig_is "unified xe does not auto-install" no \
+    "$xe_small" "$(stub_path x86_64)"
+elig_is "i915 does not auto-install" no \
+    "$(fixture elig_i915 i915)" "$(stub_path x86_64)"
+elig_is "nvidia does not auto-install" no \
+    "$(fixture elig_nv nvidia)" "$(stub_path x86_64)"
+elig_is "no gpu does not auto-install" no \
+    "$(fixture elig_bare)" "$(stub_path x86_64)"
+
+# HomeCloud. v3d/vc4 expose a render node and must not queue setup_ai, write
+# the setup-state file, or invoke systemd-run. This is the production RPi path.
+echo "== Raspberry Pi does not receive the AI stack =="
+
+assert_pi_skips() {
+    local label="$1" root="$2"
+    local bindir called install
+    bindir="$(stub_path aarch64)"
+    called="$TMP/systemd-run-${label// /-}"
+    install="$TMP/install-${label// /-}"
+    mkdir -p "$install"
+    cat > "$bindir/systemd-run" <<EOF
+#!/bin/sh
+echo called >> "$called"
+exit 0
+EOF
+    chmod +x "$bindir/systemd-run"
+    local got
+    got="$(
+        export HB_SYSFS_ROOT="$root"
+        export PATH="$bindir"
+        export LOG_DIR="$TMP/pi-log"
+        export INSTALL_DIR="$install"
+        mkdir -p "$LOG_DIR"
+        # shellcheck source=../common.sh disable=SC1091
+        source "$COMMON" >/dev/null 2>&1
+        start_ai_auto_setup >/dev/null 2>&1
+        printf '%s %s %s\n' "$HB_GPU_DRIVER" "$HAS_GPU" \
+            "$(if [[ -f "$INSTALL_DIR/.ai_setup_state" ]]; then echo state; else echo clean; fi)"
+    )"
+    if [[ "$got" == "none false clean" && ! -f "$called" ]]; then
+        ok "$label"
+    else
+        bad "$label
+          want: driver none, has_gpu false, no state file, systemd-run not called
+          got:  $got
+          systemd-run: $(cat "$called" 2>/dev/null || echo not-called)"
+    fi
+}
+
+assert_pi_skips "RPi v3d does not auto-install" "$(fixture rpi_v3d v3d)"
+assert_pi_skips "RPi vc4 does not auto-install" "$(fixture rpi_vc4 vc4)"
+
+echo "== AI setup state on system_status =="
+
+# No binary, no openclaw on PATH. The state file is the only reason the
+# dashboard would say anything other than not_installed.
+status_opt="$TMP/status-opt"
+status_log="$TMP/status-log"
+mkdir -p "$status_opt" "$status_log"
+printf '\n' > "$status_opt/.env"
+status_bin="$(stub_path x86_64)"
+status_json() {
+    # Absolute bash: the PATH assignment applies to this command, so a bare
+    # `bash` would be looked up in the stub dir and miss.
+    INSTALL_DIR="$status_opt" LOG_DIR="$status_log" PATH="$status_bin" \
+        /bin/bash "$SCRIPT_DIR/../utilities.sh" system_status 2>"$status_log/err"
+}
+status_field() {
+    python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
+}
+
+printf 'running\n' > "$status_opt/.ai_setup_state"
+running_json="$(status_json || true)"
+if [[ "$(printf '%s' "$running_json" | status_field llama_server)" == "installing" \
+   && "$(printf '%s' "$running_json" | status_field openclaw)" == "installing" ]]; then
+    ok "running state file reports installing"
+else
+    bad "running state file: want installing/installing, got ${running_json:-<empty>}
+          $(cat "$status_log/err" 2>/dev/null)"
+fi
+
+printf 'failed\n' > "$status_opt/.ai_setup_state"
+failed_json="$(status_json || true)"
+if [[ "$(printf '%s' "$failed_json" | status_field llama_server)" == "failed" \
+   && "$(printf '%s' "$failed_json" | status_field openclaw)" == "failed" ]]; then
+    ok "failed state file reports failed when nothing is installed"
+else
+    bad "failed state file: want failed/failed, got ${failed_json:-<empty>}
+          $(cat "$status_log/err" 2>/dev/null)"
+fi
+
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

@@ -182,6 +182,7 @@ rsync -a --delete \
 --exclude='version.json' \
 --exclude='venv' \
 --exclude='.platform.json' \
+--exclude='.ai_setup_state' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
 
 # Refresh the hardware record against the freshly-synced common.sh. Excluded
@@ -270,7 +271,12 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             log_info "llama.cpp: ${llama_have:-${old_llama_tag:-unset}} → ${llama_want}. Updating binary..."
             bash "$INSTALL_DIR/scripts/utilities.sh" update_llama || log_warn "llama.cpp update failed — check logs."
         fi
-        if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]]; then
+        # A missing binary is a first install, owned by start_ai_auto_setup
+        # below. This branch is an in-place upgrade of a stack that is already
+        # there; running it on an absent install would pull OpenClaw in before
+        # llama-server and block the update on npm.
+        if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]] \
+           && command -v openclaw >/dev/null 2>&1; then
             log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
             bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
         else
@@ -302,6 +308,11 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         fi
     fi
 fi
+
+# Boxes provisioned before auto-setup, and a failed first attempt. No-op when
+# the stack is installed, opted out, or this GPU is not first-class. Detached,
+# so the update does not wait on the download.
+start_ai_auto_setup
 
 # 5. Dependency Management
 log_info "Updating Python dependencies..."
