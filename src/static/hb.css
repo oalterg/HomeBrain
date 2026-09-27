@@ -634,6 +634,26 @@ tbody tr:hover td { background: var(--accent-soft); }
 
 .hint { display: block; margin-top: 6px; font-size: 0.85em; color: var(--text-dim); }
 
+.picture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+.picture-grid figure { margin: 0; }
+.picture-grid img {
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-input);
+  display: block;
+}
+.picture-grid figcaption {
+  margin-top: 4px;
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+.picture-grid button { margin-top: 4px; }
+
 .empty-state {
   display: flex;
   flex-direction: column;

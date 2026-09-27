@@ -280,7 +280,7 @@ async function init() {
         // badges in the Status tab, so fetching it at init means those rows
         // populate immediately instead of staying skeleton until someone
         // opens the Settings tab.
-        await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), fetchVaultStatus(),
+        await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), pictureRefresh(), fetchVaultStatus(),
             vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(),
             loadRecoveryStatus(), loadActivation()]);
     } catch (err) {
@@ -299,6 +299,7 @@ const POLLERS = [
     [fetchStatus, 5000],
     [loadSystemConfig, 10000],   // AI state doesn't churn
     [pollTask, 2000],
+    [pictureRefresh, 2000],
     [fetchVaultStatus, 10000],
     [vaultDocsRefresh, 30000],
     [vaultMcpRefresh, 30000],
@@ -468,7 +469,10 @@ async function pollTask() {
         const banner = document.getElementById('global-status');
         if (!banner) return;
 
-        if (data.status === 'idle') {
+        if (window._pictureRunning) {
+            banner.innerText = 'Making a picture. Chat is paused.';
+            banner.dataset.state = 'busy';
+        } else if (data.status === 'idle') {
             banner.innerText = 'System Active';
             banner.removeAttribute('data-state');
         } else if (data.status === 'running') {
@@ -1455,6 +1459,92 @@ function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStat
         whisperRow.style.display = known ? '' : 'none';
         if (known) setStatus(document.getElementById('sys-whisper-status'), whisperStatus);
     }
+    applyPicturePause();
+}
+
+function applyPicturePause() {
+    if (!window._pictureRunning) return;
+    const el = document.getElementById('sys-llama-status');
+    if (el) setStatus(el, 'starting', 'Paused for a picture');
+}
+
+async function pictureRefresh() {
+    const card = document.getElementById('picture-card');
+    if (!card) return;
+    try {
+        const res = await fetch('/api/picture', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        card.style.display = data.available ? '' : 'none';
+        if (!data.available) {
+            window._pictureRunning = false;
+            return;
+        }
+        window._pictureRunning = data.state === 'running';
+        const msg = document.getElementById('picture-msg');
+        const button = document.getElementById('picture-generate');
+        if (button) {
+            button.disabled = window._pictureRunning;
+            button.textContent = window._pictureRunning ? 'Making a picture…' : 'Generate';
+        }
+        if (msg) {
+            if (data.state === 'running') msg.textContent = data.message || 'Chat is paused while the picture is made.';
+            else if (data.state === 'error') msg.textContent = data.message || 'The picture failed.';
+            else if (data.state === 'success') msg.textContent = 'Picture ready. Chat is back.';
+        }
+        applyPicturePause();
+        const gallery = document.getElementById('picture-gallery');
+        if (!gallery) return;
+        const images = data.images || [];
+        const key = images.map(image => image.id).join(',');
+        if (gallery.dataset.key === key) return;
+        gallery.dataset.key = key;
+        gallery.replaceChildren();
+        for (const image of images) {
+            const figure = document.createElement('figure');
+            const img = document.createElement('img');
+            img.src = '/api/picture/images/' + image.id;
+            img.alt = image.prompt || 'Picture';
+            const caption = document.createElement('figcaption');
+            caption.textContent = image.prompt || '';
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.textContent = 'Remove';
+            remove.addEventListener('click', () => pictureDelete(image.id));
+            figure.append(img, caption, remove);
+            gallery.appendChild(figure);
+        }
+    } catch (e) { /* next poll retries */ }
+}
+
+async function pictureGenerate() {
+    const prompt = (document.getElementById('picture-prompt')?.value || '').trim();
+    const msg = document.getElementById('picture-msg');
+    const res = await fetch('/api/picture', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* non-json */ }
+    if (!res.ok) {
+        if (msg) msg.textContent = data.error || 'Could not start.';
+        return;
+    }
+    if (msg) msg.textContent = 'Chat is paused while the picture is made. This takes a couple of minutes.';
+    window._pictureRunning = true;
+    applyPicturePause();
+    const button = document.getElementById('picture-generate');
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Making a picture…';
+    }
+}
+
+async function pictureDelete(id) {
+    const res = await fetch('/api/picture/' + id, { method: 'DELETE', credentials: 'include' });
+    if (res.ok) pictureRefresh();
 }
 
 let aiModelsLoaded = false;

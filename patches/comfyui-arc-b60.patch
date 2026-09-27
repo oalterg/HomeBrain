@@ -1,0 +1,138 @@
+diff --git a/comfy/ops.py b/comfy/ops.py
+index 860e09e..6686261 100644
+--- a/comfy/ops.py
++++ b/comfy/ops.py
+@@ -23,6 +23,59 @@ import dataclasses
+ import inspect
+ import comfy.model_management
+ from comfy.cli_args import args, PerformanceFeature
++
++_orig_linear = torch.nn.functional.linear
++
++_xpu_linear_chunk = {}
++
++def _xpu_chunked_linear(input, weight, bias=None):
++    # oneDNN on Arc Pro B60 rejects many GEMM shapes, including short prompts.
++    # The row slice is exact. A shape that fails every GPU size falls back to CPU.
++    if (type(input) is not torch.Tensor or getattr(input, "device", None) is None
++            or input.device.type != "xpu" or weight is None or weight.dim() != 2):
++        return _orig_linear(input, weight, bias)
++    if type(weight) is not torch.Tensor:
++        try:
++            return _orig_linear(input, weight, bias)
++        except RuntimeError:
++            if hasattr(weight, "dequantize"):
++                weight = weight.dequantize()
++            return _xpu_chunked_linear(input, weight, bias)
++    if weight.dtype != input.dtype:
++        weight = weight.to(dtype=input.dtype)
++    if bias is not None and torch.is_tensor(bias) and bias.dtype != input.dtype:
++        bias = bias.to(dtype=input.dtype)
++    in_f = input.shape[-1]
++    rows = input.numel() // in_f
++    flat = input.reshape(rows, in_f)
++    key = (int(weight.shape[0]), int(weight.shape[1]), str(weight.dtype))
++
++    def apply(chunk):
++        if chunk == "cpu":
++            b = None if bias is None else bias.detach().to("cpu")
++            out = _orig_linear(flat.detach().to("cpu"), weight.detach().to("cpu"), b)
++            return out.to(device=input.device, dtype=out.dtype).reshape(*input.shape[:-1], weight.shape[0])
++        step = rows if chunk >= rows else chunk
++        parts = [_orig_linear(flat[i:i + step], weight, bias) for i in range(0, rows, step)]
++        out = parts[0] if len(parts) == 1 else torch.cat(parts, 0)
++        return out.reshape(*input.shape[:-1], weight.shape[0])
++
++    mode = _xpu_linear_chunk.get(key)
++    if mode is not None:
++        return apply(mode)
++    for chunk in (128, 64, 32, 16, 8, 1, "cpu"):
++        if chunk != "cpu" and chunk > rows:
++            continue
++        try:
++            out = apply(chunk)
++        except RuntimeError:
++            continue
++        _xpu_linear_chunk[key] = chunk
++        return out
++    raise RuntimeError("could not create a primitive")
++
++torch.nn.functional.linear = _xpu_chunked_linear
++
+ import comfy.float
+ import json
+ import comfy.memory_management
+@@ -55,11 +108,53 @@ def repeat_kv_for_gqa(k, v, query_heads, head_dim):
+         v = v.repeat_interleave(n_rep, dim=head_dim)
+     return k, v
+ 
++def _xpu_mm(a, b):
++    try:
++        return torch.matmul(a, b)
++    except RuntimeError:
++        return torch.matmul(a.detach().to("cpu"), b.detach().to("cpu")).to(device=a.device, dtype=a.dtype)
++
++def _xpu_attention(q, k, v, attn_mask=None, is_causal=False, scale=None):
++    """Per-head attention. Arc oneDNN cannot build an SDPA primitive; the matmuls work."""
++    squeeze = q.dim() == 3
++    if squeeze:
++        q, k, v = q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
++    if k.shape[-3] != q.shape[-3]:
++        n_rep = q.shape[-3] // k.shape[-3]
++        k = k.repeat_interleave(n_rep, dim=-3)
++        v = v.repeat_interleave(n_rep, dim=-3)
++    if scale is None:
++        scale = q.shape[-1] ** -0.5
++    bsz, heads, seq, dim = q.shape
++    sk = k.shape[-2]
++    out = torch.empty(bsz, heads, seq, dim, device=q.device, dtype=q.dtype)
++    causal = torch.ones(seq, sk, device=q.device, dtype=torch.bool).triu(1) if is_causal else None
++    for b in range(bsz):
++        for h in range(heads):
++            scores = _xpu_mm(q[b, h], k[b, h].transpose(0, 1)).float().mul_(scale)
++            if causal is not None:
++                scores.masked_fill_(causal, float("-inf"))
++            if attn_mask is not None:
++                m = attn_mask
++                if m.dim() == 4:
++                    m = m[min(b, m.shape[0] - 1), min(h, m.shape[1] - 1)]
++                elif m.dim() == 3:
++                    m = m[min(b, m.shape[0] - 1)]
++                if m.dtype == torch.bool:
++                    scores.masked_fill_(~m, float("-inf"))
++                else:
++                    scores = scores + m.float()
++            probs = torch.softmax(scores, dim=-1).to(dtype=q.dtype)
++            out[b, h] = _xpu_mm(probs, v[b, h])
++    return out[0] if squeeze else out
++
+ def scaled_dot_product_attention(q, k, v, *args, **kwargs):
+     attn_mask = args[0] if len(args) > 0 else kwargs.get("attn_mask")
+     if kwargs.get("enable_gqa", False) and attn_mask is not None:
+         k, v = repeat_kv_for_gqa(k, v, q.shape[-3], -3)
+         kwargs["enable_gqa"] = False
++    if q.device.type == "xpu":
++        return _xpu_attention(q, k, v, attn_mask=attn_mask, is_causal=kwargs.get("is_causal", False), scale=kwargs.get("scale"))
+     return torch.nn.functional.scaled_dot_product_attention(q, k, v, *args, **kwargs)
+ 
+ 
+diff --git a/comfy/weight_adapter/lora.py b/comfy/weight_adapter/lora.py
+index 8e1261a..959e811 100644
+--- a/comfy/weight_adapter/lora.py
++++ b/comfy/weight_adapter/lora.py
+@@ -265,9 +265,12 @@ class LoRAAdapter(WeightAdapterBase):
+                 .transpose(0, 1)
+             )
+         try:
+-            lora_diff = torch.mm(
+-                mat1.flatten(start_dim=1), mat2.flatten(start_dim=1)
+-            ).reshape(weight.shape)
++            flat1 = mat1.flatten(start_dim=1)
++            flat2 = mat2.flatten(start_dim=1)
++            try:
++                lora_diff = torch.mm(flat1, flat2).reshape(weight.shape)
++            except RuntimeError:
++                lora_diff = torch.mm(flat1.cpu(), flat2.cpu()).reshape(weight.shape).to(weight.device)
+             del mat1, mat2
+             if dora_scale is not None:
+                 weight = weight_decompose(
