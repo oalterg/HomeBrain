@@ -159,6 +159,70 @@ def test_backup_409s_on_shared_running_status_even_if_worker_local_is_idle(monke
         assert r.status_code == 409
 
 
+def test_backup_409s_with_a_clear_message_when_one_is_already_running(monkeypatch):
+    class _T:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise AssertionError("backup must not start")
+
+    monkeypatch.setattr(hb.threading, "Thread", _T)
+    monkeypatch.setattr(hb, "backup_is_running", lambda: True)
+    with _client() as client:
+        r = client.post("/api/backup/now", json={"strategy": "full"})
+        assert r.status_code == 409
+        assert r.get_json()["error"] == "A backup is already running."
+
+
+def test_task_status_reports_a_scheduled_backup_without_taking_the_slot(monkeypatch):
+    monkeypatch.setattr(hb, "backup_is_running", lambda: True)
+    with _client() as client:
+        hb.write_status({"status": "idle", "message": "", "log_type": "setup"})
+        data = client.get("/api/task_status").get_json()
+        assert data["status"] == "idle"
+        assert data["backup_running"] is True
+        assert data["message"] == "Backup in progress..."
+        # A real task still owns the banner. The flag must not overwrite it.
+        hb.write_status({"status": "running", "message": "Updating",
+                         "log_type": "update"})
+        busy = client.get("/api/task_status").get_json()
+        assert busy["status"] == "running"
+        assert busy["message"] == "Updating"
+        assert "backup_running" not in busy
+
+
+def test_task_status_idle_when_no_backup_is_running(monkeypatch):
+    monkeypatch.setattr(hb, "backup_is_running", lambda: False)
+    with _client() as client:
+        hb.write_status({"status": "idle", "message": "", "log_type": "setup"})
+        data = client.get("/api/task_status").get_json()
+        assert data["status"] == "idle"
+        assert "backup_running" not in data
+
+
+def test_backup_is_running_reads_the_lock_from_proc_locks(monkeypatch, tmp_path):
+    lock = tmp_path / "backup.lock"
+    lock.write_text("")
+    st = lock.stat()
+    token = "%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+    locks = tmp_path / "locks"
+    monkeypatch.setattr(hb, "BACKUP_LOCK_FILE", str(lock))
+    monkeypatch.setattr(hb, "PROC_LOCKS_FILE", str(locks))
+
+    assert hb.backup_is_running() is False  # locks file missing
+    locks.write_text(f"2: FLOCK  ADVISORY  WRITE 1 {token} 0 EOF\n")
+    assert hb.backup_is_running() is True
+    # A POSIX lock on the same inode is not the backup flock.
+    locks.write_text(f"1: POSIX  ADVISORY  WRITE 1 {token} 0 EOF\n")
+    assert hb.backup_is_running() is False
+    locks.write_text("2: FLOCK  ADVISORY  WRITE 1 ff:ff:1 0 EOF\n")
+    assert hb.backup_is_running() is False
+    monkeypatch.setattr(hb, "BACKUP_LOCK_FILE", str(tmp_path / "missing.lock"))
+    locks.write_text(f"2: FLOCK  ADVISORY  WRITE 1 {token} 0 EOF\n")
+    assert hb.backup_is_running() is False
+
+
 def test_second_backup_409s_while_first_holds_the_slot(monkeypatch):
     class _T:
         def __init__(self, *a, **k):
