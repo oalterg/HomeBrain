@@ -184,6 +184,34 @@ def test_channel_status_bot_without_owner_is_not_paired(monkeypatch, tmp_path):
     assert info["paired"] is False
 
 
+def test_channel_status_reads_openclaw_pairing_store(monkeypatch, tmp_path):
+    cfg = tmp_path / "openclaw.json"
+    cfg.write_text(json.dumps({
+        "channels": {"telegram": {"enabled": True, "botToken": "test"}},
+        "plugins": {"entries": {"telegram": {"enabled": True}}},
+    }))
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "telegram-default-allowFrom.json").write_text('{"allowFrom":["99"]}')
+    monkeypatch.setattr(integrations, "_OPENCLAW_CONFIG_PATH", str(cfg))
+    info = integrations._channel_status("telegram")
+    assert info["paired"] is True
+    assert info["ready"] is True
+    monkeypatch.setattr(activation, "OPENCLAW_CONFIG", str(cfg))
+    assert activation.telegram_is_paired() is True
+
+
+def test_telegram_ui_explains_the_two_credentials():
+    root = os.path.join(os.path.dirname(__file__), "..", "..", "src")
+    html = open(os.path.join(root, "templates", "dashboard.html")).read()
+    js = open(os.path.join(root, "static", "dashboard.js")).read()
+    assert "1. Connect your bot" in html
+    assert "2. Pair your Telegram account" in html
+    assert "not @BotFather" in html
+    assert "different from the BotFather token" in html
+    assert "Pairing required" in js
+
+
 @contextmanager
 def _client(gpu=True):
     saved = {

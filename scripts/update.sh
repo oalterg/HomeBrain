@@ -325,6 +325,7 @@ UNITS_CHANGED=false
 for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer \
             homebrain-offsite.service homebrain-offsite.timer \
             homebrain-ha-watch.service homebrain-email-watch.service \
+            homebrain-media.service homebrain-picture.service homebrain-video.service \
             homebrain-mdns.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
@@ -359,6 +360,7 @@ systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.
 systemctl enable --now homebrain-ha-watch.service 2>/dev/null || true
 systemctl enable --now homebrain-email-watch.service 2>/dev/null || true
+systemctl enable --now homebrain-media.service 2>/dev/null || true
 # mDNS aliases for nc/vault/ha-homebrain.local. New on boxes that predates LAN HTTPS.
 command -v avahi-publish >/dev/null 2>&1 \
     || apt-get install -y -qq avahi-daemon avahi-utils libnss-mdns 2>/dev/null \

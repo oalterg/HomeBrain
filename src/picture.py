@@ -38,6 +38,32 @@ VIDEO_WEIGHTS = (
     ("loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", 1956193000),
 )
 
+QWEN_WEIGHTS = (
+    ("diffusion_models/qwen_image_2.1_int8_convrot.safetensors", 7256783064),
+    ("text_encoders/qwen3vl_8b_int8_convrot.safetensors", 9350798360),
+    ("vae/qwen_image_2.1_vae_bf16.safetensors", 675509688),
+)
+
+MODELS = {
+    "krea2": {"name": "Krea2", "kind": "picture", "steps": 8},
+    "qwen-image-2.1": {"name": "Qwen Image 2.1", "kind": "picture", "steps": 25},
+    "minimax-h3": {"name": "MiniMax H3", "kind": "video", "steps": 8},
+}
+
+
+def default_model(kind: str) -> str:
+    return "minimax-h3" if kind == "video" else "krea2"
+
+
+def model_error(kind: str, model: str | None = None) -> str | None:
+    if kind not in ("picture", "video"):
+        return "kind must be picture or video"
+    if model is None:
+        return None
+    if not isinstance(model, str) or model not in MODELS or MODELS[model]["kind"] != kind:
+        return "Choose a supported model for this media type."
+    return None
+
 FROZEN_NODES = {
     "1": "UNETLoader",
     "2": "CLIPLoader",
@@ -103,7 +129,7 @@ def arc_discrete(platform: dict) -> bool:
 
 def prompt_error(body) -> str | None:
     """Reject anything that is not a single prompt string."""
-    if not isinstance(body, dict) or set(body) != {"prompt"}:
+    if not isinstance(body, dict) or "prompt" not in body or set(body) - {"prompt", "model", "request_id"}:
         return "Send a prompt, not a workflow."
     text = body.get("prompt")
     if not isinstance(text, str):
@@ -118,8 +144,15 @@ def prompt_error(body) -> str | None:
     return None
 
 
-def load_template(path: str | None = None, kind: str = "picture") -> dict:
+def load_template(path: str | None = None, kind: str = "picture", model: str | None = None) -> dict:
+    if model_error(kind, model):
+        raise ValueError(model_error(kind, model))
+    qwen = model == "qwen-image-2.1"
     expected = VIDEO_NODES if kind == "video" else FROZEN_NODES
+    if qwen:
+        expected = {k: v for k, v in FROZEN_NODES.items() if k != "5"}
+        expected["4"] = "TextEncodeQwenImage21"
+        path = path or os.path.join(os.path.dirname(TEMPLATE_PATH), "qwen-image-2.1.json")
     with open(path or (VIDEO_TEMPLATE_PATH if kind == "video" else TEMPLATE_PATH), encoding="utf-8") as f:
         template = json.load(f)
     if not isinstance(template, dict) or set(template) != set(expected):
@@ -137,14 +170,17 @@ def load_template(path: str | None = None, kind: str = "picture") -> dict:
         return template
     if template["6"]["inputs"].get("width") != 1024 or template["6"]["inputs"].get("height") != 1024:
         raise ValueError("picture workflow was modified")
-    if template["7"]["inputs"].get("steps") != 8:
+    if template["7"]["inputs"].get("steps") != (25 if qwen else 8):
         raise ValueError("picture workflow was modified")
     return template
 
 
-def build_workflow(template: dict, prompt: str, seed: int, filename_prefix: str, kind: str = "picture") -> dict:
+def build_workflow(template: dict, prompt: str, seed: int, filename_prefix: str, kind: str = "picture", model: str | None = None) -> dict:
     """Substitute the prompt and seed. Every other knob stays the checked graph."""
-    load_template_shape = set(template) == set(VIDEO_NODES if kind == "video" else FROZEN_NODES)
+    nodes = VIDEO_NODES if kind == "video" else FROZEN_NODES
+    if model == "qwen-image-2.1":
+        nodes = {k: v for k, v in nodes.items() if k != "5"}
+    load_template_shape = set(template) == set(nodes)
     if not load_template_shape:
         raise ValueError("picture workflow was modified")
     workflow = copy.deepcopy(template)
@@ -153,15 +189,18 @@ def build_workflow(template: dict, prompt: str, seed: int, filename_prefix: str,
         workflow["10"]["inputs"]["noise_seed"] = int(seed)
         workflow["15"]["inputs"]["filename_prefix"] = filename_prefix
         return workflow
-    workflow["4"]["inputs"]["text"] = prompt
+    workflow["4"]["inputs"]["prompt" if model == "qwen-image-2.1" else "text"] = prompt
     workflow["7"]["inputs"]["seed"] = int(seed)
     workflow["9"]["inputs"]["filename_prefix"] = filename_prefix
     return workflow
 
 
-def weights_ready(root: str | None = None, kind: str = "picture") -> bool:
+def weights_ready(root: str | None = None, kind: str = "picture", model: str | None = None) -> bool:
+    if model_error(kind, model):
+        return False
     base = os.path.join(root or comfy_root(), "models")
-    for rel, size in (VIDEO_WEIGHTS if kind == "video" else WEIGHTS):
+    weights = QWEN_WEIGHTS if model == "qwen-image-2.1" else (VIDEO_WEIGHTS if kind == "video" else WEIGHTS)
+    for rel, size in weights:
         path = os.path.join(base, rel)
         try:
             if os.path.getsize(path) != size:
@@ -171,7 +210,7 @@ def weights_ready(root: str | None = None, kind: str = "picture") -> bool:
     return True
 
 
-def runtime_ready(platform: dict, root: str | None = None, unit: str | None = None, kind: str = "picture") -> bool:
+def runtime_ready(platform: dict, root: str | None = None, unit: str | None = None, kind: str = "picture", model: str | None = None) -> bool:
     if not arc_discrete(platform):
         return False
     if not os.path.isfile(unit or unit_path(kind)):
@@ -183,21 +222,30 @@ def runtime_ready(platform: dict, root: str | None = None, unit: str | None = No
                 return False
     except OSError:
         return False
-    return weights_ready(root, kind)
+    if model == "qwen-image-2.1":
+        try:
+            with open(os.path.join(root or comfy_root(), "comfy_extras", "nodes_qwen.py")) as f:
+                if "class TextEncodeQwenImage21" not in f.read():
+                    return False
+        except OSError:
+            return False
+    return weights_ready(root, kind, model)
 
 
 def _atomic_json(path: str, payload: dict) -> None:
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(payload, f)
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
 def write_request(payload: dict, path: str | None = None, kind: str = "picture") -> None:
     _atomic_json(path or request_path(kind), payload)
+    os.chmod(path or request_path(kind), 0o600)
 
 
 def write_status(state: str, message: str = "", image_id: str = "", path: str | None = None, kind: str = "picture") -> None:
@@ -236,6 +284,10 @@ def load_request(path: str | None = None, kind: str = "picture") -> dict:
     if type(seed) is not int or not (0 <= seed < 2**31):
         raise ValueError("picture request seed is not usable")
     data["prompt"] = data["prompt"].strip()
+    model = data.get("model", default_model(kind))
+    if model_error(kind, model):
+        raise ValueError(model_error(kind, model))
+    data["model"] = model
     return data
 
 
@@ -325,10 +377,10 @@ def _error_text(status: dict, kind: str = "picture") -> str:
 def execute_job(timeout_s: int = JOB_TIMEOUT_S, kind: str = "picture") -> None:
     """Post the frozen workflow to a ComfyUI that is already listening."""
     request = load_request(kind=kind)
-    template = load_template(kind=kind)
+    template = load_template(kind=kind, model=request["model"])
     subdir = "hbvideo" if kind == "video" else "hbpic"
     workflow = build_workflow(
-        template, request["prompt"], request["seed"], f"{subdir}/{request['id']}", kind=kind
+        template, request["prompt"], request["seed"], f"{subdir}/{request['id']}", kind=kind, model=request["model"]
     )
     try:
         queued = _http_json("POST", f"{COMFY_URL}/prompt", {"prompt": workflow}, timeout=120)
@@ -364,20 +416,22 @@ def execute_job(timeout_s: int = JOB_TIMEOUT_S, kind: str = "picture") -> None:
 
     output_dir = os.path.join(comfy_root(), "output", subdir)
     matches = glob.glob(os.path.join(output_dir, request["id"] + "_*" + extension(kind)))
-    matches = [path for path in matches if os.path.isfile(path)]
+    matches = [path for path in matches if _inside(output_dir, path) and os.path.isfile(path)]
     if not matches:
         write_status("error", f"ComfyUI finished without a {kind}.", request["id"], kind=kind)
         raise SystemExit(1)
     src = max(matches, key=os.path.getmtime)
     os.makedirs(pictures_dir(kind), exist_ok=True)
     dest = os.path.join(pictures_dir(kind), request["id"] + extension(kind))
-    shutil.copy2(src, dest)
-    os.chmod(dest, 0o640)
+    shutil.copy2(src, dest + ".tmp")
+    os.chmod(dest + ".tmp", 0o640)
+    os.replace(dest + ".tmp", dest)
     _give(dest)
     sidecar = {
         "id": request["id"],
         "prompt": request["prompt"],
         "seed": request["seed"],
+        "model": request["model"],
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     meta = os.path.join(pictures_dir(kind), request["id"] + ".json")
@@ -409,19 +463,17 @@ def settle(kind: str = "picture") -> None:
 
 def mark_chat(ok: bool, kind: str = "picture") -> None:
     """Record that llama-server did not become healthy again."""
-    if ok:
-        return
     current = read_status(kind=kind)
+    current["chat_ready"] = ok
+    if ok:
+        _atomic_json(status_path(kind), current)
+        return
     if current.get("state") == "success":
-        write_status(
-            "error",
-            f"The {kind} was saved, but chat did not come back.",
-            current.get("id") or "",
-            kind=kind,
-        )
+        current["message"] = f"The {kind} was saved, but chat did not come back."
     else:
         message = (current.get("message") or f"The {kind} failed.").rstrip(".")
-        write_status("error", message + ". Chat did not come back.", current.get("id") or "", kind=kind)
+        current["message"] = message + ". Chat did not come back."
+    _atomic_json(status_path(kind), current)
 
 
 def main(argv: list[str]) -> int:
@@ -435,12 +487,12 @@ def main(argv: list[str]) -> int:
         return 0 if weights_ready(kind=kind) else 1
     if cmd == "check":
         try:
-            load_request(kind=kind)
-            load_template(kind=kind)
+            job = load_request(kind=kind)
+            load_template(kind=kind, model=job["model"])
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(exc)
             return 1
-        if not weights_ready(kind=kind):
+        if not weights_ready(kind=kind, model=job["model"]):
             print(f"Weights for {kind} generation are missing.")
             return 1
         return 0

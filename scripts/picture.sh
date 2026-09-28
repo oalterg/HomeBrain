@@ -12,7 +12,7 @@ COMFY_REV="79be670e2d9be63e238785af307369d2b9039ed1"
 LAUNCHER="${HOMEBRAIN_HOME}/comfy-xpu.sh"
 # homebrain has to be able to create this. /var/log/homebrain is root-only.
 COMFY_LOG="${HOMEBRAIN_HOME}/picture-comfy.log"
-MEDIA_KIND=picture
+MEDIA_KIND="${HB_MEDIA_KIND:-picture}"
 if [[ "${1:-}" == "run-video" ]]; then
     MEDIA_KIND=video
     COMFY_LOG="${HOMEBRAIN_HOME}/video-comfy.log"
@@ -106,6 +106,7 @@ cleanup() {
         python mark-chat down || true
         say "chat did not come back"
     else
+        python mark-chat ok || true
         say "chat restored"
     fi
 }
@@ -168,7 +169,9 @@ install_comfy() {
     install -d -m 755 /var/lib/homebrain
     install -m 644 "$ROOT/config/homebrain-picture.service" /etc/systemd/system/homebrain-picture.service
     install -m 644 "$ROOT/config/homebrain-video.service" /etc/systemd/system/homebrain-video.service
+    install -m 644 "$ROOT/config/homebrain-media.service" /etc/systemd/system/homebrain-media.service
     systemctl daemon-reload
+    systemctl enable --now homebrain-media.service
     # No [Install] section: this unit never starts at boot.
     say "picture runtime installed"
 }
@@ -221,5 +224,6 @@ cmd_run() {
 case "${1:-}" in
     install) cmd_install ;;
     run|run-video) cmd_run ;;
+    recover) need_root; cleanup ;;
     *) echo "usage: picture.sh install|run|run-video" >&2; exit 2 ;;
 esac

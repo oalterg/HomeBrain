@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/opt/homebrain/scripts/picture.sh run-video
+ExecStopPost=/usr/bin/env HB_MEDIA_KIND=video /opt/homebrain/scripts/picture.sh recover
 TimeoutStartSec=2100
 TimeoutStopSec=150
 StandardOutput=journal

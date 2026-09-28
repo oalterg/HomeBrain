@@ -154,17 +154,19 @@ def test_a_ready_box_records_the_prompt_and_starts_once():
 
     def start(payload):
         seen.append(payload)
-        return True
+        return dict(payload, state="accepted")
 
     hb.picture_ready = lambda: True
     hb.start_picture_task = start
     client = _client()
     response = client.post("/api/picture", json={"prompt": "  a blue enamel cup  "})
-    assert response.status_code == 200, response.get_json()
+    assert response.status_code == 202, response.get_json()
     assert seen[0]["prompt"] == "a blue enamel cup"
     assert type(seen[0]["seed"]) is int
     assert picture.ID_RE.match(seen[0]["id"])
-    hb.start_picture_task = lambda payload: False
+    def busy_start(payload):
+        raise hb.media_jobs.Busy()
+    hb.start_picture_task = busy_start
     busy = client.post("/api/picture", json={"prompt": "another"})
     assert busy.status_code == 409
 

@@ -283,6 +283,10 @@ systemctl enable --now homebrain-email-watch.service 2>/dev/null \
     || log_warn "Email watcher service not started (OpenClaw not present yet is OK)."
 
 # Rotate /var/log/homebrain. Without this it grows for the life of the box.
+cp "${SCRIPT_DIR}/../config/homebrain-media.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now homebrain-media.service 2>/dev/null || true
+
 cp "${SCRIPT_DIR}/../config/logrotate-homebrain" /etc/logrotate.d/homebrain
 chmod 644 /etc/logrotate.d/homebrain
 if logrotate --debug /etc/logrotate.d/homebrain >/dev/null 2>&1; then

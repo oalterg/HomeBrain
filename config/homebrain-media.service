@@ -1,0 +1,20 @@
+[Unit]
+Description=HomeBrain durable media jobs and Telegram delivery
+After=network-online.target
+ConditionPathExists=/etc/systemd/system/homebrain-picture.service
+
+[Service]
+Type=simple
+User=root
+Environment=HOMEBRAIN_HOME=/home/homebrain
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+ExecStart=/opt/homebrain/venv/bin/python3 /opt/homebrain/scripts/media_worker.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=100
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

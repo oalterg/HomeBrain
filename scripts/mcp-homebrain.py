@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -70,6 +71,28 @@ def _http(method: str, path: str, body: dict | None = None,
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+def t_media_capabilities(_args: dict) -> dict:
+    code, body = _http("GET", "/api/integrations/self/media/capabilities")
+    return _body(code, body, fail="media unavailable")
+
+
+def t_media_generate(args: dict) -> dict:
+    if set(args) - {"kind", "model", "prompt", "request_id"}:
+        return err("Only kind, model, prompt and request_id are accepted.")
+    code, body = _http("POST", "/api/integrations/self/media/generate", args)
+    if code in (200, 202) and isinstance(body, dict):
+        audit("homebrain", "media_generate", id=body.get("id"), model=body.get("model"))
+        return ok(**body)
+    return _body(code, body, fail="generation not accepted")
+
+
+def t_media_job_status(args: dict) -> dict:
+    job_id = args.get("job_id")
+    if not isinstance(job_id, str) or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", job_id):
+        return err("Use the job_id returned by media_generate.")
+    code, body = _http("GET", f"/api/integrations/self/media/jobs/{job_id}")
+    return _body(code, body, fail="job unavailable")
 
 def t_service_status(_args: dict) -> dict:
     code, body = _http("GET", "/api/integrations/self/system-status")
@@ -491,6 +514,9 @@ TOOLS = [
 
 
 DISPATCH = {
+    "homebrain.media_capabilities": t_media_capabilities,
+    "homebrain.media_generate": t_media_generate,
+    "homebrain.media_job_status": t_media_job_status,
     "homebrain.service_status": t_service_status,
     "homebrain.gpu_stats": t_gpu_stats,
     "homebrain.logs_tail": t_logs_tail,
@@ -509,6 +535,25 @@ DISPATCH = {
     "homebrain.setup_skip": t_setup_skip,
     "homebrain.household_add": t_household_add,
 }
+
+TOOLS.extend([
+    {"name": "homebrain.media_capabilities",
+     "description": "Available local image/video models and automatic Telegram delivery readiness. Chat pauses during generation.",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "homebrain.media_generate",
+     "description": "Generate on user request; Krea2 default. Returns a job ID; Telegram delivery is automatic. Do not poll or resend. Reuse request_id only for retries.",
+     "inputSchema": {"type": "object", "additionalProperties": False,
+                     "properties": {
+                         "kind": {"type": "string", "enum": ["picture", "video"]},
+                         "model": {"type": "string", "enum": ["krea2", "qwen-image-2.1", "minimax-h3"]},
+                         "prompt": {"type": "string", "minLength": 1, "maxLength": 500},
+                         "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,100}$"}},
+                     "required": ["kind", "prompt", "request_id"]}},
+    {"name": "homebrain.media_job_status",
+     "description": "Check a media job when the user asks. Completion delivery is automatic; do not poll.",
+     "inputSchema": {"type": "object", "additionalProperties": False,
+                     "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]}},
+])
 
 
 def dispatch(name: str, args: dict) -> dict:
