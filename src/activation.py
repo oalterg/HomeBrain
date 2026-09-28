@@ -105,15 +105,22 @@ def read_openclaw_config(path=None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def telegram_is_paired(config: dict | None = None) -> bool:
-    """True once pairing approve has written channels.telegram.allowFrom.
-
-    A bot token without an owner is not the agent.
-    """
+def telegram_is_paired(config: dict | None = None, config_path: str | None = None) -> bool:
+    """Pairing lives in OpenClaw's credential store, or a configured allowlist."""
     if config is None:
-        config = read_openclaw_config()
+        config_path = config_path or OPENCLAW_CONFIG
+        config = read_openclaw_config(config_path)
     ch = (config.get("channels") or {}).get("telegram") or {}
-    allow = ch.get("allowFrom") or []
+    if not ch:
+        return False
+    allow = list(ch.get("allowFrom") or [])
+    if config_path:
+        path = os.path.join(os.path.dirname(config_path), "credentials", "telegram-default-allowFrom.json")
+        try:
+            with open(path) as f:
+                allow += json.load(f).get("allowFrom", [])
+        except (OSError, ValueError):
+            pass
     return bool(allow)
 
 

@@ -544,7 +544,10 @@ async function channelRefresh() {
             const meta = CHANNEL_LABELS[ch.key] || { name: ch.key, sub: '' };
             let sub = meta.sub;
             let badge;
-            if (ch.key === 'email' ? ch.ready : ch.enabled)
+            if (ch.key === 'telegram' && ch.enabled && !ch.paired) {
+                badge = '<span class="status-badge status-unknown">Pairing required</span>';
+                sub = 'Bot linked. Message it in Telegram, then approve the pairing code here.';
+            } else if (ch.key === 'email' || ch.key === 'telegram' ? ch.ready : ch.enabled)
                 badge = '<span class="status-badge status-running">Active</span>';
             else if (ch.configured) badge = '<span class="status-badge status-unknown">Configured</span>';
             else badge = '<span class="status-badge status-stopped">Not linked</span>';
@@ -600,9 +603,10 @@ async function channelTelegramAdd() {
         });
         const d = await r.json();
         if (r.ok) {
-            msg.innerText = `Linked @${d.bot_username || 'bot'}. Restarting agent...`;
+            msg.innerText = `Bot linked: @${d.bot_username || 'bot'}. Send it a message in Telegram, then enter its pairing code below.`;
             closeForm('details-telegram');
             document.getElementById('tg-token').value = '';
+            openDetails('details-telegram-pair', 'tg-pair-code');
         } else {
             msg.innerText = d.error || 'Failed';
         }
@@ -1531,6 +1535,7 @@ async function refreshMedia() {
         window._mediaRunning[kind] = !!(data.available && data.state === 'running');
     }
     for (const [kind, data] of fetched) paintMedia(kind, data);
+    if (fetched.some(([, data]) => data?.available)) refreshMediaDelivery();
     applyMediaPause();
 }
 
@@ -1544,15 +1549,23 @@ function paintMedia(kind, data) {
         return;
     }
     const button = document.getElementById(kind + '-generate');
+    const modelSelect = document.getElementById(kind + '-model');
+    if (modelSelect) {
+        for (const option of modelSelect.options) {
+            const model = (data.models || []).find(m => m.id === option.value);
+            option.disabled = !model?.available;
+        }
+        modelSelect.disabled = mediaBusy();
+    }
     if (button) {
-        button.disabled = mediaBusy();
+        button.disabled = mediaBusy() || !!modelSelect?.selectedOptions[0]?.disabled;
         button.textContent = window._mediaRunning[kind] ? spec.busy : 'Generate';
     }
     const msg = document.getElementById(kind + '-msg');
     if (msg) {
         if (data.state === 'running') msg.textContent = data.message || spec.running;
         else if (data.state === 'error') msg.textContent = data.message || spec.fail;
-        else if (data.state === 'success') msg.textContent = spec.ready;
+        else if (data.state === 'success') msg.textContent = data.chat_ready === false ? data.message : spec.ready;
     }
     const gallery = document.getElementById(kind + '-gallery');
     if (!gallery) return;
@@ -1587,18 +1600,27 @@ async function mediaGenerate(kind) {
     const spec = MEDIA[kind];
     const prompt = (document.getElementById(kind + '-prompt')?.value || '').trim();
     const msg = document.getElementById(kind + '-msg');
+    const model = document.getElementById(kind + '-model')?.value;
+    const promptEl = document.getElementById(kind + '-prompt');
+    const fingerprint = JSON.stringify({ prompt, model });
+    if (promptEl.dataset.request !== fingerprint) {
+        promptEl.dataset.request = fingerprint;
+        promptEl.dataset.requestId = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
+    }
     const res = await fetch(spec.api, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, model, request_id: promptEl.dataset.requestId }),
     });
     let data = {};
     try { data = await res.json(); } catch (e) { /* non-json */ }
     if (!res.ok) {
+        if (res.status < 500) delete promptEl.dataset.request;
         if (msg) msg.textContent = data.error || 'Could not start.';
         return;
     }
+    delete promptEl.dataset.request;
     if (msg) msg.textContent = spec.start;
     window._mediaRunning[kind] = true;
     applyMediaPause();
@@ -1613,6 +1635,51 @@ async function mediaGenerate(kind) {
 async function mediaDelete(kind, id) {
     const res = await fetch(MEDIA[kind].remove(id), { method: 'DELETE', credentials: 'include' });
     if (res.ok) refreshMedia();
+}
+
+async function refreshMediaDelivery() {
+    try {
+        const res = await fetch('/api/media/delivery', { credentials: 'include' });
+        if (!res.ok) return;
+        const data = await res.json();
+        document.getElementById('media-delivery-card').style.display = '';
+        const select = document.getElementById('media-delivery-target');
+        const key = JSON.stringify([data.targets, data.target]);
+        if (select.dataset.key !== key) {
+            select.replaceChildren(new Option('Disabled', ''));
+            for (const target of data.targets) select.add(new Option(target, target));
+            select.value = data.target;
+            select.dataset.key = key;
+        }
+        const list = document.getElementById('media-jobs');
+        list.replaceChildren();
+        for (const job of data.jobs) {
+            const row = document.createElement('div');
+            const status = job.delivery?.state;
+            row.textContent = `${job.model}: ${job.state}${status ? ' · Telegram: ' + status : ''}${job.delivery?.error ? ' · ' + job.delivery.error : ''}`;
+            if (['failed', 'unknown', 'blocked'].includes(status)) {
+                const retry = document.createElement('button');
+                retry.textContent = 'Retry delivery';
+                retry.onclick = async () => {
+                    if (status === 'unknown' && !confirm('Telegram may already have received this message. Send it again?')) return;
+                    await fetch('/api/media/jobs/' + job.id + '/retry-delivery', { method: 'POST', credentials: 'include' });
+                    refreshMediaDelivery();
+                };
+                row.appendChild(retry);
+            }
+            list.appendChild(row);
+        }
+    } catch (e) { /* retry on next refresh */ }
+}
+
+async function saveMediaDelivery() {
+    const res = await fetch('/api/media/delivery', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: document.getElementById('media-delivery-target').value }),
+    });
+    const data = await res.json();
+    document.getElementById('media-delivery-msg').textContent = res.ok ? 'Recipient saved.' : data.error;
+    refreshMediaDelivery();
 }
 
 let aiModelsLoaded = false;

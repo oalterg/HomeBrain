@@ -1174,9 +1174,10 @@ def _channel_status(channel_id: str) -> dict:
         "enabled": enabled,
     }
     if channel_id == "telegram" and configured:
+        import activation
         info["has_token"] = bool(ch.get("botToken"))
-        allow = ch.get("allowFrom") or []
-        info["paired"] = bool(allow)
+        info["paired"] = activation.telegram_is_paired(data, _OPENCLAW_CONFIG_PATH)
+        info["ready"] = bool(enabled and info["has_token"] and info["paired"])
     return info
 
 
@@ -1666,6 +1667,43 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         return jsonify({"lines": [ln.strip() for ln in lines]})
 
     # ---- Wire up Flask URL rules ------------------------------------------
+    def self_media_capabilities():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import media_capabilities
+        return jsonify(media_capabilities())
+
+    def self_media_generate():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import submit_media
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "Send a generation request."}), 400
+        body = dict(body)
+        kind = body.pop("kind", "picture")
+        result, code = submit_media(body, kind, source="mcp")
+        return jsonify(result), code
+
+    def self_media_job(job_id):
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        import media_jobs
+        import picture
+        if not picture.ID_RE.fullmatch(job_id):
+            return jsonify({"error": "Unknown media job."}), 404
+        job = media_jobs.get(job_id)
+        if not job:
+            return jsonify({"error": "Unknown media job."}), 404
+        return jsonify(media_jobs.public(job))
+
+    app.add_url_rule("/api/integrations/self/media/capabilities", "self_media_capabilities",
+                     self_media_capabilities, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/media/generate", "self_media_generate",
+                     limiter.limit("5 per minute")(self_media_generate), methods=["POST"])
+    app.add_url_rule("/api/integrations/self/media/jobs/<job_id>", "self_media_job",
+                     self_media_job, methods=["GET"])
+
     app.add_url_rule("/api/integrations/status", "integrations_status",
                      status_all, methods=["GET"])
     app.add_url_rule("/api/integrations/self/status",

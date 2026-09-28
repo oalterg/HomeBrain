@@ -204,6 +204,11 @@
                 <h3>Picture</h3>
                 <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
                     then comes back.</p>
+                <label for="picture-model">Image model</label>
+                <select id="picture-model" onchange="refreshMedia()">
+                    <option value="krea2">Krea2 (default)</option>
+                    <option value="qwen-image-2.1">Qwen Image 2.1</option>
+                </select>
                 <textarea id="picture-prompt" rows="3" maxlength="500"
                           placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
                 <div class="form-actions">
@@ -217,6 +222,8 @@
                 <h3>Video</h3>
                 <p class="lede">Makes one short clip, about two seconds, on this Arc card. Chat pauses while it runs,
                     then comes back.</p>
+                <label for="video-model">Video model</label>
+                <select id="video-model" onchange="refreshMedia()"><option value="minimax-h3">MiniMax H3</option></select>
                 <textarea id="video-prompt" rows="3" maxlength="500"
                           placeholder="A ceramic teapot on a wooden table, steam rising, soft morning light"></textarea>
                 <div class="form-actions">
@@ -224,6 +231,17 @@
                 </div>
                 <small id="video-msg" class="hint"></small>
                 <div id="video-gallery" class="picture-grid"></div>
+            </section>
+
+            <section class="section" id="media-delivery-card" style="display:none;">
+                <h3>Media delivery</h3>
+                <p class="lede">Images and videos requested through the agent are sent to this paired Telegram DM.
+                    Dashboard generations stay here.</p>
+                <label for="media-delivery-target">Telegram recipient</label>
+                <select id="media-delivery-target"><option value="">Disabled</option></select>
+                <div class="form-actions"><button onclick="saveMediaDelivery()">Save recipient</button></div>
+                <small id="media-delivery-msg" class="hint"></small>
+                <div id="media-jobs" class="row-list"></div>
             </section>
 
             <section class="section" id="integrations-card">
@@ -355,17 +373,25 @@
                 <small id="channel-msg" class="hint" style="min-height:1em;"></small>
 
                 <div hidden id="details-telegram" class="conn-form">
-                    <input type="text" id="tg-token" placeholder="Bot token from @BotFather"
+                    <p class="small"><strong>1. Connect your bot</strong><br>
+                        The BotFather token connects HomeBrain to your bot. You will pair your own Telegram account next.</p>
+                    <input type="password" id="tg-token" placeholder="Bot token from @BotFather" autocomplete="off"
                            onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramAdd(); }">
                     <div class="form-actions">
                         <button class="btn-primary" onclick="channelTelegramAdd()">Link</button>
                         <button onclick="closeForm('details-telegram')">Cancel</button>
                     </div>
                     <small class="hint">Open Telegram → search <strong>@BotFather</strong> → send <code>/newbot</code>
-                        → follow the prompts → paste the token above.</small>
+                        → follow the prompts → paste the token above. Then message your bot and approve its pairing code.</small>
                 </div>
 
                 <div hidden id="details-telegram-pair" class="conn-form">
+                    <p class="small"><strong>2. Pair your Telegram account</strong></p>
+                    <ol class="small">
+                        <li>Open a chat with <strong>your new bot</strong> in Telegram, not @BotFather.</li>
+                        <li>Tap <strong>Start</strong> or send a message. Your bot replies with a <strong>pairing code</strong>.</li>
+                        <li>Paste that code below and click <strong>Approve</strong>. The code is different from the BotFather token.</li>
+                    </ol>
                     <input type="text" id="tg-pair-code" placeholder="Pairing code (e.g. U43BU8JG)"
                            style="text-transform:uppercase;"
                            onkeydown="if (event.key === 'Enter') { event.preventDefault(); channelTelegramPair(); }">
@@ -373,8 +399,7 @@
                         <button class="btn-primary" onclick="channelTelegramPair()">Approve</button>
                         <button onclick="closeForm('details-telegram-pair')">Cancel</button>
                     </div>
-                    <small class="hint">Send any message to your bot on Telegram. It replies with a pairing code —
-                        paste it above to approve.</small>
+                    <small class="hint">Your agent can reply to you after approval. Only approve a code from your own Telegram chat.</small>
                 </div>
 
                 <div hidden id="details-email-channel" class="conn-form">

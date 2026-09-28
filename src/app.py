@@ -30,6 +30,7 @@ import recovery
 import activation
 import household
 import picture
+import media_jobs
 import vault_account
 import member_escrow
 from flask_limiter import Limiter
@@ -862,7 +863,7 @@ def task_running():
     """
     if read_status().get("status") == "running":
         return True
-    return picture_unit_active() or picture_unit_active("video")
+    return bool(media_jobs.active()) or picture_unit_active() or picture_unit_active("video")
 
 
 def claim_task(status):
@@ -3666,48 +3667,76 @@ def start_video_task(payload):
 
 
 def _start_media_task(payload, kind):
-    """Claim the long-job slot, then let systemd own the media job.
+    """Reserve against dashboard tasks under their existing cross-process lock."""
+    with open(STATUS_FILE + ".lock", "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return media_jobs.accept(dict(payload, kind=kind), busy=task_running)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
-    The request file is written only after the slot is held, so a second
-    click cannot replace the prompt of a job that already started.
-    """
-    if picture_unit_active() or picture_unit_active("video"):
-        return False
-    if not claim_task({
-        "status": "running",
-        "message": f"Making a {kind}. Chat is paused.",
-        "log_type": "setup",
-    }):
-        return False
+
+def media_capabilities():
+    platform_info = get_platform()
+    return {
+        "models": [dict(id=model, **spec, available=picture.runtime_ready(
+            platform_info, kind=spec["kind"], model=model))
+            for model, spec in picture.MODELS.items()],
+        "default_image_model": "krea2", "default_video_model": "minimax-h3",
+        "chat_pauses": True, "delivery_configured": bool(media_jobs.delivery_target()),
+    }
+
+
+def submit_media(body, kind, source="dashboard"):
+    error = picture.prompt_error(body)
+    if error:
+        return {"error": error}, 400
+    model = body.get("model", picture.default_model(kind))
+    if not isinstance(model, str):
+        return {"error": "Choose a supported model."}, 400
+    error = picture.model_error(kind, model)
+    if error:
+        return {"error": error}, 400
+    request_id = body.get("request_id")
+    if request_id is None and source == "dashboard":
+        request_id = secrets.token_hex(16)
+    if not isinstance(request_id, str) or not media_jobs.REQUEST_ID.fullmatch(request_id):
+        return {"error": "request_id must be 8–100 letters, digits, underscores or hyphens."}, 400
+    target = media_jobs.delivery_target() if source == "mcp" else ""
+    if source == "mcp" and not target:
+        return {"error": "Choose a paired Telegram recipient in the dashboard's Media delivery settings first."}, 409
+    ready = (video_ready() if kind == "video" else picture_ready()) if model == picture.default_model(kind) else picture.runtime_ready(get_platform(), kind=kind, model=model)
+    if not ready:
+        return {"error": f"{picture.MODELS[model]['name']} is not available on this box."}, 404
+    image_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(4)
+    payload = {"id": image_id, "prompt": body["prompt"].strip(),
+               "seed": secrets.randbelow(2**31 - 1) + 1, "model": model,
+               "source": source, "request_id": request_id, "target": target}
     try:
-        picture.write_request(payload, kind=kind)
-    except OSError as exc:
-        logging.error("%s request: %s", kind, exc)
-        write_status({
-            "status": "error",
-            "message": f"Could not start the {kind}.",
-            "log_type": "setup",
-        })
-        return False
-    cmd = (
-        f"systemctl reset-failed homebrain-{kind}.service; "
-        f"systemctl start homebrain-{kind}.service"
-    )
-    threading.Thread(
-        target=run_background_task, args=(f"Making a {kind}", cmd, "setup")
-    ).start()
-    return True
+        start = start_video_task if kind == "video" else start_picture_task
+        job = start(payload)
+    except media_jobs.Busy:
+        return {"error": "A task is already running"}, 409
+    except ValueError as exc:
+        return {"error": str(exc)}, 409
+    return {"status": job["state"], "id": job["id"], "model": job["model"],
+            "automatic_delivery": bool(job["target"]),
+            "hint": "End this turn briefly. HomeBrain waits for chat to be idle, then generates and delivers automatically. Do not poll, schedule a reminder, or send the attachment yourself."}, 202
 
 
 @app.route("/api/picture", methods=["GET"], defaults={"kind": "picture"})
 @app.route("/api/video", methods=["GET"], defaults={"kind": "video"})
 @limiter.limit("120 per minute")
 def picture_state(kind="picture"):
-    ready = video_ready() if kind == "video" else picture_ready()
+    models = [m for m in media_capabilities()["models"] if m["kind"] == kind]
+    ready = any(m["available"] for m in models)
     status = picture.read_status(kind=kind)
+    active = media_jobs.active()
+    if active and active["kind"] == kind and active["state"] == "accepted":
+        status = {"id": active["id"], "message": "Preparing generation. Chat will pause."}
     # The oneshot is still in its cleanup while chat restarts. Keep showing
     # the pause until the unit has actually exited.
-    if picture_unit_active(kind):
+    if picture_unit_active(kind) or (active and active["kind"] == kind):
         status = {
             "state": "running",
             "message": status.get("message") or f"Chat is paused while the {kind} is made.",
@@ -3725,6 +3754,8 @@ def picture_state(kind="picture"):
         "message": status.get("message") or "",
         "id": status.get("id") or "",
         "images": picture.list_images(kind=kind) if ready else [],
+        "models": models,
+        "chat_ready": status.get("chat_ready"),
     })
 
 
@@ -3732,22 +3763,29 @@ def picture_state(kind="picture"):
 @app.route("/api/video", methods=["POST"], defaults={"kind": "video"})
 @limiter.limit("5 per minute")
 def picture_start(kind="picture"):
-    body = request.get_json(silent=True)
-    err = picture.prompt_error(body)
-    if err:
-        return jsonify({"error": err}), 400
-    if not (video_ready() if kind == "video" else picture_ready()):
-        return jsonify({"error": f"{kind.capitalize()}s are not available on this box."}), 404
-    image_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(4)
-    payload = {
-        "id": image_id,
-        "prompt": body["prompt"].strip(),
-        "seed": secrets.randbelow(2**31 - 1) + 1,
-    }
-    start = start_video_task if kind == "video" else start_picture_task
-    if not start(payload):
-        return jsonify({"error": "A task is already running"}), 409
-    return jsonify({"status": "started", "id": image_id})
+    result, code = submit_media(request.get_json(silent=True), kind)
+    return jsonify(result), code
+
+
+@app.route("/api/media/delivery", methods=["GET", "POST"])
+def media_delivery_config():
+    if request.method == "POST":
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or set(body) != {"target"}:
+            return jsonify({"error": "Send a Telegram target."}), 400
+        try:
+            media_jobs.set_delivery_target(body["target"])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    return jsonify({"target": media_jobs.delivery_target(), "targets": media_jobs.telegram_targets(),
+                    "jobs": [media_jobs.public(j) for j in media_jobs.recent()]})
+
+
+@app.route("/api/media/jobs/<job_id>/retry-delivery", methods=["POST"])
+def media_retry_delivery(job_id):
+    if not picture.ID_RE.fullmatch(job_id):
+        abort(404)
+    return jsonify({"retried": media_jobs.retry_delivery(job_id)})
 
 
 @app.route("/api/picture/images/<image_id>", methods=["GET"], defaults={"kind": "picture"})
@@ -3764,6 +3802,10 @@ def picture_image(image_id, kind="picture"):
 @app.route("/api/video/<image_id>", methods=["DELETE"], defaults={"kind": "video"})
 @limiter.limit("30 per minute")
 def picture_delete(image_id, kind="picture"):
+    job = media_jobs.get(image_id)
+    if job and (job["state"] in media_jobs.ACTIVE or
+                (job["delivery"] and job["delivery"]["state"] in ("pending", "sending"))):
+        return jsonify({"error": "This media still has an active job or delivery."}), 409
     if not picture.delete_image(image_id, kind=kind):
         return jsonify({"error": f"That {kind} is already gone"}), 404
     return jsonify({"status": "deleted"})

@@ -49,15 +49,17 @@ def test_video_requires_its_own_weights(monkeypatch, tmp_path):
 
 def test_video_uses_exclusive_job_slot(monkeypatch):
     monkeypatch.setattr(hb, "video_ready", lambda: True)
-    monkeypatch.setattr(hb, "start_video_task", lambda _: False)
+    def busy(_):
+        raise hb.media_jobs.Busy()
+    monkeypatch.setattr(hb, "start_video_task", busy)
     assert client().post("/api/video", json={"prompt": "a cup"}).status_code == 409
 
 
 def test_video_records_prompt_and_seed(monkeypatch):
     seen = []
     monkeypatch.setattr(hb, "video_ready", lambda: True)
-    monkeypatch.setattr(hb, "start_video_task", lambda payload: seen.append(payload) or True)
-    assert client().post("/api/video", json={"prompt": "  a cup  "}).status_code == 200
+    monkeypatch.setattr(hb, "start_video_task", lambda payload: seen.append(payload) or dict(payload, state="accepted"))
+    assert client().post("/api/video", json={"prompt": "  a cup  "}).status_code == 202
     assert seen[0]["prompt"] == "a cup"
     assert type(seen[0]["seed"]) is int
 
