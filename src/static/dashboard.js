@@ -477,6 +477,12 @@ async function pollTask() {
         if (making) {
             banner.innerText = MEDIA[making].banner;
             banner.dataset.state = 'busy';
+        } else if (data.backup_running) {
+            // A scheduled backup never claims the task slot, so status stays
+            // idle. This has to win over the idle branch below, or the banner
+            // keeps saying "System Active".
+            banner.innerText = data.message || 'Backup in progress...';
+            banner.dataset.state = 'busy';
         } else if (data.status === 'idle') {
             banner.innerText = 'System Active';
             banner.removeAttribute('data-state');

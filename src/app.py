@@ -813,6 +813,46 @@ def picture_unit_active(kind="picture"):
     return result.stdout.strip() in ("activating", "active")
 
 
+# backup.sh:LOCK_FILE. The scheduled run is a systemd oneshot and never
+# writes the dashboard task file, so the banner stays "System Active"
+# unless we look at the lock ourselves. Reading /proc/locks, not taking
+# the lock: a 2s status poll that flocked it would make a backup starting
+# in that window fail with "already running". The lock is dropped before
+# the off-site upload, so this is the local backup only. An hours-long
+# mirror must not keep the banner up or refuse the next backup.
+BACKUP_LOCK_FILE = "/var/run/homebrain-backup.lock"
+PROC_LOCKS_FILE = "/proc/locks"
+
+
+def backup_is_running():
+    """True while some backup.sh still holds the backup lock."""
+    try:
+        st = os.stat(BACKUP_LOCK_FILE)
+    except OSError:
+        return False
+    want = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+    try:
+        with open(PROC_LOCKS_FILE) as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    for line in lines:
+        parts = line.split()
+        # "2: FLOCK  ADVISORY  WRITE 109143 00:1b:10320 0 EOF"
+        if len(parts) < 6 or parts[1] != "FLOCK":
+            continue
+        dev_ino = parts[5].split(":")
+        if len(dev_ino) != 3:
+            continue
+        try:
+            got = (int(dev_ino[0], 16), int(dev_ino[1], 16), int(dev_ino[2]))
+        except ValueError:
+            continue
+        if got == want:
+            return True
+    return False
+
+
 def task_running():
     """True when a background task is in flight.
 
@@ -898,7 +938,14 @@ except Exception as e:
 
 @app.route("/api/task_status")
 def get_task_status():
-    return jsonify(read_status())
+    status = read_status()
+    # Don't rewrite a real task. A scheduled backup leaves the slot idle, and
+    # that is the case the banner otherwise renders as "System Active".
+    if status.get("status") == "idle" and backup_is_running():
+        status = dict(status)
+        status["backup_running"] = True
+        status["message"] = "Backup in progress..."
+    return jsonify(status)
 
 # Rate limits live in the stack's Redis (loopback-published) so all gunicorn
 # workers share one counter — in-memory storage counted per worker, turning
@@ -2593,6 +2640,11 @@ def backup_replica():
 @app.route("/api/backup/now", methods=["POST"])
 @limiter.limit("3 per minute")
 def trigger_backup():
+    # Checked before the shared slot. A timer-started backup holds the lock
+    # without ever claiming that slot, so "Task running" never fired and the
+    # script died an instant later with a generic "check logs".
+    if backup_is_running():
+        return jsonify({"error": "A backup is already running."}), 409
     if task_running():
         return jsonify({"error": "Task running"}), 409
 
