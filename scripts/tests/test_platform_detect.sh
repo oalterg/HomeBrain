@@ -451,10 +451,16 @@ HB_GPU_BACKEND=sycl
 fake_bin="$TMP/llama-server"
 : > "$fake_bin"
 launcher="$(_write_sycl_launcher "$fake_bin")"
+ocl_after_setvars=0
 if [[ -x "$launcher" ]] && grep -q 'setvars.sh' "$launcher" && grep -qF "exec $(printf %q "$fake_bin")" "$launcher" && grep -q 'neo-26.35' "$launcher"; then
-    ok "sycl launcher sources setvars and execs the real binary"
+    setvars_line=$(grep -n 'setvars.sh' "$launcher" | head -1 | cut -d: -f1)
+    ocl_line=$(grep -n 'OCL_ICD_FILENAMES=.*libigdrcl.so' "$launcher" | head -1 | cut -d: -f1)
+    [[ -n "$setvars_line" && -n "$ocl_line" && "$ocl_line" -gt "$setvars_line" ]] && ocl_after_setvars=1
+fi
+if [[ "$ocl_after_setvars" -eq 1 ]]; then
+    ok "sycl launcher sources setvars, points oneDNN at the Arc OpenCL driver, and execs the real binary"
 else
-    bad "sycl launcher missing setvars or exec: $(cat "$launcher" 2>/dev/null)"
+    bad "sycl launcher missing setvars, OpenCL ICD, or exec: $(cat "$launcher" 2>/dev/null)"
 fi
 
 echo

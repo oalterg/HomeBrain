@@ -990,6 +990,9 @@ _install_sycl_runtime() {
     {
         echo '[Service]'
         echo "Environment=\"LD_LIBRARY_PATH=${libs}:${workdir}\""
+        # oneDNN's SYCL kernels look up the GPU through OpenCL. The ICD loader
+        # otherwise binds the CPU runtime and SDPA falls back.
+        echo "Environment=\"OCL_ICD_FILENAMES=${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so\""
         while IFS=$'\t' read -r key val; do
             [[ -n "$key" ]] || continue
             echo "Environment=\"${key}=${val}\""
@@ -1003,7 +1006,9 @@ _install_sycl_runtime() {
 # oneAPI's setvars.sh is what makes Level Zero visible. A unit that only sets
 # LD_LIBRARY_PATH and ONEAPI_DEVICE_SELECTOR still exits with "No device of
 # requested type available" on the B60. The launcher sources setvars, then
-# puts the side-by-side Level Zero ahead of Ubuntu's libze.
+# puts the side-by-side Level Zero ahead of Ubuntu's libze. OCL_ICD_FILENAMES
+# is set after setvars so oneDNN sees the Arc OpenCL driver, not the CPU ICD
+# setvars selects when the variable is empty.
 _write_sycl_launcher() {
     local bin_path="$1"
     local work_dir launcher versions_file spec setvars prefix key val
@@ -1023,6 +1028,8 @@ _write_sycl_launcher() {
             [[ -n "$key" ]] || continue
             printf 'export %s=%q\n' "$key" "$val"
         done < <(jq -r "${spec}.env | to_entries[] | [.key, .value] | @tsv" "$versions_file")
+        printf 'export OCL_ICD_FILENAMES=%q\n' \
+            "${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
         printf 'exec %q "$@"\n' "$bin_path"
     } > "$launcher"
     chmod 755 "$launcher"
@@ -3291,6 +3298,27 @@ case "${1:-}" in
         install_llamacpp "true"
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
+        ;;
+    refresh_llama_runtime)
+        # Env-only SYCL changes (the OpenCL ICD path) must land without a
+        # llama.cpp rebuild. No-op until the binary exists, so a first install
+        # stays with start_ai_auto_setup.
+        [[ "${HB_GPU_BACKEND:-}" == "sycl" ]] || exit 0
+        bin_path=$(get_llama_bin_path)
+        [[ -x "$bin_path" ]] || exit 0
+        launcher="$(dirname "$bin_path")/llama-sycl-server.sh"
+        dropin="/etc/systemd/system/llama-server.service.d/10-sycl.conf"
+        before=$(cat "$launcher" "$dropin" 2>/dev/null || true)
+        _install_sycl_runtime
+        _write_sycl_launcher "$bin_path" >/dev/null
+        after=$(cat "$launcher" "$dropin" 2>/dev/null || true)
+        if [[ "$before" == "$after" ]]; then
+            exit 0
+        fi
+        if systemctl is-active --quiet llama-server 2>/dev/null; then
+            log_info "SYCL runtime env changed; restarting llama-server."
+            systemctl restart llama-server
+        fi
         ;;
     refresh_openclaw)
         # Re-register the bundled HomeBrain OpenClaw plugins and re-patch

@@ -270,6 +270,9 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             || [[ -n "$llama_src" && "$llama_src" != "$llama_have" ]]; }; then
             log_info "llama.cpp: ${llama_have:-${old_llama_tag:-unset}} → ${llama_want}. Updating binary..."
             bash "$INSTALL_DIR/scripts/utilities.sh" update_llama || log_warn "llama.cpp update failed — check logs."
+        elif [[ "${HB_GPU_BACKEND:-}" == "sycl" ]]; then
+            bash "$INSTALL_DIR/scripts/utilities.sh" refresh_llama_runtime \
+                || log_warn "SYCL runtime refresh failed — check logs."
         fi
         # A missing binary is a first install, owned by start_ai_auto_setup
         # below. This branch is an in-place upgrade of a stack that is already
