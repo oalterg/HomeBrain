@@ -1854,8 +1854,24 @@ patch_openclaw_config() {
         *) think_level="" ;;
     esac
 
+    # OpenClaw attaches image bytes, and skips its separate caption call, only
+    # when the catalog entry lists image input. Without that it posts the photo
+    # to the default OpenAI vision model, which on this box is the Whisper
+    # endpoint, and the chat model is told it cannot see the picture. A
+    # projector on this platform's profile is what makes vision real.
+    local vision="false"
+    if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+        local mmproj=""
+        mmproj=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" \
+            '(.models[] | select(.id == $id)
+              | ((.profiles[$dtag] // .profiles[$tag] // {}).mmproj_filename // .mmproj_filename)) // empty' \
+            "$models_file" 2>/dev/null || echo "")
+        [[ -n "$mmproj" ]] && vision="true"
+    fi
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
-        --argjson max_tokens "$max_tokens" --arg think "$think_level" \
+        --argjson max_tokens "$max_tokens" --arg think "$think_level" --arg vision "$vision" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -1929,6 +1945,7 @@ patch_openclaw_config() {
         # thinking-capable so the Control UI and /reasoning actually render it.
         .models.providers.llamacpp.models[0].reasoning = true |
         .models.providers.llamacpp.models[0].compat.thinkingFormat = "deepseek" |
+        .models.providers.llamacpp.models[0].input = (if $vision == "true" then ["text", "image"] else ["text"] end) |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
         # timeout (schema minimum 1) — not the keep-model-warm knob
