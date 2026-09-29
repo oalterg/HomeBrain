@@ -298,7 +298,7 @@ else
     gl_flags="$(resolve Muse-Glimmer-30B-UD-Q5_K_M x86_64-sycl extra_flags xe)"
     gl_mmproj="$(jq -r --arg id Muse-Glimmer-30B-UD-Q5_K_M '.models[] | select(.id == $id) | .profiles["x86_64-sycl-xe"].mmproj_filename // empty' "$MODELS")"
     gl_mmproj_top="$(jq -r --arg id Muse-Glimmer-30B-UD-Q5_K_M '.models[] | select(.id == $id) | .mmproj_filename // empty' "$MODELS")"
-    if [[ "$gl_ctx" == "131072" && "$gl_amd" == "8192" && "$gl_flags" == *"-b 4096 -ub 2048"* && "$gl_flags" == *"q8_0"* && "$gl_flags" == *"reasoning_strength"* && "$gl_mmproj" == "mmproj-Muse-Glimmer-30B-Q8_0.gguf" && -z "$gl_mmproj_top" ]]; then
+    if [[ "$gl_ctx" == "131072" && "$gl_amd" == "8192" && "$gl_flags" == *"-b 4096 -ub 2048"* && "$gl_flags" == *"--cache-type-k f16 --cache-type-v f16"* && "$gl_flags" == *"reasoning_strength"* && "$gl_mmproj" == "mmproj-Muse-Glimmer-30B-Q8_0.gguf" && -z "$gl_mmproj_top" ]]; then
         ok "Glimmer Q5_K_M is ctx 131072 with the Q8 projector on sycl/xe only"
     else
         bad "Glimmer Q5_K_M profile: want sycl 131072 + Q8 mmproj, amd 8192, got ctx ${gl_ctx}/${gl_amd} mmproj ${gl_mmproj:-none} top ${gl_mmproj_top:-none}"

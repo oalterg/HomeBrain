@@ -140,11 +140,11 @@
       "profiles": {
         "x86_64-sycl-xe": {
           "context_window": 131072,
-          "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 64 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
+          "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k f16 --cache-type-v f16 --temp 1.0 --top-p 0.95 --top-k 64 -b 4096 -ub 2048 --threads 6 --chat-template-kwargs '{\"reasoning_strength\": \"xhigh\"}'",
           "mmproj_filename": "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
           "mmproj_url": "https://huggingface.co/unsloth/Muse-Glimmer-30B-GGUF/resolve/main/mmproj-Muse-Glimmer-30B-Q8_0.gguf",
           "mmproj_min_size_bytes": 2000000000,
-          "notes": "Arc vision option (2026-09-27). Same SYCL point as the ctx 131072 row: 19.8 t/s, 19.2 GiB resident, 4.7 GiB free, no fit warning. mmproj-Muse-Glimmer-30B-Q8_0.gguf is 2,051,685,088 bytes (1.91 GiB) and fits in that leftover with about 2.8 GiB left. ctx 393216 only has 2.0 GiB free, so it is not the profile. The RX 9060 XT never selects this profile. UD-Q5_K_XL stays the Arc text default. UD-Q4_K_XL stays the 16 GB default."
+          "notes": "Arc vision option (2026-09-27), f16 KV since 2026-09-29: decode 17.6 -> 18.5 t/s at a 17K prompt (20.1 t/s short), prefill unchanged at ~975 t/s. With mmproj loaded it leaves 1.3 GiB free after a 125,707-token fill plus a 1024px image (q8_0 KV left 2.2 GiB); no fit warning, no xe events. Earlier q8_0 point: Same SYCL point as the ctx 131072 row: 19.8 t/s, 19.2 GiB resident, 4.7 GiB free, no fit warning. mmproj-Muse-Glimmer-30B-Q8_0.gguf is 2,051,685,088 bytes (1.91 GiB) and fits in that leftover with about 2.8 GiB left. ctx 393216 only has 2.0 GiB free, so it is not the profile. The RX 9060 XT never selects this profile. UD-Q5_K_XL stays the Arc text default. UD-Q4_K_XL stays the 16 GB default."
         }
       },
       "benchmark": {
