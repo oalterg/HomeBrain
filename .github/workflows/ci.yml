@@ -119,7 +119,7 @@ jobs:
         run: bash scripts/tests/test_load_env.sh
       - name: openclaw compaction budget (jq program + reserve ladder)
         run: bash scripts/tests/test_openclaw_compaction.sh
-      - name: GPU recovery leaves a running or paused chat alone
+      - name: GPU recovery and SYCL/whisper runtime refresh
         run: |
           bash scripts/tests/test_recover_gpu.sh
           bash scripts/tests/test_gpu_runtime.sh

@@ -1894,11 +1894,15 @@ patch_openclaw_config() {
     # projector on this platform's profile is what makes vision real.
     local vision="false"
     if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+        # Same condition setup_llama_server uses to pass --mmproj: a name
+        # and a URL. A name alone attaches nothing.
         local mmproj=""
         mmproj=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
             --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" \
             '(.models[] | select(.id == $id)
-              | ((.profiles[$dtag] // .profiles[$tag] // {}).mmproj_filename // .mmproj_filename)) // empty' \
+              | (.profiles[$dtag] // .profiles[$tag] // {}) as $p
+              | select(($p.mmproj_filename // .mmproj_filename) and ($p.mmproj_url // .mmproj_url))
+              | "yes") // empty' \
             "$models_file" 2>/dev/null || echo "")
         [[ -n "$mmproj" ]] && vision="true"
     fi

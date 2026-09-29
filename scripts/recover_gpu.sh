@@ -251,6 +251,11 @@ main() {
     [[ -z "$invocation" ]] || text=$(journalctl -b "_SYSTEMD_INVOCATION_ID=$invocation" -n 40 --no-pager 2>/dev/null || true)
     log_says_no_device "$text" && nodevice=1
     if [[ -f "$PENDING" ]]; then nodevice=1; pending=1; fi
+    # The rebind already failed after the one reboot we allow. Retrying every
+    # cooldown only bounces voice for a bind that cannot succeed.
+    if [[ "$pending" == 1 ]] && stamp_fresh "$REBOOT_STAMP" "$REBOOT_COOLDOWN"; then
+        return 0
+    fi
     action=$(recover_action "$state" "$result" "$media" "$cooldown" "$nodevice" "$unresponsive" "$pending")
     case "$action" in
         rebind)
