@@ -1111,6 +1111,16 @@ download_model() {
     log_info "Model downloaded: $(( size / 1073741824 )) GB"
 }
 
+# The timer unit is installed by provision/update. Enable it once llama exists
+# so a HomeCloud box, which never has that unit, does not grow a no-op timer.
+enable_gpu_recover_timer() {
+    [[ -f /etc/systemd/system/homebrain-gpu-recover.timer ]] || return 0
+    command -v fuser >/dev/null 2>&1 || apt-get install -y -qq psmisc \
+        || log_warn "GPU recovery needs psmisc (fuser)."
+    systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null || \
+        log_warn "Failed to enable GPU recovery timer."
+}
+
 # Main setup orchestrator
 setup_llama_server() {
     log_info "=== Setting up llama-server ==="
@@ -1280,6 +1290,7 @@ setup_llama_server() {
         systemctl daemon-reload
         systemctl enable llama-server
         systemctl restart llama-server
+        enable_gpu_recover_timer
         wait_for_llama_health "$HEALTH_URL" 600 || return 1
         verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
         return 0
@@ -1306,6 +1317,7 @@ setup_llama_server() {
     generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
     systemctl daemon-reload
     systemctl enable --now llama-server
+    enable_gpu_recover_timer
 
     wait_for_llama_health "$HEALTH_URL" 600 || return 1
     verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
