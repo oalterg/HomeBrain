@@ -969,7 +969,8 @@ _install_sycl_runtime() {
 
     local ze="${prefix}/usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1"
     local igc="${prefix}/usr/local/lib/libigc.so.2"
-    if [[ ! -e "$ze" || ! -e "$igc" ]]; then
+    local ocl="${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
+    if [[ ! -e "$ze" || ! -e "$igc" || ! -e "$ocl" ]]; then
         log_info "Unpacking Intel Level Zero into ${prefix}..."
         local tmp url base
         tmp=$(mktemp -d)
@@ -981,7 +982,7 @@ _install_sycl_runtime() {
         done < <(jq -r "${spec}.neo_debs[]" "$versions_file")
         rm -rf "$tmp"
     fi
-    [[ -e "$ze" && -e "$igc" ]] || die "Level Zero unpack did not produce ${ze} and ${igc}"
+    [[ -e "$ze" && -e "$igc" && -e "$ocl" ]] || die "Intel runtime unpack did not produce ${ze}, ${igc} and ${ocl}"
 
     local libs workdir key val
     libs=$(jq -r "${spec}.runtime_libs | join(\":\")" "$versions_file")
@@ -1489,7 +1490,7 @@ User=${HOMEBRAIN_USER}
 Group=${HOMEBRAIN_USER}
 WorkingDirectory=$(dirname "$bin_path")
 Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
-Environment="GGML_VK_DEVICE=0"
+Environment="GGML_DISABLE_VULKAN=1"
 ExecStart=${bin_path} \\
   --model ${model_path} \\
   --host 127.0.0.1 \\
@@ -1538,6 +1539,26 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     chmod 644 /etc/systemd/system/whisper-proxy.service
+}
+
+# --no-gpu disables inference offload but still enumerates Vulkan devices.
+# Apply the backend opt-out to existing installations without rebuilding or
+# changing their model, port, or other service settings.
+refresh_whisper_runtime() {
+    [[ -f /etc/systemd/system/whisper-server.service ]] || return 0
+    local dir=/etc/systemd/system/whisper-server.service.d
+    local content=$'[Service]\nEnvironment="GGML_DISABLE_VULKAN=1"'
+    [[ "$(cat "$dir/10-cpu-only.conf" 2>/dev/null || true)" != "$content" ]] || return 0
+    mkdir -p "$dir"
+    printf '%s\n' "$content" > "$dir/10-cpu-only.conf"
+    systemctl daemon-reload
+    local server=0 proxy=0
+    systemctl is-active --quiet whisper-server && server=1
+    systemctl is-active --quiet whisper-proxy && proxy=1
+    if [[ "$server" == 1 ]]; then
+        systemctl restart whisper-server
+        [[ "$proxy" == 0 ]] || systemctl start whisper-proxy
+    fi
 }
 
 setup_whisper_server() {
@@ -3315,6 +3336,9 @@ case "${1:-}" in
         install_llamacpp "true"
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
+        ;;
+    refresh_whisper_runtime)
+        refresh_whisper_runtime
         ;;
     refresh_llama_runtime)
         # Env-only SYCL changes (the OpenCL ICD path) must land without a

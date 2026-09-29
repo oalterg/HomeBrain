@@ -312,6 +312,8 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
     fi
 fi
 
+bash "$INSTALL_DIR/scripts/utilities.sh" refresh_whisper_runtime \
+    || log_warn "Whisper CPU isolation refresh failed — check logs."
 # Boxes provisioned before auto-setup, and a failed first attempt. No-op when
 # the stack is installed, opted out, or this GPU is not first-class. Detached,
 # so the update does not wait on the download.
