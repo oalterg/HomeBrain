@@ -30,7 +30,9 @@ ExecStartPre=/bin/sh -c 'i=0; until [ -e /dev/dri/renderD128 ] || [ -e /dev/dri/
 # silently shrinks its compute buffer (warns only) and MTP loses its entire speedup.
 # Wait until non-llama VRAM use drains below 300 MiB (whisper idle is ~56 MiB).
 # Bounded to ~120 s, then proceed regardless: degraded-but-running beats not-running.
-ExecStartPre=/bin/sh -c 'for d in /sys/class/drm/card*/device; do [ -r "$d/mem_info_vram_used" ] || continue; [ "$(cat "$d/mem_info_vram_total" 2>/dev/null || echo 0)" -gt 4294967296 ] || continue; c="$d"; break; done; [ -n "$c" ] || exit 0; i=0; while [ $i -lt 60 ]; do u=$(( $(cat "$c/mem_info_vram_used")/1048576 )); if [ "$u" -lt 300 ]; then echo "vram-gate: ${u} MiB in use, clear to start"; exit 0; fi; echo "vram-gate: waiting, ${u} MiB still in use by other GPU consumers"; sleep 2; i=$((i+1)); done; echo "vram-gate: timeout after 120s, proceeding (compute buffer may be constrained)"; exit 0'
+# systemd expands ${VAR} inside ExecStartPre itself, so shell variables in
+# braces must be written $${VAR}; a bare $u in its own word is left alone.
+ExecStartPre=/bin/sh -c 'for d in /sys/class/drm/card*/device; do [ -r "$d/mem_info_vram_used" ] || continue; [ "$(cat "$d/mem_info_vram_total" 2>/dev/null || echo 0)" -gt 4294967296 ] || continue; c="$d"; break; done; [ -n "$c" ] || exit 0; i=0; while [ $i -lt 60 ]; do u=$(( $(cat "$c/mem_info_vram_used")/1048576 )); if [ "$u" -lt 300 ]; then echo "vram-gate: $${u} MiB in use, clear to start"; exit 0; fi; echo "vram-gate: waiting, $${u} MiB still in use by other GPU consumers"; sleep 2; i=$((i+1)); done; echo "vram-gate: timeout after 120s, proceeding (compute buffer may be constrained)"; exit 0'
 
 ExecStart=__LLAMA_BIN__ \
   --model __LLAMA_MODEL__ \

@@ -64,3 +64,11 @@ generate_whisper_services /tmp/whisper-server /tmp/model.bin
 grep -q 'GGML_DISABLE_VULKAN=1' "$TMP/systemd/whisper-server.service"
 grep -q -- '--no-gpu' "$TMP/systemd/whisper-server.service"
 echo 'ok: fresh Whisper service disables Vulkan discovery and GPU inference'
+
+# systemd expands ${VAR} in Exec lines before the shell sees them, which
+# blanked the VRAM gate's log messages. Shell braces must be written $${VAR}.
+if grep -E '^Exec' "$ROOT/config/llama-server.service" | grep -qE '(^|[^$])\$\{'; then
+    echo 'FAIL: llama-server.service has an unescaped ${VAR} in an Exec line' >&2
+    exit 1
+fi
+echo 'ok: llama-server Exec lines escape shell braces from systemd'
