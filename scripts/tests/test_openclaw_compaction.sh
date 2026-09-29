@@ -62,6 +62,8 @@ log_error() { :; }
 # No browser on a CI runner; the real one returns empty there too, which is
 # the branch that leaves .browser.executablePath untouched.
 resolve_browser_path() { return 0; }
+# No OpenClaw on a CI runner, so no SearXNG plugin either.
+searxng_plugin_version() { return 0; }
 
 # patch_openclaw_config reads the real catalog through SCRIPT_DIR, so point it
 # at scripts/ — that also pins maxTokens resolution against the shipped
@@ -438,6 +440,25 @@ if out=$( set -euo pipefail; resolve_llama_ctx_size ); then
 else
     bad "returns 0 and echoes either nothing or a bare integer" "non-zero exit under set -e"
 fi
+
+echo "== web_search follows the SearXNG plugin =="
+cfgs="$(run_patch 131072 "$GLIMMER")"
+if [[ "$(jq -r '.tools.web.search.provider // "unset"' "$cfgs")" == "unset" ]]; then
+    ok "no plugin leaves the provider unset"
+else
+    bad "no plugin leaves the provider unset" "$(jq -c '.tools.web' "$cfgs")"
+fi
+searxng_plugin_version() { echo 2026.7.35; }
+write_fixture "$TMP_ROOT/openclaw.json"
+jq '.plugins.entries.searxng.enabled = true' "$TMP_ROOT/openclaw.json" > "$TMP_ROOT/sx.json"
+patch_openclaw_config "$TMP_ROOT/sx.json" "$GLIMMER" 131072 >/dev/null 2>&1
+got=$(jq -c '[.tools.web.search.provider, .plugins.entries.searxng.config.webSearch.baseUrl, .plugins.entries.searxng.enabled]' "$TMP_ROOT/sx.json")
+if [[ "$got" == '["searxng","http://127.0.0.1:8888",true]' ]]; then
+    ok "installed plugin points web_search at the loopback SearXNG and keeps it enabled"
+else
+    bad "installed plugin points web_search at the loopback SearXNG and keeps it enabled" "got $got"
+fi
+searxng_plugin_version() { return 0; }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

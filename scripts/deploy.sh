@@ -101,6 +101,7 @@ if handover_pending; then
     stop_tunnel_services
 fi
 
+ensure_searxng_secret
 vault_profiles=$(get_vault_profiles)
 log_info "Starting Stack with Tunnel Profile: ${profiles:-None} · Vault Profile: ${vault_profiles:-None}"
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
