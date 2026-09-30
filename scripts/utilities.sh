@@ -2618,16 +2618,19 @@ setup_openclaw() {
             || log_warn "nodejs upgrade failed — openclaw may refuse to run if its engines range moved."
 
         log_info "Node $(node --version)"
+        # Otherwise the old gateway keeps running while npm replaces its
+        # files (on .69 it failed to load modules mid-install), under a unit
+        # the old version wrote, where doctor cannot verify it owns the
+        # gateway and refuses to migrate. Step 3 starts the new one.
+        if command -v openclaw >/dev/null 2>&1; then
+            run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
+        fi
         log_info "Installing openclaw@${OPENCLAW_VERSION}..."
         if npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit; then
             command -v openclaw >/dev/null 2>&1 \
                 || die "openclaw binary not found in PATH after install."
             update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
             log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
-            # The old gateway keeps running on the files npm just replaced,
-            # under a unit the old version wrote. Doctor cannot verify it owns
-            # that gateway and refuses to migrate; step 3 starts the new one.
-            run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
         else
             # Npm install failed — continue if openclaw is already installed so that
             # patch_openclaw_config and the daemon restart still happen (e.g. model switch).

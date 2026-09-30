@@ -3943,18 +3943,16 @@ def _openclaw_upstream_path(subpath):
     return target
 
 
-def _openclaw_bootstrap_script() -> bytes:
-    """Tiny inline bootstrap injected into the Control UI's index.html.
-
-    It only tells the SPA where it is mounted. Authentication happens
-    server-side: the WS proxy vouches for the session as a trusted proxy.
-    """
-    js = (
-        "<script>"
-        "window.__OPENCLAW_CONTROL_UI_BASE_PATH__='/openclaw';"
-        "</script>"
-    )
-    return js.encode("utf-8")
+# The Control UI's URL for a user's picture; see openclaw_proxy.
+_OPENCLAW_USER_AVATAR_RE = re.compile(r"api/users/[^/]+/avatar")
+# The owner's initial, as the Control UI draws it when it has no picture.
+_OPENCLAW_OWNER_AVATAR_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="32" fill="#6b7280"/>'
+    '<text x="32" y="42" font-family="sans-serif" font-size="28" '
+    'text-anchor="middle" fill="#fff">' + _OPENCLAW_IDENTITY[:1].upper() + '</text>'
+    '</svg>'
+).encode("utf-8")
 
 
 @app.route("/openclaw", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
@@ -3967,11 +3965,20 @@ def openclaw_proxy(subpath=""):
     The before_request middleware has already verified the session, so any
     request reaching this view is authenticated. We forward verbatim, stream
     the response body (important for SSE / long-running calls), and name the
-    owner to the gateway as its trusted proxy.
-
-    For the SPA index.html we additionally inject a bootstrap script that
-    tells the UI its base path.
+    owner to the gateway as its trusted proxy. The gateway applies
+    controlUi.basePath to the SPA itself, so nothing is rewritten.
     """
+    # Never forwarded. On 2026.8 every trusted-proxy HTTP request re-ensures
+    # the owner's user profile, and that write announces sessions.changed
+    # even when nothing changed. The Control UI answers the event by listing
+    # sessions and re-rendering, which fetches the owner's avatar again: a
+    # loop at ~85 requests a second for as long as a tab is open, measured
+    # on .69. Answer with the initial the UI would draw. An avatar uploaded
+    # in OpenClaw's own profile page does not show; 2026.7 had none at all.
+    if _OPENCLAW_USER_AVATAR_RE.fullmatch(subpath):
+        return Response(_OPENCLAW_OWNER_AVATAR_SVG, mimetype="image/svg+xml",
+                        headers={"Cache-Control": "private, max-age=86400"})
+
     target_path = _openclaw_upstream_path(subpath)
     url = f"http://{_OPENCLAW_PROXY_HOST}:{_OPENCLAW_PROXY_PORT}{target_path}"
     if request.query_string:
@@ -3987,6 +3994,11 @@ def openclaw_proxy(subpath=""):
     # the proxy's own loopback URL — as we did before — leaves a port-mismatch
     # against the allowlist entries and gets us rejected.
     headers.update(_openclaw_proxy_headers())
+    # requests decodes the body as it streams, and Content-Encoding is dropped
+    # below. It decodes gzip and deflate only; 2026.8 answers a browser's
+    # `br, zstd` with Brotli, which reached the browser as raw bytes labelled
+    # text/html.
+    headers["Accept-Encoding"] = "gzip, deflate"
 
     try:
         upstream = requests.request(
@@ -4005,32 +4017,6 @@ def openclaw_proxy(subpath=""):
     # Strip hop-by-hop and content-encoding (already decoded by requests).
     excluded = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}
     resp_headers = [(k, v) for k, v in upstream.raw.headers.items() if k.lower() not in excluded]
-
-    upstream_ct = upstream.headers.get("Content-Type", "")
-    is_html = (
-        request.method == "GET"
-        and upstream.status_code == 200
-        and upstream_ct.lower().startswith("text/html")
-    )
-
-    if is_html:
-        # Buffer the small HTML so we can splice in the base-path global
-        # before the SPA module evaluates. Streaming buys nothing for
-        # ~10 KB and prevents body rewriting.
-        try:
-            body = upstream.raw.read(decode_content=True)
-        finally:
-            upstream.close()
-        # Force a fresh fetch every visit so stale HTML can never run a
-        # prior bootstrap variant against current state.
-        resp_headers = [(k, v) for k, v in resp_headers if k.lower() != "cache-control"]
-        resp_headers.append(("Cache-Control", "no-store, max-age=0"))
-        marker = b"<head>"
-        idx = body.find(marker)
-        if idx != -1:
-            inject = _openclaw_bootstrap_script()
-            body = body[: idx + len(marker)] + inject + body[idx + len(marker) :]
-        return Response(body, status=upstream.status_code, headers=resp_headers)
 
     def generate():
         try:
