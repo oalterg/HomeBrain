@@ -75,9 +75,8 @@
         "lightContext": true
       }
     },
-    "list": [
-      {
-        "id": "main",
+    "entries": {
+      "main": {
         "tools": {
           "profile": "full",
           "alsoAllow": [
@@ -85,7 +84,7 @@
           ]
         }
       }
-    ]
+    }
   },
   "tools": {
     "exec": {
