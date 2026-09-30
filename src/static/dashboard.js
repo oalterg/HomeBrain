@@ -1319,14 +1319,27 @@ function showCloudflareForm() {
     document.getElementById('cf-form-container').style.display = 'block';
 }
 
+/* LAN-only box: swap the "Tunnel inactive" state for the tunnel form. */
+function showTunnelSetup(show) {
+    document.getElementById('tunnel-empty').style.display = show ? 'none' : '';
+    document.getElementById('pangolin-form').style.display = show ? '' : 'none';
+}
+
 async function updatePangolin(e) {
     e.preventDefault();
-    if (!await hbConfirm({
+    const enable = e.target.dataset.enable === '1';
+    if (!await hbConfirm(enable ? {
+        title: 'Turn on the tunnel?',
+        body: 'Nextcloud, Home Assistant and Vault restart and become reachable under your domain. '
+            + 'This takes a minute or two.',
+        detail: 'The names on your home network (nc-homebrain.local and the others) keep working.',
+        confirm: 'Turn on',
+    } : {
         title: 'Update tunnel settings?',
         body: 'All service URLs will be rewritten and the tunnels restarted.',
         confirm: 'Update',
     })) return;
-    triggerAction('/api/tunnel', 'Update Tunnel', {
+    triggerAction('/api/tunnel', enable ? 'Turn on tunnel' : 'Update Tunnel', {
         endpoint: document.getElementById('tun-ep').value,
         id: document.getElementById('tun-id').value,
         secret: document.getElementById('tun-sec').value,
@@ -1335,13 +1348,19 @@ async function updatePangolin(e) {
     setTimeout(() => location.reload(), 3000);
 }
 
-async function revertPangolin() {
-    if (!await hbConfirm({
+/* `off`: this box shipped without a tunnel, so "factory" means none. */
+async function revertPangolin(off) {
+    if (!await hbConfirm(off ? {
+        title: 'Turn off the tunnel?',
+        body: 'Nextcloud, Home Assistant and Vault stop answering on your domain. '
+            + 'The names on your home network keep working.',
+        confirm: 'Turn off', danger: true,
+    } : {
         title: 'Revert to factory defaults?',
         body: 'Endpoint, device ID, secret and domains all return to the values this device shipped with.',
         confirm: 'Revert', danger: true,
     })) return;
-    triggerAction('/api/tunnel', 'Revert Tunnel', { action: 'revert' });
+    triggerAction('/api/tunnel', off ? 'Turn off tunnel' : 'Revert Tunnel', { action: 'revert' });
     setTimeout(() => location.reload(), 3000);
 }
 
@@ -3832,7 +3851,7 @@ const tunDomainEl = document.getElementById('tun-main-domain');
 if (tunDomainEl) {
     tunDomainEl.addEventListener('input', e => {
         const val = e.target.value || '…';
-        ['preview-mgr', 'preview-nc', 'preview-ha'].forEach(id => {
+        ['preview-mgr', 'preview-nc', 'preview-ha', 'preview-vault'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.innerText = val;
         });

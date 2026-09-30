@@ -3057,6 +3057,38 @@ def update_openclaw_backup_settings():
 
 
 # --- Routes: Tunnel Management ---
+def point_pangolin_at(endpoint, newt_id, secret, domain):
+    """Write one Pangolin tunnel into .env — or none, when a value is missing.
+
+    DEPLOYMENT_MODE follows the credentials. The wizard writes "local" on a box
+    set up without a tunnel, and is_local_mode() (here, in common.sh and in
+    healthcheck.py) lets that win over credentials — so a tunnel added later
+    came up while Nextcloud, the vault URL and this dashboard all carried on
+    as local. Nothing on the redeploy path derives the vault keys either:
+    provision_vault.sh only fills an empty VAULT_DOMAIN.
+    """
+    domain = sanitize_domain(domain)
+    on = bool(endpoint and newt_id and secret and domain)
+    dom = domain if on else ""
+    update_env_var("DEPLOYMENT_MODE", "remote" if on else "local")
+    update_env_var("PANGOLIN_ENDPOINT", endpoint)
+    update_env_var("NEWT_ID", newt_id)
+    update_env_var("NEWT_SECRET", secret)
+    update_env_var("PANGOLIN_DOMAIN", dom)
+    update_env_var("MANAGER_DOMAIN", dom)
+    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{dom}" if dom else "")
+    update_env_var("HA_TRUSTED_DOMAINS", f"ha.{dom}" if dom else "")
+    update_env_var("VAULT_TRUSTED_DOMAINS", f"vault.{dom}" if dom else "")
+    update_env_var("VAULT_DOMAIN", f"https://vault.{dom}" if dom else "https://vault-homebrain.local")
+
+
+def point_pangolin_at_factory():
+    """The tunnel this box shipped with. A box that shipped without one goes local."""
+    factory = get_factory_config()
+    point_pangolin_at(factory.get("PANGOLIN_ENDPOINT", ""), factory.get("NEWT_ID", ""),
+                      factory.get("NEWT_SECRET", ""), factory.get("PANGOLIN_DOMAIN", ""))
+
+
 @app.route("/api/tunnel", methods=["POST"])
 @limiter.limit("5 per minute")
 def update_tunnel():
@@ -3066,35 +3098,22 @@ def update_tunnel():
     data = request.json
     action = data.get("action")
 
+    if action != "revert":
+        endpoint = (data.get("endpoint") or "").strip()
+        newt_id = (data.get("id") or "").strip()
+        secret = (data.get("secret") or "").strip()
+        main_dom = sanitize_domain(data.get("main_domain"))
+        if not (endpoint and newt_id and secret and main_dom):
+            return jsonify({"error": "Endpoint, device ID, secret key and main domain are all required."}), 400
+
     # Ensure we are in Pangolin mode: Clear CF tokens
     update_env_var("CF_TOKEN_NC", None)
     update_env_var("CF_TOKEN_HA", None)
 
     if action == "revert":
-        factory = get_factory_config()
-        update_env_var("PANGOLIN_ENDPOINT", factory.get("PANGOLIN_ENDPOINT", ""))
-        update_env_var("NEWT_ID", factory.get("NEWT_ID", ""))
-        update_env_var("NEWT_SECRET", factory.get("NEWT_SECRET", ""))
-        
-        # Revert Domain Logic
-        main_dom = sanitize_domain(factory.get("PANGOLIN_DOMAIN", ""))
-        update_env_var("PANGOLIN_DOMAIN", main_dom)
-        update_env_var("MANAGER_DOMAIN", main_dom)
-        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}" if main_dom else "")
-        update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}" if main_dom else "")
-
+        point_pangolin_at_factory()
     else:
-        update_env_var("PANGOLIN_ENDPOINT", data.get("endpoint"))
-        update_env_var("NEWT_ID", data.get("id"))
-        update_env_var("NEWT_SECRET", data.get("secret"))
-        
-        # Consolidate Domain Logic
-        main_dom = sanitize_domain(data.get("main_domain"))
-        if main_dom:
-            update_env_var("PANGOLIN_DOMAIN", main_dom)
-            update_env_var("MANAGER_DOMAIN", main_dom)
-            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}")
-            update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}")
+        point_pangolin_at(endpoint, newt_id, secret, main_dom)
 
     # Trigger deploy script to update stack logic
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
@@ -3148,22 +3167,10 @@ def revert_tunnel_provider():
     update_env_var("CF_TOKEN_NC", None)
     update_env_var("CF_TOKEN_HA", None)
 
-    # 2. Restore Factory Pangolin vars
-    factory = get_factory_config()
-    update_env_var("PANGOLIN_ENDPOINT", factory.get("PANGOLIN_ENDPOINT", ""))
-    update_env_var("NEWT_ID", factory.get("NEWT_ID", ""))
-    update_env_var("NEWT_SECRET", factory.get("NEWT_SECRET", ""))
-    # Derive trusted domains from the factory PANGOLIN_DOMAIN rather than the
-    # legacy NC_DOMAIN/HA_DOMAIN keys: provision.sh (remote mode) rewrites
-    # factory_config without those keys, so reading them here would blank the
-    # trusted domains on revert. Mirrors the /api/tunnel revert + start_setup map.
-    main_dom = sanitize_domain(factory.get("PANGOLIN_DOMAIN", ""))
-    update_env_var("PANGOLIN_DOMAIN", main_dom)
-    update_env_var("MANAGER_DOMAIN", main_dom)
-    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{main_dom}" if main_dom else "")
-    update_env_var("HA_TRUSTED_DOMAINS", f"ha.{main_dom}" if main_dom else "")
-    update_env_var("VAULT_TRUSTED_DOMAINS", f"vault.{main_dom}" if main_dom else "")
-    update_env_var("VAULT_DOMAIN", f"https://vault.{main_dom}" if main_dom else "")
+    # 2. Restore Factory Pangolin vars. Trusted domains derive from the factory
+    # PANGOLIN_DOMAIN rather than the legacy NC_DOMAIN/HA_DOMAIN keys:
+    # provision.sh (remote mode) rewrites factory_config without those keys.
+    point_pangolin_at_factory()
 
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
