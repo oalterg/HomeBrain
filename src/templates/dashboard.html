@@ -54,7 +54,10 @@
                 <div class="stat-item"><span>Nextcloud</span> <span id="st-nc" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Database</span> <span id="st-db" class="skeleton sk-mid"></span></div>
                 <div class="stat-item"><span>Home Assistant</span> <span id="st-ha" class="skeleton sk-mid"></span></div>
-                <div class="stat-item"><span>Vault</span> <span id="st-vault" class="skeleton sk-mid"></span></div>
+                <div class="stat-item">
+                    <span>Vault <a id="vault-setup-link" href="#" onclick="return goTo('settings', 'vault-config-card')" style="display:none;">· set up</a></span>
+                    <span id="st-vault" class="skeleton sk-mid"></span>
+                </div>
                 <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="skeleton sk-mid"></span></div>
 
                 <div class="link-row">
@@ -107,32 +110,6 @@
             </div>
             {% endif %}
 
-            <div class="card" id="vault-card">
-                <h3>Vault</h3>
-                <p class="lede">Self-hosted password manager. Use the official
-                    <a href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Bitwarden apps</a>
-                    and point the server URL at your vault domain.</p>
-                <div class="stat-item"><span>Service</span> <span id="vault-state" class="skeleton sk-mid"></span></div>
-                <div class="stat-item"><span>URL</span> <span id="vault-url" class="skeleton sk-wide"></span></div>
-                <div class="stat-item"><span>Users</span> <span id="vault-users" class="skeleton sk-small"></span></div>
-                <div class="stat-item"><span>Signups</span> <span id="vault-signups" class="skeleton sk-small"></span></div>
-
-                <div class="link-row">
-                    <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
-                    <a id="vault-configure-link" href="#" onclick="return goTo('settings', 'vault-config-card')" class="link-out">Configure<span aria-hidden="true">→</span></a>
-                </div>
-            </div>
-
-            <div class="card" id="selftest-card">
-                <h3>Self-test</h3>
-                <p class="small muted">Checks what this box claims, through the real interfaces —
-                    logs in to each service with the password it has stored, reads the newest backup,
-                    and reports what it could not check as exactly that.</p>
-                <button class="btn-main" id="btn-selftest" onclick="runSelfTest()">Run self-test</button>
-                <p id="selftest-summary" class="small" style="min-height:1.3em;"></p>
-                <div id="selftest-rows"></div>
-            </div>
-
             <div class="card">
                 <h3>System Resources</h3>
                 {% if has_gpu %}
@@ -181,68 +158,53 @@
                 <p class="lede">A fully private assistant on your own hardware. Inference and chat never leave the
                     device. Live status is on the Status tab.</p>
 
-                <div id="ai-model-selector" style="display:none;">
-                    <label for="ai-model-select">Model</label>
-                    <select id="ai-model-select" onchange="onModelSelectChange()"></select>
-                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
-                </div>
-
-                <div id="models-on-disk" class="mt" style="display:none;">
-                    <label>Downloaded models</label>
-                    <p class="lede">Switching models keeps the old one so switching back is instant. They are large;
-                        delete the ones you are not using. Any of them can be downloaded again.</p>
-                    <div id="models-on-disk-list"></div>
-                </div>
-
-                <div class="inline-row mt" style="justify-content:space-between;">
+                <!-- One row: the model picker lives in Models at the bottom of
+                     the tab, so Picture and Video sit right under this. -->
+                <div class="inline-row">
                     <a id="openclaw-open" href="/openclaw/" target="_blank" rel="noopener" class="btn-primary link-out"
                        style="display:none;">Open AI Assistant<span aria-hidden="true">↗</span></a>
+                    <span class="small muted">
+                        <span id="ai-model-name"></span>
+                        <a href="#" id="ai-model-link" onclick="return goTo('ai', 'model-card')"></a>
+                    </span>
                     <button id="btn-ai-toggle" onclick="toggleSystem('openclaw')" disabled style="margin-left:auto;">Loading…</button>
                 </div>
             </section>
-            <section class="section" id="picture-card" style="display:none;">
-                <h3>Picture</h3>
-                <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
-                    then comes back.</p>
-                <label for="picture-model">Image model</label>
-                <select id="picture-model" onchange="refreshMedia()">
-                    <option value="krea2">Krea2 (default)</option>
-                    <option value="qwen-image-2.1">Qwen Image 2.1</option>
-                </select>
-                <textarea id="picture-prompt" rows="3" maxlength="500"
-                          placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
-                <div class="form-actions">
-                    <button class="btn-primary" id="picture-generate" onclick="mediaGenerate('picture')">Generate</button>
-                </div>
-                <small id="picture-msg" class="hint"></small>
-                <div id="picture-gallery" class="picture-grid"></div>
-            </section>
 
-            <section class="section" id="video-card" style="display:none;">
-                <h3>Video</h3>
-                <p class="lede">Makes one short clip, about two seconds, on this Arc card. Chat pauses while it runs,
-                    then comes back.</p>
-                <label for="video-model">Video model</label>
-                <select id="video-model" onchange="refreshMedia()"><option value="minimax-h3">MiniMax H3</option></select>
-                <textarea id="video-prompt" rows="3" maxlength="500"
-                          placeholder="A ceramic teapot on a wooden table, steam rising, soft morning light"></textarea>
-                <div class="form-actions">
-                    <button class="btn-primary" id="video-generate" onclick="mediaGenerate('video')">Generate</button>
-                </div>
-                <small id="video-msg" class="hint"></small>
-                <div id="video-gallery" class="picture-grid"></div>
-            </section>
+            <div class="media-row">
+                <section class="section" id="picture-card" style="display:none;">
+                    <h3>Picture</h3>
+                    <p class="lede">Makes one 1024 picture on this Arc card. Chat pauses for a couple of minutes,
+                        then comes back.</p>
+                    <label for="picture-model">Image model</label>
+                    <select id="picture-model" onchange="refreshMedia()">
+                        <option value="krea2">Krea2 (default)</option>
+                        <option value="qwen-image-2.1">Qwen Image 2.1</option>
+                    </select>
+                    <textarea id="picture-prompt" rows="3" maxlength="500"
+                              placeholder="A ceramic teapot on a wooden table, soft morning light"></textarea>
+                    <div class="form-actions">
+                        <button class="btn-primary" id="picture-generate" onclick="mediaGenerate('picture')">Generate</button>
+                    </div>
+                    <small id="picture-msg" class="hint"></small>
+                    <div id="picture-gallery" class="picture-grid"></div>
+                </section>
 
-            <section class="section" id="media-delivery-card" style="display:none;">
-                <h3>Media delivery</h3>
-                <p class="lede">Images and videos requested through the agent are sent to this paired Telegram DM.
-                    Dashboard generations stay here.</p>
-                <label for="media-delivery-target">Telegram recipient</label>
-                <select id="media-delivery-target"><option value="">Disabled</option></select>
-                <div class="form-actions"><button onclick="saveMediaDelivery()">Save recipient</button></div>
-                <small id="media-delivery-msg" class="hint"></small>
-                <div id="media-jobs" class="row-list"></div>
-            </section>
+                <section class="section" id="video-card" style="display:none;">
+                    <h3>Video</h3>
+                    <p class="lede">Makes one short clip, about two seconds, on this Arc card. Chat pauses while it runs,
+                        then comes back.</p>
+                    <label for="video-model">Video model</label>
+                    <select id="video-model" onchange="refreshMedia()"><option value="minimax-h3">MiniMax H3</option></select>
+                    <textarea id="video-prompt" rows="3" maxlength="500"
+                              placeholder="A ceramic teapot on a wooden table, steam rising, soft morning light"></textarea>
+                    <div class="form-actions">
+                        <button class="btn-primary" id="video-generate" onclick="mediaGenerate('video')">Generate</button>
+                    </div>
+                    <small id="video-msg" class="hint"></small>
+                    <div id="video-gallery" class="picture-grid"></div>
+                </section>
+            </div>
 
             <section class="section" id="integrations-card">
                 <h3>Agent Integrations</h3>
@@ -412,6 +374,34 @@
                         <button onclick="closeForm('details-email-channel')">Cancel</button>
                     </div>
                     <small class="hint">Write to the agent address from one of these personal addresses — not from the agent mailbox itself. A reply to a healthcheck alert from an allowlisted address also wakes the agent. HomeBrain does not send the reply; the agent drafts (or sends, if you enabled that).</small>
+                </div>
+            </section>
+
+            <section class="section" id="media-delivery-card" style="display:none;">
+                <h3>Media delivery</h3>
+                <p class="lede">Images and videos requested through the agent are sent to this paired Telegram DM.
+                    Dashboard generations stay here.</p>
+                <label for="media-delivery-target">Telegram recipient</label>
+                <select id="media-delivery-target"><option value="">Disabled</option></select>
+                <div class="form-actions"><button onclick="saveMediaDelivery()">Save recipient</button></div>
+                <small id="media-delivery-msg" class="hint"></small>
+                <div id="media-jobs" class="row-list"></div>
+            </section>
+
+            <section class="section" id="model-card">
+                <h3>Models</h3>
+                <p class="lede">What the assistant runs on. Switching stops chat while the new model loads.</p>
+                <div id="ai-model-selector" style="display:none;">
+                    <label for="ai-model-select">Model</label>
+                    <select id="ai-model-select" onchange="onModelSelectChange()"></select>
+                    <button id="btn-switch-model" onclick="switchModel()" style="display:none;">Switch model</button>
+                </div>
+
+                <div id="models-on-disk" class="mt" style="display:none;">
+                    <label>Downloaded models</label>
+                    <p class="lede">Switching models keeps the old one so switching back is instant. They are large;
+                        delete the ones you are not using. Any of them can be downloaded again.</p>
+                    <div id="models-on-disk-list"></div>
                 </div>
             </section>
 
@@ -925,8 +915,13 @@
 
             <section class="section" id="vault-config-card">
                 <h3>Vault</h3>
-                <p class="lede">First-time setup, admin actions, and encrypted-document storage. Live status is on
-                    the Status tab.</p>
+                <p class="lede">Self-hosted password manager. Use the official
+                    <a href="https://bitwarden.com/download/" target="_blank" rel="noreferrer">Bitwarden apps</a>
+                    and point the server URL at your vault domain.</p>
+                <div class="stat-item"><span>Service</span> <span id="vault-state" class="skeleton sk-mid"></span></div>
+                <div class="stat-item"><span>URL</span> <span id="vault-url" class="skeleton sk-wide"></span></div>
+                <div class="stat-item"><span>Users</span> <span id="vault-users" class="skeleton sk-small"></span></div>
+                <div class="stat-item"><span>Signups</span> <span id="vault-signups" class="skeleton sk-small"></span></div>
 
                 <div id="vault-bootstrap" class="conn-form" style="display:none;">
                     <strong>First-time setup</strong>
@@ -939,6 +934,7 @@
                 </div>
 
                 <div class="link-row">
+                    <a id="vault-open" href="#" target="_blank" class="link-out">Open Vault<span aria-hidden="true">↗</span></a>
                     <a href="#" onclick="vaultOpenAdmin(event)" class="link-out">Admin panel<span aria-hidden="true">↗</span></a>
                 </div>
 
@@ -990,6 +986,16 @@
                         <small class="hint">Nightly security patches apply themselves. Run now if you don’t want to wait; restart if the health banner asks.</small>
                     </div>
                 </div>
+            </section>
+
+            <section class="section" id="selftest-card">
+                <h3>Self-test</h3>
+                <p class="lede">Checks what this box claims, through the real interfaces —
+                    logs in to each service with the password it has stored, reads the newest backup,
+                    and reports what it could not check as exactly that.</p>
+                <button id="btn-selftest" onclick="runSelfTest()">Run self-test</button>
+                <p id="selftest-summary" class="small" style="min-height:1.3em;"></p>
+                <div id="selftest-rows"></div>
             </section>
 
             <section class="section">
