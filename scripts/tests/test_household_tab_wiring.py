@@ -126,6 +126,13 @@ def test_ai_tab_holds_the_assistant_and_stays_off_a_pi():
     for marker in ("picture-card", "video-card", "integrations-card", "channels-card",
                    "ai-model-select", "Personal AI Assistant"):
         assert marker in panel, marker
+    # Picture and Video come straight after the assistant row; the model
+    # picker and the downloaded-models list sit below everything else.
+    order = [panel.index(m) for m in ("Personal AI Assistant", 'id="picture-card"',
+                                      'id="video-card"', 'id="integrations-card"',
+                                      'id="model-card"', 'id="ai-model-select"',
+                                      'id="models-on-disk"')]
+    assert order == sorted(order), order
     settings = html[html.index('<div id="settings" class="tab-content'):]
     for marker in ("picture-card", "video-card", "integrations-card", "channels-card"):
         assert marker not in settings, marker
@@ -139,6 +146,29 @@ def test_ai_tab_holds_the_assistant_and_stays_off_a_pi():
     assert settings_branch and "loadModelsOnDisk" not in settings_branch.group(1)
     assert "mediaGenerate('video')" in html
     assert "refreshMedia" in js
+
+
+def test_status_is_status_and_settings_holds_vault_and_self_test():
+    """Status shows what is running. Vault config and the self-test are settings.
+
+    The Status tab keeps one vault prompt: a "set up" link on the Services row
+    while first-time setup is open, since Settings is where that form lives.
+    """
+    html = _dashboard_html()
+    status = html[html.index('<div id="status" class="tab-content'):
+                  html.index('<div id="household" class="tab-content')]
+    settings = html[html.index('<div id="settings" class="tab-content'):
+                    html.index('<div id="logs" class="tab-content')]
+    for marker in ('id="vault-card"', 'id="selftest-card"', 'id="vault-state"', "runSelfTest()"):
+        assert marker not in status, f"{marker!r} still on the Status tab"
+    assert 'id="st-vault"' in status and 'id="vault-setup-link"' in status
+    for marker in ('id="selftest-card"', "runSelfTest()", 'id="vault-config-card"',
+                   'id="vault-state"', 'id="vault-open"', 'id="vault-bootstrap"'):
+        assert html.count(marker) == 1, marker
+        assert marker in settings, f"{marker!r} is not on Settings"
+
+    js = open(DASHBOARD_JS, encoding="utf-8").read()
+    assert "vault-setup-link" in js and "vault-configure-link" not in js
 
 
 if __name__ == "__main__":

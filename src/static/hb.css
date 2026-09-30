@@ -634,6 +634,17 @@ tbody tr:hover td { background: var(--accent-soft); }
 
 .hint { display: block; margin-top: 6px; font-size: 0.85em; color: var(--text-dim); }
 
+/* Picture and Video side by side; one column on a phone, or when only one
+   is available (auto-fit drops the empty track). The first section keeps its
+   rule — inside this wrapper it is :first-child, which would drop it. */
+.media-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  column-gap: 28px;
+  align-items: start;
+}
+.media-row > .section:first-child { border-top: 1px solid var(--border); padding-top: 28px; }
+
 .picture-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

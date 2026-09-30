@@ -1123,11 +1123,10 @@ async function fetchVaultStatus() {
             v.container && v.container !== 'stopped';
         const bootstrap = document.getElementById('vault-bootstrap');
         if (bootstrap) bootstrap.style.display = showBootstrap ? '' : 'none';
-        const cfgLink = document.getElementById('vault-configure-link');
-        if (cfgLink) {
-            cfgLink.innerHTML = (showBootstrap ? 'Set up' : 'Configure') + '<span aria-hidden="true">→</span>';
-            cfgLink.style.outline = showBootstrap ? '2px solid var(--accent)' : '';
-        }
+        // The vault settings live on Settings; this link on the Status tab is
+        // the only prompt that first-time setup is still open.
+        const setupLink = document.getElementById('vault-setup-link');
+        if (setupLink) setupLink.style.display = showBootstrap ? '' : 'none';
     } catch (e) { /* silent */ }
 }
 
@@ -1454,6 +1453,11 @@ function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStat
             btn.disabled = true;
         } else btn.innerText = 'Enable';
     }
+
+    const modelName = document.getElementById('ai-model-name');
+    if (modelName) modelName.textContent = currentModelId ? currentModelId + ' ·' : '';
+    const modelLink = document.getElementById('ai-model-link');
+    if (modelLink) modelLink.textContent = currentModelId ? 'change' : 'choose a model';
 
     const modelSelector = document.getElementById('ai-model-selector');
     if (modelSelector) {
