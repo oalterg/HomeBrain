@@ -2613,6 +2613,10 @@ setup_openclaw() {
                 || die "openclaw binary not found in PATH after install."
             update_installed_version '.openclaw.version' "$OPENCLAW_VERSION"
             log_info "Installed: $(openclaw --version 2>/dev/null || echo 'ok')"
+            # The old gateway keeps running on the files npm just replaced,
+            # under a unit the old version wrote. Doctor cannot verify it owns
+            # that gateway and refuses to migrate; step 3 starts the new one.
+            run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
         else
             # Npm install failed — continue if openclaw is already installed so that
             # patch_openclaw_config and the daemon restart still happen (e.g. model switch).
@@ -2647,39 +2651,20 @@ setup_openclaw() {
     seed_openclaw_workspace
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
-    log_info "Config written to $config_dest"
-
-    remove_whatsapp_plugins
-
-    # --- [3/3] Register and start daemon ---
-    log_info "[3/3] Registering and starting daemon..."
-    # `--force` overwrites a stale systemd unit. Without it `daemon install`
-    # short-circuits with "service already enabled" and the next `daemon start`
-    # then exec's whatever path the previous unit pointed at — which silently
-    # breaks after an OpenClaw upgrade or a path move.
-    run_as_admin openclaw daemon install --force 2>/dev/null || true
-    # After `daemon install --force` (it rewrites the unit) and before the
-    # daemon-reload below, so the new environment is in effect on start.
-    write_openclaw_gateway_dropin
-    # The previous (sabotaged or version-mismatched) unit may have crash-
-    # looped its way to systemd's "Start request repeated too quickly"
-    # rate-limit cap before we got here. `--force` rewrites the unit file
-    # but does NOT clear that failed/limited state, and the next start
-    # would then surface as `systemctl restart failed: Job for
-    # openclaw-gateway.service failed`. Reload-and-reset before start.
-    run_as_admin systemctl --user daemon-reload 2>/dev/null || true
-    run_as_admin systemctl --user reset-failed openclaw-gateway 2>/dev/null || true
     # A new OpenClaw migrates its own state on the first doctor run (device
-    # identity into SQLite, transcript media) and refuses to start on config
-    # keys it retired that are not ours to know about. Doctor verifies it owns
-    # the gateway through the service unit, so it runs after `daemon install`
-    # has written the new version's unit, and the config the patch wrote has
-    # to validate first. It stops a running gateway; the start below follows.
+    # identity into SQLite, transcript media) and refuses to start, or even to
+    # `daemon install`, on config keys it retired that are not ours to know
+    # about. The patch above has to leave a config that validates: doctor
+    # checks it owns the gateway through `gateway status`, which fails on an
+    # invalid config. Doctor stops a running gateway; step 3 starts it.
     if [[ "$needs_npm_install" == "true" ]] \
        || ! run_as_admin openclaw config validate >/dev/null 2>&1; then
         log_info "Running openclaw doctor --fix for OpenClaw ${OPENCLAW_VERSION}..."
-        run_as_admin openclaw doctor --fix --non-interactive >/dev/null 2>&1 \
-            || log_warn "openclaw doctor --fix exited non-zero."
+        local doctor_out
+        if ! doctor_out=$(run_as_admin openclaw doctor --fix --non-interactive 2>&1 </dev/null); then
+            log_warn "openclaw doctor --fix failed: $(printf '%s' "$doctor_out" \
+                | sed 's/\x1b\[[0-9;]*m//g' | grep -iE 'error|could not|failed' | tail -n 2 | tr '\n' ' ')"
+        fi
         chmod 600 "$config_dest"
         if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
             log_error "openclaw.json is invalid; the gateway will not start:"
@@ -2699,6 +2684,31 @@ setup_openclaw() {
         chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$config_dest"
         chmod 600 "$config_dest"
     fi
+    log_info "Config written to $config_dest"
+
+    remove_whatsapp_plugins
+
+    # --- [3/3] Register and start daemon ---
+    log_info "[3/3] Registering and starting daemon..."
+    # `--force` overwrites a stale systemd unit. Without it `daemon install`
+    # short-circuits with "service already enabled" and the next `daemon start`
+    # then exec's whatever path the previous unit pointed at — which silently
+    # breaks after an OpenClaw upgrade or a path move.
+    local daemon_out
+    if ! daemon_out=$(run_as_admin openclaw daemon install --force 2>&1); then
+        log_warn "openclaw daemon install --force failed: $(printf '%s' "$daemon_out" | tail -n 3 | tr '\n' ' ')"
+    fi
+    # After `daemon install --force` (it rewrites the unit) and before the
+    # daemon-reload below, so the new environment is in effect on start.
+    write_openclaw_gateway_dropin
+    # The previous (sabotaged or version-mismatched) unit may have crash-
+    # looped its way to systemd's "Start request repeated too quickly"
+    # rate-limit cap before we got here. `--force` rewrites the unit file
+    # but does NOT clear that failed/limited state, and the next start
+    # would then surface as `systemctl restart failed: Job for
+    # openclaw-gateway.service failed`. Reload-and-reset before start.
+    run_as_admin systemctl --user daemon-reload 2>/dev/null || true
+    run_as_admin systemctl --user reset-failed openclaw-gateway 2>/dev/null || true
     run_as_admin openclaw daemon start \
         || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install --force"; return 1; }
 
