@@ -439,5 +439,38 @@ else
     bad "returns 0 and echoes either nothing or a bare integer" "non-zero exit under set -e"
 fi
 
+echo "== vision input follows the projector =="
+saved_tag="$HB_PLATFORM_TAG"
+saved_driver="${HB_GPU_DRIVER:-}"
+HB_PLATFORM_TAG="x86_64-sycl"
+HB_GPU_DRIVER="xe"
+cfgv="$(run_patch 131072 Muse-Glimmer-30B-UD-Q5_K_M)"
+got=$(jq -c '.models.providers.llamacpp.models[0].input' "$cfgv")
+if [[ "$got" == '["text","image"]' ]]; then
+    ok "Q5_K_M on Arc advertises image input"
+else
+    bad "Q5_K_M on Arc advertises image input" "got $got"
+fi
+cfgx="$(run_patch 131072 Muse-Glimmer-30B-UD-Q5_K_XL)"
+got=$(jq -c '.models.providers.llamacpp.models[0].input' "$cfgx")
+if [[ "$got" == '["text"]' ]]; then
+    ok "Q5_K_XL stays text-only"
+else
+    bad "Q5_K_XL stays text-only" "got $got"
+fi
+HB_PLATFORM_TAG="x86_64-vulkan"
+unset HB_GPU_DRIVER
+cfgq="$(run_patch 131072 "$GLIMMER")"
+got=$(jq -c '.models.providers.llamacpp.models[0].input' "$cfgq")
+if [[ "$got" == '["text"]' ]]; then
+    ok "Q4 on Vulkan stays text-only"
+else
+    bad "Q4 on Vulkan stays text-only" "got $got"
+fi
+HB_PLATFORM_TAG="$saved_tag"
+if [[ -n "$saved_driver" ]]; then
+    HB_GPU_DRIVER="$saved_driver"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

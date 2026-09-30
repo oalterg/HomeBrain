@@ -268,6 +268,20 @@ systemctl enable --now homebrain-health.timer 2>/dev/null \
     && log_info "Health check timer enabled." \
     || log_warn "Failed to enable health check timer."
 
+# Rebind a wedged Arc and restart llama-server. Enable only once llama-server
+# exists; setup_llama_server enables it on a first AI install. Leaving the
+# timer running on a HomeCloud box just logs a skipped condition every minute.
+cp "${SCRIPT_DIR}/../config/homebrain-gpu-recover.service" /etc/systemd/system/
+cp "${SCRIPT_DIR}/../config/homebrain-gpu-recover.timer" /etc/systemd/system/
+systemctl daemon-reload
+if [[ -f /etc/systemd/system/llama-server.service ]]; then
+    command -v fuser >/dev/null 2>&1 || apt-get install -y -qq psmisc \
+        || log_warn "GPU recovery needs psmisc (fuser)."
+    systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null \
+        && log_info "GPU recovery timer enabled." \
+        || log_warn "Failed to enable GPU recovery timer."
+fi
+
 # HA watchers: Telegram ping on Home Assistant state_changed. Condition in
 # the unit skips start until OpenClaw exists (GPU boxes).
 cp "${SCRIPT_DIR}/../config/homebrain-ha-watch.service" /etc/systemd/system/

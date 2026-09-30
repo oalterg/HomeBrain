@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover llama-server after a wedged GPU or a start-limit stall
+ConditionPathExists=/etc/systemd/system/llama-server.service
+ConditionPathExists=/opt/homebrain/scripts/recover_gpu.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/homebrain/scripts/recover_gpu.sh
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

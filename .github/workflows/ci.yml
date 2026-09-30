@@ -119,6 +119,10 @@ jobs:
         run: bash scripts/tests/test_load_env.sh
       - name: openclaw compaction budget (jq program + reserve ladder)
         run: bash scripts/tests/test_openclaw_compaction.sh
+      - name: GPU recovery and SYCL/whisper runtime refresh
+        run: |
+          bash scripts/tests/test_recover_gpu.sh
+          bash scripts/tests/test_gpu_runtime.sh
       - name: openclaw workspace memory seed
         run: bash scripts/tests/test_openclaw_workspace_seed.sh
       - name: retired WhatsApp plugins are actually uninstalled
