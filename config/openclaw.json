@@ -30,7 +30,8 @@
               "cacheWrite": 0
             },
             "contextWindow": 131072,
-            "maxTokens": 16384
+            "maxTokens": 16384,
+            "contextTokens": 116072
           }
         ]
       },
@@ -53,11 +54,13 @@
       "thinkingDefault": "xhigh",
       "compaction": {
         "mode": "default",
-        "reserveTokensFloor": 35000,
         "timeoutSeconds": 1200,
         "notifyUser": true,
         "memoryFlush": {
           "enabled": false
+        },
+        "midTurnPrecheck": {
+          "enabled": true
         }
       },
       "heartbeat": {
@@ -95,17 +98,17 @@
         "enabled": true,
         "scope": {
           "default": "allow"
-        },
-        "models": [
-          {
-            "capabilities": [
-              "audio"
-            ],
-            "baseUrl": "http://127.0.0.1:8002/v1",
-            "timeoutSeconds": 30
-          }
-        ]
-      }
+        }
+      },
+      "models": [
+        {
+          "capabilities": [
+            "audio"
+          ],
+          "baseUrl": "http://127.0.0.1:8002/v1",
+          "timeoutSeconds": 30
+        }
+      ]
     },
     "deny": [
       "cron"
@@ -129,9 +132,30 @@
       "allowedOrigins": []
     },
     "auth": {
-      "mode": "token",
-      "token": ""
-    }
+      "mode": "trusted-proxy",
+      "password": "",
+      "trustedProxy": {
+        "userHeader": "x-homebrain-user",
+        "allowUsers": [
+          "owner"
+        ],
+        "allowLoopback": true
+      },
+      "identityScopes": {
+        "owner": [
+          "operator.admin",
+          "operator.read",
+          "operator.write",
+          "operator.approvals",
+          "operator.questions",
+          "operator.pairing"
+        ]
+      }
+    },
+    "trustedProxies": [
+      "127.0.0.1",
+      "::1"
+    ]
   },
   "plugins": {
     "entries": {

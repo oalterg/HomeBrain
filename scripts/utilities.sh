@@ -1794,19 +1794,22 @@ patch_openclaw_config() {
     origins_jq="${origins_jq%,}]"
     local origins="$origins_jq"
 
-    # Derive a stable gateway token from MASTER_PASSWORD so it survives redeployment
-    local gw_token=""
+    # Derive a stable gateway password from MASTER_PASSWORD so it survives
+    # redeployment. The dashboard authenticates as a trusted proxy (below); this
+    # is for the local CLI (`openclaw message send`, `openclaw agent`), which
+    # reaches the gateway directly and reads it from the config.
+    local gw_password=""
     if [[ -n "${MASTER_PASSWORD:-}" ]]; then
-        gw_token=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
+        gw_password=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
     else
-        log_warn "MASTER_PASSWORD is unset — skipping gateway token derivation; token will remain empty"
+        log_warn "MASTER_PASSWORD is unset — skipping gateway password derivation; password will remain empty"
     fi
 
     local jq_extra_args=()
-    local jq_token_patch=""
-    if [[ -n "$gw_token" ]]; then
-        jq_extra_args=(--arg gw_token "$gw_token")
-        jq_token_patch='| .gateway.auth.token = $gw_token'
+    local jq_password_patch=""
+    if [[ -n "$gw_password" ]]; then
+        jq_extra_args=(--arg gw_password "$gw_password")
+        jq_password_patch='| .gateway.auth.password = $gw_password'
     fi
 
     # web_search goes to the box's SearXNG container. Name the provider only
@@ -2139,25 +2142,32 @@ patch_openclaw_config() {
         # long Telegram chat ends in "Auto-compaction could not recover this
         # turn" and the session is stuck until the owner types /new.
         #
-        # reserveTokensFloor is the headroom kept free when OpenClaw decides
-        # whether the next turn still fits: preflight compaction fires at
-        # contextWindow - floor - 4000 (the memory-flush soft threshold), and
-        # the pre-dispatch precheck rejects a prompt above
-        # contextWindow - floor. At the schema default of 20000 against a
-        # 131072 window that is a 107072 trigger and a 111072 ceiling, only
-        # ~15% apart — narrow enough that one tool-heavy turn jumps the gap
-        # and overflows before compaction ever gets a chance. Measured on
-        # .58 2026-08-15: a turn estimated at 122552 tokens cleared the
-        # trigger and hit the ceiling in the same step (overflowTokens=11480,
-        # toolResultReducibleChars=0, so truncation had nothing to give
-        # back). The ladder below is OpenClaw’s own
-        # computeContextAwareReserveTokensFloor — 35000 above a 100k window,
-        # 20000 below — i.e. exactly what its failure message tells the owner
-        # to set. Do not flatten it to 35000: at the 81920 the Qwen slots run
-        # that would compact at 52% of the window, throwing away history on a
-        # box where every compaction costs minutes.
-        .agents.defaults.compaction.reserveTokensFloor =
-            (if $ctx >= 100000 then 35000 else 20000 end) |
+        # The reserve is the headroom kept free when OpenClaw decides whether
+        # the next turn still fits: preflight compaction fires at
+        # budget - reserve - 4000 (the memory-flush soft threshold), and the
+        # pre-dispatch precheck rejects a prompt above budget - reserve. At
+        # 20000 against a 131072 window that is a 107072 trigger and a 111072
+        # ceiling, only ~15% apart — narrow enough that one tool-heavy turn
+        # jumps the gap and overflows before compaction ever gets a chance.
+        # Measured on .58 2026-08-15: a turn estimated at 122552 tokens
+        # cleared the trigger and hit the ceiling in the same step
+        # (overflowTokens=11480, toolResultReducibleChars=0, so truncation had
+        # nothing to give back). 35000 above a 100k window fixed it.
+        #
+        # 2026.8 retired compaction.reserveTokensFloor (doctor deletes it) and
+        # pins the reserve at 20000 of the model’s budget. contextTokens is
+        # that budget, so capping it 15000 below the window keeps the 35000
+        # headroom against the real window. Below 100k the budget stays the
+        # window: at the 81920 the Qwen slots run, 35000 would compact at 52%,
+        # throwing away history on a box where every compaction costs minutes.
+        del(.agents.defaults.compaction.reserveTokensFloor) |
+        (if $ctx >= 100000
+          then .models.providers.llamacpp.models[0].contextTokens = ($ctx - 15000)
+          else del(.models.providers.llamacpp.models[0].contextTokens) end) |
+        # The same overflow can also build up inside one turn, as tool results
+        # pile up between model calls. This re-checks the budget after each
+        # tool result and compacts before the next call instead of overflowing.
+        .agents.defaults.compaction.midTurnPrecheck.enabled = true |
         # timeoutSeconds bounds ONE compaction pass, and the 180 s schema
         # default is unreachable here, which is what actually breaks the
         # turn: the overflow handler calls compact, the safety timeout fires
@@ -2217,17 +2227,30 @@ patch_openclaw_config() {
         (if (.plugins.entries["nextcloud-talk"] // null) == {"enabled": false}
           then del(.plugins.entries["nextcloud-talk"]) else . end) |
         .gateway.controlUi.allowedOrigins = $origins |
-        # The Control UI uses crypto.subtle to sign a device-identity
-        # challenge — that API is only exposed in "secure contexts"
-        # (HTTPS, localhost, or 127.0.0.1). On LAN HTTP the browser
-        # refuses, the SPA throws "device identity required", and
-        # there is no way to enable it from the client side. Setting
-        # allowInsecureAuth on the gateway opts into token-only auth
-        # for those non-secure contexts. The bearer token is generated
-        # from MASTER_PASSWORD and the manager already gates /openclaw
-        # behind the session, so dropping device-identity here does
-        # not weaken our auth posture — it just unblocks the LAN flow.
-        .gateway.controlUi.allowInsecureAuth = true |
+        # The dashboard reaches the Control UI only through the manager’s
+        # /openclaw proxy (app.py), which has already checked the master-
+        # password session. The gateway takes the manager’s word for it:
+        # trusted-proxy mode, with the manager on loopback naming the owner in
+        # x-homebrain-user. 2026.8 retired allowInsecureAuth (token-only auth
+        # without device identity); trusted-proxy is the one mode that still
+        # admits a Control UI session without it, and the proxy strips the
+        # browser’s device field. allowLoopback trusts every local process as
+        # much as the manager; the agent is already root-equivalent (see
+        # AGENTS.md), and the gateway still binds loopback only. The local
+        # CLI does not go through the proxy and uses auth.password instead.
+        del(.gateway.controlUi.allowInsecureAuth) |
+        del(.gateway.auth.token) |
+        .gateway.auth.mode = "trusted-proxy" |
+        .gateway.auth.trustedProxy = {
+            "userHeader": "x-homebrain-user",
+            "allowUsers": ["owner"],
+            "allowLoopback": true
+        } |
+        .gateway.auth.identityScopes = {"owner": [
+            "operator.admin", "operator.read", "operator.write",
+            "operator.approvals", "operator.questions", "operator.pairing"
+        ]} |
+        .gateway.trustedProxies = ["127.0.0.1", "::1"] |
         # MCP consent gate is disabled pending our upstream OpenClaw approvals
         # PR. It must NOT be persisted under .mcp: stock OpenClaw (>=2026.6)
         # strictly validates the mcp section and rejects unknown keys
@@ -2279,8 +2302,16 @@ patch_openclaw_config() {
         .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
-        .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
-        .tools.media.audio.models[0].timeoutSeconds = 30 |
+        # 2026.8 keeps media models in one list tagged by capability; doctor
+        # moves tools.media.audio.models there. Write the new shape, or every
+        # patch would put the old one back.
+        del(.tools.media.audio.models) |
+        .tools.media.models = (
+            [(.tools.media.models // [])[]
+             | select((.capabilities // []) | index("audio") | not)]
+            + [{"capabilities": ["audio"],
+                "baseUrl": "http://127.0.0.1:8002/v1",
+                "timeoutSeconds": 30}]) |
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []} |
         # memorySearch.provider defaults to openai. Our openai provider is
         # local Whisper (dummy key, :8002). Explicit "none" is FTS-only —
@@ -2292,7 +2323,7 @@ patch_openclaw_config() {
         # sweep. Off until we measure MEMORY.md growth; plugin stays loaded
         # so memory_search still works. config is a free-form record.
         .plugins.entries["memory-core"].config.dreaming.enabled = false
-        '"$jq_token_patch$jq_browser_patch$jq_search_patch"'
+        '"$jq_password_patch$jq_browser_patch$jq_search_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
