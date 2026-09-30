@@ -116,6 +116,44 @@ detect_downgrade() {
     return 1
 }
 
+# Whether a component is installed at a version other than its pin. update.sh
+# used to reinstall only when the pin itself moved between the old and new
+# versions.json, so a box whose install never reached the old pin kept lagging:
+# .69 ran OpenClaw 2026.7.1-2 under a 2026.7.35 pin through every update. An
+# unknown installed version (empty) is not evidence of drift.
+pin_lags() {   # pin_lags <pinned> <installed>
+    [[ -n "$1" && -n "$2" && "$1" != "$2" ]]
+}
+
+# The installed OpenClaw version: the install record, else the CLI's own report
+# ("OpenClaw 2026.8.33 (f773aa0)"). Empty when neither knows.
+installed_openclaw_version() {   # installed_openclaw_version <installed_versions.json>
+    local v=""
+    if [[ -f "$1" ]]; then
+        v=$(jq -r '.openclaw.version // empty' "$1" 2>/dev/null || true)
+    fi
+    if [[ -z "$v" ]] && command -v openclaw >/dev/null 2>&1; then
+        v=$(openclaw --version 2>/dev/null | awk 'NR == 1 {print $2}' || true)
+    fi
+    echo "$v"
+}
+
+# needrestart restarts every service that maps an upgraded library, and
+# unattended-upgrades (enabled by update.sh) runs it after each nightly
+# upgrade. For a job unit a restart kills the job and starts it over: on .69
+# an openssl upgrade landed mid-update, killed the llama.cpp build, left
+# llama-server stopped, and the restarted update failed its first download.
+# Daemons are still restarted onto the patched libraries.
+NEEDRESTART_GUARD="${NEEDRESTART_GUARD:-/etc/needrestart/conf.d/homebrain.conf}"
+install_needrestart_guard() {
+    [[ -d "$(dirname "$NEEDRESTART_GUARD")" ]] || return 0
+    cat > "$NEEDRESTART_GUARD" <<'EOF'
+# Managed by HomeBrain (scripts/common.sh:install_needrestart_guard).
+# Never restart a HomeBrain job mid-run: a restart kills it and starts it over.
+$nrconf{override_rc}{qr(^homebrain-(update|ai-setup|backup|offsite|picture|video|gpu-recover)\.service$)} = 0;
+EOF
+}
+
 # --- Platform Detection ---
 # One probe, one record. Everything that varies by hardware keys off this: which
 # llama.cpp binary we install, the flag profile we run it with, how we read GPU
@@ -1293,6 +1331,7 @@ install_deps_enable_docker() {
     # qrencode draws the phone-pairing code for Nextcloud's mobile apps.
     local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode avahi-daemon avahi-utils libnss-mdns"
     apt-get install -y -qq $common_pkgs
+    install_needrestart_guard || true
 
     # Headless browser for the OpenClaw browser tool (non-fatal)
     if [[ "$HAS_GPU" == "true" ]]; then
