@@ -118,6 +118,48 @@ else
     bad "update.sh compose pull/up uses get_runtime_profiles"
 fi
 
+echo "== update rsync keeps box state =="
+# Every INSTALL_DIR path the code writes that the tarball does not ship must
+# survive the sync. Run update.sh's own exclude list through a real
+# `rsync --delete` from a tree that lacks them all.
+REPO_ROOT="$SCRIPT_DIR/../.."
+excludes=()
+while IFS= read -r pat; do
+    excludes+=("--exclude=$pat")
+done < <(sed -n '/^rsync -a --delete/,/"\$INSTALL_DIR\/"/p' "$UPDATE_SH" \
+    | grep -oE "exclude='[^']+'" | sed -E "s/^exclude='(.*)'$/\1/")
+state=()
+while IFS= read -r name; do
+    [[ -e "$REPO_ROOT/$name" ]] || state+=("$name")
+done < <(grep -rhoE '(\$INSTALL_DIR|\$\{INSTALL_DIR\}|\{INSTALL_DIR\}|/opt/homebrain)/[A-Za-z0-9_.][A-Za-z0-9_.-]*' \
+            "$REPO_ROOT/scripts" "$REPO_ROOT/src" --include='*.sh' --include='*.py' \
+         | sed -E 's#.*/##; /\.$/d' | sort -u)
+if [[ ${#excludes[@]} -lt 5 || ${#state[@]} -lt 5 ]]; then
+    bad "found the rsync excludes (${#excludes[@]}) and the box-state paths (${#state[@]})"
+else
+    sync_tmp="$(mktemp -d)"
+    mkdir -p "$sync_tmp/src/scripts" "$sync_tmp/dst"
+    touch "$sync_tmp/src/scripts/update.sh"
+    for name in "${state[@]}"; do
+        echo keep > "$sync_tmp/dst/$name"
+    done
+    echo stale > "$sync_tmp/dst/removed_upstream.sh"
+    rsync -a --delete "${excludes[@]}" "$sync_tmp/src/" "$sync_tmp/dst/"
+    for name in "${state[@]}"; do
+        if [[ -e "$sync_tmp/dst/$name" ]]; then
+            ok "update keeps $name"
+        else
+            bad "update deletes $name (add --exclude='$name' to update.sh)"
+        fi
+    done
+    if [[ -e "$sync_tmp/dst/removed_upstream.sh" ]]; then
+        bad "update still deletes files the tarball dropped"
+    else
+        ok "update still deletes files the tarball dropped"
+    fi
+    rm -rf "$sync_tmp"
+fi
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]

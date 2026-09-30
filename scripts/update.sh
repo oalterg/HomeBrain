@@ -173,7 +173,13 @@ fi
 # Back up the docker-compose.yml just in case
 cp "$INSTALL_DIR/docker-compose.yml" "$TEMP_DIR/extract/docker-compose.yml.backup"
 
-# rsync ensures we get new files, delete removed files, but exclude our preserved configs from being overwritten if they were missing in source
+# rsync ensures we get new files, delete removed files, but exclude our preserved configs from being overwritten if they were missing in source.
+# --delete removes every box-state file the tarball lacks, so each one written
+# into INSTALL_DIR must be listed. Losing .installed_versions.json rebuilt
+# llama.cpp from source on every Arc update; losing .secret_key logged
+# everyone out; x86 keeps factory_config.txt here (no /boot/firmware); and a
+# legacy box's Nextcloud data would be gone before the layout migration below
+# could move it. test_update_guard.sh fails when a new path is missing here.
 rsync -a --delete \
 --exclude='.env' \
 --exclude='.setup_complete' \
@@ -183,6 +189,17 @@ rsync -a --delete \
 --exclude='venv' \
 --exclude='.platform.json' \
 --exclude='.ai_setup_state' \
+--exclude='.installed_versions.json' \
+--exclude='.secret_key' \
+--exclude='.first_boot_update_done' \
+--exclude='.registration_complete' \
+--exclude='.setup_started' \
+--exclude='.install_creds_staging' \
+--exclude='.restoring' \
+--exclude='.restore_failed' \
+--exclude='factory_config.txt' \
+--exclude='install_creds.json' \
+--exclude='/nextcloud-data' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
 
 # Refresh the hardware record against the freshly-synced common.sh. Excluded
