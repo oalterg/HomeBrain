@@ -3917,7 +3917,7 @@ _OPENCLAW_SPOOFABLE_HEADERS = {
 }
 
 
-def _openclaw_proxy_headers():
+def _openclaw_proxy_headers(identity=True):
     """Identity and forwarding headers for one proxied gateway request.
 
     The gateway admits a trusted-proxy request only when X-Forwarded-For names
@@ -3927,12 +3927,14 @@ def _openclaw_proxy_headers():
     """
     forwarded = request.headers.get("X-Forwarded-For", "")
     client = forwarded.split(",")[-1].strip() or request.remote_addr or ""
-    return {
-        _OPENCLAW_IDENTITY_HEADER: _OPENCLAW_IDENTITY,
+    headers = {
         "X-Forwarded-For": client,
         "X-Forwarded-Proto": request.headers.get("X-Forwarded-Proto", request.scheme),
         "X-Forwarded-Host": request.host,
     }
+    if identity:
+        headers[_OPENCLAW_IDENTITY_HEADER] = _OPENCLAW_IDENTITY
+    return headers
 
 
 def _openclaw_upstream_path(subpath):
@@ -3955,31 +3957,8 @@ _OPENCLAW_OWNER_AVATAR_SVG = (
 ).encode("utf-8")
 
 
-@app.route("/openclaw", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@app.route("/openclaw/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@app.route("/openclaw/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@limiter.exempt
-def openclaw_proxy(subpath=""):
-    """HTTP reverse-proxy to the OpenClaw gateway control UI.
-
-    The before_request middleware has already verified the session, so any
-    request reaching this view is authenticated. We forward verbatim, stream
-    the response body (important for SSE / long-running calls), and name the
-    owner to the gateway as its trusted proxy. The gateway applies
-    controlUi.basePath to the SPA itself, so nothing is rewritten.
-    """
-    # Never forwarded. On 2026.8 every trusted-proxy HTTP request re-ensures
-    # the owner's user profile, and that write announces sessions.changed
-    # even when nothing changed. The Control UI answers the event by listing
-    # sessions and re-rendering, which fetches the owner's avatar again: a
-    # loop at ~85 requests a second for as long as a tab is open, measured
-    # on .69. Answer with the initial the UI would draw. An avatar uploaded
-    # in OpenClaw's own profile page does not show; 2026.7 had none at all.
-    if _OPENCLAW_USER_AVATAR_RE.fullmatch(subpath):
-        return Response(_OPENCLAW_OWNER_AVATAR_SVG, mimetype="image/svg+xml",
-                        headers={"Cache-Control": "private, max-age=86400"})
-
-    target_path = _openclaw_upstream_path(subpath)
+def _openclaw_forward(target_path, identity=True):
+    """Stream one HTTP request to the gateway and its response back."""
     url = f"http://{_OPENCLAW_PROXY_HOST}:{_OPENCLAW_PROXY_PORT}{target_path}"
     if request.query_string:
         url += "?" + request.query_string.decode("latin-1")
@@ -3993,7 +3972,7 @@ def openclaw_proxy(subpath=""):
     # gateway accepts or rejects based on this header. Overriding Origin to
     # the proxy's own loopback URL — as we did before — leaves a port-mismatch
     # against the allowlist entries and gets us rejected.
-    headers.update(_openclaw_proxy_headers())
+    headers.update(_openclaw_proxy_headers(identity))
     # requests decodes the body as it streams, and Content-Encoding is dropped
     # below. It decodes gzip and deflate only; 2026.8 answers a browser's
     # `br, zstd` with Brotli, which reached the browser as raw bytes labelled
@@ -4027,6 +4006,47 @@ def openclaw_proxy(subpath=""):
             upstream.close()
 
     return Response(stream_with_context(generate()), status=upstream.status_code, headers=resp_headers)
+
+
+@app.route("/openclaw", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@app.route("/openclaw/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@app.route("/openclaw/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@limiter.exempt
+def openclaw_proxy(subpath=""):
+    """HTTP reverse-proxy to the OpenClaw gateway control UI.
+
+    The before_request middleware has already verified the session, so any
+    request reaching this view is authenticated. We forward verbatim, stream
+    the response body (important for SSE / long-running calls), and name the
+    owner to the gateway as its trusted proxy. The gateway applies
+    controlUi.basePath to the SPA itself, so nothing is rewritten.
+    """
+    # Never forwarded. On 2026.8 every trusted-proxy HTTP request re-ensures
+    # the owner's user profile, and that write announces sessions.changed
+    # even when nothing changed. The Control UI answers the event by listing
+    # sessions and re-rendering, which fetches the owner's avatar again: a
+    # loop at ~85 requests a second for as long as a tab is open, measured
+    # on .69. Answer with the initial the UI would draw. An avatar uploaded
+    # in OpenClaw's own profile page does not show; 2026.7 had none at all.
+    if _OPENCLAW_USER_AVATAR_RE.fullmatch(subpath):
+        return Response(_OPENCLAW_OWNER_AVATAR_SVG, mimetype="image/svg+xml",
+                        headers={"Cache-Control": "private, max-age=86400"})
+
+    return _openclaw_forward(_openclaw_upstream_path(subpath))
+
+
+@app.route("/__openclaw__/<path:subpath>", methods=["GET", "HEAD"])
+def openclaw_capability_proxy(subpath):
+    """Widgets the agent draws with show_widget, at the gateway's root.
+
+    2026.8 serves a Canvas widget from /__openclaw__/cap/<capability>/...,
+    outside controlUi.basePath, and the Control UI frames that root path on
+    our origin, where nothing answered. The capability in the path is the
+    gateway's credential, valid while the dashboard that minted it stays
+    connected. No owner identity: every identified request re-announces
+    the owner's profile (see openclaw_proxy), and this one needs none.
+    """
+    return _openclaw_forward(f"/__openclaw__/{subpath}", identity=False)
 
 
 # The Control UI's `new WebSocket(gatewayUrl)` call targets the basePath

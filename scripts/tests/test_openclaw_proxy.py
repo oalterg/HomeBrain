@@ -111,6 +111,26 @@ def test_a_signed_out_browser_is_not_proxied():
         assert calls == []
 
 
+def test_widget_documents_reach_the_gateway_root_without_identity():
+    # show_widget frames /__openclaw__/cap/<capability>/... at the site root,
+    # outside the /openclaw base path; the capability is the credential.
+    with _proxy() as (client, calls):
+        path = "/__openclaw__/cap/AbC123/__openclaw__/canvas/documents/cv_1/index.html"
+        r = client.get(path, headers={"x-homebrain-user": "owner",
+                                      "X-Forwarded-For": "192.168.178.49"})
+        assert r.status_code == 200
+        assert calls[0]["url"] == "http://127.0.0.1:18789" + path
+        sent = {k.lower(): v for k, v in calls[0]["headers"].items()}
+        assert "x-homebrain-user" not in sent
+        assert sent["x-forwarded-for"] == "192.168.178.49"
+
+
+def test_widget_documents_need_a_signed_in_browser():
+    with _proxy(authenticated=False) as (client, calls):
+        client.get("/__openclaw__/cap/AbC123/__openclaw__/canvas/documents/cv_1/index.html")
+        assert calls == []
+
+
 if __name__ == "__main__":
     import traceback
 
