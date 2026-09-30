@@ -329,18 +329,18 @@ else
         "got $(printf '%s' "$got" | head -c 80)…"
 fi
 
-got=$(jq -r '.agents.defaults.memorySearch.provider' "$cfg")
+got=$(jq -r '.memory.search.provider' "$cfg")
 if [[ "$got" == "none" ]]; then
-    ok "memorySearch.provider is none (FTS-only; not Whisper, not OpenAI)"
+    ok "memory.search.provider is none (FTS-only; not Whisper, not OpenAI)"
 else
-    bad "memorySearch.provider is none" "got $got"
+    bad "memory.search.provider is none" "got $got"
 fi
 
-got=$(jq -r '.agents.defaults.memorySearch.enabled' "$cfg")
+got=$(jq -r '.memory.search.enabled' "$cfg")
 if [[ "$got" == "true" ]]; then
-    ok "memorySearch stays enabled"
+    ok "memory.search stays enabled"
 else
-    bad "memorySearch stays enabled" "got $got"
+    bad "memory.search stays enabled" "got $got"
 fi
 
 got=$(jq -r '.plugins.entries["memory-core"].config.dreaming.enabled' "$cfg")
@@ -365,7 +365,7 @@ seed="$TEST_DIR/../../config/openclaw.json"
 for key in \
     '.agents.defaults.heartbeat.lightContext' \
     '.agents.defaults.heartbeat.isolatedSession' \
-    '.agents.defaults.memorySearch.provider' \
+    '.memory.search.provider' \
     '.agents.defaults.compaction.memoryFlush.enabled' \
     '.plugins.entries["memory-core"].config.dreaming.enabled'
 do

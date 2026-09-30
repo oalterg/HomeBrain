@@ -2025,7 +2025,12 @@ patch_openclaw_config() {
         # us off first.
         .models.providers.llamacpp.timeoutSeconds = 1800 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
-        .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        # 2026.8 turned the defaults.models map into modelPolicy.allow.
+        # Write the list and drop the map, so a model switch replaces the one
+        # allowlist that counts instead of leaving the old model the only
+        # one permitted.
+        del(.agents.defaults.models) |
+        .agents.defaults.modelPolicy.allow = [("llamacpp/" + $id)] |
         # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
@@ -2313,12 +2318,13 @@ patch_openclaw_config() {
                 "baseUrl": "http://127.0.0.1:8002/v1",
                 "timeoutSeconds": 30}]) |
         .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []} |
-        # memorySearch.provider defaults to openai. Our openai provider is
+        # memory.search.provider defaults to openai. Our openai provider is
         # local Whisper (dummy key, :8002). Explicit "none" is FTS-only —
-        # on-box, no embeddings, no Whisper-as-embedder. Path is
-        # agents.defaults.memorySearch on 2026.7.1-2, not top-level memory.search.
-        .agents.defaults.memorySearch.enabled = true |
-        .agents.defaults.memorySearch.provider = "none" |
+        # on-box, no embeddings, no Whisper-as-embedder. 2026.8 moved it from
+        # agents.defaults.memorySearch, and rejects the old path.
+        del(.agents.defaults.memorySearch) |
+        .memory.search.enabled = true |
+        .memory.search.provider = "none" |
         # Dreaming is default-on and schedules a 03:00 35B consolidation
         # sweep. Off until we measure MEMORY.md growth; plugin stays loaded
         # so memory_search still works. config is a free-form record.
@@ -2639,6 +2645,23 @@ setup_openclaw() {
     seed_openclaw_workspace
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
+    # A new OpenClaw refuses to start on keys it retired, and not all of them
+    # are ours: 2026.7 wrote meta.lastTouchedAt itself, and 2026.8 rejects it.
+    # The patch above writes the current shapes; doctor migrates the rest,
+    # along with state files (device identity into SQLite). Only when the
+    # config fails validation, since doctor stops the gateway.
+    if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+        log_info "Migrating openclaw.json for OpenClaw ${OPENCLAW_VERSION} (openclaw doctor --fix)..."
+        run_as_admin openclaw doctor --fix --non-interactive >/dev/null 2>&1 \
+            || log_warn "openclaw doctor --fix exited non-zero."
+        chmod 600 "$config_dest"
+        if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+            log_error "openclaw.json is still invalid; the gateway will not start:"
+            run_as_admin openclaw config validate 2>&1 | tail -n 8 | while IFS= read -r line; do
+                log_error "  $line"
+            done
+        fi
+    fi
     log_info "Config written to $config_dest"
 
     remove_whatsapp_plugins
