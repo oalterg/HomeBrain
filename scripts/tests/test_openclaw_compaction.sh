@@ -508,7 +508,12 @@ echo "== a 2026.7 config comes out in the 2026.8 shape =="
 cfg7="$TMP_ROOT/openclaw-2026.7.json"
 cat > "$cfg7" <<'JSON'
 {
-  "agents": { "defaults": { "compaction": { "mode": "default", "reserveTokensFloor": 35000 } } },
+  "meta": { "lastTouchedAt": "2026-09-30T11:59:02.091Z", "lastTouchedVersion": "2026.7.35" },
+  "agents": { "defaults": {
+    "compaction": { "mode": "default", "reserveTokensFloor": 35000 },
+    "models": { "llamacpp/stale-model": {} },
+    "memorySearch": { "enabled": true, "provider": "none" }
+  } },
   "gateway": {
     "mode": "local",
     "controlUi": { "basePath": "/openclaw", "allowInsecureAuth": true },
@@ -524,11 +529,19 @@ JSON
 patch_openclaw_config "$cfg7" "$GLIMMER" 131072 >/dev/null 2>&1
 retired=$(jq -c '[.agents.defaults.compaction.reserveTokensFloor,
                   .gateway.controlUi.allowInsecureAuth, .gateway.auth.token,
-                  .tools.media.audio.models] | map(select(. != null))' "$cfg7")
+                  .tools.media.audio.models, .meta.lastTouchedAt,
+                  .agents.defaults.memorySearch, .agents.defaults.models]
+                 | map(select(. != null))' "$cfg7")
 if [[ "$retired" == "[]" ]]; then
     ok "every key 2026.8 retired is gone"
 else
     bad "every key 2026.8 retired is gone" "left: $retired"
+fi
+got=$(jq -c '[.meta.lastTouchedVersion, .agents.defaults.modelPolicy.allow, .memory.search]' "$cfg7")
+if [[ "$got" == '["2026.7.35",["llamacpp/'"$GLIMMER"'"],{"enabled":true,"provider":"none"}]' ]]; then
+    ok "their replacements are written, and the rest of meta is left alone"
+else
+    bad "their replacements are written, and the rest of meta is left alone" "got $got"
 fi
 want_pw=$(printf '%s:openclaw-gateway' "$MASTER_PASSWORD" | sha256sum 2>/dev/null | cut -c1-32)
 [[ -n "$want_pw" ]] || want_pw=$(printf '%s:openclaw-gateway' "$MASTER_PASSWORD" | shasum -a 256 | cut -c1-32)

@@ -2166,6 +2166,9 @@ patch_openclaw_config() {
         # window: at the 81920 the Qwen slots run, 35000 would compact at 52%,
         # throwing away history on a box where every compaction costs minutes.
         del(.agents.defaults.compaction.reserveTokensFloor) |
+        # 2026.7 stamped meta.lastTouchedAt on every config write; 2026.8
+        # rejects the key, and refuses even `daemon install` until it is gone.
+        del(.meta.lastTouchedAt) |
         (if $ctx >= 100000
           then .models.providers.llamacpp.models[0].contextTokens = ($ctx - 15000)
           else del(.models.providers.llamacpp.models[0].contextTokens) end) |
@@ -2644,36 +2647,6 @@ setup_openclaw() {
     seed_openclaw_workspace
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
-    # A new OpenClaw refuses to start on keys it retired, and not all of them
-    # are ours: 2026.7 wrote meta.lastTouchedAt itself, and 2026.8 rejects it.
-    # The patch above writes the current shapes; doctor migrates the rest,
-    # along with state files (device identity into SQLite). Doctor will not
-    # touch a gateway it cannot prove it owns, and the running one is still
-    # the old version's unit, so stop it first; step 3 starts it again.
-    if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
-        log_info "Migrating openclaw.json for OpenClaw ${OPENCLAW_VERSION} (openclaw doctor --fix)..."
-        run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
-        run_as_admin openclaw doctor --fix --non-interactive >/dev/null 2>&1 \
-            || log_warn "openclaw doctor --fix exited non-zero."
-        chmod 600 "$config_dest"
-        if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
-            log_error "openclaw.json is still invalid; the gateway will not start:"
-            run_as_admin openclaw config validate 2>&1 | tail -n 8 | while IFS= read -r line; do
-                log_error "  $line"
-            done
-        fi
-    fi
-    # After the migration: `plugins install` refuses to run on a config the
-    # new version rejects. The patch points web_search at the plugin only
-    # once it is installed, so patch again when this install is its first.
-    local searxng_before
-    searxng_before=$(searxng_plugin_version)
-    install_searxng_plugin
-    if [[ -z "$searxng_before" && -n "$(searxng_plugin_version)" ]]; then
-        patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
-        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$config_dest"
-        chmod 600 "$config_dest"
-    fi
     log_info "Config written to $config_dest"
 
     remove_whatsapp_plugins
@@ -2696,6 +2669,36 @@ setup_openclaw() {
     # openclaw-gateway.service failed`. Reload-and-reset before start.
     run_as_admin systemctl --user daemon-reload 2>/dev/null || true
     run_as_admin systemctl --user reset-failed openclaw-gateway 2>/dev/null || true
+    # A new OpenClaw migrates its own state on the first doctor run (device
+    # identity into SQLite, transcript media) and refuses to start on config
+    # keys it retired that are not ours to know about. Doctor verifies it owns
+    # the gateway through the service unit, so it runs after `daemon install`
+    # has written the new version's unit, and the config the patch wrote has
+    # to validate first. It stops a running gateway; the start below follows.
+    if [[ "$needs_npm_install" == "true" ]] \
+       || ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+        log_info "Running openclaw doctor --fix for OpenClaw ${OPENCLAW_VERSION}..."
+        run_as_admin openclaw doctor --fix --non-interactive >/dev/null 2>&1 \
+            || log_warn "openclaw doctor --fix exited non-zero."
+        chmod 600 "$config_dest"
+        if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+            log_error "openclaw.json is invalid; the gateway will not start:"
+            run_as_admin openclaw config validate 2>&1 | tail -n 8 | while IFS= read -r line; do
+                log_error "  $line"
+            done
+        fi
+    fi
+    # After doctor: `plugins install` refuses a config the new version
+    # rejects. The patch points web_search at the plugin only once it is
+    # installed, so patch again when this install is its first.
+    local searxng_before
+    searxng_before=$(searxng_plugin_version)
+    install_searxng_plugin
+    if [[ -z "$searxng_before" && -n "$(searxng_plugin_version)" ]]; then
+        patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$config_dest"
+        chmod 600 "$config_dest"
+    fi
     run_as_admin openclaw daemon start \
         || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install --force"; return 1; }
 
