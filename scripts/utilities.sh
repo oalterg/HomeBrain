@@ -2638,7 +2638,6 @@ setup_openclaw() {
         cp "$config_src" "$config_dest"
         log_info "Seeded openclaw.json from template (first install)."
     fi
-    install_searxng_plugin
     local OC_CTX_SIZE
     OC_CTX_SIZE=$(resolve_llama_ctx_size)
     patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
@@ -2648,10 +2647,12 @@ setup_openclaw() {
     # A new OpenClaw refuses to start on keys it retired, and not all of them
     # are ours: 2026.7 wrote meta.lastTouchedAt itself, and 2026.8 rejects it.
     # The patch above writes the current shapes; doctor migrates the rest,
-    # along with state files (device identity into SQLite). Only when the
-    # config fails validation, since doctor stops the gateway.
+    # along with state files (device identity into SQLite). Doctor will not
+    # touch a gateway it cannot prove it owns, and the running one is still
+    # the old version's unit, so stop it first; step 3 starts it again.
     if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
         log_info "Migrating openclaw.json for OpenClaw ${OPENCLAW_VERSION} (openclaw doctor --fix)..."
+        run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
         run_as_admin openclaw doctor --fix --non-interactive >/dev/null 2>&1 \
             || log_warn "openclaw doctor --fix exited non-zero."
         chmod 600 "$config_dest"
@@ -2661,6 +2662,17 @@ setup_openclaw() {
                 log_error "  $line"
             done
         fi
+    fi
+    # After the migration: `plugins install` refuses to run on a config the
+    # new version rejects. The patch points web_search at the plugin only
+    # once it is installed, so patch again when this install is its first.
+    local searxng_before
+    searxng_before=$(searxng_plugin_version)
+    install_searxng_plugin
+    if [[ -z "$searxng_before" && -n "$(searxng_plugin_version)" ]]; then
+        patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$config_dest"
+        chmod 600 "$config_dest"
     fi
     log_info "Config written to $config_dest"
 
