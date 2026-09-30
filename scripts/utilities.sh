@@ -2312,15 +2312,22 @@ patch_openclaw_config() {
         .tools.media.audio.scope.default = "allow" |
         # 2026.8 keeps media models in one list tagged by capability; doctor
         # moves tools.media.audio.models there. Write the new shape, or every
-        # patch would put the old one back.
+        # patch would put the old one back. It also wants the provider named
+        # ("Provider entry missing provider for audio"): local Whisper speaks
+        # the OpenAI transcription API, and ignores the model name.
         del(.tools.media.audio.models) |
         .tools.media.models = (
             [(.tools.media.models // [])[]
              | select((.capabilities // []) | index("audio") | not)]
             + [{"capabilities": ["audio"],
+                "provider": "openai",
+                "model": "whisper-1",
                 "baseUrl": "http://127.0.0.1:8002/v1",
                 "timeoutSeconds": 30}]) |
-        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []} |
+        # The openai provider is local Whisper only. 2026.8 refuses provider
+        # requests to loopback (SsrFBlockedError) unless the provider opts in.
+        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": [],
+                                    "request": {"allowPrivateNetwork": true}} |
         # memory.search.provider defaults to openai. Our openai provider is
         # local Whisper (dummy key, :8002). Explicit "none" is FTS-only —
         # on-box, no embeddings, no Whisper-as-embedder. 2026.8 moved it from

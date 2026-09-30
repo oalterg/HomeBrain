@@ -38,7 +38,10 @@
       "openai": {
         "apiKey": "dummy-local-whisper",
         "baseUrl": "http://127.0.0.1:8002/v1",
-        "models": []
+        "models": [],
+        "request": {
+          "allowPrivateNetwork": true
+        }
       }
     }
   },
@@ -103,6 +106,8 @@
           "capabilities": [
             "audio"
           ],
+          "provider": "openai",
+          "model": "whisper-1",
           "baseUrl": "http://127.0.0.1:8002/v1",
           "timeoutSeconds": 30
         }

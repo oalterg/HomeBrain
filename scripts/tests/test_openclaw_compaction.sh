@@ -567,12 +567,18 @@ else
         "app.py header=$header identity=$identity, config checks $got"
 fi
 got=$(jq -c '[.tools.media.models[] | .capabilities[0]] | sort' "$cfg7")
-audio=$(jq -c '.tools.media.models[] | select(.capabilities == ["audio"]) | .baseUrl' "$cfg7")
-if [[ "$got" == '["audio","image"]' && "$audio" == '"http://127.0.0.1:8002/v1"' ]]; then
+audio=$(jq -c '.tools.media.models[] | select(.capabilities == ["audio"]) | [.provider, .model, .baseUrl]' "$cfg7")
+if [[ "$got" == '["audio","image"]' && "$audio" == '["openai","whisper-1","http://127.0.0.1:8002/v1"]' ]]; then
     ok "whisper moves to the capability-tagged list and the image model stays"
 else
     bad "whisper moves to the capability-tagged list and the image model stays" \
-        "capabilities $got, audio baseUrl $audio"
+        "capabilities $got, audio entry $audio"
+fi
+got=$(jq -c '[.models.providers.openai.baseUrl, .models.providers.openai.request.allowPrivateNetwork]' "$cfg7")
+if [[ "$got" == '["http://127.0.0.1:8002/v1",true]' ]]; then
+    ok "the loopback Whisper provider is let past the private-network guard"
+else
+    bad "the loopback Whisper provider is let past the private-network guard" "got $got"
 fi
 before=$(jq -S . "$cfg7")
 patch_openclaw_config "$cfg7" "$GLIMMER" 131072 >/dev/null 2>&1
