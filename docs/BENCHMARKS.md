@@ -1353,3 +1353,48 @@ For profiling, temporarily copy `scripts/comfy-picture-profile.py` into
 while node seconds include transfers. The hardware regression script is
 `scripts/tests/check_comfy_arc.py`: run it with the ComfyUI venv Python,
 the environment exported by `comfy-xpu.sh`, and `comfy/ops.py` as its argument.
+
+## 2026-09-30 — Arc Pro B60: the first job after idle crashed the GuC
+
+Arc Pro B60 24 GB, kernel 7.0, GuC 70.58.0, compute-runtime 26.35, oneAPI
+2025.3, Muse Glimmer 30B UD-Q5_K_M with the Q8 projector, ctx 131072,
+`-b 4096 -ub 2048`. Every failure had the same kernel sequence: `GuC Crash
+dump notification`, a reset that fails `firmware signature verification`,
+then `Xe has declared device ... as wedged`. llama-server aborts in NEO's
+`checkResetStatus` (`drm_neo.cpp:290`) because the device is already gone;
+that abort is a consequence. `homebrain-gpu-recover` rebound the Arc every
+time (about two minutes each), without a reboot.
+
+Test: prime a 30K-token conversation, leave the GPU idle for 300 s, then
+continue the same conversation. No conversation switch and no prompt-cache
+save take place, so `--cache-ram 0` is not the fix; the idle gap is.
+
+| build | KV | Level Zero copies | runs | crashed |
+|---|---|---|---:|---:|
+| 2145525 (b11201) | f16 | copy engine (default) | 3 | 3 |
+| 2145525 (b11201) | q8_0 | copy engine (default) | 2 | 0 |
+| 2145525 (b11201) | f16 | compute queue | 2 | 0 |
+| 90c908d (b11292) | f16 | copy engine (default) | 1 | 1 |
+| 90c908d (b11292) | f16 | compute queue | 3 | 0 |
+
+q8_0 KV was not immune: the 2026-09-28 and 09-29 incidents were on q8_0,
+after 12 minutes and an hour of idle. f16 leaves 1.3 GiB free instead of 2.2
+and turned a rare failure into a reliable one. Routing copies to the compute
+queue (`UR_L0_USE_COPY_ENGINE=0`, `UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1`)
+removed it and costs nothing measurable. The live box then served three
+hourly heartbeats (36 to 59 minutes idle, each a conversation switch with a
+32K-token context) on b11292 with the workaround, without a wedge.
+
+| build | copies | chat decode (400 tok) | PP at 17K | TG at 17K |
+|---|---|---:|---:|---:|
+| b11201 | copy engine | 20.1 | 975 | 18.5 |
+| b11201 | compute queue | 20.2 | 977 | 18.7 |
+| b11292 | copy engine | 20.0 | 976 | 18.5 |
+
+Both variables are in the SYCL runtime env in `config/versions.json`, so
+`refresh_llama_runtime` puts them in the launcher and drop-in on the next
+update. The SYCL build moves to b11292 (`90c908d`) with them: same speed,
+and only two SYCL commits since 2145525 (multi-GPU allreduce, FWHT), neither
+about this. The idea came from a report of an A770 blitter hang on the same
+compute-runtime and xe KMD, where copies were likewise moved off the copy
+engine; the failure here is a GuC crash rather than a `bcs` engine reset.

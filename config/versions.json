@@ -10,7 +10,7 @@
         "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
       },
       "x86_64-sycl": {
-        "git_ref": "2145525a4081d66ff1a87cf43ef809f95a85ac0c",
+        "git_ref": "90c908d06d82ab02d0204a44c4a46fd3348f0535",
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {
           "package": "intel-deep-learning-essentials-2025.3",
@@ -38,7 +38,9 @@
           "OverrideCsrAllocationSize": "1048576",
           "NEOReadDebugKeys": "1",
           "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
-          "SYCL_CACHE_PERSISTENT": "0"
+          "SYCL_CACHE_PERSISTENT": "0",
+          "UR_L0_USE_COPY_ENGINE": "0",
+          "UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD": "1"
         }
       }
     }
