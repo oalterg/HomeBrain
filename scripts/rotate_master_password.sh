@@ -166,22 +166,24 @@ else
     log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
 fi
 
-# --- 6. Re-derive OpenClaw gateway token (BEST-EFFORT, GPU boxes only) ------
+# --- 6. Re-derive OpenClaw gateway password (BEST-EFFORT, GPU boxes only) ---
+# The local CLI's credential; the dashboard reaches the gateway as a trusted
+# proxy and needs none. Same derivation as patch_openclaw_config.
 CFG="${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
 if [[ "${HAS_GPU:-false}" == "true" ]] && [[ -f "$CFG" ]] && command -v jq >/dev/null 2>&1; then
-    log_info "Re-deriving OpenClaw gateway token..."
-    GW_TOKEN="$(printf '%s:openclaw-gateway' "$NEW_PASS" | sha256sum | cut -c1-32)"
+    log_info "Re-deriving OpenClaw gateway password..."
+    GW_PASSWORD="$(printf '%s:openclaw-gateway' "$NEW_PASS" | sha256sum | cut -c1-32)"
     TMP_CFG="$(mktemp)"
-    if jq --arg t "$GW_TOKEN" '.gateway.auth.token = $t' "$CFG" > "$TMP_CFG" 2>/dev/null; then
+    if jq --arg p "$GW_PASSWORD" '.gateway.auth.password = $p | del(.gateway.auth.token)' "$CFG" > "$TMP_CFG" 2>/dev/null; then
         chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$TMP_CFG" 2>/dev/null || true
         chmod 600 "$TMP_CFG"
         mv "$TMP_CFG" "$CFG"
         run_as_admin systemctl --user restart openclaw-gateway 2>/dev/null \
-            || log_warn "openclaw-gateway restart failed; token applies on next start."
-        log_info "OpenClaw gateway token re-derived."
+            || log_warn "openclaw-gateway restart failed; password applies on next start."
+        log_info "OpenClaw gateway password re-derived."
     else
         rm -f "$TMP_CFG"
-        log_warn "jq patch of openclaw.json failed — gateway token unchanged (non-fatal)."
+        log_warn "jq patch of openclaw.json failed — gateway password unchanged (non-fatal)."
     fi
 fi
 

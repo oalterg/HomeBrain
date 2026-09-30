@@ -1794,19 +1794,22 @@ patch_openclaw_config() {
     origins_jq="${origins_jq%,}]"
     local origins="$origins_jq"
 
-    # Derive a stable gateway token from MASTER_PASSWORD so it survives redeployment
-    local gw_token=""
+    # Derive a stable gateway password from MASTER_PASSWORD so it survives
+    # redeployment. The dashboard authenticates as a trusted proxy (below); this
+    # is for the local CLI (`openclaw message send`, `openclaw agent`), which
+    # reaches the gateway directly and reads it from the config.
+    local gw_password=""
     if [[ -n "${MASTER_PASSWORD:-}" ]]; then
-        gw_token=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
+        gw_password=$(echo -n "${MASTER_PASSWORD}:openclaw-gateway" | sha256sum | cut -c1-32)
     else
-        log_warn "MASTER_PASSWORD is unset — skipping gateway token derivation; token will remain empty"
+        log_warn "MASTER_PASSWORD is unset — skipping gateway password derivation; password will remain empty"
     fi
 
     local jq_extra_args=()
-    local jq_token_patch=""
-    if [[ -n "$gw_token" ]]; then
-        jq_extra_args=(--arg gw_token "$gw_token")
-        jq_token_patch='| .gateway.auth.token = $gw_token'
+    local jq_password_patch=""
+    if [[ -n "$gw_password" ]]; then
+        jq_extra_args=(--arg gw_password "$gw_password")
+        jq_password_patch='| .gateway.auth.password = $gw_password'
     fi
 
     # web_search goes to the box's SearXNG container. Name the provider only
@@ -1915,8 +1918,20 @@ patch_openclaw_config() {
         [[ -n "$mmproj" ]] && vision="true"
     fi
 
+    # Compaction by transcript size (see the jq program). The transport
+    # estimates a request at chars / 3.2 and caps the reply at window minus
+    # that, so compact while (transcript + fixed part + next message) / 3.2
+    # still leaves a full max_tokens reply. The fixed part is the system
+    # prompt and tool schemas, measured at 122k chars on .69 (budgeted 128k),
+    # plus 48k for the next message and its tool results. 131072 / 16384
+    # gives 191000 bytes; the 81920 Qwen slots get ~34k, a much shorter chat
+    # between compactions, which is what that window holds under 2026.8.
+    local transcript_bytes=$(( (${ctx_size:-131072} - max_tokens) * 16 / 5 - 176000 ))
+    (( transcript_bytes >= 32768 )) || transcript_bytes=32768
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         --argjson max_tokens "$max_tokens" --arg think "$think_level" --arg vision "$vision" \
+        --argjson transcript_bytes "$transcript_bytes" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -2022,7 +2037,12 @@ patch_openclaw_config() {
         # us off first.
         .models.providers.llamacpp.timeoutSeconds = 1800 |
         .agents.defaults.model.primary = ("llamacpp/" + $id) |
-        .agents.defaults.models = {("llamacpp/" + $id): {}} |
+        # 2026.8 turned the defaults.models map into modelPolicy.allow.
+        # Write the list and drop the map, so a model switch replaces the one
+        # allowlist that counts instead of leaving the old model the only
+        # one permitted.
+        del(.agents.defaults.models) |
+        .agents.defaults.modelPolicy.allow = [("llamacpp/" + $id)] |
         # The OpenClaw schema default is 30m. HomeBrain wakes the local GPU
         # agent once an hour.
         .agents.defaults.heartbeat.every = "1h" |
@@ -2139,25 +2159,39 @@ patch_openclaw_config() {
         # long Telegram chat ends in "Auto-compaction could not recover this
         # turn" and the session is stuck until the owner types /new.
         #
-        # reserveTokensFloor is the headroom kept free when OpenClaw decides
-        # whether the next turn still fits: preflight compaction fires at
-        # contextWindow - floor - 4000 (the memory-flush soft threshold), and
-        # the pre-dispatch precheck rejects a prompt above
-        # contextWindow - floor. At the schema default of 20000 against a
-        # 131072 window that is a 107072 trigger and a 111072 ceiling, only
-        # ~15% apart — narrow enough that one tool-heavy turn jumps the gap
-        # and overflows before compaction ever gets a chance. Measured on
-        # .58 2026-08-15: a turn estimated at 122552 tokens cleared the
-        # trigger and hit the ceiling in the same step (overflowTokens=11480,
-        # toolResultReducibleChars=0, so truncation had nothing to give
-        # back). The ladder below is OpenClaw’s own
-        # computeContextAwareReserveTokensFloor — 35000 above a 100k window,
-        # 20000 below — i.e. exactly what its failure message tells the owner
-        # to set. Do not flatten it to 35000: at the 81920 the Qwen slots run
-        # that would compact at 52% of the window, throwing away history on a
-        # box where every compaction costs minutes.
-        .agents.defaults.compaction.reserveTokensFloor =
-            (if $ctx >= 100000 then 35000 else 20000 end) |
+        # The reserve is the headroom kept free when OpenClaw decides whether
+        # the next turn still fits: preflight compaction fires at
+        # budget - reserve - 4000 (the memory-flush soft threshold), and the
+        # pre-dispatch precheck rejects a prompt above budget - reserve. At
+        # 20000 against a 131072 window that is a 107072 trigger and a 111072
+        # ceiling, only ~15% apart — narrow enough that one tool-heavy turn
+        # jumps the gap and overflows before compaction ever gets a chance.
+        # Measured on .58 2026-08-15: a turn estimated at 122552 tokens
+        # cleared the trigger and hit the ceiling in the same step
+        # (overflowTokens=11480, toolResultReducibleChars=0, so truncation had
+        # nothing to give back). 35000 above a 100k window fixed it.
+        #
+        # 2026.8 retired compaction.reserveTokensFloor (doctor deletes it) and
+        # pins the reserve at 20000. A second limit now binds first: for a
+        # self-hosted endpoint the transport caps each reply at
+        # contextTokens-or-window - (request chars / 3.2) - 1. That estimate
+        # runs ~40% above llama.cpp’s own count on prose, so on .69 a 93k-token
+        # turn went out with max_completion_tokens=1 and came back empty,
+        # while the token trigger still said it fitted. Capping contextTokens
+        # (tried first) only moved that ceiling down. So: no contextTokens,
+        # the transport gets the whole window, and compaction is triggered by
+        # transcript size, which is what the transport estimate counts
+        # ($transcript_bytes, derived below the jq program).
+        del(.agents.defaults.compaction.reserveTokensFloor) |
+        # 2026.7 stamped meta.lastTouchedAt on every config write; 2026.8
+        # rejects the key, and refuses even `daemon install` until it is gone.
+        del(.meta.lastTouchedAt) |
+        del(.models.providers.llamacpp.models[0].contextTokens) |
+        .agents.defaults.compaction.maxActiveTranscriptBytes = $transcript_bytes |
+        # The same overflow can also build up inside one turn, as tool results
+        # pile up between model calls. This re-checks the budget after each
+        # tool result and compacts before the next call instead of overflowing.
+        .agents.defaults.compaction.midTurnPrecheck.enabled = true |
         # timeoutSeconds bounds ONE compaction pass, and the 180 s schema
         # default is unreachable here, which is what actually breaks the
         # turn: the overflow handler calls compact, the safety timeout fires
@@ -2217,17 +2251,30 @@ patch_openclaw_config() {
         (if (.plugins.entries["nextcloud-talk"] // null) == {"enabled": false}
           then del(.plugins.entries["nextcloud-talk"]) else . end) |
         .gateway.controlUi.allowedOrigins = $origins |
-        # The Control UI uses crypto.subtle to sign a device-identity
-        # challenge — that API is only exposed in "secure contexts"
-        # (HTTPS, localhost, or 127.0.0.1). On LAN HTTP the browser
-        # refuses, the SPA throws "device identity required", and
-        # there is no way to enable it from the client side. Setting
-        # allowInsecureAuth on the gateway opts into token-only auth
-        # for those non-secure contexts. The bearer token is generated
-        # from MASTER_PASSWORD and the manager already gates /openclaw
-        # behind the session, so dropping device-identity here does
-        # not weaken our auth posture — it just unblocks the LAN flow.
-        .gateway.controlUi.allowInsecureAuth = true |
+        # The dashboard reaches the Control UI only through the manager’s
+        # /openclaw proxy (app.py), which has already checked the master-
+        # password session. The gateway takes the manager’s word for it:
+        # trusted-proxy mode, with the manager on loopback naming the owner in
+        # x-homebrain-user. 2026.8 retired allowInsecureAuth (token-only auth
+        # without device identity); trusted-proxy is the one mode that still
+        # admits a Control UI session without it, and the proxy strips the
+        # browser’s device field. allowLoopback trusts every local process as
+        # much as the manager; the agent is already root-equivalent (see
+        # AGENTS.md), and the gateway still binds loopback only. The local
+        # CLI does not go through the proxy and uses auth.password instead.
+        del(.gateway.controlUi.allowInsecureAuth) |
+        del(.gateway.auth.token) |
+        .gateway.auth.mode = "trusted-proxy" |
+        .gateway.auth.trustedProxy = {
+            "userHeader": "x-homebrain-user",
+            "allowUsers": ["owner"],
+            "allowLoopback": true
+        } |
+        .gateway.auth.identityScopes = {"owner": [
+            "operator.admin", "operator.read", "operator.write",
+            "operator.approvals", "operator.questions", "operator.pairing"
+        ]} |
+        .gateway.trustedProxies = ["127.0.0.1", "::1"] |
         # MCP consent gate is disabled pending our upstream OpenClaw approvals
         # PR. It must NOT be persisted under .mcp: stock OpenClaw (>=2026.6)
         # strictly validates the mcp section and rejects unknown keys
@@ -2279,20 +2326,36 @@ patch_openclaw_config() {
         .approvals.plugin.mode = "session" |
         .tools.media.audio.enabled = true |
         .tools.media.audio.scope.default = "allow" |
-        .tools.media.audio.models[0].baseUrl = "http://127.0.0.1:8002/v1" |
-        .tools.media.audio.models[0].timeoutSeconds = 30 |
-        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": []} |
-        # memorySearch.provider defaults to openai. Our openai provider is
+        # 2026.8 keeps media models in one list tagged by capability; doctor
+        # moves tools.media.audio.models there. Write the new shape, or every
+        # patch would put the old one back. It also wants the provider named
+        # ("Provider entry missing provider for audio"): local Whisper speaks
+        # the OpenAI transcription API, and ignores the model name.
+        del(.tools.media.audio.models) |
+        .tools.media.models = (
+            [(.tools.media.models // [])[]
+             | select((.capabilities // []) | index("audio") | not)]
+            + [{"capabilities": ["audio"],
+                "provider": "openai",
+                "model": "whisper-1",
+                "baseUrl": "http://127.0.0.1:8002/v1",
+                "timeoutSeconds": 30}]) |
+        # The openai provider is local Whisper only. 2026.8 refuses provider
+        # requests to loopback (SsrFBlockedError) unless the provider opts in.
+        .models.providers.openai = {"apiKey": "dummy-local-whisper", "baseUrl": "http://127.0.0.1:8002/v1", "models": [],
+                                    "request": {"allowPrivateNetwork": true}} |
+        # memory.search.provider defaults to openai. Our openai provider is
         # local Whisper (dummy key, :8002). Explicit "none" is FTS-only —
-        # on-box, no embeddings, no Whisper-as-embedder. Path is
-        # agents.defaults.memorySearch on 2026.7.1-2, not top-level memory.search.
-        .agents.defaults.memorySearch.enabled = true |
-        .agents.defaults.memorySearch.provider = "none" |
+        # on-box, no embeddings, no Whisper-as-embedder. 2026.8 moved it from
+        # agents.defaults.memorySearch, and rejects the old path.
+        del(.agents.defaults.memorySearch) |
+        .memory.search.enabled = true |
+        .memory.search.provider = "none" |
         # Dreaming is default-on and schedules a 03:00 35B consolidation
         # sweep. Off until we measure MEMORY.md growth; plugin stays loaded
         # so memory_search still works. config is a free-form record.
         .plugins.entries["memory-core"].config.dreaming.enabled = false
-        '"$jq_token_patch$jq_browser_patch$jq_search_patch"'
+        '"$jq_password_patch$jq_browser_patch$jq_search_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
@@ -2406,10 +2469,17 @@ run_as_admin() {
     # Ensure runtime dir exists
     mkdir -p "/run/user/${hb_uid}" 2>/dev/null || true
     chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "/run/user/${hb_uid}" 2>/dev/null || true
-    sudo -u "${HOMEBRAIN_USER}" \
-        XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
-        "$@"
+    # From a directory the admin user can enter. Run by hand via sudo, the
+    # caller's cwd is often a home directory it cannot, and OpenClaw's node
+    # then fails to spawn systemctl (EACCES): `daemon install` and doctor's
+    # gateway ownership check both break.
+    (
+        cd / || exit
+        sudo -u "${HOMEBRAIN_USER}" \
+            XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
+            "$@"
+    )
 }
 
 # One-shot migration: HomeBrain is Telegram-only now. Earlier releases
@@ -2467,7 +2537,11 @@ install_searxng_plugin() {
     local want="${SEARXNG_PLUGIN_VERSION:-}"
     [[ -n "$want" ]] || return 0
     [[ "$(searxng_plugin_version)" == "$want" ]] && return 0
-    run_as_admin openclaw plugins install "@openclaw/searxng-plugin@${want}" --force >/dev/null 2>&1 || true
+    # 2026.8 asks consent for a plugin's declared capabilities, and without a
+    # terminal the install fails. This one declares a web-search provider and
+    # nothing else.
+    run_as_admin openclaw plugins install "@openclaw/searxng-plugin@${want}" \
+        --force --accept-capabilities >/dev/null 2>&1 || true
     if [[ "$(searxng_plugin_version)" == "$want" ]]; then
         log_info "Installed OpenClaw SearXNG plugin ${want}."
     else
@@ -2567,6 +2641,13 @@ setup_openclaw() {
             || log_warn "nodejs upgrade failed — openclaw may refuse to run if its engines range moved."
 
         log_info "Node $(node --version)"
+        # Otherwise the old gateway keeps running while npm replaces its
+        # files (on .69 it failed to load modules mid-install), under a unit
+        # the old version wrote, where doctor cannot verify it owns the
+        # gateway and refuses to migrate. Step 3 starts the new one.
+        if command -v openclaw >/dev/null 2>&1; then
+            run_as_admin systemctl --user stop openclaw-gateway 2>/dev/null || true
+        fi
         log_info "Installing openclaw@${OPENCLAW_VERSION}..."
         if npm install -g "openclaw@${OPENCLAW_VERSION}" --no-fund --no-audit; then
             command -v openclaw >/dev/null 2>&1 \
@@ -2601,13 +2682,45 @@ setup_openclaw() {
         cp "$config_src" "$config_dest"
         log_info "Seeded openclaw.json from template (first install)."
     fi
-    install_searxng_plugin
     local OC_CTX_SIZE
     OC_CTX_SIZE=$(resolve_llama_ctx_size)
     patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
     seed_openclaw_workspace
     chown -R "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "${HOMEBRAIN_HOME}/.openclaw"
     chmod 600 "$config_dest"
+    # A new OpenClaw migrates its own state on the first doctor run (device
+    # identity into SQLite, transcript media) and refuses to start, or even to
+    # `daemon install`, on config keys it retired that are not ours to know
+    # about. The patch above has to leave a config that validates: doctor
+    # checks it owns the gateway through `gateway status`, which fails on an
+    # invalid config. Doctor stops a running gateway; step 3 starts it.
+    if [[ "$needs_npm_install" == "true" ]] \
+       || ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+        log_info "Running openclaw doctor --fix for OpenClaw ${OPENCLAW_VERSION}..."
+        local doctor_out
+        if ! doctor_out=$(run_as_admin openclaw doctor --fix --non-interactive 2>&1 </dev/null); then
+            log_warn "openclaw doctor --fix failed: $(printf '%s' "$doctor_out" \
+                | sed 's/\x1b\[[0-9;]*m//g' | grep -iE 'error|could not|failed' | tail -n 2 | tr '\n' ' ')"
+        fi
+        chmod 600 "$config_dest"
+        if ! run_as_admin openclaw config validate >/dev/null 2>&1; then
+            log_error "openclaw.json is invalid; the gateway will not start:"
+            run_as_admin openclaw config validate 2>&1 | tail -n 8 | while IFS= read -r line; do
+                log_error "  $line"
+            done
+        fi
+    fi
+    # After doctor: `plugins install` refuses a config the new version
+    # rejects. The patch points web_search at the plugin only once it is
+    # installed, so patch again when this install is its first.
+    local searxng_before
+    searxng_before=$(searxng_plugin_version)
+    install_searxng_plugin
+    if [[ -z "$searxng_before" && -n "$(searxng_plugin_version)" ]]; then
+        patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
+        chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$config_dest"
+        chmod 600 "$config_dest"
+    fi
     log_info "Config written to $config_dest"
 
     remove_whatsapp_plugins
@@ -2618,7 +2731,10 @@ setup_openclaw() {
     # short-circuits with "service already enabled" and the next `daemon start`
     # then exec's whatever path the previous unit pointed at — which silently
     # breaks after an OpenClaw upgrade or a path move.
-    run_as_admin openclaw daemon install --force 2>/dev/null || true
+    local daemon_out
+    if ! daemon_out=$(run_as_admin openclaw daemon install --force 2>&1); then
+        log_warn "openclaw daemon install --force failed: $(printf '%s' "$daemon_out" | tail -n 3 | tr '\n' ' ')"
+    fi
     # After `daemon install --force` (it rewrites the unit) and before the
     # daemon-reload below, so the new environment is in effect on start.
     write_openclaw_gateway_dropin

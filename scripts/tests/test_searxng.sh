@@ -42,10 +42,10 @@ SEARXNG_PLUGIN_VERSION=2026.7.35
 
 : > "$CALLS"; rm -f "$TMP/installed"
 install_searxng_plugin
-if grep -q 'plugins install @openclaw/searxng-plugin@2026.7.35 --force' "$CALLS" && [[ "$(cat "$TMP/installed")" == 2026.7.35 ]]; then
-    ok "missing plugin installs at the pin"
+if grep -q 'plugins install @openclaw/searxng-plugin@2026.7.35 --force --accept-capabilities' "$CALLS" && [[ "$(cat "$TMP/installed")" == 2026.7.35 ]]; then
+    ok "missing plugin installs at the pin, consenting to its capabilities"
 else
-    bad "missing plugin installs at the pin" "$(cat "$CALLS")"
+    bad "missing plugin installs at the pin, consenting to its capabilities" "$(cat "$CALLS")"
 fi
 
 : > "$CALLS"

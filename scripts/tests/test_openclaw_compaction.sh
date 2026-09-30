@@ -4,16 +4,19 @@
 # compaction budget it writes into openclaw.json.
 #
 # The bugs these pin:
-#   * The OpenClaw schema defaults (reserveTokensFloor 20000, compaction
+#   * The OpenClaw schema defaults (a 20000 compaction reserve, compaction
 #     timeoutSeconds 180) are sized for hosted providers. Against a local
 #     llama-server they turn every long Telegram chat into "⚠️ Auto-compaction
 #     could not recover this turn": compaction has to re-prefill the whole
 #     transcript, which on .58 takes 95-503 s, and the 180 s safety timeout
 #     aborts it every time (observed: durationMs=180043, reason=timeout).
-#   * reserveTokensFloor must follow OpenClaw's own context-aware ladder.
-#     Flattening it to 35000 would compact the 81920 Qwen slots at 52% of
-#     their window; leaving it at 20000 lets a 131072 window overflow between
-#     the compaction trigger and the prompt ceiling.
+#   * The headroom must follow the context window: 35000 above 100k, 20000
+#     below. Flattening it to 35000 would compact the 81920 Qwen slots at 52%
+#     of their window; leaving it at 20000 lets a 131072 window overflow
+#     between the compaction trigger and the prompt ceiling. Since 2026.8 the
+#     reserve is a fixed 20000 and the transport caps each reply at the window
+#     minus its own char-based estimate of the request, so the lever is
+#     compaction by transcript size, and contextTokens must stay unset.
 #   * The whole jq program is one shell string. A stray quote does not fail
 #     the install loudly — jq exits non-zero, the `&& mv` never runs, and the
 #     box silently keeps the previous config. Parsing it is the point.
@@ -120,11 +123,20 @@ else
 fi
 
 echo "== compaction budget at a 131072 window =="
-got=$(jq -r '.agents.defaults.compaction.reserveTokensFloor' "$cfg")
-if [[ "$got" == "35000" ]]; then
-    ok "reserveTokensFloor is 35000 above a 100k window"
+got=$(jq -r '[(.models.providers.llamacpp.models[0] | has("contextTokens")),
+               .agents.defaults.compaction.maxActiveTranscriptBytes] | @csv' "$cfg")
+# (131072 - 16384) * 3.2 - 176000: the transport still has room for a full
+# 16384-token reply when the next turn opens.
+if [[ "$got" == "false,191001" ]]; then
+    ok "the transport keeps the whole window; compaction triggers at 191001 transcript bytes"
 else
-    bad "reserveTokensFloor is 35000 above a 100k window" "got $got"
+    bad "the transport keeps the whole window; compaction triggers at 191001 transcript bytes" "got $got"
+fi
+got=$(jq -r '.agents.defaults.compaction.midTurnPrecheck.enabled' "$cfg")
+if [[ "$got" == "true" ]]; then
+    ok "midTurnPrecheck re-checks the budget between tool calls"
+else
+    bad "midTurnPrecheck re-checks the budget between tool calls" "got $got"
 fi
 
 got=$(jq -r '.agents.defaults.compaction.timeoutSeconds' "$cfg")
@@ -322,18 +334,18 @@ else
         "got $(printf '%s' "$got" | head -c 80)…"
 fi
 
-got=$(jq -r '.agents.defaults.memorySearch.provider' "$cfg")
+got=$(jq -r '.memory.search.provider' "$cfg")
 if [[ "$got" == "none" ]]; then
-    ok "memorySearch.provider is none (FTS-only; not Whisper, not OpenAI)"
+    ok "memory.search.provider is none (FTS-only; not Whisper, not OpenAI)"
 else
-    bad "memorySearch.provider is none" "got $got"
+    bad "memory.search.provider is none" "got $got"
 fi
 
-got=$(jq -r '.agents.defaults.memorySearch.enabled' "$cfg")
+got=$(jq -r '.memory.search.enabled' "$cfg")
 if [[ "$got" == "true" ]]; then
-    ok "memorySearch stays enabled"
+    ok "memory.search stays enabled"
 else
-    bad "memorySearch stays enabled" "got $got"
+    bad "memory.search stays enabled" "got $got"
 fi
 
 got=$(jq -r '.plugins.entries["memory-core"].config.dreaming.enabled' "$cfg")
@@ -358,7 +370,7 @@ seed="$TEST_DIR/../../config/openclaw.json"
 for key in \
     '.agents.defaults.heartbeat.lightContext' \
     '.agents.defaults.heartbeat.isolatedSession' \
-    '.agents.defaults.memorySearch.provider' \
+    '.memory.search.provider' \
     '.agents.defaults.compaction.memoryFlush.enabled' \
     '.plugins.entries["memory-core"].config.dreaming.enabled'
 do
@@ -371,13 +383,13 @@ do
     fi
 done
 
-echo "== the reserve floor follows the context window =="
+echo "== the headroom follows the context window =="
 cfg81920="$(run_patch 81920 "$QWEN27")"
-got=$(jq -r '.agents.defaults.compaction.reserveTokensFloor' "$cfg81920")
-if [[ "$got" == "20000" ]]; then
-    ok "reserveTokensFloor drops to 20000 at an 81920 window"
+got=$(jq -r '.agents.defaults.compaction.maxActiveTranscriptBytes' "$cfg81920")
+if [[ "$got" == "33715" ]]; then
+    ok "an 81920 window compacts at 33715 transcript bytes"
 else
-    bad "reserveTokensFloor drops to 20000 at an 81920 window" "got $got"
+    bad "an 81920 window compacts at 33715 transcript bytes" "got $got"
 fi
 
 got=$(jq -r '.models.providers.llamacpp.models[0].contextWindow' "$cfg81920")
@@ -390,12 +402,12 @@ fi
 echo "== an empty ctx_size still lands on a coherent pair =="
 cfgdefault="$(run_patch "" "$GLIMMER")"
 win=$(jq -r '.models.providers.llamacpp.models[0].contextWindow' "$cfgdefault")
-floor=$(jq -r '.agents.defaults.compaction.reserveTokensFloor' "$cfgdefault")
-if [[ "$win" == "131072" && "$floor" == "35000" ]]; then
-    ok "empty ctx_size falls back to 131072 with the matching 35000 floor"
+budget=$(jq -r '.agents.defaults.compaction.maxActiveTranscriptBytes' "$cfgdefault")
+if [[ "$win" == "131072" && "$budget" == "191001" ]]; then
+    ok "empty ctx_size falls back to 131072 with the matching size trigger"
 else
-    bad "empty ctx_size falls back to 131072 with the matching 35000 floor" \
-        "contextWindow=$win reserveTokensFloor=$floor"
+    bad "empty ctx_size falls back to 131072 with the matching size trigger" \
+        "contextWindow=$win maxActiveTranscriptBytes=$budget"
 fi
 
 echo "== idempotency =="
@@ -491,6 +503,96 @@ fi
 HB_PLATFORM_TAG="$saved_tag"
 if [[ -n "$saved_driver" ]]; then
     HB_GPU_DRIVER="$saved_driver"
+fi
+
+echo "== a 2026.7 config comes out in the 2026.8 shape =="
+# What .69 and .58 carried before the bump: the retired floor, token-only
+# dashboard auth, and per-capability media models, plus an image model the
+# owner added that must survive the reshape.
+cfg7="$TMP_ROOT/openclaw-2026.7.json"
+cat > "$cfg7" <<'JSON'
+{
+  "meta": { "lastTouchedAt": "2026-09-30T11:59:02.091Z", "lastTouchedVersion": "2026.7.35" },
+  "models": { "providers": { "llamacpp": { "models": [ { "id": "stale", "contextTokens": 116072 } ] } } },
+  "agents": { "defaults": {
+    "compaction": { "mode": "default", "reserveTokensFloor": 35000 },
+    "models": { "llamacpp/stale-model": {} },
+    "memorySearch": { "enabled": true, "provider": "none" }
+  } },
+  "gateway": {
+    "mode": "local",
+    "controlUi": { "basePath": "/openclaw", "allowInsecureAuth": true },
+    "auth": { "token": "0123456789abcdef0123456789abcdef" }
+  },
+  "tools": { "media": {
+    "audio": { "enabled": true, "scope": { "default": "allow" },
+               "models": [ { "baseUrl": "http://127.0.0.1:8002/v1", "timeoutSeconds": 30 } ] },
+    "models": [ { "capabilities": ["image"], "provider": "openai", "model": "gpt-image" } ]
+  } }
+}
+JSON
+patch_openclaw_config "$cfg7" "$GLIMMER" 131072 >/dev/null 2>&1
+retired=$(jq -c '[.agents.defaults.compaction.reserveTokensFloor,
+                  .gateway.controlUi.allowInsecureAuth, .gateway.auth.token,
+                  .tools.media.audio.models, .meta.lastTouchedAt,
+                  .models.providers.llamacpp.models[0].contextTokens,
+                  .agents.defaults.memorySearch, .agents.defaults.models]
+                 | map(select(. != null))' "$cfg7")
+if [[ "$retired" == "[]" ]]; then
+    ok "every key 2026.8 retired is gone"
+else
+    bad "every key 2026.8 retired is gone" "left: $retired"
+fi
+got=$(jq -c '[.meta.lastTouchedVersion, .agents.defaults.modelPolicy.allow, .memory.search]' "$cfg7")
+if [[ "$got" == '["2026.7.35",["llamacpp/'"$GLIMMER"'"],{"enabled":true,"provider":"none"}]' ]]; then
+    ok "their replacements are written, and the rest of meta is left alone"
+else
+    bad "their replacements are written, and the rest of meta is left alone" "got $got"
+fi
+want_pw=$(printf '%s:openclaw-gateway' "$MASTER_PASSWORD" | sha256sum 2>/dev/null | cut -c1-32)
+[[ -n "$want_pw" ]] || want_pw=$(printf '%s:openclaw-gateway' "$MASTER_PASSWORD" | shasum -a 256 | cut -c1-32)
+got=$(jq -c '[.gateway.auth.mode, .gateway.auth.password == $pw,
+              .gateway.auth.trustedProxy.allowLoopback, .gateway.trustedProxies]' \
+      --arg pw "$want_pw" "$cfg7")
+if [[ "$got" == '["trusted-proxy",true,true,["127.0.0.1","::1"]]' ]]; then
+    ok "the gateway trusts the loopback manager, and the CLI has its password"
+else
+    bad "the gateway trusts the loopback manager, and the CLI has its password" "got $got"
+fi
+# app.py names the identity; the gateway admits only what this config lists.
+header=$(sed -n 's/^_OPENCLAW_IDENTITY_HEADER = "\(.*\)"$/\1/p' "$TEST_DIR/../../src/app.py")
+identity=$(sed -n 's/^_OPENCLAW_IDENTITY = "\(.*\)"$/\1/p' "$TEST_DIR/../../src/app.py")
+got=$(jq -c --arg h "$header" --arg u "$identity" '[
+        .gateway.auth.trustedProxy.userHeader == $h,
+        .gateway.auth.trustedProxy.allowUsers == [$u],
+        (.gateway.auth.identityScopes[$u] | index("operator.admin") != null)]' "$cfg7")
+if [[ -n "$header" && -n "$identity" && "$got" == '[true,true,true]' ]]; then
+    ok "the proxy sends the header and identity the gateway admits, with admin"
+else
+    bad "the proxy sends the header and identity the gateway admits, with admin" \
+        "app.py header=$header identity=$identity, config checks $got"
+fi
+got=$(jq -c '[.tools.media.models[] | .capabilities[0]] | sort' "$cfg7")
+audio=$(jq -c '.tools.media.models[] | select(.capabilities == ["audio"]) | [.provider, .model, .baseUrl]' "$cfg7")
+if [[ "$got" == '["audio","image"]' && "$audio" == '["openai","whisper-1","http://127.0.0.1:8002/v1"]' ]]; then
+    ok "whisper moves to the capability-tagged list and the image model stays"
+else
+    bad "whisper moves to the capability-tagged list and the image model stays" \
+        "capabilities $got, audio entry $audio"
+fi
+got=$(jq -c '[.models.providers.openai.baseUrl, .models.providers.openai.request.allowPrivateNetwork]' "$cfg7")
+if [[ "$got" == '["http://127.0.0.1:8002/v1",true]' ]]; then
+    ok "the loopback Whisper provider is let past the private-network guard"
+else
+    bad "the loopback Whisper provider is let past the private-network guard" "got $got"
+fi
+before=$(jq -S . "$cfg7")
+patch_openclaw_config "$cfg7" "$GLIMMER" 131072 >/dev/null 2>&1
+if [[ "$(jq -S . "$cfg7")" == "$before" ]]; then
+    ok "patching the migrated config again changes nothing"
+else
+    bad "patching the migrated config again changes nothing" \
+        "$(diff <(echo "$before") <(jq -S . "$cfg7") | head -5)"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

@@ -37,7 +37,10 @@
       "openai": {
         "apiKey": "dummy-local-whisper",
         "baseUrl": "http://127.0.0.1:8002/v1",
-        "models": []
+        "models": [],
+        "request": {
+          "allowPrivateNetwork": true
+        }
       }
     }
   },
@@ -46,34 +49,34 @@
       "model": {
         "primary": "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL"
       },
-      "models": {
-        "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL": {}
+      "modelPolicy": {
+        "allow": [
+          "llamacpp/Muse-Glimmer-30B-UD-Q4_K_XL"
+        ]
       },
       "workspace": "/home/homebrain/.openclaw/workspace",
       "thinkingDefault": "xhigh",
       "compaction": {
         "mode": "default",
-        "reserveTokensFloor": 35000,
         "timeoutSeconds": 1200,
         "notifyUser": true,
         "memoryFlush": {
           "enabled": false
-        }
+        },
+        "midTurnPrecheck": {
+          "enabled": true
+        },
+        "maxActiveTranscriptBytes": 191001
       },
       "heartbeat": {
         "every": "1h",
         "timeoutSeconds": 3000,
         "isolatedSession": true,
         "lightContext": true
-      },
-      "memorySearch": {
-        "enabled": true,
-        "provider": "none"
       }
     },
-    "list": [
-      {
-        "id": "main",
+    "entries": {
+      "main": {
         "tools": {
           "profile": "full",
           "alsoAllow": [
@@ -81,7 +84,7 @@
           ]
         }
       }
-    ]
+    }
   },
   "tools": {
     "exec": {
@@ -95,17 +98,19 @@
         "enabled": true,
         "scope": {
           "default": "allow"
-        },
-        "models": [
-          {
-            "capabilities": [
-              "audio"
-            ],
-            "baseUrl": "http://127.0.0.1:8002/v1",
-            "timeoutSeconds": 30
-          }
-        ]
-      }
+        }
+      },
+      "models": [
+        {
+          "capabilities": [
+            "audio"
+          ],
+          "provider": "openai",
+          "model": "whisper-1",
+          "baseUrl": "http://127.0.0.1:8002/v1",
+          "timeoutSeconds": 30
+        }
+      ]
     },
     "deny": [
       "cron"
@@ -129,9 +134,30 @@
       "allowedOrigins": []
     },
     "auth": {
-      "mode": "token",
-      "token": ""
-    }
+      "mode": "trusted-proxy",
+      "password": "",
+      "trustedProxy": {
+        "userHeader": "x-homebrain-user",
+        "allowUsers": [
+          "owner"
+        ],
+        "allowLoopback": true
+      },
+      "identityScopes": {
+        "owner": [
+          "operator.admin",
+          "operator.read",
+          "operator.write",
+          "operator.approvals",
+          "operator.questions",
+          "operator.pairing"
+        ]
+      }
+    },
+    "trustedProxies": [
+      "127.0.0.1",
+      "::1"
+    ]
   },
   "plugins": {
     "entries": {
@@ -145,6 +171,12 @@
           }
         }
       }
+    }
+  },
+  "memory": {
+    "search": {
+      "enabled": true,
+      "provider": "none"
     }
   }
 }
