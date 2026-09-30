@@ -129,6 +129,10 @@ fi
 
 log_info "Update script and common up-to-date. Proceeding..."
 
+# Before anything long starts: a nightly upgrade's needrestart must not
+# restart this unit mid-update (see install_needrestart_guard).
+install_needrestart_guard || log_warn "needrestart guard not written — an unattended upgrade could restart this update."
+
 load_env
 
 # 1. Prepare Environment
@@ -173,7 +177,13 @@ fi
 # Back up the docker-compose.yml just in case
 cp "$INSTALL_DIR/docker-compose.yml" "$TEMP_DIR/extract/docker-compose.yml.backup"
 
-# rsync ensures we get new files, delete removed files, but exclude our preserved configs from being overwritten if they were missing in source
+# rsync ensures we get new files, delete removed files, but exclude our preserved configs from being overwritten if they were missing in source.
+# --delete removes every box-state file the tarball lacks, so each one written
+# into INSTALL_DIR must be listed. Losing .installed_versions.json rebuilt
+# llama.cpp from source on every Arc update; losing .secret_key logged
+# everyone out; x86 keeps factory_config.txt here (no /boot/firmware); and a
+# legacy box's Nextcloud data would be gone before the layout migration below
+# could move it. test_update_guard.sh fails when a new path is missing here.
 rsync -a --delete \
 --exclude='.env' \
 --exclude='.setup_complete' \
@@ -183,6 +193,17 @@ rsync -a --delete \
 --exclude='venv' \
 --exclude='.platform.json' \
 --exclude='.ai_setup_state' \
+--exclude='.installed_versions.json' \
+--exclude='.secret_key' \
+--exclude='.first_boot_update_done' \
+--exclude='.registration_complete' \
+--exclude='.setup_started' \
+--exclude='.install_creds_staging' \
+--exclude='.restoring' \
+--exclude='.restore_failed' \
+--exclude='factory_config.txt' \
+--exclude='install_creds.json' \
+--exclude='/nextcloud-data' \
 "$TEMP_DIR/extract/" "$INSTALL_DIR/" || { log_error "Rsync failed"; exit 1; }
 
 # Refresh the hardware record against the freshly-synced common.sh. Excluded
@@ -266,8 +287,12 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         if [[ -f "$INSTALL_DIR/.installed_versions.json" ]]; then
             llama_have=$(jq -r '.llama_cpp.tag // empty' "$INSTALL_DIR/.installed_versions.json" 2>/dev/null || echo "")
         fi
+        # Three reasons to reinstall: the pin moved; a source build is not at
+        # its commit (an unknown record counts, as before); a release install
+        # is known to lag its pin.
         if { [[ -n "$new_llama_tag" && "$old_llama_tag" != "$new_llama_tag" ]] \
-            || [[ -n "$llama_src" && "$llama_src" != "$llama_have" ]]; }; then
+            || [[ -n "$llama_src" && "$llama_src" != "$llama_have" ]] \
+            || { [[ -z "$llama_src" ]] && pin_lags "$llama_want" "$llama_have"; }; }; then
             log_info "llama.cpp: ${llama_have:-${old_llama_tag:-unset}} → ${llama_want}. Updating binary..."
             bash "$INSTALL_DIR/scripts/utilities.sh" update_llama || log_warn "llama.cpp update failed — check logs."
         elif [[ "${HB_GPU_BACKEND:-}" == "sycl" ]]; then
@@ -278,9 +303,11 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         # below. This branch is an in-place upgrade of a stack that is already
         # there; running it on an absent install would pull OpenClaw in before
         # llama-server and block the update on npm.
-        if [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]] \
+        openclaw_have=$(installed_openclaw_version "$INSTALL_DIR/.installed_versions.json")
+        if { [[ -n "$new_openclaw_ver" && "$old_openclaw_ver" != "$new_openclaw_ver" ]] \
+             || pin_lags "$new_openclaw_ver" "$openclaw_have"; } \
            && command -v openclaw >/dev/null 2>&1; then
-            log_info "OpenClaw: ${old_openclaw_ver} → ${new_openclaw_ver}. Updating..."
+            log_info "OpenClaw: ${openclaw_have:-${old_openclaw_ver:-unset}} → ${new_openclaw_ver}. Updating..."
             bash "$UPDATE_DEPS_SCRIPT" openclaw || log_warn "OpenClaw update failed — check logs."
         else
             # Config drift catch-all. The openclaw npm package didn't change,

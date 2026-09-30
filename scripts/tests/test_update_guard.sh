@@ -118,6 +118,103 @@ else
     bad "update.sh compose pull/up uses get_runtime_profiles"
 fi
 
+echo "== pin_lags =="
+if pin_lags 2026.7.35 2026.7.1-2; then ok "an install behind its pin lags"; else bad "an install behind its pin lags"; fi
+if pin_lags 2026.8.33 2026.8.33; then bad "an install at its pin does not lag"; else ok "an install at its pin does not lag"; fi
+if pin_lags 2026.8.33 ""; then bad "an unknown install is not drift"; else ok "an unknown install is not drift"; fi
+if pin_lags "" 2026.8.33; then bad "no pin, no drift"; else ok "no pin, no drift"; fi
+
+echo "== installed_openclaw_version =="
+iv_tmp="$(mktemp -d)"
+echo '{"openclaw":{"version":"2026.7.35"}}' > "$iv_tmp/record.json"
+echo '{"llama_cpp":{"tag":"b10361"}}' > "$iv_tmp/no-openclaw.json"
+openclaw() { [[ "$1" == "--version" ]] && echo "OpenClaw 2026.7.1-2 (0790d9f)"; }
+got=$(installed_openclaw_version "$iv_tmp/record.json")
+[[ "$got" == 2026.7.35 ]] && ok "the install record wins" || bad "the install record wins (got $got)"
+got=$(installed_openclaw_version "$iv_tmp/no-openclaw.json")
+[[ "$got" == 2026.7.1-2 ]] && ok "without a record, the CLI's own version" || bad "without a record, the CLI's own version (got $got)"
+got=$(installed_openclaw_version "$iv_tmp/missing.json")
+[[ "$got" == 2026.7.1-2 ]] && ok "a missing record file falls back to the CLI" || bad "a missing record file falls back to the CLI (got $got)"
+unset -f openclaw
+got=$(PATH=/nonexistent installed_openclaw_version "$iv_tmp/no-openclaw.json")
+[[ -z "$got" ]] && ok "neither record nor CLI: unknown" || bad "neither record nor CLI: unknown (got $got)"
+rm -rf "$iv_tmp"
+
+echo "== needrestart leaves HomeBrain jobs alone =="
+nr_tmp="$(mktemp -d)"
+NEEDRESTART_GUARD="$nr_tmp/absent/homebrain.conf" install_needrestart_guard
+[[ ! -e "$nr_tmp/absent/homebrain.conf" ]] && ok "no needrestart, nothing written" || bad "no needrestart, nothing written"
+mkdir -p "$nr_tmp/conf.d"
+NEEDRESTART_GUARD="$nr_tmp/conf.d/homebrain.conf"
+install_needrestart_guard
+if command -v perl >/dev/null 2>&1; then
+    # Load it the way needrestart.conf does, then match unit names the way
+    # needrestart's restart loop does: first key in sorted order wins.
+    verdicts=$(perl -e '
+        our %nrconf = (override_rc => { qr(^dbus) => 0 });
+        do $ARGV[0]; die $@ if $@;
+        for my $rc (@ARGV[1..$#ARGV]) {
+            my $restart = 1;
+            for my $re (sort keys %{$nrconf{override_rc}}) {
+                next unless $rc =~ /$re/;
+                $restart = $nrconf{override_rc}{$re}; last;
+            }
+            print "$rc=$restart ";
+        }' "$NEEDRESTART_GUARD" \
+        homebrain-update.service homebrain-ai-setup.service homebrain-backup.service \
+        homebrain-offsite.service homebrain-picture.service homebrain-video.service \
+        homebrain-gpu-recover.service homebrain-manager.service homebrain-media.service \
+        homebrain-update-helper.service dbus.service 2>&1)
+    want="homebrain-update.service=0 homebrain-ai-setup.service=0 homebrain-backup.service=0 homebrain-offsite.service=0 homebrain-picture.service=0 homebrain-video.service=0 homebrain-gpu-recover.service=0 homebrain-manager.service=1 homebrain-media.service=1 homebrain-update-helper.service=1 dbus.service=0 "
+    [[ "$verdicts" == "$want" ]] && ok "jobs are never restarted, daemons still are" \
+        || bad "jobs are never restarted, daemons still are: $verdicts"
+else
+    bad "perl is needed to check the needrestart guard"
+fi
+rm -rf "$nr_tmp"
+
+echo "== update rsync keeps box state =="
+# Every INSTALL_DIR path the code writes that the tarball does not ship must
+# survive the sync. Run update.sh's own exclude list through a real
+# `rsync --delete` from a tree that lacks them all.
+REPO_ROOT="$SCRIPT_DIR/../.."
+excludes=()
+while IFS= read -r pat; do
+    excludes+=("--exclude=$pat")
+done < <(sed -n '/^rsync -a --delete/,/"\$INSTALL_DIR\/"/p' "$UPDATE_SH" \
+    | grep -oE "exclude='[^']+'" | sed -E "s/^exclude='(.*)'$/\1/")
+state=()
+while IFS= read -r name; do
+    [[ -e "$REPO_ROOT/$name" ]] || state+=("$name")
+done < <(grep -rhoE '(\$INSTALL_DIR|\$\{INSTALL_DIR\}|\{INSTALL_DIR\}|/opt/homebrain)/[A-Za-z0-9_.][A-Za-z0-9_.-]*' \
+            "$REPO_ROOT/scripts" "$REPO_ROOT/src" --include='*.sh' --include='*.py' \
+         | sed -E 's#.*/##; /\.$/d' | sort -u)
+if [[ ${#excludes[@]} -lt 5 || ${#state[@]} -lt 5 ]]; then
+    bad "found the rsync excludes (${#excludes[@]}) and the box-state paths (${#state[@]})"
+else
+    sync_tmp="$(mktemp -d)"
+    mkdir -p "$sync_tmp/src/scripts" "$sync_tmp/dst"
+    touch "$sync_tmp/src/scripts/update.sh"
+    for name in "${state[@]}"; do
+        echo keep > "$sync_tmp/dst/$name"
+    done
+    echo stale > "$sync_tmp/dst/removed_upstream.sh"
+    rsync -a --delete "${excludes[@]}" "$sync_tmp/src/" "$sync_tmp/dst/"
+    for name in "${state[@]}"; do
+        if [[ -e "$sync_tmp/dst/$name" ]]; then
+            ok "update keeps $name"
+        else
+            bad "update deletes $name (add --exclude='$name' to update.sh)"
+        fi
+    done
+    if [[ -e "$sync_tmp/dst/removed_upstream.sh" ]]; then
+        bad "update still deletes files the tarball dropped"
+    else
+        ok "update still deletes files the tarball dropped"
+    fi
+    rm -rf "$sync_tmp"
+fi
+
 echo
 echo "passed: $pass   failed: $fail"
 [ "$fail" -eq 0 ]
