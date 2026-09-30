@@ -1918,8 +1918,20 @@ patch_openclaw_config() {
         [[ -n "$mmproj" ]] && vision="true"
     fi
 
+    # Compaction by transcript size (see the jq program). The transport
+    # estimates a request at chars / 3.2 and caps the reply at window minus
+    # that, so compact while (transcript + fixed part + next message) / 3.2
+    # still leaves a full max_tokens reply. The fixed part is the system
+    # prompt and tool schemas, measured at 122k chars on .69 (budgeted 128k),
+    # plus 48k for the next message and its tool results. 131072 / 16384
+    # gives 191000 bytes; the 81920 Qwen slots get ~34k, a much shorter chat
+    # between compactions, which is what that window holds under 2026.8.
+    local transcript_bytes=$(( (${ctx_size:-131072} - max_tokens) * 16 / 5 - 176000 ))
+    (( transcript_bytes >= 32768 )) || transcript_bytes=32768
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         --argjson max_tokens "$max_tokens" --arg think "$think_level" --arg vision "$vision" \
+        --argjson transcript_bytes "$transcript_bytes" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -2160,18 +2172,22 @@ patch_openclaw_config() {
         # nothing to give back). 35000 above a 100k window fixed it.
         #
         # 2026.8 retired compaction.reserveTokensFloor (doctor deletes it) and
-        # pins the reserve at 20000 of the model’s budget. contextTokens is
-        # that budget, so capping it 15000 below the window keeps the 35000
-        # headroom against the real window. Below 100k the budget stays the
-        # window: at the 81920 the Qwen slots run, 35000 would compact at 52%,
-        # throwing away history on a box where every compaction costs minutes.
+        # pins the reserve at 20000. A second limit now binds first: for a
+        # self-hosted endpoint the transport caps each reply at
+        # contextTokens-or-window - (request chars / 3.2) - 1. That estimate
+        # runs ~40% above llama.cpp’s own count on prose, so on .69 a 93k-token
+        # turn went out with max_completion_tokens=1 and came back empty,
+        # while the token trigger still said it fitted. Capping contextTokens
+        # (tried first) only moved that ceiling down. So: no contextTokens,
+        # the transport gets the whole window, and compaction is triggered by
+        # transcript size, which is what the transport estimate counts
+        # ($transcript_bytes, derived below the jq program).
         del(.agents.defaults.compaction.reserveTokensFloor) |
         # 2026.7 stamped meta.lastTouchedAt on every config write; 2026.8
         # rejects the key, and refuses even `daemon install` until it is gone.
         del(.meta.lastTouchedAt) |
-        (if $ctx >= 100000
-          then .models.providers.llamacpp.models[0].contextTokens = ($ctx - 15000)
-          else del(.models.providers.llamacpp.models[0].contextTokens) end) |
+        del(.models.providers.llamacpp.models[0].contextTokens) |
+        .agents.defaults.compaction.maxActiveTranscriptBytes = $transcript_bytes |
         # The same overflow can also build up inside one turn, as tool results
         # pile up between model calls. This re-checks the budget after each
         # tool result and compacts before the next call instead of overflowing.

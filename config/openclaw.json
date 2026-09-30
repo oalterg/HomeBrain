@@ -30,8 +30,7 @@
               "cacheWrite": 0
             },
             "contextWindow": 131072,
-            "maxTokens": 16384,
-            "contextTokens": 116072
+            "maxTokens": 16384
           }
         ]
       },
@@ -66,7 +65,8 @@
         },
         "midTurnPrecheck": {
           "enabled": true
-        }
+        },
+        "maxActiveTranscriptBytes": 191001
       },
       "heartbeat": {
         "every": "1h",

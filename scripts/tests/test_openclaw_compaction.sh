@@ -14,7 +14,9 @@
 #     below. Flattening it to 35000 would compact the 81920 Qwen slots at 52%
 #     of their window; leaving it at 20000 lets a 131072 window overflow
 #     between the compaction trigger and the prompt ceiling. Since 2026.8 the
-#     reserve is a fixed 20000, so the lever is the model's contextTokens.
+#     reserve is a fixed 20000 and the transport caps each reply at the window
+#     minus its own char-based estimate of the request, so the lever is
+#     compaction by transcript size, and contextTokens must stay unset.
 #   * The whole jq program is one shell string. A stray quote does not fail
 #     the install loudly — jq exits non-zero, the `&& mv` never runs, and the
 #     box silently keeps the previous config. Parsing it is the point.
@@ -121,11 +123,14 @@ else
 fi
 
 echo "== compaction budget at a 131072 window =="
-got=$(jq -r '.models.providers.llamacpp.models[0].contextTokens' "$cfg")
-if [[ "$got" == "116072" ]]; then
-    ok "contextTokens leaves 35000 of headroom above a 100k window"
+got=$(jq -r '[(.models.providers.llamacpp.models[0] | has("contextTokens")),
+               .agents.defaults.compaction.maxActiveTranscriptBytes] | @csv' "$cfg")
+# (131072 - 16384) * 3.2 - 176000: the transport still has room for a full
+# 16384-token reply when the next turn opens.
+if [[ "$got" == "false,191001" ]]; then
+    ok "the transport keeps the whole window; compaction triggers at 191001 transcript bytes"
 else
-    bad "contextTokens leaves 35000 of headroom above a 100k window" "got $got"
+    bad "the transport keeps the whole window; compaction triggers at 191001 transcript bytes" "got $got"
 fi
 got=$(jq -r '.agents.defaults.compaction.midTurnPrecheck.enabled' "$cfg")
 if [[ "$got" == "true" ]]; then
@@ -380,12 +385,11 @@ done
 
 echo "== the headroom follows the context window =="
 cfg81920="$(run_patch 81920 "$QWEN27")"
-got=$(jq -r '.models.providers.llamacpp.models[0] | has("contextTokens")' "$cfg81920")
-if [[ "$got" == "false" ]]; then
-    ok "no contextTokens cap at an 81920 window (the plain 20000 reserve)"
+got=$(jq -r '.agents.defaults.compaction.maxActiveTranscriptBytes' "$cfg81920")
+if [[ "$got" == "33715" ]]; then
+    ok "an 81920 window compacts at 33715 transcript bytes"
 else
-    bad "no contextTokens cap at an 81920 window (the plain 20000 reserve)" \
-        "got $(jq -c '.models.providers.llamacpp.models[0].contextTokens' "$cfg81920")"
+    bad "an 81920 window compacts at 33715 transcript bytes" "got $got"
 fi
 
 got=$(jq -r '.models.providers.llamacpp.models[0].contextWindow' "$cfg81920")
@@ -398,12 +402,12 @@ fi
 echo "== an empty ctx_size still lands on a coherent pair =="
 cfgdefault="$(run_patch "" "$GLIMMER")"
 win=$(jq -r '.models.providers.llamacpp.models[0].contextWindow' "$cfgdefault")
-budget=$(jq -r '.models.providers.llamacpp.models[0].contextTokens' "$cfgdefault")
-if [[ "$win" == "131072" && "$budget" == "116072" ]]; then
-    ok "empty ctx_size falls back to 131072 with the matching 116072 budget"
+budget=$(jq -r '.agents.defaults.compaction.maxActiveTranscriptBytes' "$cfgdefault")
+if [[ "$win" == "131072" && "$budget" == "191001" ]]; then
+    ok "empty ctx_size falls back to 131072 with the matching size trigger"
 else
-    bad "empty ctx_size falls back to 131072 with the matching 116072 budget" \
-        "contextWindow=$win contextTokens=$budget"
+    bad "empty ctx_size falls back to 131072 with the matching size trigger" \
+        "contextWindow=$win maxActiveTranscriptBytes=$budget"
 fi
 
 echo "== idempotency =="
@@ -509,6 +513,7 @@ cfg7="$TMP_ROOT/openclaw-2026.7.json"
 cat > "$cfg7" <<'JSON'
 {
   "meta": { "lastTouchedAt": "2026-09-30T11:59:02.091Z", "lastTouchedVersion": "2026.7.35" },
+  "models": { "providers": { "llamacpp": { "models": [ { "id": "stale", "contextTokens": 116072 } ] } } },
   "agents": { "defaults": {
     "compaction": { "mode": "default", "reserveTokensFloor": 35000 },
     "models": { "llamacpp/stale-model": {} },
@@ -530,6 +535,7 @@ patch_openclaw_config "$cfg7" "$GLIMMER" 131072 >/dev/null 2>&1
 retired=$(jq -c '[.agents.defaults.compaction.reserveTokensFloor,
                   .gateway.controlUi.allowInsecureAuth, .gateway.auth.token,
                   .tools.media.audio.models, .meta.lastTouchedAt,
+                  .models.providers.llamacpp.models[0].contextTokens,
                   .agents.defaults.memorySearch, .agents.defaults.models]
                  | map(select(. != null))' "$cfg7")
 if [[ "$retired" == "[]" ]]; then
