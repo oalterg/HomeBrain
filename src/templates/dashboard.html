@@ -725,7 +725,7 @@
                 </h3>
 
                 {% if deployment_mode == 'local' %}
-                <div class="empty-state">
+                <div class="empty-state" id="tunnel-empty">
                     <span class="empty-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M9 17H7a5 5 0 0 1 0-10h2"/>
@@ -739,31 +739,51 @@
                     {% else %}
                     <p>This device is reachable on your home network only. A Pangolin tunnel is how you reach the apps from outside.</p>
                     {% endif %}
+                    <button class="btn-primary" onclick="showTunnelSetup(true)">Set up your own tunnel</button>
                 </div>
+                {% endif %}
 
-                {% elif tunnel.mode == 'pangolin' %}
-                <form onsubmit="updatePangolin(event)">
+                {% if deployment_mode == 'local' or tunnel.mode == 'pangolin' %}
+                <!-- On a LAN-only box this is how the owner adds their own
+                     tunnel after setup — the wizard was the only way before. -->
+                <form id="pangolin-form" onsubmit="updatePangolin(event)"
+                      {% if deployment_mode == 'local' %}data-enable="1" style="display:none;"{% endif %}>
+                    {% if deployment_mode == 'local' %}
+                    <p class="lede">Create a Newt site in your Pangolin dashboard and paste its values here.
+                        Nextcloud, Home Assistant and Vault get public addresses under your domain; the names on
+                        your home network keep working.</p>
+                    {% endif %}
                     <div class="fields fields-2">
-                        <div><label for="tun-ep">Endpoint</label><input type="text" id="tun-ep" value="{{ tunnel.current.PANGOLIN_ENDPOINT }}"></div>
-                        <div><label for="tun-id">Device ID</label><input type="text" id="tun-id" value="{{ tunnel.current.NEWT_ID }}"></div>
+                        <div><label for="tun-ep">Endpoint</label><input type="text" id="tun-ep" value="{{ tunnel.current.PANGOLIN_ENDPOINT }}" placeholder="https://pangolin.example.com" required></div>
+                        <div><label for="tun-id">Device ID</label><input type="text" id="tun-id" value="{{ tunnel.current.NEWT_ID }}" required></div>
                     </div>
                     <div class="mt">
                         <label for="tun-sec">Secret key</label>
-                        <input type="password" id="tun-sec" value="{{ tunnel.current.NEWT_SECRET }}">
+                        <input type="password" id="tun-sec" value="{{ tunnel.current.NEWT_SECRET }}" required>
                         <label for="tun-main-domain">Main domain</label>
-                        <input type="text" id="tun-main-domain" value="{{ main_domain }}" placeholder="myserver.homebrain.com">
+                        <input type="text" id="tun-main-domain" value="{{ main_domain or '' }}" placeholder="myserver.homebrain.com" required>
                     </div>
 
                     <div class="info-panel" style="margin-bottom:15px;">
                         <strong>Subdomain preview</strong>
-                        <div class="stat-item"><span>Manager</span> <span id="preview-mgr">{{ main_domain }}</span></div>
-                        <div class="stat-item"><span>Nextcloud</span> <span>nc.<span id="preview-nc">{{ main_domain }}</span></span></div>
-                        <div class="stat-item"><span>Home Assistant</span> <span>ha.<span id="preview-ha">{{ main_domain }}</span></span></div>
+                        <div class="stat-item"><span>Manager</span> <span id="preview-mgr">{{ main_domain or '…' }}</span></div>
+                        <div class="stat-item"><span>Nextcloud</span> <span>nc.<span id="preview-nc">{{ main_domain or '…' }}</span></span></div>
+                        <div class="stat-item"><span>Home Assistant</span> <span>ha.<span id="preview-ha">{{ main_domain or '…' }}</span></span></div>
+                        <div class="stat-item"><span>Vault</span> <span>vault.<span id="preview-vault">{{ main_domain or '…' }}</span></span></div>
                     </div>
 
+                    {% if deployment_mode == 'local' %}
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary">Turn on tunnel</button>
+                        <button type="button" onclick="showTunnelSetup(false)">Cancel</button>
+                    </div>
+                    {% else %}
                     <button type="submit" class="btn-primary">Update connection settings</button>
+                    {% endif %}
                 </form>
+                {% endif %}
 
+                {% if deployment_mode != 'local' and tunnel.mode == 'pangolin' %}
                 <hr>
 
                 <label>Switch provider</label>
@@ -792,11 +812,16 @@
 
                 {% if tunnel.is_custom_pangolin %}
                 <div class="inline-row mt">
+                    {% if tunnel.factory.NEWT_ID %}
                     <button class="btn-danger" onclick="revertPangolin()">Reset to factory defaults</button>
+                    {% else %}
+                    <!-- Shipped without a tunnel: the factory default is none. -->
+                    <button class="btn-danger" onclick="revertPangolin(true)">Turn off tunnel</button>
+                    {% endif %}
                 </div>
                 {% endif %}
 
-                {% else %}
+                {% elif deployment_mode != 'local' %}
                 <div class="stat-item">
                     <span>Nextcloud</span>
                     {% if tunnel.current.CF_TOKEN_NC %}<span class="status-badge status-running">Configured</span>

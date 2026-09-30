@@ -98,11 +98,8 @@ def test_tunnel_update_with_a_pasted_url_still_derives_clean_hostnames():
             "main_domain": f"https://{HOST}/",
         })
         assert r.status_code == 200, r.get_data(as_text=True)
-        # /api/tunnel derives NC/HA (vault keys are deploy-owned on this path)
-        for key in ("PANGOLIN_DOMAIN", "MANAGER_DOMAIN",
-                    "NEXTCLOUD_TRUSTED_DOMAINS", "HA_TRUSTED_DOMAINS"):
-            assert h.written(key) == DERIVED[key], \
-                f"{key} = {h.written(key)!r}, wanted {DERIVED[key]!r}"
+        # Nothing on the redeploy path derives the vault keys, so this does.
+        _assert_clean_writes(h)
     finally:
         h.close()
 
