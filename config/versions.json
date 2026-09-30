@@ -1,9 +1,9 @@
 {
   "llama_cpp": {
-    "tag": "b10361",
+    "tag": "b11292",
     "assets": {
-      "x86_64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b10361/llama-b10361-bin-ubuntu-vulkan-x64.tar.gz",
-      "aarch64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b10361/llama-b10361-bin-ubuntu-vulkan-arm64.tar.gz"
+      "x86_64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b11292/llama-b11292-bin-ubuntu-vulkan-x64.tar.gz",
+      "aarch64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b11292/llama-b11292-bin-ubuntu-vulkan-arm64.tar.gz"
     },
     "source_build": {
       "aarch64-cuda": {
