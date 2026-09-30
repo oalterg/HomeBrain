@@ -2446,10 +2446,17 @@ run_as_admin() {
     # Ensure runtime dir exists
     mkdir -p "/run/user/${hb_uid}" 2>/dev/null || true
     chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "/run/user/${hb_uid}" 2>/dev/null || true
-    sudo -u "${HOMEBRAIN_USER}" \
-        XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
-        "$@"
+    # From a directory the admin user can enter. Run by hand via sudo, the
+    # caller's cwd is often a home directory it cannot, and OpenClaw's node
+    # then fails to spawn systemctl (EACCES): `daemon install` and doctor's
+    # gateway ownership check both break.
+    (
+        cd / || exit
+        sudo -u "${HOMEBRAIN_USER}" \
+            XDG_RUNTIME_DIR="/run/user/${hb_uid}" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${hb_uid}/bus" \
+            "$@"
+    )
 }
 
 # One-shot migration: HomeBrain is Telegram-only now. Earlier releases
