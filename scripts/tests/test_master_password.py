@@ -314,13 +314,17 @@ def test_launcher_hands_password_over_in_a_0600_file():
         def start(self):
             pass
 
-    saved_thread, saved_run, saved_status = (
-        hb.threading.Thread, hb.subprocess.run, hb.STATUS_FILE)
+    saved_thread, saved_run, saved_status, saved_unit = (
+        hb.threading.Thread, hb.subprocess.run, hb.STATUS_FILE,
+        hb.picture_unit_active)
     fd, status = tempfile.mkstemp(prefix="hb_rotate_status_")
     os.close(fd)
     hb.STATUS_FILE = status
     hb.threading.Thread = FakeThread
     hb.subprocess.run = lambda *a, **k: None
+    # task_running() asks systemctl about the media units, through the
+    # subprocess.run stubbed out above.
+    hb.picture_unit_active = lambda *a, **k: False
     try:
         hb._launch_master_rotation(NEW_PW)
         _label, cmd, _log = captured["args"]
@@ -333,6 +337,7 @@ def test_launcher_hands_password_over_in_a_0600_file():
     finally:
         hb.threading.Thread, hb.subprocess.run, hb.STATUS_FILE = (
             saved_thread, saved_run, saved_status)
+        hb.picture_unit_active = saved_unit
         for p in (status, status + ".lock"):
             try:
                 os.unlink(p)
