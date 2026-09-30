@@ -472,6 +472,7 @@ cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
 # Runtime profiles so a running proton-bridge is pulled and is not treated as
 # an orphan by `up --remove-orphans`.
 profiles=$(get_runtime_profiles)
+ensure_searxng_secret
 # Pull latest images defined in compose
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} pull || { log_error "Docker pull failed"; exit 1; }
 # Restart containers (recreates them if image changed or compose file changed)

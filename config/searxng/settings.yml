@@ -1,0 +1,26 @@
+# Loopback-only instance for OpenClaw's web_search. Everything not set here
+# comes from SearXNG's defaults.
+use_default_settings:
+  engines:
+    remove:
+      # Shows a reCAPTCHA to scrapers first and suspends for 7 days.
+      - google
+engines:
+  # Off by default. With google gone and DuckDuckGo prone to CAPTCHAs, these
+  # keep more than one web index answering. Qwant was tried and CAPTCHAs on
+  # every query from a home IP.
+  - name: bing
+    disabled: false
+  - name: yahoo
+    disabled: false
+server:
+  # The limiter protects public instances from bots. Only the agent calls
+  # this one, over loopback.
+  limiter: false
+  image_proxy: false
+  public_instance: false
+search:
+  # OpenClaw uses the JSON API.
+  formats:
+    - html
+    - json

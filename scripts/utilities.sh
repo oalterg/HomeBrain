@@ -18,7 +18,8 @@ load_versions() {
     LLAMA_TAG=$(jq -r '.llama_cpp.tag' "$versions_file")
     WHISPER_GIT_REF=$(jq -r '.whisper_cpp.git_ref // "master"' "$versions_file")
     OPENCLAW_VERSION=$(jq -r '.openclaw.version' "$versions_file")
-    export LLAMA_TAG WHISPER_GIT_REF OPENCLAW_VERSION
+    SEARXNG_PLUGIN_VERSION=$(jq -r '.openclaw.searxng_plugin // empty' "$versions_file")
+    export LLAMA_TAG WHISPER_GIT_REF OPENCLAW_VERSION SEARXNG_PLUGIN_VERSION
 }
 
 # How llama.cpp is obtained on this platform. Echoes
@@ -1808,6 +1809,13 @@ patch_openclaw_config() {
         jq_token_patch='| .gateway.auth.token = $gw_token'
     fi
 
+    # web_search goes to the box's SearXNG container. Name the provider only
+    # once its plugin is installed.
+    local jq_search_patch=""
+    if [[ -n "$(searxng_plugin_version)" ]]; then
+        jq_search_patch='| .tools.web.search.provider = "searxng" | .plugins.entries.searxng.config.webSearch.baseUrl = "http://127.0.0.1:8888"'
+    fi
+
     # Resolve the browser rather than hardcoding Chrome's path: on architectures
     # Google does not build Chrome for, this is chromium. Empty means no browser
     # is installed, in which case the key is left alone rather than pointed at a
@@ -2284,7 +2292,7 @@ patch_openclaw_config() {
         # sweep. Off until we measure MEMORY.md growth; plugin stays loaded
         # so memory_search still works. config is a free-form record.
         .plugins.entries["memory-core"].config.dreaming.enabled = false
-        '"$jq_token_patch$jq_browser_patch"'
+        '"$jq_token_patch$jq_browser_patch$jq_search_patch"'
     ' "$config_file" > "${config_file}.tmp" && mv "${config_file}.tmp" "$config_file"
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
@@ -2443,6 +2451,30 @@ remove_whatsapp_plugins() {
     done
 }
 
+# OpenClaw's SearXNG web_search provider is a separate npm plugin, pinned to
+# the OpenClaw release it was built against. `plugins install` over an
+# existing copy refuses and changes nothing, so a pin move needs --force.
+# `plugins inspect` names the copy OpenClaw actually loads; --force leaves
+# older generations on disk.
+searxng_plugin_version() {
+    command -v openclaw >/dev/null 2>&1 || return 0
+    run_as_admin openclaw plugins inspect searxng --json 2>/dev/null \
+        | jq -r '.install.version // empty' 2>/dev/null || true
+}
+
+install_searxng_plugin() {
+    command -v openclaw >/dev/null 2>&1 || return 0
+    local want="${SEARXNG_PLUGIN_VERSION:-}"
+    [[ -n "$want" ]] || return 0
+    [[ "$(searxng_plugin_version)" == "$want" ]] && return 0
+    run_as_admin openclaw plugins install "@openclaw/searxng-plugin@${want}" --force >/dev/null 2>&1 || true
+    if [[ "$(searxng_plugin_version)" == "$want" ]]; then
+        log_info "Installed OpenClaw SearXNG plugin ${want}."
+    else
+        log_warn "OpenClaw SearXNG plugin ${want} did not install; web_search stays unavailable."
+    fi
+}
+
 setup_openclaw() {
     log_info "=== Setting up OpenClaw AI Assistant ==="
     load_env
@@ -2569,6 +2601,7 @@ setup_openclaw() {
         cp "$config_src" "$config_dest"
         log_info "Seeded openclaw.json from template (first install)."
     fi
+    install_searxng_plugin
     local OC_CTX_SIZE
     OC_CTX_SIZE=$(resolve_llama_ctx_size)
     patch_openclaw_config "$config_dest" "$model_id" "${OC_CTX_SIZE:-}"
@@ -3393,6 +3426,8 @@ case "${1:-}" in
         fi
         cp "$CFG" "${CFG}.preupdate"
         remove_whatsapp_plugins
+        load_versions
+        install_searxng_plugin
         # The drop-in carries settings with no openclaw.json path. Unlike the
         # config — which OpenClaw hot-reloads, `[reload] config hot reload
         # applied` — a systemd Environment= change needs daemon-reload plus a

@@ -119,6 +119,8 @@ jobs:
         run: bash scripts/tests/test_load_env.sh
       - name: openclaw compaction budget (jq program + reserve ladder)
         run: bash scripts/tests/test_openclaw_compaction.sh
+      - name: SearXNG web search (plugin pin, secret, settings)
+        run: bash scripts/tests/test_searxng.sh
       - name: GPU recovery and SYCL/whisper runtime refresh
         run: |
           bash scripts/tests/test_recover_gpu.sh

@@ -1025,6 +1025,17 @@ stop_tunnel_services() {
         stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
 }
 
+# SearXNG refuses to start with its default secret. Generate one per box.
+# Exported as well: load_env already exported the old empty value, and
+# Compose prefers the shell environment over --env-file.
+ensure_searxng_secret() {
+    [[ -n "${SEARXNG_SECRET:-}" ]] && return 0
+    SEARXNG_SECRET="$(openssl rand -hex 32)"
+    update_env_var "SEARXNG_SECRET" "$SEARXNG_SECRET"
+    export SEARXNG_SECRET
+    log_info "Generated SEARXNG_SECRET."
+}
+
 # --- Tunnel Profiles Helper ---
 get_tunnel_profiles() {
     local profiles=""

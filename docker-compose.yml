@@ -159,6 +159,32 @@ services:
       # that word lands in the first-boot log the owner is watching.
       start_period: 60s
 
+  searxng:
+    # Web search for the agent. OpenClaw's web_search tool queries it over
+    # loopback; it fans each query out to public engines from this box's IP.
+    # Not profile-gated: deploy, restore and tunnel redeploys run
+    # `up --remove-orphans` with tunnel profiles only, which would stop it.
+    # Idle cost is about 120 MiB.
+    image: searxng/searxng:2026.9.29-4e2c1ea7f
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      # The image refuses its default key. Generated per box before `up`.
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
   proton-bridge:
     # Profile-gated: only starts when the user has added a Proton account in
     # the dashboard (Connections → Email). Bridge exposes IMAP on :12143
