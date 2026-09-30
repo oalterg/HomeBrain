@@ -462,6 +462,13 @@ if [[ "$ocl_after_setvars" -eq 1 ]]; then
 else
     bad "sycl launcher missing setvars, OpenCL ICD, or exec: $(cat "$launcher" 2>/dev/null)"
 fi
+# Without these the first job after a few idle minutes crashed the GuC and
+# wedged the B60 (docs/BENCHMARKS.md, 2026-09-30).
+if grep -qx 'export UR_L0_USE_COPY_ENGINE=0' "$launcher" && grep -qx 'export UR_L0_V2_FORCE_DISABLE_COPY_OFFLOAD=1' "$launcher"; then
+    ok "sycl launcher keeps Level Zero copies on the compute queue"
+else
+    bad "sycl launcher does not route copies to the compute queue: $(cat "$launcher" 2>/dev/null)"
+fi
 
 echo
 printf 'passed %d, failed %d\n' "$pass" "$fail"
