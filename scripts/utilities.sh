@@ -2514,7 +2514,11 @@ install_searxng_plugin() {
     local want="${SEARXNG_PLUGIN_VERSION:-}"
     [[ -n "$want" ]] || return 0
     [[ "$(searxng_plugin_version)" == "$want" ]] && return 0
-    run_as_admin openclaw plugins install "@openclaw/searxng-plugin@${want}" --force >/dev/null 2>&1 || true
+    # 2026.8 asks consent for a plugin's declared capabilities, and without a
+    # terminal the install fails. This one declares a web-search provider and
+    # nothing else.
+    run_as_admin openclaw plugins install "@openclaw/searxng-plugin@${want}" \
+        --force --accept-capabilities >/dev/null 2>&1 || true
     if [[ "$(searxng_plugin_version)" == "$want" ]]; then
         log_info "Installed OpenClaw SearXNG plugin ${want}."
     else
