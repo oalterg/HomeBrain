@@ -252,6 +252,9 @@ def test_reboot_failure_publishes_error(monkeypatch):
     monkeypatch.setattr(
         hb.subprocess, "run",
         lambda *a, **k: type("R", (), {"returncode": 1})())
+    # task_running() asks systemctl about the media units, through the
+    # subprocess.run stubbed out above.
+    monkeypatch.setattr(hb, "picture_unit_active", lambda *a, **k: False)
     with _client() as client:
         r = client.post("/api/system/reboot")
         assert r.status_code == 200

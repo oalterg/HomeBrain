@@ -1,0 +1,12 @@
+[Unit]
+Description=Check once a minute whether llama-server needs a GPU recovery
+
+[Timer]
+OnBootSec=3min
+# The service is oneshot, so it never enters "active" and OnUnitActiveSec
+# has no base: the timer fired once and then stayed dead. Count from when
+# the check finished instead.
+OnUnitInactiveSec=1min
+
+[Install]
+WantedBy=timers.target

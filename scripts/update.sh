@@ -270,6 +270,9 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
             || [[ -n "$llama_src" && "$llama_src" != "$llama_have" ]]; }; then
             log_info "llama.cpp: ${llama_have:-${old_llama_tag:-unset}} → ${llama_want}. Updating binary..."
             bash "$INSTALL_DIR/scripts/utilities.sh" update_llama || log_warn "llama.cpp update failed — check logs."
+        elif [[ "${HB_GPU_BACKEND:-}" == "sycl" ]]; then
+            bash "$INSTALL_DIR/scripts/utilities.sh" refresh_llama_runtime \
+                || log_warn "SYCL runtime refresh failed — check logs."
         fi
         # A missing binary is a first install, owned by start_ai_auto_setup
         # below. This branch is an in-place upgrade of a stack that is already
@@ -309,6 +312,8 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
     fi
 fi
 
+bash "$INSTALL_DIR/scripts/utilities.sh" refresh_whisper_runtime \
+    || log_warn "Whisper CPU isolation refresh failed — check logs."
 # Boxes provisioned before auto-setup, and a failed first attempt. No-op when
 # the stack is installed, opted out, or this GPU is not first-class. Detached,
 # so the update does not wait on the download.
@@ -326,6 +331,7 @@ for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.
             homebrain-offsite.service homebrain-offsite.timer \
             homebrain-ha-watch.service homebrain-email-watch.service \
             homebrain-media.service homebrain-picture.service homebrain-video.service \
+            homebrain-gpu-recover.service homebrain-gpu-recover.timer \
             homebrain-mdns.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
@@ -355,6 +361,14 @@ fi
 # enable it (idempotent). smartmontools is a provision-time dep; install it
 # here once so pre-existing boxes get SMART monitoring too (best-effort).
 systemctl enable --now homebrain-health.timer 2>/dev/null || true
+chmod +x "$INSTALL_DIR/scripts/recover_gpu.sh" 2>/dev/null || true
+# HomeCloud has no llama-server unit. Enabling the timer there logs a skipped
+# condition every minute and never has anything to recover.
+if [[ -f /etc/systemd/system/llama-server.service ]]; then
+    command -v fuser >/dev/null 2>&1 || apt-get install -y -qq psmisc \
+        || log_warn "GPU recovery needs psmisc (fuser)."
+    systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null || true
+fi
 # Same for the off-site resume timer on boxes provisioned before it existed.
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.

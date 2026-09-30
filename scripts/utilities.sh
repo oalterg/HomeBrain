@@ -970,7 +970,8 @@ _install_sycl_runtime() {
 
     local ze="${prefix}/usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1"
     local igc="${prefix}/usr/local/lib/libigc.so.2"
-    if [[ ! -e "$ze" || ! -e "$igc" ]]; then
+    local ocl="${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
+    if [[ ! -e "$ze" || ! -e "$igc" || ! -e "$ocl" ]]; then
         log_info "Unpacking Intel Level Zero into ${prefix}..."
         local tmp url base
         tmp=$(mktemp -d)
@@ -982,7 +983,7 @@ _install_sycl_runtime() {
         done < <(jq -r "${spec}.neo_debs[]" "$versions_file")
         rm -rf "$tmp"
     fi
-    [[ -e "$ze" && -e "$igc" ]] || die "Level Zero unpack did not produce ${ze} and ${igc}"
+    [[ -e "$ze" && -e "$igc" && -e "$ocl" ]] || die "Intel runtime unpack did not produce ${ze}, ${igc} and ${ocl}"
 
     local libs workdir key val
     libs=$(jq -r "${spec}.runtime_libs | join(\":\")" "$versions_file")
@@ -991,6 +992,9 @@ _install_sycl_runtime() {
     {
         echo '[Service]'
         echo "Environment=\"LD_LIBRARY_PATH=${libs}:${workdir}\""
+        # oneDNN's SYCL kernels look up the GPU through OpenCL. The ICD loader
+        # otherwise binds the CPU runtime and SDPA falls back.
+        echo "Environment=\"OCL_ICD_FILENAMES=${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so\""
         while IFS=$'\t' read -r key val; do
             [[ -n "$key" ]] || continue
             echo "Environment=\"${key}=${val}\""
@@ -1004,7 +1008,9 @@ _install_sycl_runtime() {
 # oneAPI's setvars.sh is what makes Level Zero visible. A unit that only sets
 # LD_LIBRARY_PATH and ONEAPI_DEVICE_SELECTOR still exits with "No device of
 # requested type available" on the B60. The launcher sources setvars, then
-# puts the side-by-side Level Zero ahead of Ubuntu's libze.
+# puts the side-by-side Level Zero ahead of Ubuntu's libze. OCL_ICD_FILENAMES
+# is set after setvars so oneDNN sees the Arc OpenCL driver, not the CPU ICD
+# setvars selects when the variable is empty.
 _write_sycl_launcher() {
     local bin_path="$1"
     local work_dir launcher versions_file spec setvars prefix key val
@@ -1024,6 +1030,8 @@ _write_sycl_launcher() {
             [[ -n "$key" ]] || continue
             printf 'export %s=%q\n' "$key" "$val"
         done < <(jq -r "${spec}.env | to_entries[] | [.key, .value] | @tsv" "$versions_file")
+        printf 'export OCL_ICD_FILENAMES=%q\n' \
+            "${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
         printf 'exec %q "$@"\n' "$bin_path"
     } > "$launcher"
     chmod 755 "$launcher"
@@ -1102,6 +1110,16 @@ download_model() {
         die "Downloaded model is too small (${size} bytes). File may be truncated or URL may be wrong."
     fi
     log_info "Model downloaded: $(( size / 1073741824 )) GB"
+}
+
+# The timer unit is installed by provision/update. Enable it once llama exists
+# so a HomeCloud box, which never has that unit, does not grow a no-op timer.
+enable_gpu_recover_timer() {
+    [[ -f /etc/systemd/system/homebrain-gpu-recover.timer ]] || return 0
+    command -v fuser >/dev/null 2>&1 || apt-get install -y -qq psmisc \
+        || log_warn "GPU recovery needs psmisc (fuser)."
+    systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null || \
+        log_warn "Failed to enable GPU recovery timer."
 }
 
 # Main setup orchestrator
@@ -1273,6 +1291,7 @@ setup_llama_server() {
         systemctl daemon-reload
         systemctl enable llama-server
         systemctl restart llama-server
+        enable_gpu_recover_timer
         wait_for_llama_health "$HEALTH_URL" 600 || return 1
         verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
         return 0
@@ -1299,6 +1318,7 @@ setup_llama_server() {
     generate_llama_service "$LLAMA_BIN" "$MODEL_PATH" "$CTX_SIZE" "$EXTRA_FLAGS"
     systemctl daemon-reload
     systemctl enable --now llama-server
+    enable_gpu_recover_timer
 
     wait_for_llama_health "$HEALTH_URL" 600 || return 1
     verify_llama_allocation "$HEALTH_URL" "$MIN_HEALTHY_VRAM"
@@ -1483,7 +1503,7 @@ User=${HOMEBRAIN_USER}
 Group=${HOMEBRAIN_USER}
 WorkingDirectory=$(dirname "$bin_path")
 Environment="LD_LIBRARY_PATH=$(dirname "$bin_path")"
-Environment="GGML_VK_DEVICE=0"
+Environment="GGML_DISABLE_VULKAN=1"
 ExecStart=${bin_path} \\
   --model ${model_path} \\
   --host 127.0.0.1 \\
@@ -1532,6 +1552,26 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
     chmod 644 /etc/systemd/system/whisper-proxy.service
+}
+
+# --no-gpu disables inference offload but still enumerates Vulkan devices.
+# Apply the backend opt-out to existing installations without rebuilding or
+# changing their model, port, or other service settings.
+refresh_whisper_runtime() {
+    [[ -f /etc/systemd/system/whisper-server.service ]] || return 0
+    local dir=/etc/systemd/system/whisper-server.service.d
+    local content=$'[Service]\nEnvironment="GGML_DISABLE_VULKAN=1"'
+    [[ "$(cat "$dir/10-cpu-only.conf" 2>/dev/null || true)" != "$content" ]] || return 0
+    mkdir -p "$dir"
+    printf '%s\n' "$content" > "$dir/10-cpu-only.conf"
+    systemctl daemon-reload
+    local server=0 proxy=0
+    systemctl is-active --quiet whisper-server && server=1
+    systemctl is-active --quiet whisper-proxy && proxy=1
+    if [[ "$server" == 1 ]]; then
+        systemctl restart whisper-server
+        [[ "$proxy" == 0 ]] || systemctl start whisper-proxy
+    fi
 }
 
 setup_whisper_server() {
@@ -1855,8 +1895,28 @@ patch_openclaw_config() {
         *) think_level="" ;;
     esac
 
+    # OpenClaw attaches image bytes, and skips its separate caption call, only
+    # when the catalog entry lists image input. Without that it posts the photo
+    # to the default OpenAI vision model, which on this box is the Whisper
+    # endpoint, and the chat model is told it cannot see the picture. A
+    # projector on this platform's profile is what makes vision real.
+    local vision="false"
+    if [[ -f "$models_file" ]] && command -v jq >/dev/null 2>&1; then
+        # Same condition setup_llama_server uses to pass --mmproj: a name
+        # and a URL. A name alone attaches nothing.
+        local mmproj=""
+        mmproj=$(jq -r --arg id "$model_id" --arg tag "${HB_PLATFORM_TAG:-}" \
+            --arg dtag "${HB_PLATFORM_TAG:-}-${HB_GPU_DRIVER:-none}" \
+            '(.models[] | select(.id == $id)
+              | (.profiles[$dtag] // .profiles[$tag] // {}) as $p
+              | select(($p.mmproj_filename // .mmproj_filename) and ($p.mmproj_url // .mmproj_url))
+              | "yes") // empty' \
+            "$models_file" 2>/dev/null || echo "")
+        [[ -n "$mmproj" ]] && vision="true"
+    fi
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
-        --argjson max_tokens "$max_tokens" --arg think "$think_level" \
+        --argjson max_tokens "$max_tokens" --arg think "$think_level" --arg vision "$vision" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -1930,6 +1990,7 @@ patch_openclaw_config() {
         # thinking-capable so the Control UI and /reasoning actually render it.
         .models.providers.llamacpp.models[0].reasoning = true |
         .models.providers.llamacpp.models[0].compat.thinkingFormat = "deepseek" |
+        .models.providers.llamacpp.models[0].input = (if $vision == "true" then ["text", "image"] else ["text"] end) |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
         # timeout (schema minimum 1) — not the keep-model-warm knob
@@ -3324,6 +3385,30 @@ case "${1:-}" in
         install_llamacpp "true"
         setup_llama_server || { log_error "Failed to restart after update."; exit 1; }
         log_info "llama-server updated and restarted."
+        ;;
+    refresh_whisper_runtime)
+        refresh_whisper_runtime
+        ;;
+    refresh_llama_runtime)
+        # Env-only SYCL changes (the OpenCL ICD path) must land without a
+        # llama.cpp rebuild. No-op until the binary exists, so a first install
+        # stays with start_ai_auto_setup.
+        [[ "${HB_GPU_BACKEND:-}" == "sycl" ]] || exit 0
+        bin_path=$(get_llama_bin_path)
+        [[ -x "$bin_path" ]] || exit 0
+        launcher="$(dirname "$bin_path")/llama-sycl-server.sh"
+        dropin="/etc/systemd/system/llama-server.service.d/10-sycl.conf"
+        before=$(cat "$launcher" "$dropin" 2>/dev/null || true)
+        _install_sycl_runtime
+        _write_sycl_launcher "$bin_path" >/dev/null
+        after=$(cat "$launcher" "$dropin" 2>/dev/null || true)
+        if [[ "$before" == "$after" ]]; then
+            exit 0
+        fi
+        if systemctl is-active --quiet llama-server 2>/dev/null; then
+            log_info "SYCL runtime env changed; restarting llama-server."
+            systemctl restart llama-server
+        fi
         ;;
     refresh_openclaw)
         # Re-register the bundled HomeBrain OpenClaw plugins and re-patch
