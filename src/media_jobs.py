@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 
+import activation
 import picture
 
 ACTIVE = ("accepted", "starting", "running")
@@ -182,11 +183,7 @@ def telegram_targets():
         if account.get("enabled") is False:
             return []
         allow = list(account.get("allowFrom") or [])
-        try:
-            with open(os.path.join(root, "credentials", "telegram-default-allowFrom.json")) as f:
-                allow += json.load(f).get("allowFrom", [])
-        except (OSError, ValueError):
-            pass
+        allow += activation.telegram_paired_ids(root)
         return sorted({str(v) for v in allow if re.fullmatch(r"[1-9][0-9]{0,19}", str(v))})
     except (OSError, ValueError, TypeError):
         return []

@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from activation import telegram_paired_ids  # noqa: E402
 from mcp_common import decrypt_secret  # noqa: E402
 
 INSTALL_DIR = "/opt/homebrain"
@@ -445,15 +447,9 @@ def resolve_push_target(openclaw_dir: str | None = None) -> tuple[str, str] | No
     tg = channels.get("telegram", {})
     if not tg.get("enabled"):
         return None
-    allow_path = os.path.join(root, "credentials",
-                              "telegram-default-allowFrom.json")
-    try:
-        with open(allow_path) as f:
-            allow = json.load(f).get("allowFrom", [])
-        if allow:
-            return ("telegram", str(allow[0]))
-    except (OSError, json.JSONDecodeError):
-        pass
+    allow = telegram_paired_ids(root)
+    if allow:
+        return ("telegram", allow[0])
     if tg.get("allowFrom"):
         return ("telegram", str(tg["allowFrom"][0]))
     return None

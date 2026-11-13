@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -199,6 +200,63 @@ def test_channel_status_reads_openclaw_pairing_store(monkeypatch, tmp_path):
     assert info["ready"] is True
     monkeypatch.setattr(activation, "OPENCLAW_CONFIG", str(cfg))
     assert activation.telegram_is_paired() is True
+
+
+def _pairing_db(root, rows=None):
+    """OpenClaw 2026.8's state database. Schema copied from a live box; the
+    upgrade moves pairings here and deletes the credentials/ JSON."""
+    (root / "state").mkdir(parents=True)
+    con = sqlite3.connect(root / "state" / "openclaw.sqlite")
+    con.execute("PRAGMA journal_mode=WAL")
+    if rows is not None:
+        con.execute("""CREATE TABLE channel_pairing_allow_entries (
+            channel_key TEXT NOT NULL, account_id TEXT NOT NULL, entry TEXT NOT NULL,
+            sort_order INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY (channel_key, account_id, entry)) STRICT""")
+        con.executemany("INSERT INTO channel_pairing_allow_entries VALUES (?, ?, ?, ?, 0)", rows)
+    con.commit()
+    con.close()
+
+
+def test_every_reader_finds_a_pairing_in_the_sqlite_store(monkeypatch, tmp_path):
+    import email_watch
+    import ha_watch
+    import healthcheck
+    import media_jobs
+
+    root = tmp_path / ".openclaw"
+    root.mkdir()
+    cfg = root / "openclaw.json"
+    cfg.write_text(json.dumps({
+        "channels": {"telegram": {"enabled": True, "botToken": "test", "dmPolicy": "pairing"}},
+        "plugins": {"entries": {"telegram": {"enabled": True}}},
+    }))
+    _pairing_db(root, [
+        ("telegram", "default", "8842631355", 0),
+        ("telegram", "default", "1111", 1),
+        ("telegram", "work", "2222", 0),
+        ("whatsapp", "default", "3333", 0),
+    ])
+
+    assert activation.telegram_paired_ids(str(root)) == ["8842631355", "1111"]
+    monkeypatch.setattr(activation, "OPENCLAW_CONFIG", str(cfg))
+    assert activation.telegram_is_paired() is True
+    monkeypatch.setattr(integrations, "_OPENCLAW_CONFIG_PATH", str(cfg))
+    assert integrations._channel_status("telegram")["paired"] is True
+    monkeypatch.setenv("HOMEBRAIN_HOME", str(tmp_path))
+    assert media_jobs.telegram_targets() == ["1111", "8842631355"]
+    assert ha_watch.resolve_push_target(str(root)) == ("telegram", "8842631355")
+    assert email_watch.resolve_push_target(str(root)) == ("telegram", "8842631355")
+    monkeypatch.setattr(healthcheck, "OPENCLAW_DIR", str(root))
+    assert healthcheck.resolve_push_target() == ("telegram", "8842631355")
+
+
+def test_a_state_db_without_the_pairing_table_falls_back_to_the_json(tmp_path):
+    """Before 2026.8 the state database existed but pairings were still JSON."""
+    _pairing_db(tmp_path)
+    (tmp_path / "credentials").mkdir()
+    (tmp_path / "credentials" / "telegram-default-allowFrom.json").write_text('{"allowFrom":["99"]}')
+    assert activation.telegram_paired_ids(str(tmp_path)) == ["99"]
 
 
 def test_telegram_ui_explains_the_two_credentials():

@@ -551,8 +551,8 @@ def check_reboot():
 
 def resolve_push_target():
     """(channel, target) for the owner. Telegram only: pairing lands in
-    credentials/telegram-default-allowFrom.json; a hand-set allowFrom in
-    openclaw.json is the fallback."""
+    OpenClaw's pairing store; a hand-set allowFrom in openclaw.json is the
+    fallback."""
     try:
         with open(f"{OPENCLAW_DIR}/openclaw.json") as f:
             channels = json.load(f).get("channels", {})
@@ -560,14 +560,11 @@ def resolve_push_target():
         return None
     tg = channels.get("telegram", {})
     if tg.get("enabled"):
-        for source in (f"{OPENCLAW_DIR}/credentials/telegram-default-allowFrom.json",):
-            try:
-                with open(source) as f:
-                    allow = json.load(f).get("allowFrom", [])
-                if allow:
-                    return ("telegram", str(allow[0]))
-            except Exception:
-                pass
+        sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+        from activation import telegram_paired_ids
+        allow = telegram_paired_ids(OPENCLAW_DIR)
+        if allow:
+            return ("telegram", allow[0])
         if tg.get("allowFrom"):
             return ("telegram", str(tg["allowFrom"][0]))
     return None
