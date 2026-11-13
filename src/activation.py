@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 
 HOMEBRAIN_HOME = os.environ.get("HOMEBRAIN_HOME", "/home/homebrain")
 OPENCLAW_CONFIG = os.path.join(HOMEBRAIN_HOME, ".openclaw", "openclaw.json")
@@ -105,8 +106,37 @@ def read_openclaw_config(path=None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def telegram_paired_ids(openclaw_dir: str) -> list[str]:
+    """Chat ids approved through OpenClaw's pairing flow, default account.
+
+    OpenClaw 2026.8 moved them from credentials/telegram-default-allowFrom.json
+    into state/openclaw.sqlite and deleted the JSON; read both. Opening the
+    gateway's database as root is safe: SQLite gives any -wal/-shm it creates
+    to the database's owner.
+    """
+    ids = []
+    db = os.path.join(openclaw_dir, "state", "openclaw.sqlite")
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            ids += [row[0] for row in con.execute(
+                "SELECT entry FROM channel_pairing_allow_entries"
+                " WHERE channel_key = 'telegram' AND account_id = 'default'"
+                " ORDER BY sort_order")]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass
+    try:
+        with open(os.path.join(openclaw_dir, "credentials", "telegram-default-allowFrom.json")) as f:
+            ids += [str(v) for v in json.load(f).get("allowFrom", [])]
+    except (OSError, ValueError):
+        pass
+    return ids
+
+
 def telegram_is_paired(config: dict | None = None, config_path: str | None = None) -> bool:
-    """Pairing lives in OpenClaw's credential store, or a configured allowlist."""
+    """Pairing lives in OpenClaw's pairing store, or a configured allowlist."""
     if config is None:
         config_path = config_path or OPENCLAW_CONFIG
         config = read_openclaw_config(config_path)
@@ -115,12 +145,7 @@ def telegram_is_paired(config: dict | None = None, config_path: str | None = Non
         return False
     allow = list(ch.get("allowFrom") or [])
     if config_path:
-        path = os.path.join(os.path.dirname(config_path), "credentials", "telegram-default-allowFrom.json")
-        try:
-            with open(path) as f:
-                allow += json.load(f).get("allowFrom", [])
-        except (OSError, ValueError):
-            pass
+        allow += telegram_paired_ids(os.path.dirname(config_path))
     return bool(allow)
 
 
