@@ -155,8 +155,8 @@
 
             <section class="section">
                 <h3>Personal AI Assistant</h3>
-                <p class="lede">A fully private assistant on your own hardware. Inference and chat never leave the
-                    device. Live status is on the Status tab.</p>
+                <p class="lede">A fully private assistant on your own hardware. Inference never leaves the
+                    device. Chat goes through the messenger you link below. Live status is on the Status tab.</p>
 
                 <!-- One row: the model picker lives in Models at the bottom of
                      the tab, so Picture and Video sit right under this. -->
@@ -330,7 +330,9 @@
 
             <section class="section" id="channels-card">
                 <h3>Messaging Channels</h3>
-                <p class="lede">How people reach your agent. Link a messenger so you can chat from your phone.</p>
+                <p class="lede">How people reach your agent. Link a messenger so you can chat from your phone.
+                    Telegram can read what you and the agent send through its bot — it is the one path on this
+                    box that a third party can read.</p>
                 <div id="channel-rows" class="row-list"></div>
                 <small id="channel-msg" class="hint" style="min-height:1em;"></small>
 
@@ -712,6 +714,22 @@
             </section>
             {% endif %}
 
+            <section class="section" id="mesh-card">
+                <h3><span>Remote access</span> <span id="mesh-chip"></span></h3>
+                <p class="lede">Reach this box away from home over a private network on your own Tailscale
+                    account. {{ platform.product_name }} runs no server for this. Traffic is encrypted between
+                    your devices and this box: Tailscale carries it and cannot read it.</p>
+                <div id="mesh-body"><span class="skeleton sk-wide"></span></div>
+                <div id="mesh-secrets" class="notice notice-warning mt" style="display:none;">
+                    <strong>Write these down now — they are shown only once.</strong>
+                    <p class="small">Either one turns the lock off again if this box is ever lost. Keep them with
+                        your recovery phrase. Without one, a replacement box cannot be let into your network.</p>
+                    <div class="mono small" id="mesh-secrets-list" style="overflow-wrap:anywhere;"></div>
+                </div>
+                <small id="mesh-msg" class="hint" style="min-height:1em;"></small>
+            </section>
+
+            {% if tunnel.mode != 'mesh' %}
             <section class="section">
                 <h3>
                     <span>Tunnel</span>
@@ -855,6 +873,7 @@
                 </div>
                 {% endif %}
             </section>
+            {% endif %}
 
             <!-- Moved here from Settings: both of these answer "how do devices
                  on my network reach this box?", which is what this tab is for. -->
