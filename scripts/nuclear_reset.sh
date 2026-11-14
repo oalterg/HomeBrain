@@ -126,6 +126,16 @@ if [[ -n "$leftover" ]]; then
     echo "$leftover" | xargs docker rm -f 2>/dev/null || true
 fi
 
+# The private network (src/mesh.py) is a host service, so nothing above
+# touches it. Left signed in, a wiped box would still publish whatever comes
+# up on its ports — to the owner's network, and to the internet where a public
+# address was on. Same exposure as a surviving newt; same answer.
+if command -v tailscale >/dev/null 2>&1; then
+    log "Signing out of the private network..."
+    tailscale serve reset 2>/dev/null || true
+    tailscale logout 2>/dev/null || true
+fi
+
 # --- 3. Wipe host user data (the nuclear part) -------------------------
 
 write_status "running" "Nuclear reset in progress — wiping user data..."

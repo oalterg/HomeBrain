@@ -4,9 +4,9 @@
 
 Nextcloud, Home Assistant, Vaultwarden, and a local AI agent are four products. HomeBrain is the appliance that makes them one: a single password, a backup that restores the whole box, updates that will not brick you, and — on a GPU — an agent that operates it so you never need a shell.
 
-No subscriptions. No cloud accounts. No one else's servers.
+No subscriptions. No HomeBrain account. No HomeBrain servers.
 
-A browser wizard configures it. Nothing leaves the box.
+A browser wizard configures it. Your files, vault and home stay on the box. The one exception is spelled out below: a Telegram chat passes through Telegram.
 
 <p align="center">
   <img src="res/screenshot.png" alt="The HomeBrain dashboard: service status, the local AI stack, vault state, a self-test, and system resources" width="860">
@@ -21,7 +21,7 @@ A GPU runs the agent. Without one, the same install is **HomeCloud**: files, hom
 ## Why this, not four apps
 
 - **One secret, one recovery** — dashboard, files, smart home, and backup encryption share a master password. People you add get one password of their own, for files and (if you tick them) vault and Home Assistant. A recovery phrase, shown once, resets the lot — including issued member vaults, unless they changed that password in the Bitwarden app.
-- **An agent that acts** — calendar, lights, files, email. Every token stays on your GPU.
+- **An agent that acts** — calendar, lights, files, email. Every token is generated on your GPU. Chat reaches you through Telegram, which can read it.
 - **Backup that restores the composition** — not four separate dumps. Scheduled, encrypted, off-site, one click from the dashboard.
 - **It runs itself** — pinned versions, downgrades blocked, a factory reset back to the wizard. Health alerts while the box is up.
 
@@ -31,9 +31,11 @@ A GPU runs the agent. Without one, the same install is **HomeCloud**: files, hom
 
 On the LAN, open `http://<server-ip>`. Nextcloud and Vault also speak HTTPS on local ports.
 
-With a GPU, Telegram is the daily interface: no VPN, no extra app. Pair it after setup. A public tunnel is optional, if you want the web UIs from outside.
+With a GPU, Telegram is the daily interface: no VPN, no extra app. Pair it after setup. Telegram's servers can read a bot chat. It is the one path on the box a third party can read, and it is optional.
 
-Without a GPU, a [Pangolin](docs/PANGOLIN.md) tunnel is how you reach the browser from outside.
+Away from home, the apps travel over a private network on your own Tailscale account: **Connectivity → Remote access**, sign in, done. HomeBrain runs no server for it. Encryption ends on your phone and on the box, so Tailscale carries the traffic and cannot read it. Nextcloud, Vault and Home Assistant can also be given a public address, so their phone apps need nothing extra installed; the dashboard never is. Design and limits: [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md).
+
+A tunnel you run yourself ([Pangolin](docs/PANGOLIN.md) or Cloudflare) still works. Either one decrypts your traffic on a machine that is not the box.
 
 <p align="center">
   <img src="res/tunnel.png" alt="Tunnel settings: endpoint, device ID and main domain, with a preview of the manager, Nextcloud and Home Assistant subdomains" width="860">
@@ -82,7 +84,8 @@ Nextcloud          Docker     Files, calendars, contacts
 Home Assistant     Docker     Smart-home automation
 Vaultwarden        Docker     Password manager (Bitwarden-compatible)
 MariaDB            Docker     Nextcloud + Vault database
-Pangolin Newt      Docker     Encrypted tunnel            optional
+Tailscale          systemd    Private network             optional
+Pangolin Newt      Docker     Self-run tunnel             optional
 llama-server       systemd    Local LLM inference         GPU only
 whisper-server     systemd    Speech-to-text              GPU only
 OpenClaw           systemd    AI agent on Telegram        GPU only
@@ -128,7 +131,8 @@ Tunnel credentials at provision time are stored on the box and selected in the w
 |-----|-------------|
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Inference throughput, quantization comparisons, tuning notes |
 | [DISASTER_RECOVERY.md](docs/DISASTER_RECOVERY.md) | Getting your data back onto new hardware after the box is gone |
-| [PANGOLIN.md](docs/PANGOLIN.md) | Optional browser tunnel (no GPU, or GPU-box web UIs from outside) |
+| [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md) | Reaching the box from outside with no HomeBrain server and nothing a third party can read |
+| [PANGOLIN.md](docs/PANGOLIN.md) | A tunnel you run yourself, as the alternative |
 | [ROADMAP.md](docs/ROADMAP.md) | Shipped features and what's next |
 | [PRODUCT_REVIEW_2026-08.md](docs/plans/PRODUCT_REVIEW_2026-08.md) | Why the glue is the product, and the findings we will act on |
 

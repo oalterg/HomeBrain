@@ -87,6 +87,15 @@ fi
 if grep -q '^MESH_DOMAIN=' "$REPO_ROOT/config/.env.template"; then ok ".env.template carries MESH_DOMAIN"
 else bad ".env.template is missing MESH_DOMAIN"; fi
 
+# A factory reset that leaves the box signed in keeps it published after the
+# password and data are gone — the newt defect PR #145 fixed, one layer down.
+nr="$REPO_ROOT/scripts/nuclear_reset.sh"
+if grep -q 'tailscale serve reset' "$nr" && grep -q 'tailscale logout' "$nr"; then
+    ok "factory reset unpublishes and signs out"
+else
+    bad "nuclear_reset.sh leaves the private network signed in"
+fi
+
 # The dashboard's private-network port is written in two languages. One owner
 # is src/mesh.py; utilities.sh must name the same port for the chat origin.
 py_port="$(sed -n 's/^DASHBOARD = (\([0-9]*\),.*/\1/p' "$REPO_ROOT/src/mesh.py")"

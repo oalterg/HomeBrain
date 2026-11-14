@@ -12,9 +12,10 @@ What these pin, in the order the feature can lie:
   * the lock never hands Tailscale a way to undo it;
   * turning it off returns the box to local, the same shape Pangolin leaves.
 
-The JSON shapes are the ones tailscale 1.104.7 prints (captured from a real
-daemon, signed out). The signed-in shapes follow its documented field names
-and are NOT yet confirmed on hardware — see TESTING.md.
+The signed-out JSON was captured from a real 1.104.7 daemon. The signed-in
+shapes (lock status, serve config, the "switched off" prompt) are read from
+that release's source, and are NOT yet confirmed on a signed-in box — see
+TESTING.md.
 
 Runnable two ways (needs Flask — install requirements.txt first):
     python3 scripts/tests/test_mesh.py
@@ -164,8 +165,8 @@ def test_an_unknown_backend_state_is_never_running():
 
 def test_running_status_strips_the_trailing_dot_and_lists_waiting_devices():
     f = Fake(lock={"Enabled": True, "NodeKeySigned": True, "PublicKey": TLPUB,
-                   "FilteredPeers": [{"Name": "phone.tail1234.ts.net.", "NodeKey": KEY},
-                                     {"Name": "junk", "NodeKey": "not-a-key"}]},
+                   "FilteredPeers": [{"DNSName": "phone.tail1234.ts.net.", "NodeKey": KEY},
+                                     {"DNSName": "junk", "NodeKey": "not-a-key"}]},
              serve=serve_config(public=True))
     try:
         st = mesh.status()
@@ -235,6 +236,17 @@ def test_a_refusal_carries_the_link_that_fixes_it():
         res = mesh.publish(True)
         assert res["enable_url"] == link
         assert "public address" in res["error"].lower()
+    finally:
+        f.close()
+
+
+def test_a_refusal_that_exits_zero_is_still_a_refusal():
+    """The CLI prints the link and exits 0 when it is told not to wait."""
+    link = "https://login.tailscale.com/f/serve?node=n1"
+    f = Fake(refuse={"serve": (0, f"\nServe is not enabled on your tailnet.\n\n         {link}\n\n")})
+    try:
+        res = mesh.publish(False)
+        assert res.get("enable_url") == link, res
     finally:
         f.close()
 

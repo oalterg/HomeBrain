@@ -151,6 +151,26 @@ An upload interrupted by a restart is picked up again within the hour, and
 after a reboot, by the off-site resume timer. Archives already at the remote are
 skipped, so only the one that was in flight repeats.
 
+## Remote access after a restore
+
+A backup carries the box's remote-access *settings*, not its membership of
+your private network. That membership is a key held by the dead box.
+
+After restoring onto new hardware, the dashboard's health banner says remote
+access is down. That is correct. Open **Connectivity → Remote access**,
+connect, and sign in with the same Tailscale account. The new box gets a new
+name (`homebrain-1`, unless you first remove the old one in your Tailscale
+admin console), and turning remote access on moves the apps to it. Phones
+paired to the old name need the new one.
+
+If you turned the lock on, the dead box was the device that approves new
+ones, so the replacement cannot be approved. Use one of the two disablement
+secrets you were shown when you turned the lock on: on any device still in
+your network, run `tailscale lock disable <secret>`, connect the new box,
+then turn the lock on again from its dashboard. Without a secret and without
+another approving device, the lock cannot be lifted and you need a new
+Tailscale network.
+
 ## Known limitation
 
 A full-system archive can be tens of gigabytes. The fetch refuses up front

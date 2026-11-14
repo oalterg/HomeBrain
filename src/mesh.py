@@ -37,7 +37,10 @@ APPS = {
 }
 DASHBOARD = (4443, "http://127.0.0.1:8000")
 
-_ENABLE_URL = re.compile(r"https://login\.tailscale\.com/f/\S+")
+# Printed when a feature is switched off for the owner's network. The CLI then
+# either waits or exits 0 (cmd/tailscale/cli enableFeatureInteractive), so the
+# link — not the exit code — is the signal.
+_ENABLE_URL = re.compile(r"https://login\.tailscale\.com/\S+")
 _SECRET = re.compile(r"disablement-secret:[0-9A-Fa-f]+")
 _NODEKEY = re.compile(r"^nodekey:[0-9a-f]{64}$")
 _TLPUB = re.compile(r"^tlpub:[0-9a-f]{64}$")
@@ -147,7 +150,7 @@ def status():
         # box is locked out and must be signed from a trusted device.
         "signed": bool(lock.get("NodeKeySigned")),
         "pending": [
-            {"name": (p.get("Name") or "").rstrip("."),
+            {"name": (p.get("DNSName") or "").rstrip("."),
              "nodekey": p.get("NodeKey") or ""}
             for p in (lock.get("FilteredPeers") or [])
             if _NODEKEY.match(p.get("NodeKey") or "")

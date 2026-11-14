@@ -1,9 +1,13 @@
 # Remote access — no HomeBrain server, nothing a third party can read
 
-**Status:** proposal (2026-11-13). Nothing built, nothing tested on a box.
-Tailscale facts in §3 were read from its documentation on 2026-11-13; every
-other claim about how it behaves with HomeBrain is untested.
-**Date:** 2026-11-13
+**Status:** in tree (2026-11-14), **not proven end to end.** The join, the
+dashboard card and the pinned install are walked on .69 up to the sign-in
+link. Everything after sign-in — publishing, the apps behind it, the public
+address, the lock — is unit-tested against a stand-in and checked against
+the pinned client's source, and has never run on a signed-in box. The list is
+in [`TESTING.md`](../TESTING.md#remote-access-private-network). §9 says what
+was built and where it differs from the proposal below.
+**Date:** 2026-11-13, built 2026-11-14
 **Essence:** The box joins a mesh VPN on the owner's own account. Private
 mesh carries the dashboard and box-to-box backup. A public address whose
 encryption ends on the box carries the three phone apps. No server in the
@@ -45,7 +49,7 @@ never what is said).
 | Tor onion services | No | No | Passes, but needs Orbot on every phone and is slow. Not a product. |
 | **Mesh VPN, private** | No | No, with Tailnet Lock on (§3) | **Passes.** |
 | **Mesh VPN public address (Funnel)** | No | No — TLS ends on the box (§3, one caveat) | **Passes with a caveat.** |
-| Telegram bot | No | **Yes** — bot chats are not end-to-end encrypted | **Fails rule 2.** See §7. |
+| Telegram bot | No | **Yes** — bot chats are not end-to-end encrypted | **Stated exception to rule 2.** See §7. |
 | Off-site backup (rclone) | No | No — archives are encrypted before they leave | Passes. |
 | Health alert email | No | Yes — the owner's mail provider reads the alert | Fails rule 2 for alert text only. See §7. |
 
@@ -204,9 +208,14 @@ fact. One owner per fact (August review §C2).
 These are the owner's to make. They are outside the tunnel but inside the
 rule.
 
-**Telegram.** Bot chats are readable by Telegram's servers: prompts,
-replies, camera stills, delivered files. Under rule 2 as written, Telegram
-fails. Two honest positions:
+**Telegram — decided 2026-11-14: stated exception.** Telegram stays the
+default chat. The README, the AI card and the Messaging Channels card now
+say that Telegram can read a bot chat. Rule 2 reads "…except the messenger
+you choose to link." The reasoning that was on the table:
+
+Bot chats are readable by Telegram's servers: prompts, replies, camera
+stills, delivered files. Under rule 2 as written, Telegram fails. Two honest
+positions:
 
 - **Exception, stated.** Telegram stays the default chat because it needs no
   app and pushes. The README and the Messaging Channels card say Telegram
@@ -217,16 +226,16 @@ fails. Two honest positions:
   wakes the phone when the agent has something to say, and alerts, watcher
   pings and media delivery all assume a messenger today.
 
-Recommendation: the second, in two steps. Ship the mesh and make the box's
-chat reachable first. Decide on push after seeing whether owners miss it.
+The owner chose the first. The box's own chat is reachable over the private
+network anyway (`https://<name>:4443`, then Chat), so the second stays open
+without more work.
 
 **Health alert email.** The alert text passes through the owner's mail
 provider. Low sensitivity ("backup failed"). Keep, and keep the text free of
 anything personal.
 
-**The dashboard sentence.** `src/templates/dashboard.html:180` says
-"Inference and chat never leave the device." While Telegram is the channel
-that is false. Fix it whichever position is taken.
+**The dashboard sentence.** Fixed: "Inference never leaves the device. Chat
+goes through the messenger you link below."
 
 ---
 
@@ -238,3 +247,84 @@ that is false. Fix it whichever position is taken.
 - A native HomeBrain mobile app.
 - Plain WireGuard with port forwarding.
 - Path-prefix hosting of Nextcloud or Home Assistant.
+
+---
+
+## 9. What was built (2026-11-14)
+
+Code: `src/mesh.py` (the only place that runs the client), routes under
+`/api/mesh/` in `src/app.py`, `ensure_tailscale` in `scripts/common.sh`, the
+**Remote access** card on the Connectivity tab.
+
+### Differences from the proposal
+
+- **Sign-in link, not a pasted key.** §4 said "pastes one join key." The
+  client offers a sign-in link with no key at all, so the owner clicks
+  **Connect**, opens the link, and signs in. HomeBrain never holds a
+  credential for the owner's account.
+- **Three explicit steps, not one.** Connect, then **Turn on remote access**,
+  then optionally **Give the phone apps a public address**. Turning it on
+  restarts three services and changes every away address, so it does not
+  happen as a side effect of signing in. The public address is off until
+  asked for: it puts three login pages on the internet.
+- **The lock is a button, not automatic.** §3 said HomeBrain must turn it on
+  at join time. It is tailnet-wide: it changes how every device on the
+  owner's existing network is admitted, and it produces secrets that must be
+  written down. The card shows "The lock is off" as a warning until it is
+  on, and says what that means. Rule 2 is not met for the private path until
+  the owner presses it. This is the one place the build is weaker than the
+  rule, on purpose; revisit after the hardware walk shows what init does to a
+  network that already has devices.
+- **No support secret.** `lock init` is run without
+  `--gen-disablement-for-support`. That flag gives Tailscale a secret that
+  turns the lock off.
+- **A third remote provider, not a new mode.** Turning it on writes the same
+  keys the tunnel writes (`DEPLOYMENT_MODE`, `NEXTCLOUD_TRUSTED_DOMAINS`,
+  `HA_TRUSTED_DOMAINS`, `VAULT_DOMAIN`, …) plus `MESH_DOMAIN`. Trusted
+  domains, the vault URL, pairing links and the replica URL follow with no
+  second copy of those facts (Q8). One provider at a time: turning this on
+  clears tunnel credentials from `.env`, and turning a tunnel on clears this.
+
+### The addresses
+
+| Service | Address | Public address allowed |
+|---|---|---|
+| Nextcloud | `https://<name>` | Yes |
+| Vault | `https://<name>:8443` | Yes |
+| Home Assistant | `https://<name>:10000` | Yes |
+| Dashboard and chat | `https://<name>:4443` | **Never** |
+
+A public address can only use 443, 8443 and 10000. Three apps take all
+three, so the dashboard sits on a port that cannot be made public. That is
+structural, and `test_mesh.py` pins it.
+
+### Open questions, answered or not
+
+- **Q1 (ports).** Accepted as proposed.
+- **Q2 (one URL or two).** Built as one: the away address is the app's
+  address, as it is with a tunnel today. Cost: with the public address on, a
+  phone at home also goes out through the relay. Not measured.
+- **Q3, Q4 (bandwidth, beta).** Open. Need the signed-in walk.
+- **Q8 (proxies).** No new proxy entry needed: the client proxies from the
+  host, so requests arrive from the Docker bridge like Caddy's do. From the
+  pinned source (`ipn/ipnlocal/serve.go`), it keeps the original `Host` and
+  sets `X-Forwarded-Host`, `X-Forwarded-Proto` and `X-Forwarded-For`. Read,
+  not observed.
+- **New: Vault attachments.** Vaultwarden builds attachment links from its
+  one configured address, which becomes the away address. On the home
+  network by `.local` name, attachment downloads may point at the away name.
+  Same as a tunnel box today. Unchecked.
+- **New: lost box with the lock on.** See
+  [`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md#remote-access-after-a-restore).
+  The backup does not carry the box's network key. Carrying it would let a
+  restore resume as the same device and is the better answer; not built.
+
+### Not built
+
+- Retiring the factory tunnel, registrar and Cloud Account card (§6 step 7).
+  Both production boxes still depend on them.
+- Demoting or labelling Cloudflare and owner-run Pangolin in the dashboard
+  (§6 step 8). The README now says both decrypt off the box.
+- A phone onboarding sheet for the private network (§6 step 5).
+- Any change to the setup wizard. Remote access is turned on after setup.
+

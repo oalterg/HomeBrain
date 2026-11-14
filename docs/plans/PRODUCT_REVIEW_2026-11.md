@@ -1,6 +1,8 @@
 # Product review — November 2026: the way in from outside
 
-**Status:** open. Findings and suggestions only; nothing here has been acted on.
+**Status:** partly acted on (2026-11-14). S1, S2 and the claim fix in §6 are
+in tree; S3–S7 are open. State of the build:
+[`REMOTE_ACCESS.md`](REMOTE_ACCESS.md) §9.
 **Date:** 2026-11-13
 **Predecessor:** [`PRODUCT_REVIEW_2026-08.md`](PRODUCT_REVIEW_2026-08.md).
 **Scope:** one question — what is the obvious missing product element, given
