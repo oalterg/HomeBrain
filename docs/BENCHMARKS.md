@@ -1398,3 +1398,69 @@ and only two SYCL commits since 2145525 (multi-GPU allreduce, FWHT), neither
 about this. The idea came from a report of an A770 blitter hang on the same
 compute-runtime and xe KMD, where copies were likewise moved off the copy
 engine; the failure here is a GuC crash rather than a `bcs` engine reset.
+
+## 2026-11-14 — Arc Pro B60: Nemotron 3.5 Bolt 74B-A9B and flint on b12359
+
+Arc Pro B60 24 GB, Ryzen 5 5600, 30 GiB RAM; llama.cpp b12359 (v1.0.0,
+`b1b770d9`) SYCL FP16, Level Zero 26.35, oneAPI 2025.3, Level Zero copies on
+the compute queue. Every row is ctx 131072 with q8_0 KV, started by the
+manager's model switch so the generated unit is the catalog's. Short: an
+800-token prompt and 256 decoded tokens, run twice. Deep: one long prompt and
+256 decoded tokens. Free memory is `visible_avail` from the xe `vram_mm`
+debugfs file.
+
+| | file | layout | load | free idle | TG short | PP short | deep prompt | PP deep | TG deep | free after deep |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Bolt 24GB | 20.51 GiB | all on GPU, `-ub 512` | 45 s | 2.9 GiB | 17.6 | 326 | 58,620 | 390 | 16.8 | 2.6 GiB |
+| flint UD-Q4_K_XL | 23.33 GiB | experts of blocks 41-48 on CPU | 20 s | 1.17 GiB | 54-58 | 780-890 | 53,398 | 468 | 39.5 | 0.97 GiB |
+| flint UD-Q3_K_XL | 17.22 GiB | all on GPU | 20 s | 4.1 GiB | 60.1-60.4 | 1,086-1,181 | 53,398 | 483 | 40.5 | 3.9 GiB |
+
+Bolt is a Mamba-2/attention hybrid with only 8 of 88 layers attending, so its
+KV is ~0.53 GiB at 131072 and decode barely drops with depth; a 118,545-token
+fill still ran at 372 t/s prefill and 16.1 t/s decode. flint UD-Q4_K_XL is
+1.86 GiB of shared weights plus 21.47 GiB of routed experts, so 3.24 GiB of
+experts go to the CPU. That costs only ~4 t/s against the all-GPU UD-Q3_K_XL,
+so the higher quant is the better trade.
+
+All three return parsed `tool_calls` from `/v1/chat/completions` (Bolt:
+Qwen3-Coder XML; flint: GLM-4.5 `<arg_key>`/`<arg_value>`) and finish the
+two-step round trip. Each answered an `openclaw agent` exec turn (run
+`df -h /` and `free -g`, report free disk and RAM) correctly from a ~46K-token
+context: Bolt 149 s, flint UD-Q4_K_XL 97 s, UD-Q3_K_XL 85 s. flint's visible
+reply carried a self-correction ("1.5 exabytes... no, 1.5 terabytes").
+
+Both need b12359. b11292 has no flint arch and refuses Bolt with
+`check_tensor_dims: tensor 'blk.1.ffn_gate_inp.weight' has wrong shape;
+expected 4096, 496, got 4096, 240`: Bolt varies the expert count per layer,
+which arrived in llama.cpp `cd0a5b6a1` (#30520). A file that cannot load
+crash-loops llama-server into its start limit.
+
+### Bolt vision: projector on the CPU
+
+NVIDIA ships one projector, `mmproj-NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf`
+(1,733,692,736 bytes, C-RADIO v4-H, `nemotron_omni`). It encodes each image at
+its own resolution, between `image_min_pixels` 262,144 and `image_max_pixels`
+3,407,872 (16 px patches, 2x2 merge, so up to ~3,300 tokens). The
+`nemotron_omni` loader reads those pixel limits and never calls
+`set_limit_image_tokens`, so `--image-max-tokens 2048` changes nothing (the
+4000x3000 image was 3,282 tokens with and without it).
+
+Test images are synthetic: a printed invoice number plus a red circle, blue
+square and green triangle. Every run read the number and placed all three
+shapes correctly.
+
+| projector | free idle | 1024x1024 (1,072 tok) | 2048x1536 (3,120 tok) | 4000x3000 (3,282 tok) |
+|---|---:|---|---|---|
+| GPU (default) | 1.2 GiB | 42 s, 645 MiB free | 40 s, 77 MiB free | 39 s, 31 MiB free + ~380 MiB in GTT |
+| CPU (`--no-mmproj-offload`) | 2.9 GiB | 49 s, 2.6 GiB free | 136 s | 140 s, 2.6 GiB free |
+
+Times are the whole request, including 150-460 generated tokens at 17.6 t/s.
+Text decode is the same either way (17.6 t/s, also right after the largest
+image). On the GPU the encoder's compute buffer grows with each larger image
+until the card is full and the rest spills to GTT. **Shipped: projector on
+the CPU**, which keeps the text model's 2.6 GiB margin and costs ~7 s on a
+1-megapixel photo and ~100 s on the largest. With the projector in the Arc
+profile, `patch_openclaw_config` lists Bolt with image input. An OpenClaw
+image-tool turn read the test picture correctly in 199 s from a 50K-token
+context. With the projector on the CPU, the first image after nine idle
+minutes answered in 45 s, with no GuC reset, and text decode stayed at 17.6 t/s.
