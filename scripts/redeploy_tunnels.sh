@@ -11,6 +11,12 @@ exec >> "$SETUP_LOG_FILE" 2>&1
 log_info "=== Starting Tunnel Redeploy: $(date) ==="
 load_env
 
+# Retire the previous mesh publication when switching providers, including
+# public Funnel listeners. Clearing .env alone does not stop tailscaled.
+if [[ -z "${MESH_DOMAIN:-}" ]] && command -v tailscale >/dev/null 2>&1; then
+    tailscale serve reset
+fi
+
 # 1. Clean Slate: Stop ALL potential tunnel services first.
 # This prevents zombie containers when switching profiles (e.g. CF -> Pangolin).
 # Docker compose 'up' with profiles ignores services not in the active profile,
@@ -39,6 +45,9 @@ vault_profiles=$(get_vault_profiles)
 if [[ -n "$profiles" || -n "$vault_profiles" ]]; then
     docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} pull
 fi
+# Remote access and Caddy both want port 443; settle who gets which address
+# before anything is (re)created. See common.sh:refresh_lan_edge_bind.
+refresh_vault_lan_ip
 # Always up: Caddy is the LAN face in both modes. Empty tunnel profiles
 # keep newt down; default services (including caddy) still start.
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
@@ -53,6 +62,8 @@ log_info "Refreshing Proxy and Trusted Domain Settings..."
 # missing, and aborting here would skip the restarts and the verification
 # below for a tunnel that is otherwise up. It logs its own [ERROR].
 configure_nc_ha_proxy_settings || true
+bash "$SCRIPT_DIR/utilities.sh" refresh_openclaw_origins \
+    || log_warn "Could not refresh chat origins; check the OpenClaw gateway."
 
 # 4. Selective Restart
 # Home Assistant reads configuration.yaml on startup, so it MUST be restarted if proxies changed.

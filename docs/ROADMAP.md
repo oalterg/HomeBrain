@@ -42,8 +42,9 @@ Track planned features and shipped releases against that. For questions or contr
 
 Remote access with no HomeBrain server and nothing a third party can read:
 [`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md). The private-network join is in
-tree; the signed-in hardware walk and retiring the servers HomeBrain still
-runs (factory tunnel, registrar) are not done. Why it is the missing element:
+tree, with phone setup and encrypted identity recovery. The registrar and
+Cloud Account flow are removed. The signed-in hardware walk and migration off
+the existing factory tunnel infrastructure remain. Why it is the missing element:
 [`PRODUCT_REVIEW_2026-11.md`](plans/PRODUCT_REVIEW_2026-11.md).
 
 Current action list: [`PRODUCT_REVIEW_2026-08.md`](plans/PRODUCT_REVIEW_2026-08.md) —

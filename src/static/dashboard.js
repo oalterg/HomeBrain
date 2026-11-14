@@ -1410,6 +1410,17 @@ async function loadMesh() {
         _meshTimer = setTimeout(loadMesh, 4000);
         return;
     }
+    if (state !== 'running' && st.carried) {
+        body.innerHTML =
+            `<p class="small"><strong>The backup you restored carried this box's place on your private ` +
+            `network.</strong> Resuming brings back the same name and addresses, and paired phones keep ` +
+            `working. Only do this if the box the backup came from is gone or switched off for good: ` +
+            `two boxes using one identity knock each other off the network.</p>` +
+            `<div class="inline-row mt">` +
+            `<button class="btn-primary" id="mesh-resume-btn" onclick="meshResume()">Resume as the same device</button>` +
+            `<button id="mesh-connect-btn" onclick="meshConnect()">Connect as a new device</button></div>`;
+        return;
+    }
     if (state !== 'running') {
         body.innerHTML =
             `<p class="small">Not connected. You need a Tailscale account; the free plan is enough. ` +
@@ -1420,11 +1431,12 @@ async function loadMesh() {
 
     _meshQr = '';
     const name = escapeHtml(st.dns_name || '');
-    const on = st.configured_name && st.configured_name === st.dns_name;
+    const on = st.configured_name && st.configured_name === st.dns_name &&
+        ['443', '8443', '10000', '4443'].every(p => Object.hasOwn(st.published || {}, p));
     if (!on) {
         body.innerHTML =
             meshRow('This box', `<code>${name}</code>`) +
-            `<p class="small mt">Connected, but nothing is published yet. Turning it on restarts Nextcloud, ` +
+            `<p class="small mt">Connected, but remote access is not fully set up. Turning it on restarts Nextcloud, ` +
             `Home Assistant and Vault, and their away-from-home addresses become the ones under this name.</p>` +
             `<div class="inline-row mt">` +
             `<button class="btn-primary" onclick="meshPublish(false, true)">Turn on remote access</button>` +
@@ -1435,6 +1447,8 @@ async function loadMesh() {
     chip.innerHTML = `<span class="chip chip-local">${st.public ? 'Private network · apps public' : 'Private network'}</span>`;
     const u = st.urls || {};
     const lock = st.lock || {};
+    _meshSheet = { name: st.dns_name, urls: u, isPublic: !!st.public, lockOn: !!lock.enabled };
+    const expiry = st.key_expiry ? new Date(st.key_expiry) : null;
     let html =
         meshRow('Nextcloud', meshLink(u.nextcloud || '')) +
         meshRow('Vault', meshLink(u.vault || '')) +
@@ -1448,6 +1462,12 @@ async function loadMesh() {
                            : '<span class="status-badge status-stopped">This box is locked out</span>')
             : '<span class="status-badge status-unknown">Off</span>');
 
+    if (expiry && !isNaN(expiry)) {
+        html += meshRow('Sign-in expires', escapeHtml(expiry.toLocaleDateString())) +
+            `<p class="hint">Remote access stops on that date until you sign this box in again. To avoid ` +
+            `that, open the Tailscale admin console, find <code>homebrain</code> under Machines and ` +
+            `choose “Disable key expiry”.</p>`;
+    }
     if (!lock.enabled) {
         html += `<div class="notice notice-warning mt"><strong>The lock is off.</strong> ` +
             `<span class="small">Until it is on, Tailscale could add a device of its own to your network. ` +
@@ -1463,6 +1483,7 @@ async function loadMesh() {
         (st.public
             ? `<button onclick="meshPublish(false)">Make the apps private</button>`
             : `<button onclick="meshPublish(true)">Give the phone apps a public address</button>`) +
+        `<button onclick="savePhoneSheet()">Save phone setup sheet</button>` +
         `<button class="btn-danger" onclick="meshDisconnect()">Turn off remote access</button></div>`;
     body.innerHTML = html;
 }
@@ -1505,11 +1526,56 @@ async function meshPublish(isPublic, first) {
         el.style.color = 'var(--danger)';
         el.innerHTML = escapeHtml(d.error || 'That did not work.') +
             (d.enable_url ? ' ' + meshLink(d.enable_url) : '');
+        loadMesh();
         return;
     }
     meshMsg('');
     if (d.status === 'started') {
         hbToast('Turning on remote access…');
+        pollTask();
+        setTimeout(() => location.reload(), 3000);
+        return;
+    }
+    loadMesh();
+}
+
+// What the phone sheet needs, kept from the last status read.
+let _meshSheet = null;
+
+function savePhoneSheet() {
+    if (!_meshSheet || typeof downloadPhoneSheet !== 'function') return;
+    downloadPhoneSheet(_meshSheet);
+}
+
+async function meshResume() {
+    if (!await hbConfirm({
+        title: 'Resume as the same device?',
+        body: 'This box takes over the identity of the box the backup came from. Nextcloud, Home Assistant '
+            + 'and Vault restart and return to their old away-from-home addresses.',
+        detail: 'If the old box is still running, both will keep dropping off your network. Switch it off first.',
+        confirm: 'Resume',
+    })) return;
+    const btn = document.getElementById('mesh-resume-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Resuming…'; }
+    meshMsg('Resuming. This can take a minute.');
+    const d = await meshPost('/api/mesh/resume');
+    if (!d) return;
+    if (!d._ok) {
+        const el = document.getElementById('mesh-msg');
+        el.style.color = 'var(--danger)';
+        el.innerHTML = escapeHtml(d.error || 'Could not resume.') +
+            (d.enable_url ? ' ' + meshLink(d.enable_url) : '');
+        loadMesh();
+        return;
+    }
+    if (d.status === 'needs_login') {
+        meshMsg('The saved sign-in is no longer valid. Press Connect and sign in again.', true);
+        loadMesh();
+        return;
+    }
+    meshMsg('');
+    if (d.status === 'started') {
+        hbToast('Resuming remote access…');
         pollTask();
         setTimeout(() => location.reload(), 3000);
         return;
@@ -2137,24 +2203,6 @@ async function configureRedis() {
     setTimeout(checkRedisStatus, 5000);
 }
 
-async function changeCloudEmail(current) {
-    const newEmail = await hbPrompt({
-        title: 'Update registered email',
-        label: 'Email address',
-        value: current,
-        type: 'email',
-        confirm: 'Update',
-    });
-    if (!newEmail || newEmail === current) return;
-    if (!newEmail.includes('@')) { hbToast('That does not look like an email address.', 'error'); return; }
-    try {
-        await triggerAction('/api/cloud/register', 'Update Email', { email: newEmail });
-        setTimeout(() => location.reload(), 2000);
-    } catch (e) {
-        hbToast('Failed to update email.', 'error');
-    }
-}
-
 /* =====================================================================
    FTP & network
    ===================================================================== */
@@ -2443,6 +2491,12 @@ function showMemberPairing(d) {
     document.getElementById('member-url').textContent = d.remote
         ? '' : 'At home only — no remote address is set up yet, so the phone must be on your home '
              + 'Wi-Fi and will ask whether to trust this box\'s certificate.';
+    const meshNote = document.getElementById('member-mesh');
+    if (meshNote) {
+        meshNote.textContent = d.needs_mesh_app
+            ? 'First: install the Tailscale app on their phone, join it to your network and switch it '
+              + 'on. The code and these addresses do not work without it.' : '';
+    }
     const vaultOk = d.services && d.services.vault === 'ok';
     const homeOk = d.services && d.services.home === 'ok';
     const vaultLine = document.getElementById('member-vault-line');
@@ -2461,6 +2515,7 @@ function showMemberPairing(d) {
         files: { url: d.url, user: d.user },
         vault: vaultOk ? { url: d.vault_url, email: d.vault_email } : null,
         home: homeOk ? { url: d.home_url, user: d.user } : null,
+        needsMeshApp: !!d.needs_mesh_app,
     };
     // The other panel describes a different person and an unchanged password.
     hideServiceAdded();

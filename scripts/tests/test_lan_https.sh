@@ -88,7 +88,7 @@ if grep -qE '8443|8444' <<< "$caddy_ports"; then
 else
     ok "Caddy does not publish :8443/:8444"
 fi
-if grep -q '"80:80"' <<< "$caddy_ports" && grep -q '"443:443"' <<< "$caddy_ports"; then
+if grep -q '"80:80"' <<< "$caddy_ports" && grep -q '"${LAN_EDGE_HTTPS:-443}:443"' <<< "$caddy_ports"; then
     ok "Caddy publishes 80 and 443"
 else
     bad "Caddy publishes 80 and 443"

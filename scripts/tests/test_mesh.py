@@ -140,7 +140,7 @@ def test_not_installed_is_its_own_state():
     saved = mesh.run
     mesh.run = lambda argv, timeout=20: (127, "tailscale is not installed")
     try:
-        assert mesh.status() == {"state": "not_installed"}
+        assert mesh.status()["state"] == "not_installed"
     finally:
         mesh.run = saved
 
@@ -236,6 +236,30 @@ def test_a_refusal_carries_the_link_that_fixes_it():
         res = mesh.publish(True)
         assert res["enable_url"] == link
         assert "public address" in res["error"].lower()
+    finally:
+        f.close()
+
+
+def test_a_refused_public_address_leaves_the_private_one_up():
+    """Found by reading, not on hardware: clearing everything on a refusal
+    would cut off an owner who pressed the button from away, over 4443."""
+    link = "https://login.tailscale.com/f/funnel?node=n1"
+    f = Fake(serve=serve_config(public=False), refuse={"funnel": (0, f"To enable, visit:\n  {link}\n")})
+    try:
+        res = mesh.publish(True)
+        assert res["enable_url"] == link and "stay on the private network" in res["error"]
+        st = mesh.status()
+        assert st["public"] is False
+        assert set(st["published"]) == {"443", "8443", "10000", "4443"}, st["published"]
+    finally:
+        f.close()
+
+
+def test_a_refused_first_publish_leaves_nothing_behind():
+    f = Fake(refuse={"serve": (0, "visit https://login.tailscale.com/f/serve?node=n1\n")})
+    try:
+        res = mesh.publish(False)
+        assert "cleared" in res["error"] and mesh.status()["published"] == {}
     finally:
         f.close()
 
@@ -444,6 +468,177 @@ def test_healthcheck_is_crit_when_the_private_network_is_down():
         f.close()
     # Opted out wins, exactly as it does for a tunnel.
     assert healthcheck.check_tunnel(dict(MESH_ENV, DEPLOYMENT_MODE="local")) is None
+
+
+# --- identity carried in a backup -------------------------------------------
+
+class _Staged:
+    """Points mesh at a temp identity file and stubs the root-only scripts."""
+
+    def __init__(self, staged=True, script_rc=0):
+        import subprocess
+        import tempfile
+        self._file = mesh.IDENTITY_FILE
+        self._run = subprocess.run
+        self.dir = tempfile.mkdtemp()
+        mesh.IDENTITY_FILE = os.path.join(self.dir, "mesh_identity.state")
+        if staged:
+            open(mesh.IDENTITY_FILE, "w").write("{}")
+        self.scripts = []
+
+        def fake_run(cmd, *a, **k):
+            if cmd[0] == "bash":
+                self.scripts.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, script_rc, "", "")
+        subprocess.run = fake_run
+
+    def close(self):
+        import shutil
+        import subprocess
+        subprocess.run = self._run
+        mesh.IDENTITY_FILE = self._file
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_status_says_when_a_backup_identity_is_waiting():
+    s = _Staged()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        assert mesh.status()["carried"] is True
+        os.remove(mesh.IDENTITY_FILE)
+        assert mesh.status()["carried"] is False
+    finally:
+        f.close()
+        s.close()
+
+
+def test_resume_without_a_staged_identity_is_refused():
+    h = _fresh()
+    s = _Staged(staged=False)
+    f = Fake()
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 409
+        assert s.scripts == [], "ran the root script with nothing to resume"
+        assert not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_resume_republishes_what_the_backup_had_and_points_the_box_at_it():
+    """The serve config comes back with the identity. A box whose apps were
+    public stays public; nothing asks the owner again."""
+    h = _fresh()
+    s = _Staged()
+    f = Fake(serve=serve_config(public=True))
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json() == {"status": "started", "public": True}
+        assert "resume_mesh_identity" in s.scripts
+        assert h.written("MESH_DOMAIN") == NAME
+        assert ("funnel", "--https=443") in f.verbs()
+        assert ("serve", "--https=4443") in f.verbs()
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_resume_onto_an_expired_sign_in_publishes_nothing():
+    h = _fresh()
+    s = _Staged()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 200
+        assert r.get_json() == {"status": "needs_login"}
+        assert f.verbs() == [] and not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_a_failed_resume_script_changes_nothing():
+    h = _fresh()
+    s = _Staged(script_rc=1)
+    f = Fake()
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 500
+        assert f.verbs() == [] and not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_publishing_as_a_new_device_drops_the_staged_identity():
+    h = _fresh()
+    s = _Staged()
+    f = Fake()
+    try:
+        assert _post(h, "/api/mesh/publish", {}).status_code == 200
+        assert not os.path.exists(mesh.IDENTITY_FILE), "an abandoned device key was left on disk"
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+# --- phones -----------------------------------------------------------------
+
+def test_pairing_says_when_the_phone_needs_the_network_app_first():
+    f = Fake(serve=serve_config(public=False))
+    try:
+        assert hb.mesh_apps_private({"MESH_DOMAIN": NAME}) is True
+    finally:
+        f.close()
+    f = Fake(serve=serve_config(public=True))
+    try:
+        assert hb.mesh_apps_private({"MESH_DOMAIN": NAME}) is False
+        # No remote access at all: the client must not even be asked.
+        f.calls.clear()
+        assert hb.mesh_apps_private({}) is False
+        assert f.calls == []
+    finally:
+        f.close()
+
+
+def test_status_reports_when_the_sign_in_expires():
+    f = Fake(status=dict(RUNNING, Self=dict(RUNNING["Self"], KeyExpiry="2027-05-13T10:00:00Z")))
+    try:
+        assert mesh.status()["key_expiry"] == "2027-05-13T10:00:00Z"
+    finally:
+        f.close()
+    f = Fake()
+    try:
+        assert mesh.status()["key_expiry"] == ""
+    finally:
+        f.close()
+
+
+# --- the account service is retired -----------------------------------------
+
+def test_no_route_or_gate_depends_on_an_account_service():
+    """HomeBrain operates no servers. Setup used to refuse to finish until an
+    email had been registered with one."""
+    h = _fresh()
+    try:
+        rules = {r.rule for r in hb.app.url_map.iter_rules()}
+        assert "/api/cloud/register" not in rules
+        saved = hb.get_factory_config
+        hb.get_factory_config = lambda: {"REGISTRAR_URL": "https://reg.example.com"}
+        try:
+            r = _post(h, "/api/setup/cleanup_credentials")
+        finally:
+            hb.get_factory_config = saved
+        assert r.status_code == 200, "a leftover factory key still blocks the handover"
+    finally:
+        h.close()
 
 
 if __name__ == "__main__":

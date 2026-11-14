@@ -241,6 +241,9 @@ else
     rm -f "$INSTANCE_SECRETS_FILE"
 fi
 
+# The box's place on the owner's private network (common.sh).
+capture_mesh_identity "$STAGING_DIR" "$ENCRYPT"
+
 # Member vault-recovery escrow: ciphertext plus the wrap key that sealed it.
 # The wrap file is 0600 and lives in staging only until tar+gpg; cleanup
 # removes staging on every path, including signals.

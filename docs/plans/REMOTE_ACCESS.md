@@ -316,15 +316,52 @@ structural, and `test_mesh.py` pins it.
   Same as a tunnel box today. Unchecked.
 - **New: lost box with the lock on.** See
   [`DISASTER_RECOVERY.md`](../DISASTER_RECOVERY.md#remote-access-after-a-restore).
-  The backup does not carry the box's network key. Carrying it would let a
-  restore resume as the same device and is the better answer; not built.
+  Encrypted backups now carry the device/signing key. Restore stages it;
+  **Resume as the same device** is explicit, because the original box must be
+  permanently offline. Old and unencrypted backups need a new sign-in.
 
 ### Not built
 
-- Retiring the factory tunnel, registrar and Cloud Account card (§6 step 7).
-  Both production boxes still depend on them.
-- Demoting or labelling Cloudflare and owner-run Pangolin in the dashboard
-  (§6 step 8). The README now says both decrypt off the box.
-- A phone onboarding sheet for the private network (§6 step 5).
+- Migrating production boxes off the factory tunnel and shutting down that
+  infrastructure (§6 step 7). Existing tunnel credentials remain supported;
+  no production service is changed by this branch.
 - Any change to the setup wizard. Remote access is turned on after setup.
 
+
+### Completion of the dashboard and recovery paths
+
+- The registrar worker, registration API/gate, Cloud Account card and remote
+  heartbeat sender are removed. Old provisioning arguments are accepted and
+  ignored. Saved notification recipients still work without contacting a
+  registration service.
+- The tunnel card explains where encryption terminates. Switching providers
+  clears old Tailscale listeners, and redeploy refreshes chat's allowed origins.
+- **Save phone setup sheet** explains joining the private network, approval
+  when the lock is on, and all four app addresses. Household pairing also
+  explains when Tailscale is required. The card shows sign-in expiry.
+- Encrypted backups carry `tailscaled.state`; restore stages it root-only.
+  Resuming requires the owner to confirm that the old device is offline. A
+  new restore replaces any previously staged identity, and factory reset
+  removes staged and pre-resume keys.
+- Publication failure clears all listeners, leaves app configuration unchanged,
+  and offers a retry. If cleanup itself fails, the error explicitly says apps
+  may still be public. The dashboard is always served privately on 4443.
+
+### Found on the first signed-in box (.69, 2026-11-14)
+
+- **Turning remote access on took the LAN names down.** The client binds the
+  box's tailnet address on port 443 for Nextcloud. Docker then cannot publish
+  Caddy on "443, every address", Caddy does not start, and `homebrain.local`
+  and the three app names stop answering. Fixed: while remote access is on,
+  Caddy's 443 is published on the LAN address and loopback only
+  (`common.sh:refresh_lan_edge_bind`, applied on redeploy, update, restore and
+  at boot). Verified on .69: all four `.local` names answer again with the
+  four tailnet addresses still published. Cost: the LAN names are IPv4-only
+  in this mode, and a box whose LAN address changes without a reboot needs a
+  manager restart to move Caddy.
+- **A refused public address cleared the private one too.** Not seen on
+  hardware; found by reading. Now a refusal puts the private publication
+  back, so an owner pressing the button from away is not cut off.
+
+These paths are checked locally; the signed-in hardware checklist remains in
+`docs/TESTING.md`. No real-tailnet or phone validation is implied by local checks.

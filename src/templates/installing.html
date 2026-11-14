@@ -237,75 +237,12 @@
                         <pre class="install-log mt">${escapeHtml(lastLog) || 'No log was captured.'}</pre>
                     </details>` : ''}
 
-                    ${data.cloud_enabled ? `
-                    <div class="activate-card">
-                        <h3>Activate remote access</h3>
-                        <p class="small">Register your device to enable remote access and finish setup.</p>
-                        <div class="activate-row">
-                            <input type="email" id="cloud-email" placeholder="Enter your email address" required>
-                            <button onclick="registerCloud()" id="btn-cloud">Activate</button>
-                        </div>
-                        <p id="cloud-msg" class="activate-msg"></p>
-                        <div id="confirmation-gate" class="confirm-gate">
-                            <label class="check">
-                                <input type="checkbox" id="chk-confirm" onchange="toggleLoginBtn()">
-                                <span>I have received the email and set my password.</span>
-                            </label>
-                        </div>
-                    </div>` : ''}
-
-                    <div id="login-section" ${data.cloud_enabled ? 'style="display:none;"' : ''}>
-                        <button class="btn-main stretch" id="btn-login-final" onclick="confirmAndLogin()"
-                                ${data.cloud_enabled ? 'disabled' : ''}>
+                    <div id="login-section">
+                        <button class="btn-main stretch" id="btn-login-final" onclick="confirmAndLogin()">
                             I have saved my password — log in
                         </button>
                     </div>
                 </div>`;
-        }
-
-        function registerCloud() {
-            const email = document.getElementById('cloud-email').value;
-            const btn = document.getElementById('btn-cloud');
-            const msg = document.getElementById('cloud-msg');
-
-            if (!email.includes('@')) {
-                msg.textContent = 'Please enter a valid email address.';
-                msg.style.color = 'var(--danger)';
-                return;
-            }
-
-            btn.disabled = true;
-            btn.textContent = 'Sending…';
-            document.getElementById('cloud-email').disabled = true;
-            msg.textContent = '';
-
-            fetch('/api/cloud/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: email })
-            })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        msg.textContent = data.message;
-                        msg.style.color = 'var(--accent)';
-                        btn.textContent = 'Activated';
-                        document.getElementById('login-section').style.display = 'block';
-                        document.getElementById('confirmation-gate').style.display = 'block';
-                    } else {
-                        msg.textContent = data.error || 'Failed to send.';
-                        msg.style.color = 'var(--danger)';
-                        btn.disabled = false;
-                        btn.textContent = 'Send invite';
-                    }
-                })
-                .catch(() => {
-                    msg.textContent = 'Connection error.';
-                    msg.style.color = 'var(--danger)';
-                    btn.disabled = false;
-                    document.getElementById('cloud-email').disabled = false;
-                    btn.textContent = 'Send invite';
-                });
         }
 
         // Populated by showSuccess(). The sheet builder itself is shared with
@@ -324,10 +261,6 @@
                 return;
             }
             downloadCredsSheet(handoverCreds);
-        }
-
-        function toggleLoginBtn() {
-            document.getElementById('btn-login-final').disabled = !document.getElementById('chk-confirm').checked;
         }
 
         function confirmAndLogin() {

@@ -33,7 +33,7 @@ On the LAN, open `http://<server-ip>`. Nextcloud and Vault also speak HTTPS on l
 
 With a GPU, Telegram is the daily interface: no VPN, no extra app. Pair it after setup. Telegram's servers can read a bot chat. It is the one path on the box a third party can read, and it is optional.
 
-Away from home, the apps travel over a private network on your own Tailscale account: **Connectivity → Remote access**, sign in, done. HomeBrain runs no server for it. Encryption ends on your phone and on the box, so Tailscale carries the traffic and cannot read it. Nextcloud, Vault and Home Assistant can also be given a public address, so their phone apps need nothing extra installed; the dashboard never is. Design and limits: [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md).
+Away from home, the apps travel over a private network on your own Tailscale account: **Connectivity → Remote access**, connect, sign in, then turn remote access on. HomeBrain runs no server for it. Encryption ends on your phone and on the box. Turn on the network lock to control which new devices are admitted. Nextcloud, Vault and Home Assistant can also be given a public address, so their phone apps need nothing extra installed; the dashboard never is. Save the phone setup sheet from the same card for the app addresses and joining steps. Encrypted backups carry the device identity; after a restore you choose whether to resume it. Design and limits: [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md).
 
 A tunnel you run yourself ([Pangolin](docs/PANGOLIN.md) or Cloudflare) still works. Either one decrypts your traffic on a machine that is not the box.
 

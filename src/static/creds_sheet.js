@@ -93,7 +93,7 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     return lines.join('\r\n');
 }
 
-function buildMemberSheet({ name, password, date, files, vault, home }) {
+function buildMemberSheet({ name, password, date, files, vault, home, needsMeshApp }) {
     const p = _hbSheetParts(date);
     const who = name || (files && files.user) || 'member';
     const lines = [
@@ -111,11 +111,85 @@ function buildMemberSheet({ name, password, date, files, vault, home }) {
     if (home && home.url) {
         lines.push(`Home    ${home.url}        user ${home.user}`);
     }
+    if (needsMeshApp) lines.push(
+        '',
+        'Away from home these addresses need the Tailscale app on your phone,',
+        'joined to the owner\'s network and switched on. Ask the owner for an',
+        'invitation.',
+    );
     lines.push(
         '',
         'Forgot it? Ask the owner -- they can issue a new one from the dashboard.',
         'Saved vault items survive that reset, unless you changed the vault',
         'password yourself in the Bitwarden app.',
+        '',
+    );
+    return lines.join('\r\n');
+}
+
+/* Phone setup for remote access over the owner's private network. No secret on
+ * it: addresses and steps only, so it can be passed to a household member.
+ * Pure, like the builders above. */
+function phoneSheetFilename(date) {
+    const p = _hbSheetParts(date);
+    return `homebrain-phone-setup-${p.day}T${p.hh}-${p.mm}-${p.ss}.txt`;
+}
+
+function buildPhoneSheet({ name, urls, isPublic, lockOn, date }) {
+    const p = _hbSheetParts(date);
+    const u = urls || {};
+    const lines = [
+        'HomeBrain -- phone setup, away from home',
+        `Generated: ${p.day} ${p.hh}:${p.mm}`,
+        `Device:    ${name || ''}`,
+        '',
+    ];
+    const join = [
+        '1. Install the Tailscale app from the App Store or Play Store.',
+        '2. Sign in. The owner uses the account this box was connected with.',
+        '   Anyone else first needs an invitation from the owner: Tailscale',
+        '   admin console, Users, Invite.',
+    ];
+    if (lockOn) join.push(
+        '3. The owner approves the phone: Dashboard, Connectivity, Remote',
+        '   access, Approve. Until then the phone reaches nothing.',
+        '4. Leave Tailscale switched on.');
+    else join.push('3. Leave Tailscale switched on.');
+    if (isPublic) {
+        lines.push(
+            'The three apps below have a public address. They work from anywhere',
+            'with nothing extra on the phone.',
+            '');
+    } else {
+        lines.push(
+            'Every address below is on a private network. A phone reaches them',
+            'only with the Tailscale app switched on. Do this first:',
+            '', ...join, '');
+    }
+    lines.push(
+        'Files (Nextcloud app)',
+        `   Server address:  ${u.nextcloud || ''}`,
+        '   Or scan the pairing code: Dashboard, Household.',
+        '',
+        'Passwords (Bitwarden app)',
+        '   On the login screen choose "Self-hosted" and enter:',
+        `   Server URL:      ${u.vault || ''}`,
+        '',
+        'Home (Home Assistant app)',
+        '   Choose "Enter address manually":',
+        `   Address:         ${u.homeassistant || ''}`,
+        '',
+        'Dashboard and chat (owner only, any browser)',
+        `   ${u.dashboard || ''}`,
+    );
+    if (isPublic) lines.push(
+        '   The dashboard is never public. To open it away from home:',
+        '', ...join);
+    lines.push(
+        '',
+        'At home these names also work, with or without Tailscale:',
+        'nc-homebrain.local, vault-homebrain.local, ha-homebrain.local,',
+        'homebrain.local.',
         '',
     );
     return lines.join('\r\n');
@@ -146,4 +220,9 @@ function downloadMemberSheet(opts) {
     saveCredsSheet(
         buildMemberSheet(Object.assign({}, opts, { date })),
         memberSheetFilename(opts.name || (opts.files && opts.files.user), date));
+}
+
+function downloadPhoneSheet(opts) {
+    const date = new Date();
+    saveCredsSheet(buildPhoneSheet(Object.assign({}, opts, { date })), phoneSheetFilename(date));
 }

@@ -194,6 +194,8 @@ rm -f "$INSTALL_DIR/.restoring" 2>/dev/null || true
 rm -f /var/lib/homebrain/member_escrow.json 2>/dev/null || true
 rm -f /var/lib/homebrain/member_escrow.wrap 2>/dev/null || true
 rm -f /var/lib/homebrain/activation.json 2>/dev/null || true
+rm -f /var/lib/homebrain/mesh_identity.state 2>/dev/null || true
+rm -f /var/lib/tailscale/tailscaled.state.before-resume 2>/dev/null || true
 
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true

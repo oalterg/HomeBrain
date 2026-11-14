@@ -467,6 +467,7 @@
                             <div id="member-vault-line"></div>
                             <div id="member-home-line"></div>
                             <div id="member-url"></div>
+                            <div id="member-mesh"></div>
                         </div>
                     </div>
                     <p class="hint">The password is only needed to sign in on a computer — the code covers the phone.
@@ -692,28 +693,6 @@
 
         <div class="stack">
 
-            {% if cloud_enabled %}
-            <section class="section">
-                <h3>Cloud Account</h3>
-                {% if cloud_account.email %}
-                <div class="stat-item">
-                    <span>Registered email</span>
-                    <span>{{ cloud_account.email }}</span>
-                </div>
-                <div class="stat-item">
-                    <span>Subscription plan</span>
-                    <span class="chip chip-local">{{ cloud_account.tier }}</span>
-                </div>
-                <div class="inline-row mt">
-                    <button onclick="changeCloudEmail('{{ cloud_account.email }}')">Update email</button>
-                </div>
-                {% else %}
-                <p class="lede">No cloud account registered locally.</p>
-                <button onclick="changeCloudEmail('')">Register account</button>
-                {% endif %}
-            </section>
-            {% endif %}
-
             <section class="section" id="mesh-card">
                 <h3><span>Remote access</span> <span id="mesh-chip"></span></h3>
                 <p class="lede">Reach this box away from home over a private network on your own Tailscale
@@ -742,6 +721,11 @@
                     {% endif %}
                 </h3>
 
+                <p class="lede">A tunnel is the other way to reach this box from outside. Its provider
+                    decrypts your traffic on a machine you do not hold, so it can read what passes through.
+                    With Remote access above, encryption ends on this box. Turn on its lock to
+                    control which devices may join your private network.</p>
+
                 {% if deployment_mode == 'local' %}
                 <div class="empty-state" id="tunnel-empty">
                     <span class="empty-icon">
@@ -755,7 +739,7 @@
                     {% if has_gpu %}
                     <p>The dashboard stays on this network. Pair Telegram to use the agent from your phone. A public tunnel is optional.</p>
                     {% else %}
-                    <p>This device is reachable on your home network only. A Pangolin tunnel is how you reach the apps from outside.</p>
+                    <p>This device is reachable on your home network only. Use Remote access above, or set up your own tunnel to reach the apps from outside.</p>
                     {% endif %}
                     <button class="btn-primary" onclick="showTunnelSetup(true)">Set up your own tunnel</button>
                 </div>

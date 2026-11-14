@@ -225,6 +225,10 @@ if [[ -f "${TMP_DIR}/instance_secrets.env" ]]; then
     merge_instance_secrets "${TMP_DIR}/instance_secrets.env"
 fi
 
+# The source box's place on the private network. Staged, never applied here:
+# see common.sh for why that is the owner's call.
+stage_mesh_identity "$TMP_DIR"
+
 # --- Smart Detection ---
 log_info "Analyzing backup structure..."
 

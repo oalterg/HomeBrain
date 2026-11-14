@@ -549,6 +549,18 @@ node scripts/tests/test_creds_sheet.js
 Design: [`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md). Unit tests:
 `scripts/tests/test_mesh.py`, `scripts/tests/test_mesh.sh`.
 
+**Local completion checks, 2026-11-14 (macOS; no live tailnet):**
+
+- Existing Python suite: 656 passed, 5 skipped. No new unit tests were added
+  during completion; the tests already present in the worktree were retained.
+- Mesh shell checks: 24 passed; handover and restore-handover checks: 33 passed.
+  Phone/recovery-sheet JavaScript checks, Ruff and ShellCheck passed.
+- Chromium smoke check used the actual Remote access card, JavaScript and Flask
+  routes with a separate fixture CLI process. Private → public → private,
+  failure on the second app port, cleanup and retry, phone-sheet download,
+  expiry display and dashboard-only-private behavior passed without JS errors.
+  Installation, service restarts and the network itself were not exercised.
+
 **Walked 2026-11-14 on .69 (x86, Ubuntu 26.04), signed out:**
 
 - [x] A box that never used it reports `not_installed`; nothing is installed
@@ -598,6 +610,19 @@ release's source, and by nothing else. Treat each as unproven until ticked.
 - [ ] Factory reset on a connected box: afterwards `tailscale status` says
       logged out and nothing is published.
 - [ ] Raspberry Pi (arm64) install path.
+- [ ] Encrypted backup → replacement box: identity is staged, not connected;
+      resume only with the source switched off; name, lock signing and phone
+      addresses survive. An expired identity offers sign-in again.
+- [ ] Restore while the source will stay live: connect as a new device, publish,
+      and confirm the staged identity is removed. Older/unencrypted backups
+      offer a fresh connection, not a stale identity from another restore.
+- [x] With remote access on, `https://homebrain.local`, `nc-`, `vault-` and
+      `ha-homebrain.local` still answer on the LAN (.69, 2026-11-14, after the
+      port-443 fix; before it Caddy failed to start).
+- [ ] The same after a reboot, and after turning remote access off again
+      (Caddy back on every address).
+- [ ] Switching to Pangolin or Cloudflare removes the old Serve/Funnel listeners;
+      chat's allowed origins match the new dashboard address after redeploy.
 
 ## Nuclear Reset (Destructive — Run Last on Test Hardware)
 

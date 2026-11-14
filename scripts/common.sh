@@ -1135,7 +1135,7 @@ get_vault_profiles() {
 is_local_mode() {
     # Neither a private-network name (MESH_DOMAIN, src/mesh.py) nor Pangolin
     # credentials — always local regardless of DEPLOYMENT_MODE
-    [[ -z "${MESH_DOMAIN:-}" ]] \
+    [[ -z "${MESH_DOMAIN:-}" && -z "${CF_TOKEN_NC:-}" && -z "${CF_TOKEN_HA:-}" ]] \
         && [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
     # Credentials present but user explicitly opted out
     [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
@@ -1252,6 +1252,33 @@ ensure_lan_hosts() {
     return 0
 }
 
+# refresh_lan_edge_bind <lan_ip> — where Caddy's HTTPS port is published.
+#
+# Remote access publishes Nextcloud on the box's tailnet address, port 443, and
+# tailscaled binds that address. Docker's default "443 on every address" then
+# fails with "address already in use", Caddy does not start, and
+# homebrain.local stops answering — found on .69 the first time remote access
+# was turned on. So in that mode Caddy takes 443 on the LAN address and on
+# loopback (box-local callers reach the LAN names through /etc/hosts), and
+# leaves the tailnet address to tailscaled. Otherwise both keys are empty and
+# docker-compose.yml's defaults apply.
+#
+# Exported as well as written: Compose prefers the environment over
+# --env-file, and load_env already exported the old values.
+refresh_lan_edge_bind() {
+    local lan_ip="$1" https="" loopback=""
+    if [[ -n "${MESH_DOMAIN:-}" && -n "$lan_ip" ]]; then
+        https="${lan_ip}:443"
+        loopback="127.0.0.1:443"
+    fi
+    if [[ "$https" != "${LAN_EDGE_HTTPS:-}" || "$loopback" != "${LAN_EDGE_LOOPBACK:-}" ]]; then
+        update_env_var "LAN_EDGE_HTTPS" "$https"
+        update_env_var "LAN_EDGE_LOOPBACK" "$loopback"
+        log_info "LAN HTTPS is published on ${https:-every address}."
+    fi
+    export LAN_EDGE_HTTPS="$https" LAN_EDGE_LOOPBACK="$loopback"
+}
+
 # Re-derive VAULT_LAN_IP from the current address.
 #
 # Caddy takes it as a TLS SAN ({$VAULT_LAN_IP} in config/Caddyfile) so a browser
@@ -1282,6 +1309,7 @@ refresh_vault_lan_ip() {
     local lan_ip
     lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [[ -n "$lan_ip" ]] || return 0
+    refresh_lan_edge_bind "$lan_ip"
     if [[ "$lan_ip" == "${VAULT_LAN_IP:-}" ]]; then
         return 0
     fi
@@ -2179,9 +2207,8 @@ ensure_tailscale() {
     fi
     if command -v tailscale >/dev/null 2>&1 && command -v tailscaled >/dev/null 2>&1 \
         && [[ "$(tailscale version 2>/dev/null | head -1)" == "$want_ver" ]]; then
-        systemctl is-active --quiet tailscaled 2>/dev/null \
-            || systemctl enable --now tailscaled >/dev/null 2>&1 || true
-        return 0
+        systemctl enable --now tailscaled
+        return $?
     fi
     if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
         log_warn "tailscale needs installing but this is not running as root — skipping."
@@ -2223,6 +2250,81 @@ ensure_tailscale() {
         return 1
     fi
     log_info "Installed tailscale $(tailscale version 2>/dev/null | head -1)."
+}
+
+# --- The box's place on the private network, carried in backups ------------
+# tailscaled.state holds this box's device key and, with the lock on, its
+# signing key. A restore that brings it back resumes as the SAME device: same
+# name, still signed, no disablement secret needed. Without it a restored box
+# joins as a stranger and a locked network refuses it.
+#
+# Two rules:
+#   * Only into an encrypted archive. The file is the device.
+#   * Never applied by restore itself. Two live boxes with one key knock each
+#     other off the network, and restore cannot know whether the old box is
+#     dead or sitting next to this one mid-migration. Restore stages the file;
+#     the owner resumes from the Remote access card.
+MESH_STATE_FILE="${MESH_STATE_FILE:-/var/lib/tailscale/tailscaled.state}"
+MESH_IDENTITY_FILE="${MESH_IDENTITY_FILE:-/var/lib/homebrain/mesh_identity.state}"
+
+# capture_mesh_identity <staging_dir> <encrypted:true|false>
+capture_mesh_identity() {
+    local staging="$1" encrypted="$2"
+    local identity="$MESH_STATE_FILE"
+    if [[ -s "$MESH_IDENTITY_FILE" ]]; then
+        identity="$MESH_IDENTITY_FILE"
+    else
+        [[ -n "${MESH_DOMAIN:-}" && -s "$identity" ]] || return 0
+    fi
+    if [[ "$encrypted" != "true" ]]; then
+        log_warn "Backup is not encrypted — leaving the private-network identity out of it."
+        return 0
+    fi
+    install -m 0600 "$identity" "$staging/mesh_identity.state" \
+        || { log_warn "Could not capture the private-network identity."; return 0; }
+    log_info "Private-network identity captured for restore."
+}
+
+# stage_mesh_identity <extracted_dir> — called by restore.sh.
+stage_mesh_identity() {
+    local src="$1/mesh_identity.state"
+    # A later restore must not offer an identity from an earlier archive.
+    rm -f "$MESH_IDENTITY_FILE" || return 1
+    [[ -s "$src" ]] || return 0
+    # Restoring data onto a box that is still signed in: it already is itself.
+    if command -v tailscale >/dev/null 2>&1 \
+        && [[ "$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null)" == "Running" ]]; then
+        log_info "This box is already on the private network — not staging the identity from the backup."
+        return 0
+    fi
+    mkdir -p "$(dirname "$MESH_IDENTITY_FILE")"
+    install -m 0600 "$src" "$MESH_IDENTITY_FILE" \
+        || { log_warn "Could not stage the private-network identity."; return 0; }
+    log_info "Private-network identity staged. Resume it from Connectivity → Remote access."
+}
+
+# resume_mesh_identity — the owner said the old box is gone. Root only.
+resume_mesh_identity() {
+    [[ -s "$MESH_IDENTITY_FILE" ]] || { log_warn "No private-network identity is staged."; return 1; }
+    command -v tailscaled >/dev/null 2>&1 || { log_warn "tailscale is not installed."; return 1; }
+    systemctl stop tailscaled || return 1
+    mkdir -p "$(dirname "$MESH_STATE_FILE")" || return 1
+    # Whatever this box was before stays recoverable by hand.
+    if [[ -f "$MESH_STATE_FILE" ]]; then
+        cp -a "$MESH_STATE_FILE" "${MESH_STATE_FILE}.before-resume" || return 1
+    fi
+    if ! install -m 0600 "$MESH_IDENTITY_FILE" "$MESH_STATE_FILE"; then
+        log_warn "Could not put the identity in place."
+        systemctl start tailscaled || true
+        return 1
+    fi
+    if ! systemctl start tailscaled; then
+        log_warn "tailscaled did not start."
+        return 1
+    fi
+    # One copy of the key on disk, not two.
+    rm -f "$MESH_IDENTITY_FILE"
+    log_info "Private-network identity resumed."
 }
 
 OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"

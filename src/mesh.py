@@ -22,6 +22,7 @@ replace. See scripts/tests/test_mesh.py.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 
@@ -36,6 +37,12 @@ APPS = {
     "homeassistant": (10000, "http://127.0.0.1:8123"),
 }
 DASHBOARD = (4443, "http://127.0.0.1:8000")
+
+# Where restore.sh stages the identity a backup carried (common.sh:
+# stage_mesh_identity). Present means "this box can resume as the device the
+# backup came from"; the owner decides, because two live boxes on one key
+# knock each other off the network.
+IDENTITY_FILE = "/var/lib/homebrain/mesh_identity.state"
 
 # Printed when a feature is switched off for the owner's network. The CLI then
 # either waits or exits 0 (cmd/tailscale/cli enableFeatureInteractive), so the
@@ -119,9 +126,10 @@ def status():
     starting, running. Anything the daemon reports that we do not recognise is
     "stopped", never "running".
     """
+    carried = os.path.exists(IDENTITY_FILE)
     st = _json(["status", "--json"])
     if st is None:
-        return {"state": "not_installed"}
+        return {"state": "not_installed", "carried": carried}
     backend = st.get("BackendState", "")
     state = {"Running": "running", "NeedsLogin": "needs_login",
              "Starting": "starting", "NeedsMachineAuth": "needs_approval"}.get(backend, "stopped")
@@ -136,6 +144,11 @@ def status():
         # Empty while HTTPS certificates are switched off for the network.
         "https_ready": bool(st.get("CertDomains")),
         "version": (st.get("Version") or "").split("-")[0],
+        # Absent when the owner has switched key expiry off for this box.
+        # While it is present, remote access stops on that date until the
+        # owner signs the box in again.
+        "key_expiry": me.get("KeyExpiry") or "",
+        "carried": carried,
         "lock": {"enabled": False, "signed": False, "pending": []},
         "published": {},
         "public": False,
@@ -196,27 +209,44 @@ def publish(public):
     never public. Returns {"ok": True} or {"error", "enable_url"} — the link
     is the page where the owner switches the feature on for their network.
     """
+    # A refused public address must not take a working private one down with
+    # it: the owner may be on the dashboard through it.
+    was_on = public and bool(_published(_json(["serve", "status", "--json"])))
     for port, target in APPS.values():
         verb = "funnel" if public else "serve"
         rc, out = run([verb, "--bg", f"--https={port}", target], timeout=25)
         bad = _publish_error(rc, out, public)
         if bad:
-            return bad
+            return _unpublish_failed(bad, was_on)
     port, target = DASHBOARD
     rc, out = run(["serve", "--bg", f"--https={port}", target], timeout=25)
     bad = _publish_error(rc, out, False)
     if bad:
-        return bad
+        return _unpublish_failed(bad, was_on)
 
     # Trust what the daemon reports, not our exit codes.
     got = _published(_json(["serve", "status", "--json"]))
     for port, _target in APPS.values():
         if got.get(port) is not bool(public):
-            return {"error": f"Port {port} did not come up as "
-                             f"{'public' if public else 'private'}."}
+            return _unpublish_failed({"error": f"Port {port} did not come up as "
+                                               f"{'public' if public else 'private'}."}, was_on)
     if got.get(DASHBOARD[0]) is not False:
-        return {"error": "The dashboard did not come up on the private network."}
+        return _unpublish_failed(
+            {"error": "The dashboard did not come up on the private network."}, was_on)
     return {"ok": True}
+
+
+def _unpublish_failed(error, restore_private=False):
+    # Commands apply one port at a time. A failure on the second port must
+    # not leave the first public after the dashboard reports a failed change.
+    rc, _out = run(["serve", "reset"])
+    if rc != 0:
+        error["error"] += " Could not clear partial publication; some apps may still be public."
+    elif restore_private and publish(False).get("ok"):
+        error["error"] += " The apps stay on the private network."
+    else:
+        error["error"] += " Remote publication was cleared. Retry to turn it on."
+    return error
 
 
 def _publish_error(rc, out, public):

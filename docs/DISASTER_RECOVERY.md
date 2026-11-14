@@ -153,23 +153,32 @@ skipped, so only the one that was in flight repeats.
 
 ## Remote access after a restore
 
-A backup carries the box's remote-access *settings*, not its membership of
-your private network. That membership is a key held by the dead box.
+Encrypted backups now carry the box's Tailscale device and signing keys. Restore
+stages that identity without connecting it: two live boxes using the same key
+would keep disconnecting each other.
 
-After restoring onto new hardware, the dashboard's health banner says remote
-access is down. That is correct. Open **Connectivity → Remote access**,
-connect, and sign in with the same Tailscale account. The new box gets a new
-name (`homebrain-1`, unless you first remove the old one in your Tailscale
-admin console), and turning remote access on moves the apps to it. Phones
-paired to the old name need the new one.
+After restoring, open **Connectivity → Remote access** on the home network:
 
-If you turned the lock on, the dead box was the device that approves new
-ones, so the replacement cannot be approved. Use one of the two disablement
-secrets you were shown when you turned the lock on: on any device still in
-your network, run `tailscale lock disable <secret>`, connect the new box,
-then turn the lock on again from its dashboard. Without a secret and without
-another approving device, the lock cannot be lifted and you need a new
-Tailscale network.
+- If the old box is gone or permanently switched off, choose **Resume as the
+  same device**. This restores its network identity and publication settings,
+  then reapplies the app addresses. Existing phone addresses remain valid if
+  the device is still registered in your tailnet.
+- If the old box will keep running, choose **Connect as a new device** and
+  sign in. Turning remote access on discards the staged identity. Pair phones
+  to the new addresses, and save a new phone setup sheet.
+- A box already signed in keeps its own identity when data is restored.
+
+An expired or removed device may need signing in again. The recovered signing
+key can resume its role only while it remains trusted by your network. Keep
+the two lock disablement secrets offline even when you have a backup. Tailnet
+Lock's cached log is fetched again from the control plane on replacement
+hardware; the backup carries the identity, not an offline coordination service.
+
+Older backups and unencrypted archives do not carry the identity. Connect as a
+new device. If the lost box was your only signing device, use a saved secret
+on a remaining device: `tailscale lock disable <secret>`. Connect the replacement
+and turn the lock on again. Without another signing device or a disablement
+secret, a locked network cannot admit the replacement.
 
 ## Known limitation
 
