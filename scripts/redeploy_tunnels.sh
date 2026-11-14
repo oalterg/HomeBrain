@@ -14,7 +14,9 @@ load_env
 # Retire the previous mesh publication when switching providers, including
 # public Funnel listeners. Clearing .env alone does not stop tailscaled.
 if [[ -z "${MESH_DOMAIN:-}" ]] && command -v tailscale >/dev/null 2>&1; then
-    tailscale serve reset
+    # Best effort: a client that is installed but signed out, or stopped,
+    # has nothing published and must not abort a tunnel redeploy.
+    tailscale serve reset || true
 fi
 
 # 1. Clean Slate: Stop ALL potential tunnel services first.

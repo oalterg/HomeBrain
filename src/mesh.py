@@ -7,14 +7,16 @@ server, and no third-party server can decipher the traffic.
 The box joins the owner's Tailscale network. Four local services are then
 published on the box's own name, with TLS ending on the box:
 
-    https://<name>            Nextcloud        (public address optional)
-    https://<name>:8443       Vault            (public address optional)
-    https://<name>:10000      Home Assistant   (public address optional)
-    https://<name>:4443       Dashboard        (private network only, always)
+    https://<name>            Nextcloud
+    https://<name>:8443       Vault
+    https://<name>:10000      Home Assistant
+    https://<name>:4443       Dashboard
 
-443, 8443 and 10000 are the only ports a public address (Funnel) may use, and
-there are three apps, so the dashboard takes a fourth port that is never made
-public. It holds the master password.
+All four are reachable only from devices on the owner's network. A public
+address (Funnel) was built and taken out before release: it put three login
+pages on the internet, and its name lives in a DNS zone Tailscale controls.
+publish() turns a public address OFF if it finds one, and status() still
+reports one, so a box where the owner switched it on by hand says so.
 
 Everything that touches the outside world goes through run(), which tests
 replace. See scripts/tests/test_mesh.py.
@@ -202,58 +204,42 @@ def connect():
     return {"error": (out.strip().splitlines() or ["No sign-in link was offered."])[-1][:200]}
 
 
-def publish(public):
-    """Publish the three apps and the dashboard on the box's name.
+def publish():
+    """Publish the three apps and the dashboard on the box's name, private.
 
-    public=True gives the apps a public address (Funnel); the dashboard is
-    never public. Returns {"ok": True} or {"error", "enable_url"} — the link
-    is the page where the owner switches the feature on for their network.
+    `serve` on a port that has a public address takes it away. Returns
+    {"ok": True} or {"error", "enable_url"} — the link is the page where the
+    owner switches HTTPS on for their network.
     """
-    # A refused public address must not take a working private one down with
-    # it: the owner may be on the dashboard through it.
-    was_on = public and bool(_published(_json(["serve", "status", "--json"])))
-    for port, target in APPS.values():
-        verb = "funnel" if public else "serve"
-        rc, out = run([verb, "--bg", f"--https={port}", target], timeout=25)
-        bad = _publish_error(rc, out, public)
+    was_on = bool(_published(_json(["serve", "status", "--json"])))
+    for port, target in list(APPS.values()) + [DASHBOARD]:
+        rc, out = run(["serve", "--bg", f"--https={port}", target], timeout=25)
+        bad = _publish_error(rc, out)
         if bad:
-            return _unpublish_failed(bad, was_on)
-    port, target = DASHBOARD
-    rc, out = run(["serve", "--bg", f"--https={port}", target], timeout=25)
-    bad = _publish_error(rc, out, False)
-    if bad:
-        return _unpublish_failed(bad, was_on)
+            return _publish_failed(bad, was_on)
 
     # Trust what the daemon reports, not our exit codes.
     got = _published(_json(["serve", "status", "--json"]))
-    for port, _target in APPS.values():
-        if got.get(port) is not bool(public):
-            return _unpublish_failed({"error": f"Port {port} did not come up as "
-                                               f"{'public' if public else 'private'}."}, was_on)
-    if got.get(DASHBOARD[0]) is not False:
-        return _unpublish_failed(
-            {"error": "The dashboard did not come up on the private network."}, was_on)
+    for port, _target in list(APPS.values()) + [DASHBOARD]:
+        if got.get(port) is not False:
+            return _publish_failed({"error": f"Port {port} did not come up on the "
+                                             "private network."}, was_on)
     return {"ok": True}
 
 
-def _unpublish_failed(error, restore_private=False):
-    # Commands apply one port at a time. A failure on the second port must
-    # not leave the first public after the dashboard reports a failed change.
-    rc, _out = run(["serve", "reset"])
-    if rc != 0:
-        error["error"] += " Could not clear partial publication; some apps may still be public."
-    elif restore_private and publish(False).get("ok"):
-        error["error"] += " The apps stay on the private network."
-    else:
-        error["error"] += " Remote publication was cleared. Retry to turn it on."
+def _publish_failed(error, was_on):
+    # A first publish that fails part-way leaves nothing behind. One that was
+    # already on is left alone: clearing it would cut off an owner who is on
+    # the dashboard through it.
+    if not was_on:
+        run(["serve", "reset"])
     return error
 
 
-def _publish_error(rc, out, public):
+def _publish_error(rc, out):
     link = _ENABLE_URL.search(out or "")
     if link:
-        what = "A public address" if public else "HTTPS"
-        return {"error": f"{what} is switched off for your network. Open the link, "
+        return {"error": "HTTPS is switched off for your network. Open the link, "
                          "allow it, then try again.",
                 "enable_url": link.group(0)}
     if rc != 0:

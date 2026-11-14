@@ -180,32 +180,25 @@ def test_running_status_strips_the_trailing_dot_and_lists_waiting_devices():
         f.close()
 
 
-def test_publish_private_uses_serve_for_everything():
+def test_publish_never_asks_for_a_public_address():
+    """The public address was taken out before release. Nothing this module
+    runs may put a login page on the internet."""
     f = Fake()
     try:
-        assert mesh.publish(False) == {"ok": True}
+        assert mesh.publish() == {"ok": True}
         assert sorted(f.verbs()) == sorted([
             ("serve", "--https=443"), ("serve", "--https=8443"),
             ("serve", "--https=10000"), ("serve", "--https=4443")])
+        assert not any(c[0] == "funnel" for c in f.calls)
     finally:
         f.close()
 
 
-def test_publish_public_never_funnels_the_dashboard():
-    f = Fake()
-    try:
-        assert mesh.publish(True) == {"ok": True}
-        assert ("serve", "--https=4443") in f.verbs()
-        assert ("funnel", "--https=4443") not in f.verbs()
-        assert sum(1 for v, _ in f.verbs() if v == "funnel") == 3
-    finally:
-        f.close()
-
-
-def test_going_private_again_takes_the_public_address_away():
+def test_publish_takes_a_hand_made_public_address_away():
     f = Fake(serve=serve_config(public=True))
     try:
-        assert mesh.publish(False) == {"ok": True}
+        assert mesh.status()["public"] is True, "a public address must be reported, not hidden"
+        assert mesh.publish() == {"ok": True}
         assert mesh.status()["public"] is False
     finally:
         f.close()
@@ -223,34 +216,31 @@ def test_publish_believes_the_daemon_not_the_exit_code():
         return real(argv, timeout)
     mesh.run = lying
     try:
-        res = mesh.publish(False)
+        res = mesh.publish()
         assert "error" in res, res
     finally:
         f.close()
 
 
 def test_a_refusal_carries_the_link_that_fixes_it():
-    link = "https://login.tailscale.com/f/funnel?node=n123CNTRL"
-    f = Fake(refuse={"funnel": (124, f"Funnel is not enabled on your tailnet.\nTo enable, visit:\n\n  {link}\n")})
+    link = "https://login.tailscale.com/f/serve?node=n123CNTRL"
+    f = Fake(refuse={"serve": (124, f"Serve is not enabled on your tailnet.\nTo enable, visit:\n\n  {link}\n")})
     try:
-        res = mesh.publish(True)
+        res = mesh.publish()
         assert res["enable_url"] == link
-        assert "public address" in res["error"].lower()
+        assert "https" in res["error"].lower()
     finally:
         f.close()
 
 
-def test_a_refused_public_address_leaves_the_private_one_up():
-    """Found by reading, not on hardware: clearing everything on a refusal
-    would cut off an owner who pressed the button from away, over 4443."""
-    link = "https://login.tailscale.com/f/funnel?node=n1"
-    f = Fake(serve=serve_config(public=False), refuse={"funnel": (0, f"To enable, visit:\n  {link}\n")})
+def test_a_failed_republish_does_not_cut_off_what_was_working():
+    """Clearing everything on a failure hangs the owner's own request when
+    they are on the dashboard through the private address."""
+    f = Fake(serve=serve_config(public=False), refuse={"serve": (1, "boom")})
     try:
-        res = mesh.publish(True)
-        assert res["enable_url"] == link and "stay on the private network" in res["error"]
-        st = mesh.status()
-        assert st["public"] is False
-        assert set(st["published"]) == {"443", "8443", "10000", "4443"}, st["published"]
+        assert "error" in mesh.publish()
+        assert ["serve", "reset"] not in f.calls
+        assert set(mesh.status()["published"]) == {"443", "8443", "10000", "4443"}
     finally:
         f.close()
 
@@ -258,8 +248,8 @@ def test_a_refused_public_address_leaves_the_private_one_up():
 def test_a_refused_first_publish_leaves_nothing_behind():
     f = Fake(refuse={"serve": (0, "visit https://login.tailscale.com/f/serve?node=n1\n")})
     try:
-        res = mesh.publish(False)
-        assert "cleared" in res["error"] and mesh.status()["published"] == {}
+        assert "error" in mesh.publish()
+        assert ["serve", "reset"] in f.calls and mesh.status()["published"] == {}
     finally:
         f.close()
 
@@ -269,7 +259,7 @@ def test_a_refusal_that_exits_zero_is_still_a_refusal():
     link = "https://login.tailscale.com/f/serve?node=n1"
     f = Fake(refuse={"serve": (0, f"\nServe is not enabled on your tailnet.\n\n         {link}\n\n")})
     try:
-        res = mesh.publish(False)
+        res = mesh.publish()
         assert res.get("enable_url") == link, res
     finally:
         f.close()
@@ -343,7 +333,7 @@ def test_publish_writes_the_same_keys_a_tunnel_does():
     h = _fresh()
     f = Fake()
     try:
-        r = _post(h, "/api/mesh/publish", {"public": True})
+        r = _post(h, "/api/mesh/publish", {"public": True})   # the flag is ignored
         assert r.status_code == 200, r.get_data(as_text=True)
         assert r.get_json()["status"] == "started"
         want = {
@@ -527,20 +517,20 @@ def test_resume_without_a_staged_identity_is_refused():
         h.close()
 
 
-def test_resume_republishes_what_the_backup_had_and_points_the_box_at_it():
-    """The serve config comes back with the identity. A box whose apps were
-    public stays public; nothing asks the owner again."""
+def test_resume_republishes_privately_and_points_the_box_at_it():
+    """The serve config comes back with the identity. Even if that backup had
+    a public address, the resumed box comes up private."""
     h = _fresh()
     s = _Staged()
     f = Fake(serve=serve_config(public=True))
     try:
         r = _post(h, "/api/mesh/resume")
         assert r.status_code == 200, r.get_data(as_text=True)
-        assert r.get_json() == {"status": "started", "public": True}
+        assert r.get_json() == {"status": "started"}
         assert "resume_mesh_identity" in s.scripts
         assert h.written("MESH_DOMAIN") == NAME
-        assert ("funnel", "--https=443") in f.verbs()
-        assert ("serve", "--https=4443") in f.verbs()
+        assert not any(c[0] == "funnel" for c in f.calls)
+        assert mesh.status()["public"] is False
     finally:
         f.close()
         s.close()

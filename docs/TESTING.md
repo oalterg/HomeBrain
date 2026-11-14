@@ -590,13 +590,6 @@ release's source, and by nothing else. Treat each as unproven until ticked.
   - [ ] `https://<name>:4443` is the dashboard; login works; **Chat** opens
         (`/openclaw/`), which proves the allowed-origin entry.
 - [ ] The names on the home network still work for all four.
-- [ ] **Give the phone apps a public address**: on a network with Funnel off,
-      the link is shown and nothing changes. With it on, the three apps answer
-      from a device that is *not* on the private network, and
-      `https://<name>:4443` does **not**.
-- [ ] A camera-roll upload through the public address: record the rate. The
-      limit is unpublished ([`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md) Q3).
-- [ ] **Make the apps private** removes the public address (check from outside).
 - [ ] **Turn on the lock**: two secrets are shown once; devices already in the
       network keep working; a newly added phone appears under **Waiting** and
       works only after **Approve**.

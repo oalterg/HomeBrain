@@ -1,17 +1,15 @@
 # Remote access — no HomeBrain server, nothing a third party can read
 
-**Status:** in tree (2026-11-14), **not proven end to end.** The join, the
-dashboard card and the pinned install are walked on .69 up to the sign-in
-link. Everything after sign-in — publishing, the apps behind it, the public
-address, the lock — is unit-tested against a stand-in and checked against
-the pinned client's source, and has never run on a signed-in box. The list is
-in [`TESTING.md`](../TESTING.md#remote-access-private-network). §9 says what
-was built and where it differs from the proposal below.
+**Status:** shipped 2026-11-14, private network only. Signed in and working
+on .69. The lock, resume from a real backup, arm64 and the phone apps have not
+been walked on hardware; the list is in
+[`TESTING.md`](../TESTING.md#remote-access-private-network). §9 says what was
+built and where it differs from the proposal below, including the public
+address, which was built and taken out.
 **Date:** 2026-11-13, built 2026-11-14
-**Essence:** The box joins a mesh VPN on the owner's own account. Private
-mesh carries the dashboard and box-to-box backup. A public address whose
-encryption ends on the box carries the three phone apps. No server in the
-path can decipher the traffic, and HomeBrain runs none of them.
+**Essence:** The box joins a mesh VPN on the owner's own account and
+publishes the dashboard and the three apps on its own name there. No server
+in the path can decipher the traffic, and HomeBrain runs none of them.
 
 Related: [`PRODUCT_REVIEW_2026-11.md`](PRODUCT_REVIEW_2026-11.md) (why this is
 the missing element), [`LAN_HTTPS.md`](LAN_HTTPS.md) (the LAN face this must
@@ -347,6 +345,27 @@ structural, and `test_mesh.py` pins it.
   and offers a retry. If cleanup itself fails, the error explicitly says apps
   may still be public. The dashboard is always served privately on 4443.
 
+### The public address was taken out (2026-11-14)
+
+§4 gave the three phone apps a public address (Funnel). It was built, and
+removed before release on the owner's question "do we need it at all?":
+
+- It is the one path with a rule-2 caveat (§3): the name lives in a DNS zone
+  Tailscale controls.
+- It puts three login pages on the internet.
+- It is labelled beta and its bandwidth limit is unpublished (Q3, Q4).
+- On .69 the owner's first click on it never returned. Funnel itself was
+  allowed on that network and a hand-run `tailscale funnel` succeeded at once,
+  so the hang was in the dashboard path; it was not root-caused before the
+  feature was cut.
+
+What remains: every address is private, every phone needs the Tailscale app.
+`mesh.publish()` runs `serve` only, which also takes away a public address
+switched on by hand, and the card reports one if it sees it. The tables in §2,
+§4 and "The addresses" above describe the proposal; read "public address" there
+as not shipped. Ports are unchanged (443, 8443, 10000, 4443), so bringing it
+back later moves no address.
+
 ### Found on the first signed-in box (.69, 2026-11-14)
 
 - **Turning remote access on took the LAN names down.** The client binds the
@@ -359,9 +378,9 @@ structural, and `test_mesh.py` pins it.
   four tailnet addresses still published. Cost: the LAN names are IPv4-only
   in this mode, and a box whose LAN address changes without a reboot needs a
   manager restart to move Caddy.
-- **A refused public address cleared the private one too.** Not seen on
-  hardware; found by reading. Now a refusal puts the private publication
-  back, so an owner pressing the button from away is not cut off.
+- **A failed publish cleared a working one.** Found by reading. A publish
+  that fails while remote access is already on now leaves it as it was, so an
+  owner on the dashboard through the private address is not cut off.
 
 These paths are checked locally; the signed-in hardware checklist remains in
 `docs/TESTING.md`. No real-tailnet or phone validation is implied by local checks.

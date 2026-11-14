@@ -1439,7 +1439,7 @@ async function loadMesh() {
             `<p class="small mt">Connected, but remote access is not fully set up. Turning it on restarts Nextcloud, ` +
             `Home Assistant and Vault, and their away-from-home addresses become the ones under this name.</p>` +
             `<div class="inline-row mt">` +
-            `<button class="btn-primary" onclick="meshPublish(false, true)">Turn on remote access</button>` +
+            `<button class="btn-primary" onclick="meshPublish(true)">Turn on remote access</button>` +
             `<button class="btn-danger" onclick="meshDisconnect()">Disconnect</button></div>`;
         return;
     }
@@ -1455,8 +1455,8 @@ async function loadMesh() {
         meshRow('Home Assistant', meshLink(u.homeassistant || '')) +
         meshRow('Dashboard <span class="muted">— private network only</span>', meshLink(u.dashboard || '')) +
         meshRow('Phone apps', st.public
-            ? 'Public address — no extra app on the phone'
-            : 'Private — each phone needs the Tailscale app, switched on') +
+            ? 'Public address — switched on outside this dashboard'
+            : 'Each phone needs the Tailscale app, switched on') +
         meshRow('Lock', lock.enabled
             ? (lock.signed ? '<span class="status-badge status-running">On</span>'
                            : '<span class="status-badge status-stopped">This box is locked out</span>')
@@ -1480,9 +1480,7 @@ async function loadMesh() {
             `<span><button onclick="meshSign('${escapeHtml(p.nodekey)}')">Approve</button></span></div>`;
     });
     html += `<div class="inline-row mt">` +
-        (st.public
-            ? `<button onclick="meshPublish(false)">Make the apps private</button>`
-            : `<button onclick="meshPublish(true)">Give the phone apps a public address</button>`) +
+        (st.public ? `<button onclick="meshPublish(false)">Make the apps private</button>` : '') +
         `<button onclick="savePhoneSheet()">Save phone setup sheet</button>` +
         `<button class="btn-danger" onclick="meshDisconnect()">Turn off remote access</button></div>`;
     body.innerHTML = html;
@@ -1499,14 +1497,8 @@ async function meshConnect() {
     loadMesh();
 }
 
-async function meshPublish(isPublic, first) {
-    if (!await hbConfirm(isPublic ? {
-        title: 'Give the phone apps a public address?',
-        body: 'Nextcloud, Vault and Home Assistant become reachable from the internet at this box\'s name, '
-            + 'so their phone apps work with nothing extra installed. Each still asks for its own login.',
-        detail: 'Encryption still ends on this box. The dashboard stays on the private network.',
-        confirm: 'Make public',
-    } : first ? {
+async function meshPublish(first) {
+    if (!await hbConfirm(first ? {
         title: 'Turn on remote access?',
         body: 'Nextcloud, Home Assistant and Vault restart and move to their private-network addresses. '
             + 'This takes a minute or two. Phones already paired need the new address.',
@@ -1519,7 +1511,7 @@ async function meshPublish(isPublic, first) {
         confirm: 'Make private',
     })) return;
     meshMsg('Working…');
-    const d = await meshPost('/api/mesh/publish', { public: !!isPublic });
+    const d = await meshPost('/api/mesh/publish');
     if (!d) return;
     if (!d._ok) {
         const el = document.getElementById('mesh-msg');

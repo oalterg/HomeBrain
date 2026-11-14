@@ -3192,16 +3192,15 @@ def mesh_publish():
     """Publish the apps on the box's private-network name.
 
     Publish first, write .env second: if the owner's network refuses (HTTPS
-    or the public address is switched off there) the box must stay exactly as
+    is switched off there) the box must stay exactly as
     it was, not half-moved to an address nothing answers on.
     """
     if task_running():
         return jsonify({"error": "Task running"}), 409
-    public = bool((request.get_json(silent=True) or {}).get("public"))
     st = mesh.status()
     if st.get("state") != "running" or not st.get("dns_name"):
         return jsonify({"error": "Connect this box to your private network first."}), 409
-    res = mesh.publish(public)
+    res = mesh.publish()
     if res.get("error"):
         return jsonify(res), 409
     # Published under this identity: one a restored backup carried is now
@@ -3210,17 +3209,17 @@ def mesh_publish():
         os.remove(mesh.IDENTITY_FILE)
     except OSError:
         pass
-    return _mesh_apply(st, public, "Turn on remote access")
+    return _mesh_apply(st, "Turn on remote access")
 
 
-def _mesh_apply(st, public, task):
+def _mesh_apply(st, task):
     """Point .env at the box's name and redeploy, unless it already is."""
     if get_env_config().get("MESH_DOMAIN") == st["dns_name"]:
-        return jsonify({"status": "ok", "public": public})
+        return jsonify({"status": "ok"})
     point_mesh_at(st["dns_name"])
     if not _redeploy_for_mesh(task):
         return jsonify({"error": "Task running"}), 409
-    return jsonify({"status": "started", "public": public})
+    return jsonify({"status": "started"})
 
 
 @app.route("/api/mesh/resume", methods=["POST"])
@@ -3229,8 +3228,7 @@ def mesh_resume():
     """Resume as the device a restored backup came from.
 
     The owner's call, never automatic: the same key on two live boxes knocks
-    both off the network. What was published comes back with the identity, so
-    the public/private choice is read from the daemon, not asked again.
+    both off the network.
     """
     if task_running():
         return jsonify({"error": "Task running"}), 409
@@ -3257,11 +3255,10 @@ def mesh_resume():
         # Signed out since the backup (key expired, or removed from the
         # network). The card now offers the sign-in link; nothing is published.
         return jsonify({"status": "needs_login"})
-    public = bool(st.get("public"))
-    res = mesh.publish(public)
+    res = mesh.publish()
     if res.get("error"):
         return jsonify(res), 409
-    return _mesh_apply(st, public, "Resume remote access")
+    return _mesh_apply(st, "Resume remote access")
 
 
 @app.route("/api/mesh/lock", methods=["POST"])
