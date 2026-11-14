@@ -92,15 +92,9 @@ services:
     # is down, and the box CA is downloadable from homebrain.local either way.
     image: caddy:2.11.4-alpine
     restart: unless-stopped
-    # With remote access on, tailscaled listens on <tailnet address>:443 for
-    # Nextcloud, and Docker cannot then take 443 on every address: Caddy fails
-    # to start and the LAN names go dark. common.sh:refresh_lan_edge_bind
-    # narrows 443 to the LAN address plus loopback in that mode. The third
-    # mapping is the loopback half; outside that mode it parks on a spare port.
     ports:
       - "80:80"
-      - "${LAN_EDGE_HTTPS:-443}:443"
-      - "${LAN_EDGE_LOOPBACK:-127.0.0.1:44380}:443"
+      - "443:443"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

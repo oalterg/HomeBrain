@@ -584,7 +584,7 @@ release's source, and by nothing else. Treat each as unproven until ticked.
 - [ ] With HTTPS on: `.env` carries `MESH_DOMAIN`, `DEPLOYMENT_MODE=remote`,
       and the three app addresses; the redeploy finishes; all containers healthy.
 - [ ] From a second device on the private network, mobile data, Wi-Fi off:
-  - [ ] `https://<name>` is Nextcloud, logs in, no "untrusted domain" page.
+  - [ ] `https://<name>:9443` is Nextcloud, logs in, no "untrusted domain" page.
   - [ ] `https://<name>:8443` is Vault; the Bitwarden app logs in and syncs.
   - [ ] `https://<name>:10000` is Home Assistant; the companion app connects.
   - [ ] `https://<name>:4443` is the dashboard; login works; **Chat** opens
@@ -609,11 +609,8 @@ release's source, and by nothing else. Treat each as unproven until ticked.
 - [ ] Restore while the source will stay live: connect as a new device, publish,
       and confirm the staged identity is removed. Older/unencrypted backups
       offer a fresh connection, not a stale identity from another restore.
-- [x] With remote access on, `https://homebrain.local`, `nc-`, `vault-` and
-      `ha-homebrain.local` still answer on the LAN (.69, 2026-11-14, after the
-      port-443 fix; before it Caddy failed to start).
-- [ ] The same after a reboot, and after turning remote access off again
-      (Caddy back on every address).
+- [ ] With remote access on, `https://homebrain.local`, `nc-`, `vault-` and
+      `ha-homebrain.local` still answer on the LAN, including after a reboot.
 - [ ] Switching to Pangolin or Cloudflare removes the old Serve/Funnel listeners;
       chat's allowed origins match the new dashboard address after redeploy.
 

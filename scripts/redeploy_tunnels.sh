@@ -47,9 +47,6 @@ vault_profiles=$(get_vault_profiles)
 if [[ -n "$profiles" || -n "$vault_profiles" ]]; then
     docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} pull
 fi
-# Remote access and Caddy both want port 443; settle who gets which address
-# before anything is (re)created. See common.sh:refresh_lan_edge_bind.
-refresh_vault_lan_ip
 # Always up: Caddy is the LAN face in both modes. Empty tunnel profiles
 # keep newt down; default services (including caddy) still start.
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans

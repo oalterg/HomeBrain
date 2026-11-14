@@ -26,7 +26,6 @@ ExecStartPre=-/bin/bash -c 'source /opt/homebrain/scripts/common.sh >/dev/null 2
 # all interfaces so host-gateway packets arrive. Install an INPUT guard
 # before listening, independent of whether UFW is installed or enabled.
 ExecStartPre=/bin/bash /opt/homebrain/scripts/manager_firewall.sh
-ExecStartPre=-/bin/bash /opt/homebrain/scripts/utilities.sh refresh_lan_edge
 ExecStart=/opt/homebrain/venv/bin/gunicorn --worker-class gevent --workers 3 --bind 0.0.0.0:8000 --timeout 30 app:app
 Restart=always
 RestartSec=10

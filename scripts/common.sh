@@ -1252,33 +1252,6 @@ ensure_lan_hosts() {
     return 0
 }
 
-# refresh_lan_edge_bind <lan_ip> — where Caddy's HTTPS port is published.
-#
-# Remote access publishes Nextcloud on the box's tailnet address, port 443, and
-# tailscaled binds that address. Docker's default "443 on every address" then
-# fails with "address already in use", Caddy does not start, and
-# homebrain.local stops answering — found on .69 the first time remote access
-# was turned on. So in that mode Caddy takes 443 on the LAN address and on
-# loopback (box-local callers reach the LAN names through /etc/hosts), and
-# leaves the tailnet address to tailscaled. Otherwise both keys are empty and
-# docker-compose.yml's defaults apply.
-#
-# Exported as well as written: Compose prefers the environment over
-# --env-file, and load_env already exported the old values.
-refresh_lan_edge_bind() {
-    local lan_ip="$1" https="" loopback=""
-    if [[ -n "${MESH_DOMAIN:-}" && -n "$lan_ip" ]]; then
-        https="${lan_ip}:443"
-        loopback="127.0.0.1:443"
-    fi
-    if [[ "$https" != "${LAN_EDGE_HTTPS:-}" || "$loopback" != "${LAN_EDGE_LOOPBACK:-}" ]]; then
-        update_env_var "LAN_EDGE_HTTPS" "$https"
-        update_env_var "LAN_EDGE_LOOPBACK" "$loopback"
-        log_info "LAN HTTPS is published on ${https:-every address}."
-    fi
-    export LAN_EDGE_HTTPS="$https" LAN_EDGE_LOOPBACK="$loopback"
-}
-
 # Re-derive VAULT_LAN_IP from the current address.
 #
 # Caddy takes it as a TLS SAN ({$VAULT_LAN_IP} in config/Caddyfile) so a browser
@@ -1309,7 +1282,6 @@ refresh_vault_lan_ip() {
     local lan_ip
     lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [[ -n "$lan_ip" ]] || return 0
-    refresh_lan_edge_bind "$lan_ip"
     if [[ "$lan_ip" == "${VAULT_LAN_IP:-}" ]]; then
         return 0
     fi

@@ -3214,7 +3214,9 @@ def mesh_publish():
 
 def _mesh_apply(st, task):
     """Point .env at the box's name and redeploy, unless it already is."""
-    if get_env_config().get("MESH_DOMAIN") == st["dns_name"]:
+    env = get_env_config()
+    if (env.get("MESH_DOMAIN") == st["dns_name"] and env.get("NEXTCLOUD_TRUSTED_DOMAINS")
+            == mesh.host_port(st["dns_name"], "nextcloud")):
         return jsonify({"status": "ok"})
     point_mesh_at(st["dns_name"])
     if not _redeploy_for_mesh(task):

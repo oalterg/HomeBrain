@@ -3433,22 +3433,6 @@ case "${1:-}" in
         ensure_tailscale "$(jq -r '.tailscale.version // empty' \
             "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
         ;;
-    refresh_lan_edge)
-        # Boot-time guard (homebrain-manager ExecStartPre). Caddy is published
-        # on the LAN address while remote access is on; a box that comes up on
-        # a different address would otherwise have no LAN web server at all.
-        load_env
-        before="${LAN_EDGE_HTTPS:-}"
-        refresh_vault_lan_ip
-        # Also whenever the narrowed bind is in force: Docker cannot bind an
-        # address the box does not hold yet, so a Caddy created before the
-        # network came up at boot is still down. `up` on a running one is a
-        # no-op.
-        if [[ "${LAN_EDGE_HTTPS:-}" != "$before" || -n "${LAN_EDGE_HTTPS:-}" ]]; then
-            # shellcheck disable=SC2046
-            docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d --no-deps caddy
-        fi
-        ;;
     resume_mesh_identity)
         resume_mesh_identity
         ;;

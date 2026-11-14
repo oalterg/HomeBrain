@@ -48,11 +48,11 @@ RUNNING = {"BackendState": "Running", "AuthURL": "",
 
 
 def serve_config(public):
-    ports = [443, 8443, 10000, 4443]
+    ports = [9443, 8443, 10000, 4443]
     return {
         "TCP": {str(p): {"HTTPS": True} for p in ports},
         "Web": {f"{NAME}:{p}": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:1"}}} for p in ports},
-        "AllowFunnel": {f"{NAME}:{p}": True for p in (443, 8443, 10000)} if public else {},
+        "AllowFunnel": {f"{NAME}:{p}": True for p in (9443, 8443, 10000)} if public else {},
     }
 
 
@@ -87,6 +87,10 @@ class Fake:
             else:
                 funnel.pop(f"{NAME}:{port}", None)
             return 0, "Available within your tailnet"
+        if argv[0] == "serve" and argv[-1] == "off":
+            port = argv[1].split("=")[1]
+            self.serve.get("TCP", {}).pop(port, None)
+            return 0, ""
         if argv[:2] == ["serve", "reset"]:
             self.serve = {}
             return 0, ""
@@ -121,7 +125,7 @@ def _post(h, path, payload=None):
 def test_urls_put_the_dashboard_on_its_own_port():
     u = mesh.urls(NAME)
     assert u == {
-        "nextcloud": f"https://{NAME}",
+        "nextcloud": f"https://{NAME}:9443",
         "vault": f"https://{NAME}:8443",
         "homeassistant": f"https://{NAME}:10000",
         "dashboard": f"https://{NAME}:4443",
@@ -129,11 +133,12 @@ def test_urls_put_the_dashboard_on_its_own_port():
     assert mesh.urls("") == {}
 
 
-def test_the_dashboard_port_is_not_one_a_public_address_can_use():
-    """Funnel only accepts 443, 8443 and 10000. Keeping the dashboard off all
-    three is what makes "never public" structural rather than a promise."""
-    assert mesh.DASHBOARD[0] not in (443, 8443, 10000)
-    assert sorted(p for p, _ in mesh.APPS.values()) == [443, 8443, 10000]
+def test_no_published_port_is_one_the_lan_edge_uses():
+    """The client binds <tailnet address>:<port> on the host. On 443 that
+    stopped Docker publishing Caddy, and homebrain.local went dark (.69)."""
+    ports = [p for p, _ in mesh.APPS.values()] + [mesh.DASHBOARD[0]]
+    assert len(set(ports)) == 4
+    assert not {80, 443} & set(ports)
 
 
 def test_not_installed_is_its_own_state():
@@ -175,7 +180,7 @@ def test_running_status_strips_the_trailing_dot_and_lists_waiting_devices():
         assert st["lock"] == {"enabled": True, "signed": True,
                               "pending": [{"name": "phone.tail1234.ts.net", "nodekey": KEY}]}
         assert st["public"] is True
-        assert st["published"] == {"443": True, "4443": False, "8443": True, "10000": True}
+        assert st["published"] == {"9443": True, "4443": False, "8443": True, "10000": True}
     finally:
         f.close()
 
@@ -187,9 +192,23 @@ def test_publish_never_asks_for_a_public_address():
     try:
         assert mesh.publish() == {"ok": True}
         assert sorted(f.verbs()) == sorted([
-            ("serve", "--https=443"), ("serve", "--https=8443"),
+            ("serve", "--https=9443"), ("serve", "--https=8443"),
             ("serve", "--https=10000"), ("serve", "--https=4443")])
         assert not any(c[0] == "funnel" for c in f.calls)
+    finally:
+        f.close()
+
+
+def test_publish_retires_ports_from_an_earlier_layout():
+    """.69 was first published with Nextcloud on 443. Re-publishing must take
+    that listener away, or the port stays bound and Caddy stays down."""
+    old = serve_config(public=False)
+    old["TCP"]["443"] = {"HTTPS": True}
+    f = Fake(serve=old)
+    try:
+        assert mesh.publish() == {"ok": True}
+        assert ["serve", "--https=443", "off"] in f.calls
+        assert set(mesh.status()["published"]) == {"9443", "8443", "10000", "4443"}
     finally:
         f.close()
 
@@ -240,7 +259,7 @@ def test_a_failed_republish_does_not_cut_off_what_was_working():
     try:
         assert "error" in mesh.publish()
         assert ["serve", "reset"] not in f.calls
-        assert set(mesh.status()["published"]) == {"443", "8443", "10000", "4443"}
+        assert set(mesh.status()["published"]) == {"9443", "8443", "10000", "4443"}
     finally:
         f.close()
 
@@ -299,7 +318,7 @@ def test_sign_rejects_anything_that_is_not_a_node_key():
 
 
 def test_health_names_what_is_missing():
-    f = Fake(serve={"TCP": {"443": {"HTTPS": True}}})
+    f = Fake(serve={"TCP": {"9443": {"HTTPS": True}}})
     try:
         ok, why = mesh.health()
         assert not ok and "vault" in why and "dashboard" in why
@@ -342,7 +361,7 @@ def test_publish_writes_the_same_keys_a_tunnel_does():
             "NEWT_ID": "",
             "PANGOLIN_DOMAIN": "",
             "MANAGER_DOMAIN": f"{NAME}:4443",
-            "NEXTCLOUD_TRUSTED_DOMAINS": NAME,
+            "NEXTCLOUD_TRUSTED_DOMAINS": f"{NAME}:9443",
             "HA_TRUSTED_DOMAINS": f"{NAME}:10000",
             "VAULT_TRUSTED_DOMAINS": NAME,
             "VAULT_DOMAIN": f"https://{NAME}:8443",

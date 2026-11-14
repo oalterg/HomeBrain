@@ -7,10 +7,14 @@ server, and no third-party server can decipher the traffic.
 The box joins the owner's Tailscale network. Four local services are then
 published on the box's own name, with TLS ending on the box:
 
-    https://<name>            Nextcloud
+    https://<name>:9443       Nextcloud
     https://<name>:8443       Vault
     https://<name>:10000      Home Assistant
     https://<name>:4443       Dashboard
+
+None of them is 443. The client binds <tailnet address>:<port> on the host
+for each one, and on 443 that stops Docker publishing Caddy on every address:
+the LAN names went dark on the first box this ran on.
 
 All four are reachable only from devices on the owner's network. A public
 address (Funnel) was built and taken out before release: it put three login
@@ -34,7 +38,7 @@ HOSTNAME = "homebrain"
 # Published path -> (port on the box's name, local target). One owner for this
 # fact: app.py derives every away-from-home URL from urls() below.
 APPS = {
-    "nextcloud": (443, "http://127.0.0.1:8080"),
+    "nextcloud": (9443, "http://127.0.0.1:8080"),
     "vault": (8443, "http://127.0.0.1:8082"),
     "homeassistant": (10000, "http://127.0.0.1:8123"),
 }
@@ -96,15 +100,14 @@ def urls(dns_name):
         return {}
     out = {}
     for app, (port, _target) in APPS.items():
-        out[app] = f"https://{dns_name}" if port == 443 else f"https://{dns_name}:{port}"
+        out[app] = f"https://{dns_name}:{port}"
     out["dashboard"] = f"https://{dns_name}:{DASHBOARD[0]}"
     return out
 
 
 def host_port(dns_name, app):
-    """`name` or `name:port` — the form the *_TRUSTED_DOMAINS keys carry."""
-    port = APPS[app][0]
-    return dns_name if port == 443 else f"{dns_name}:{port}"
+    """`name:port` — the form the *_TRUSTED_DOMAINS keys carry."""
+    return f"{dns_name}:{APPS[app][0]}"
 
 
 def _published(serve):
@@ -211,8 +214,13 @@ def publish():
     {"ok": True} or {"error", "enable_url"} — the link is the page where the
     owner switches HTTPS on for their network.
     """
-    was_on = bool(_published(_json(["serve", "status", "--json"])))
-    for port, target in list(APPS.values()) + [DASHBOARD]:
+    before = _published(_json(["serve", "status", "--json"]))
+    was_on = bool(before)
+    wanted = list(APPS.values()) + [DASHBOARD]
+    # Anything else this box still publishes is from an earlier layout.
+    for port in sorted(set(before) - {p for p, _t in wanted}):
+        run(["serve", f"--https={port}", "off"])
+    for port, target in wanted:
         rc, out = run(["serve", "--bg", f"--https={port}", target], timeout=25)
         bad = _publish_error(rc, out)
         if bad:
@@ -220,7 +228,7 @@ def publish():
 
     # Trust what the daemon reports, not our exit codes.
     got = _published(_json(["serve", "status", "--json"]))
-    for port, _target in list(APPS.values()) + [DASHBOARD]:
+    for port, _target in wanted:
         if got.get(port) is not False:
             return _publish_failed({"error": f"Port {port} did not come up on the "
                                              "private network."}, was_on)

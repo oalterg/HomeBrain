@@ -287,10 +287,10 @@ Code: `src/mesh.py` (the only place that runs the client), routes under
 
 | Service | Address | Public address allowed |
 |---|---|---|
-| Nextcloud | `https://<name>` | Yes |
-| Vault | `https://<name>:8443` | Yes |
-| Home Assistant | `https://<name>:10000` | Yes |
-| Dashboard and chat | `https://<name>:4443` | **Never** |
+| Nextcloud | `https://<name>:9443` (was 443 as built; see below) | No |
+| Vault | `https://<name>:8443` | No |
+| Home Assistant | `https://<name>:10000` | No |
+| Dashboard and chat | `https://<name>:4443` | No |
 
 A public address can only use 443, 8443 and 10000. Three apps take all
 three, so the dashboard sits on a port that cannot be made public. That is
@@ -363,24 +363,28 @@ What remains: every address is private, every phone needs the Tailscale app.
 `mesh.publish()` runs `serve` only, which also takes away a public address
 switched on by hand, and the card reports one if it sees it. The tables in §2,
 §4 and "The addresses" above describe the proposal; read "public address" there
-as not shipped. Ports are unchanged (443, 8443, 10000, 4443), so bringing it
-back later moves no address.
+as not shipped.
 
 ### Found on the first signed-in box (.69, 2026-11-14)
 
-- **Turning remote access on took the LAN names down.** The client binds the
-  box's tailnet address on port 443 for Nextcloud. Docker then cannot publish
-  Caddy on "443, every address", Caddy does not start, and `homebrain.local`
-  and the three app names stop answering. Fixed: while remote access is on,
-  Caddy's 443 is published on the LAN address and loopback only
-  (`common.sh:refresh_lan_edge_bind`, applied on redeploy, update, restore and
-  at boot). Verified on .69: all four `.local` names answer again with the
-  four tailnet addresses still published. Cost: the LAN names are IPv4-only
-  in this mode, and a box whose LAN address changes without a reboot needs a
-  manager restart to move Caddy.
+- **Turning remote access on took the LAN names down.** The client binds
+  `<tailnet address>:<port>` on the host for every published port. With
+  Nextcloud on 443, Docker could no longer publish Caddy on "443, every
+  address", Caddy did not start, and `homebrain.local` and the three app
+  names stopped answering. From the pinned source that host listener only
+  serves traffic from the box to itself, retries forever, and cannot be
+  switched off.
+  First fix, abandoned: publish Caddy's 443 on the LAN address and loopback
+  only. It worked until a reboot, where Docker started before the box held
+  its LAN address and Caddy came up with no ports at all.
+  Shipped fix: Nextcloud's private-network port is **9443**, and no published
+  port is one Caddy uses. Nothing about the LAN edge changes. Only 443 was
+  ever tied to the public address, which is gone.
 - **A failed publish cleared a working one.** Found by reading. A publish
   that fails while remote access is already on now leaves it as it was, so an
   owner on the dashboard through the private address is not cut off.
+- `publish()` retires ports left from an earlier layout, which is how .69
+  moved from 443 to 9443.
 
 These paths are checked locally; the signed-in hardware checklist remains in
 `docs/TESTING.md`. No real-tailnet or phone validation is implied by local checks.

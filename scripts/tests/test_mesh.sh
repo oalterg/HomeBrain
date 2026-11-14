@@ -106,27 +106,15 @@ else
 fi
 
 echo "LAN HTTPS beside remote access"
-# tailscaled binds <tailnet address>:443. Docker's "443 on every address" then
-# fails, Caddy does not start and homebrain.local goes dark (seen on .69).
-edge() {  # edge <MESH_DOMAIN> <lan_ip> -> "https|loopback"
-    (
-        update_env_var() { :; }
-        MESH_DOMAIN="$1"; unset LAN_EDGE_HTTPS LAN_EDGE_LOOPBACK
-        refresh_lan_edge_bind "$2" >/dev/null 2>&1
-        echo "${LAN_EDGE_HTTPS}|${LAN_EDGE_LOOPBACK}"
-    )
-}
-expect "remote access on: 443 on the LAN address and loopback only" \
-    "192.168.1.10:443|127.0.0.1:443" "$(edge hb.t.ts.net 192.168.1.10)"
-expect "remote access off: every address" "|" "$(edge "" 192.168.1.10)"
-expect "no LAN address known: every address" "|" "$(edge hb.t.ts.net "")"
-if grep -q '"${LAN_EDGE_HTTPS:-443}:443"' "$REPO_ROOT/docker-compose.yml" \
-    && grep -q '"${LAN_EDGE_LOOPBACK:-127.0.0.1:44380}:443"' "$REPO_ROOT/docker-compose.yml" \
-    && grep -B3 'up -d --remove-orphans' "$REPO_ROOT/scripts/redeploy_tunnels.sh" | grep -q refresh_vault_lan_ip \
-    && grep -q 'utilities.sh refresh_lan_edge' "$REPO_ROOT/config/homebrain-manager.service"; then
-    ok "compose, redeploy and boot all use the narrowed bind"
+# The client binds <tailnet address>:<port> on the host for every published
+# port. On 443 that stopped Docker publishing Caddy ("address already in
+# use") and homebrain.local went dark on .69. No published port may be one
+# the LAN edge uses.
+ports="$(sed -n 's/.*": (\([0-9]*\), "http.*/\1/p; s/^DASHBOARD = (\([0-9]*\),.*/\1/p' "$REPO_ROOT/src/mesh.py" | tr '\n' ' ')"
+if [[ "$(wc -w <<< "$ports")" -eq 4 ]] && ! grep -qwE '80|443' <<< "$ports"; then
+    ok "no private-network port collides with Caddy's 80/443 ($ports)"
 else
-    bad "the narrowed 443 bind is not wired into compose, redeploy and boot"
+    bad "a private-network port collides with Caddy, or the list could not be read ('$ports')"
 fi
 
 echo "identity carried in a backup"
