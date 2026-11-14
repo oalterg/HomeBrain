@@ -1133,8 +1133,10 @@ get_vault_profiles() {
 # set DEPLOYMENT_MODE=local to opt out despite having credentials.
 # When Pangolin IS provisioned, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
 is_local_mode() {
-    # No Pangolin credentials at all — always local regardless of DEPLOYMENT_MODE
-    [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
+    # Neither a private-network name (MESH_DOMAIN, src/mesh.py) nor Pangolin
+    # credentials — always local regardless of DEPLOYMENT_MODE
+    [[ -z "${MESH_DOMAIN:-}" && -z "${CF_TOKEN_NC:-}" && -z "${CF_TOKEN_HA:-}" ]] \
+        && [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
     # Credentials present but user explicitly opted out
     [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
     return 1
@@ -2159,6 +2161,142 @@ ensure_rclone() {
     rm -rf "$tmp"
     hash -r 2>/dev/null || true
     log_info "Installed rclone $(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}') to /usr/local/bin."
+}
+
+# ensure_tailscale [version] — the mesh VPN client behind Remote access
+# (docs/plans/REMOTE_ACCESS.md). Host-level, not a container: it must survive
+# `compose down`, and it owns a network interface.
+#
+# The pinned static build, not the vendor apt repo: an apt repo upgrades the
+# client under us on the next unattended-upgrade, and every other moving part
+# on this box is pinned in versions.json. Installing does not join anything —
+# the box stays signed out until the owner connects it from the dashboard.
+ensure_tailscale() {
+    local want_ver="${1:-}"
+    if [[ -z "$want_ver" ]]; then
+        log_warn "No tailscale version pinned in versions.json."
+        return 1
+    fi
+    if command -v tailscale >/dev/null 2>&1 && command -v tailscaled >/dev/null 2>&1 \
+        && [[ "$(tailscale version 2>/dev/null | head -1)" == "$want_ver" ]]; then
+        systemctl enable --now tailscaled
+        return $?
+    fi
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        log_warn "tailscale needs installing but this is not running as root — skipping."
+        return 1
+    fi
+
+    local arch url tmp dir
+    case "$(uname -m)" in
+        x86_64)  arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *) log_warn "No tailscale build for $(uname -m)."; return 1 ;;
+    esac
+    url="https://pkgs.tailscale.com/stable/tailscale_${want_ver}_${arch}.tgz"
+    tmp=$(mktemp -d) || return 1
+    if ! curl -fsSL --retry 3 -o "$tmp/ts.tgz" "$url"; then
+        rm -rf "$tmp"; log_warn "Could not download tailscale from $url"; return 1
+    fi
+    if ! tar -xzf "$tmp/ts.tgz" -C "$tmp"; then
+        rm -rf "$tmp"; log_warn "Could not unpack the tailscale download."; return 1
+    fi
+    dir="$tmp/tailscale_${want_ver}_${arch}"
+    if [[ ! -x "$dir/tailscale" || ! -x "$dir/tailscaled" || ! -f "$dir/systemd/tailscaled.service" ]]; then
+        rm -rf "$tmp"; log_warn "The tailscale download is missing a binary or its unit."; return 1
+    fi
+    # The unit's ExecStart is /usr/sbin/tailscaled; keep the vendor layout.
+    install -m 0755 -o root -g root "$dir/tailscale" /usr/bin/tailscale
+    install -m 0755 -o root -g root "$dir/tailscaled" /usr/sbin/tailscaled
+    install -m 0644 -o root -g root "$dir/systemd/tailscaled.service" /etc/systemd/system/tailscaled.service
+    # Keep an existing defaults file: it may carry the owner's port choice.
+    [[ -f /etc/default/tailscaled ]] \
+        || install -m 0644 -o root -g root "$dir/systemd/tailscaled.defaults" /etc/default/tailscaled
+    rm -rf "$tmp"
+    hash -r 2>/dev/null || true
+    systemctl daemon-reload
+    # restart, not start: on an upgrade the old daemon is still the one running.
+    systemctl enable tailscaled >/dev/null 2>&1 || true
+    if ! systemctl restart tailscaled; then
+        log_warn "tailscaled did not start."
+        return 1
+    fi
+    log_info "Installed tailscale $(tailscale version 2>/dev/null | head -1)."
+}
+
+# --- The box's place on the private network, carried in backups ------------
+# tailscaled.state holds this box's device key and, with the lock on, its
+# signing key. A restore that brings it back resumes as the SAME device: same
+# name, still signed, no disablement secret needed. Without it a restored box
+# joins as a stranger and a locked network refuses it.
+#
+# Two rules:
+#   * Only into an encrypted archive. The file is the device.
+#   * Never applied by restore itself. Two live boxes with one key knock each
+#     other off the network, and restore cannot know whether the old box is
+#     dead or sitting next to this one mid-migration. Restore stages the file;
+#     the owner resumes from the Remote access card.
+MESH_STATE_FILE="${MESH_STATE_FILE:-/var/lib/tailscale/tailscaled.state}"
+MESH_IDENTITY_FILE="${MESH_IDENTITY_FILE:-/var/lib/homebrain/mesh_identity.state}"
+
+# capture_mesh_identity <staging_dir> <encrypted:true|false>
+capture_mesh_identity() {
+    local staging="$1" encrypted="$2"
+    local identity="$MESH_STATE_FILE"
+    if [[ -s "$MESH_IDENTITY_FILE" ]]; then
+        identity="$MESH_IDENTITY_FILE"
+    else
+        [[ -n "${MESH_DOMAIN:-}" && -s "$identity" ]] || return 0
+    fi
+    if [[ "$encrypted" != "true" ]]; then
+        log_warn "Backup is not encrypted — leaving the private-network identity out of it."
+        return 0
+    fi
+    install -m 0600 "$identity" "$staging/mesh_identity.state" \
+        || { log_warn "Could not capture the private-network identity."; return 0; }
+    log_info "Private-network identity captured for restore."
+}
+
+# stage_mesh_identity <extracted_dir> — called by restore.sh.
+stage_mesh_identity() {
+    local src="$1/mesh_identity.state"
+    # A later restore must not offer an identity from an earlier archive.
+    rm -f "$MESH_IDENTITY_FILE" || return 1
+    [[ -s "$src" ]] || return 0
+    # Restoring data onto a box that is still signed in: it already is itself.
+    if command -v tailscale >/dev/null 2>&1 \
+        && [[ "$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null)" == "Running" ]]; then
+        log_info "This box is already on the private network — not staging the identity from the backup."
+        return 0
+    fi
+    mkdir -p "$(dirname "$MESH_IDENTITY_FILE")"
+    install -m 0600 "$src" "$MESH_IDENTITY_FILE" \
+        || { log_warn "Could not stage the private-network identity."; return 0; }
+    log_info "Private-network identity staged. Resume it from Connectivity → Remote access."
+}
+
+# resume_mesh_identity — the owner said the old box is gone. Root only.
+resume_mesh_identity() {
+    [[ -s "$MESH_IDENTITY_FILE" ]] || { log_warn "No private-network identity is staged."; return 1; }
+    command -v tailscaled >/dev/null 2>&1 || { log_warn "tailscale is not installed."; return 1; }
+    systemctl stop tailscaled || return 1
+    mkdir -p "$(dirname "$MESH_STATE_FILE")" || return 1
+    # Whatever this box was before stays recoverable by hand.
+    if [[ -f "$MESH_STATE_FILE" ]]; then
+        cp -a "$MESH_STATE_FILE" "${MESH_STATE_FILE}.before-resume" || return 1
+    fi
+    if ! install -m 0600 "$MESH_IDENTITY_FILE" "$MESH_STATE_FILE"; then
+        log_warn "Could not put the identity in place."
+        systemctl start tailscaled || true
+        return 1
+    fi
+    if ! systemctl start tailscaled; then
+        log_warn "tailscaled did not start."
+        return 1
+    fi
+    # One copy of the key on disk, not two.
+    rm -f "$MESH_IDENTITY_FILE"
+    log_info "Private-network identity resumed."
 }
 
 OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"

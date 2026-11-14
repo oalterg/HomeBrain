@@ -49,7 +49,7 @@ extract_fn() {
     ' "$UTILITIES"
 }
 
-for fn in patch_openclaw_config resolve_llama_ctx_size; do
+for fn in openclaw_origins patch_openclaw_config resolve_llama_ctx_size; do
     body="$(extract_fn "$fn")"
     if [[ -z "$body" ]]; then
         echo "could not extract $fn from $UTILITIES"; exit 1

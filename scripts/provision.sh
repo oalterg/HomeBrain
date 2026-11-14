@@ -23,21 +23,23 @@ if [[ $EUID -ne 0 ]]; then echo "Run as root."; exit 1; fi
 #
 #   Positional (back-compat):
 #     local:  provision.sh [FACTORY_PASS]
-#     remote: provision.sh <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS> [REGISTRAR_URL] [REGISTRAR_SECRET]
+#     remote: provision.sh <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS>
 #
 #   Named flags (idempotent re-provision / tunnel repoint). Any value not given
 #   is inherited from the existing factory_config, so repointing a live box to a
 #   new tunnel is a one-liner:
 #     provision.sh --newt-id ID --newt-secret SECRET --domain DOMAIN \
-#                  [--endpoint URL] [--factory-pass PASS] \
-#                  [--registrar-url URL] [--registrar-secret SECRET] [--local] [--no-apply]
+#                  [--endpoint URL] [--factory-pass PASS] [--local] [--no-apply]
+#
+# --registrar-url / --registrar-secret and positional arguments 6 and 7 are
+# accepted and ignored: the account service they named is retired, and factory
+# scripts that still pass them must not fail.
 #
 # Remote vs local is decided in section 2, AFTER merging with the existing
 # factory_config: remote iff NEWT_ID, NEWT_SECRET and PANGOLIN_DOMAIN are all
 # present (and --local was not passed).
 PROV_NEWT_ID="" ; PROV_NEWT_SECRET="" ; PROV_PANGOLIN_DOMAIN=""
 PROV_PANGOLIN_ENDPOINT="" ; PROV_FACTORY_PASS=""
-PROV_REGISTRAR_URL="" ; PROV_REGISTRAR_SECRET=""
 FORCE_LOCAL=false
 APPLY_REDEPLOY=true   # on an already-set-up box, redeploy so the repoint goes live
 
@@ -49,8 +51,7 @@ if [[ "${1:-}" == --* ]]; then
             --domain)           PROV_PANGOLIN_DOMAIN="${2:?--domain needs a value}"; shift 2;;
             --endpoint)         PROV_PANGOLIN_ENDPOINT="${2:?--endpoint needs a value}"; shift 2;;
             --factory-pass)     PROV_FACTORY_PASS="${2:?--factory-pass needs a value}"; shift 2;;
-            --registrar-url)    PROV_REGISTRAR_URL="${2:?--registrar-url needs a value}"; shift 2;;
-            --registrar-secret) PROV_REGISTRAR_SECRET="${2:?--registrar-secret needs a value}"; shift 2;;
+            --registrar-url|--registrar-secret) shift; [[ $# -gt 0 ]] && shift;;
             --local)            FORCE_LOCAL=true; shift;;
             --no-apply)         APPLY_REDEPLOY=false; shift;;
             *) echo "Unknown flag: $1"; exit 1;;
@@ -62,13 +63,11 @@ elif [[ $# -ge 5 ]]; then
     PROV_PANGOLIN_DOMAIN="${3}"
     PROV_PANGOLIN_ENDPOINT="${4}"
     PROV_FACTORY_PASS="${5}"
-    PROV_REGISTRAR_URL="${6:-}"
-    PROV_REGISTRAR_SECRET="${7:-}"
 elif [[ $# -le 1 ]]; then
     PROV_FACTORY_PASS="${1:-}"
 else
     echo "Usage (local):  $0 [FACTORY_PASS]"
-    echo "Usage (remote): $0 <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS> [REGISTRAR_URL] [REGISTRAR_SECRET]"
+    echo "Usage (remote): $0 <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS>"
     echo "Usage (flags):  $0 --newt-id ID --newt-secret SECRET --domain DOMAIN [--endpoint URL] [--factory-pass PASS] [--local] [--no-apply]"
     exit 1
 fi
@@ -116,11 +115,10 @@ harden_gpu
 # the factory password baked into the OS image, and an operator can repoint the
 # tunnel by supplying only the changed fields.
 declare -A _FC=( [NEWT_ID]="" [NEWT_SECRET]="" [PANGOLIN_DOMAIN]="" \
-                 [PANGOLIN_ENDPOINT]="" [FACTORY_PASSWORD]="" \
-                 [REGISTRAR_URL]="" [REGISTRAR_SECRET]="" )
+                 [PANGOLIN_ENDPOINT]="" [FACTORY_PASSWORD]="" )
 if [[ -f "$BOOT_CONFIG" ]]; then
-    # Split on the first '=' only — NEWT_SECRET / FACTORY_PASSWORD /
-    # REGISTRAR_SECRET are generated values that can legitimately end in '=',
+    # Split on the first '=' only — NEWT_SECRET and FACTORY_PASSWORD are
+    # generated values that can legitimately end in '=',
     # which `IFS='=' read` would eat as a delimiter. See restore.sh for the
     # same bug caught in the act on HOMEBRAIN_EMAIL_KEY.
     while read -r _line || [[ -n "$_line" ]]; do
@@ -134,8 +132,6 @@ fi
 [[ -n "$PROV_PANGOLIN_DOMAIN"   ]] && _FC[PANGOLIN_DOMAIN]="$PROV_PANGOLIN_DOMAIN"
 [[ -n "$PROV_PANGOLIN_ENDPOINT" ]] && _FC[PANGOLIN_ENDPOINT]="$PROV_PANGOLIN_ENDPOINT"
 [[ -n "$PROV_FACTORY_PASS"      ]] && _FC[FACTORY_PASSWORD]="$PROV_FACTORY_PASS"
-[[ -n "$PROV_REGISTRAR_URL"     ]] && _FC[REGISTRAR_URL]="$PROV_REGISTRAR_URL"
-[[ -n "$PROV_REGISTRAR_SECRET"  ]] && _FC[REGISTRAR_SECRET]="$PROV_REGISTRAR_SECRET"
 
 # Operators paste the tunnel domain as a URL ("https://home.example.com/").
 # Every public hostname is derived by prefixing labels onto this value
@@ -177,8 +173,6 @@ NEWT_SECRET=${_FC[NEWT_SECRET]}
 PANGOLIN_DOMAIN=${_FC[PANGOLIN_DOMAIN]}
 PANGOLIN_ENDPOINT=${_FC[PANGOLIN_ENDPOINT]}
 FACTORY_PASSWORD=${_FC[FACTORY_PASSWORD]}
-REGISTRAR_URL=${_FC[REGISTRAR_URL]}
-REGISTRAR_SECRET=${_FC[REGISTRAR_SECRET]}
 EOF
 chmod 600 "$BOOT_CONFIG"
 
@@ -372,6 +366,7 @@ if [[ "$PROVISION_MODE" == "remote" && -f "$INSTALL_DIR/.setup_complete" && -f "
     _dom="${_FC[PANGOLIN_DOMAIN]}"
     log_info "Already-provisioned box — propagating new tunnel identity into .env (domain: ${_dom})."
     update_env_var "DEPLOYMENT_MODE"           "remote"
+    update_env_var "MESH_DOMAIN"               ""
     update_env_var "NEWT_ID"                   "${_FC[NEWT_ID]}"
     update_env_var "NEWT_SECRET"               "${_FC[NEWT_SECRET]}"
     update_env_var "PANGOLIN_ENDPOINT"         "${_FC[PANGOLIN_ENDPOINT]}"

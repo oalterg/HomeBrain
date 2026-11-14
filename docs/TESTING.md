@@ -544,6 +544,76 @@ node scripts/tests/test_creds_sheet.js
 
 ---
 
+## Remote access (private network)
+
+Design: [`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md). Unit tests:
+`scripts/tests/test_mesh.py`, `scripts/tests/test_mesh.sh`.
+
+**Local completion checks, 2026-11-14 (macOS; no live tailnet):**
+
+- Existing Python suite: 656 passed, 5 skipped. No new unit tests were added
+  during completion; the tests already present in the worktree were retained.
+- Mesh shell checks: 24 passed; handover and restore-handover checks: 33 passed.
+  Phone/recovery-sheet JavaScript checks, Ruff and ShellCheck passed.
+- Chromium smoke check used the actual Remote access card, JavaScript and Flask
+  routes with a separate fixture CLI process. Private → public → private,
+  failure on the second app port, cleanup and retry, phone-sheet download,
+  expiry display and dashboard-only-private behavior passed without JS errors.
+  Installation, service restarts and the network itself were not exercised.
+
+**Walked 2026-11-14 on .69 (x86, Ubuntu 26.04), signed out:**
+
+- [x] A box that never used it reports `not_installed`; nothing is installed
+      until the owner clicks **Connect**.
+- [x] **Connect** installs the pinned client (`tailscale version` = the pin in
+      `versions.json`), `tailscaled` is active and enabled, and the card shows
+      a sign-in link. 12 s including the download.
+- [x] Publishing before sign-in is refused (HTTP 409) and writes nothing.
+- [x] The card renders with no page errors; the Tunnel card is still there on
+      a box that has not turned remote access on.
+- [x] Self-test row **Remote access** is `skip` on a local box.
+
+**Not yet walked — needs the owner's Tailscale sign-in.** Everything below is
+covered by unit tests against a stand-in CLI and by reading the pinned
+release's source, and by nothing else. Treat each as unproven until ticked.
+
+- [ ] Finishing the sign-in in a browser brings the box to **Connected**
+      without clicking Connect again.
+- [ ] **Turn on remote access** on a network with HTTPS switched off shows the
+      link that switches it on, and `.env` is unchanged.
+- [ ] With HTTPS on: `.env` carries `MESH_DOMAIN`, `DEPLOYMENT_MODE=remote`,
+      and the three app addresses; the redeploy finishes; all containers healthy.
+- [ ] From a second device on the private network, mobile data, Wi-Fi off:
+  - [ ] `https://<name>:9443` is Nextcloud, logs in, no "untrusted domain" page.
+  - [ ] `https://<name>:8443` is Vault; the Bitwarden app logs in and syncs.
+  - [ ] `https://<name>:10000` is Home Assistant; the companion app connects.
+  - [ ] `https://<name>:4443` is the dashboard; login works; **Chat** opens
+        (`/openclaw/`), which proves the allowed-origin entry.
+- [ ] The names on the home network still work for all four.
+- [ ] **Turn on the lock**: two secrets are shown once; devices already in the
+      network keep working; a newly added phone appears under **Waiting** and
+      works only after **Approve**.
+- [ ] Health check: `sudo tailscale down` → next run reports remote access
+      down (crit); `sudo tailscale up` → recovers.
+- [ ] Box-to-box: a second box on the same network uses this one's replica
+      URL as its off-site target and a backup arrives.
+- [ ] Reboot: the box reconnects and the apps are published again.
+- [ ] **Turn off remote access** signs the box out, returns `.env` to local,
+      and the home-network names still work.
+- [ ] Factory reset on a connected box: afterwards `tailscale status` says
+      logged out and nothing is published.
+- [ ] Raspberry Pi (arm64) install path.
+- [ ] Encrypted backup → replacement box: identity is staged, not connected;
+      resume only with the source switched off; name, lock signing and phone
+      addresses survive. An expired identity offers sign-in again.
+- [ ] Restore while the source will stay live: connect as a new device, publish,
+      and confirm the staged identity is removed. Older/unencrypted backups
+      offer a fresh connection, not a stale identity from another restore.
+- [ ] With remote access on, `https://homebrain.local`, `nc-`, `vault-` and
+      `ha-homebrain.local` still answer on the LAN, including after a reboot.
+- [ ] Switching to Pangolin or Cloudflare removes the old Serve/Funnel listeners;
+      chat's allowed origins match the new dashboard address after redeploy.
+
 ## Nuclear Reset (Destructive — Run Last on Test Hardware)
 
 **Prerequisites**

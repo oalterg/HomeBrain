@@ -1,0 +1,663 @@
+#!/usr/bin/env python3
+"""Remote access over the owner's private network (src/mesh.py).
+
+What these pin, in the order the feature can lie:
+
+  * "connected" is only ever what the daemon says, never an exit code;
+  * the dashboard is never given a public address, whatever the apps get;
+  * a refusal from the owner's network (HTTPS or the public address switched
+    off there) leaves .env untouched — a box half-moved to an address nothing
+    answers on is the failure mode docs/plans/REMOTE_ACCESS.md is written
+    against;
+  * the lock never hands Tailscale a way to undo it;
+  * turning it off returns the box to local, the same shape Pangolin leaves.
+
+The signed-out JSON was captured from a real 1.104.7 daemon. The signed-in
+shapes (lock status, serve config, the "switched off" prompt) are read from
+that release's source, and are NOT yet confirmed on a signed-in box — see
+TESTING.md.
+
+Runnable two ways (needs Flask — install requirements.txt first):
+    python3 scripts/tests/test_mesh.py
+    pytest scripts/tests/test_mesh.py
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
+
+import app as hb                                  # noqa: E402
+import mesh                                       # noqa: E402
+import selftest                                   # noqa: E402
+import healthcheck                                # noqa: E402
+from test_setup_credentials import _fresh         # noqa: E402
+
+NAME = "homebrain.tail1234.ts.net"
+KEY = "nodekey:" + "ab" * 32
+TLPUB = "tlpub:" + "cd" * 32
+
+SIGNED_OUT = {"BackendState": "NeedsLogin", "AuthURL": "", "Self": {"DNSName": ""},
+              "CurrentTailnet": None, "CertDomains": None, "Version": "1.104.7-tabc"}
+RUNNING = {"BackendState": "Running", "AuthURL": "",
+           "Self": {"DNSName": NAME + ".", "TailscaleIPs": ["100.64.0.1"]},
+           "CurrentTailnet": {"Name": "owner@example.com"},
+           "CertDomains": [NAME], "Version": "1.104.7-tabc"}
+
+
+def serve_config(public):
+    ports = [9443, 8443, 10000, 4443]
+    return {
+        "TCP": {str(p): {"HTTPS": True} for p in ports},
+        "Web": {f"{NAME}:{p}": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:1"}}} for p in ports},
+        "AllowFunnel": {f"{NAME}:{p}": True for p in (9443, 8443, 10000)} if public else {},
+    }
+
+
+class Fake:
+    """Stands in for mesh.run. Records argv; answers from a small state."""
+
+    def __init__(self, status=RUNNING, lock=None, serve=None, refuse=None):
+        self.status = status
+        self.lock = lock or {"Enabled": False, "PublicKey": TLPUB, "NodeKeySigned": False}
+        self.serve = serve if serve is not None else {}
+        self.refuse = refuse or {}       # verb -> (rc, output)
+        self.calls = []
+        self._saved = mesh.run
+        mesh.run = self
+
+    def __call__(self, argv, timeout=20):
+        self.calls.append(list(argv))
+        if argv[:2] == ["status", "--json"]:
+            return 0, json.dumps(self.status)
+        if argv[:3] == ["lock", "status", "--json"]:
+            return 0, json.dumps(self.lock)
+        if argv[:3] == ["serve", "status", "--json"]:
+            return 0, json.dumps(self.serve)
+        if argv[0] in ("serve", "funnel") and "--bg" in argv:
+            if argv[0] in self.refuse:
+                return self.refuse[argv[0]]
+            port = next(a.split("=")[1] for a in argv if a.startswith("--https="))
+            self.serve.setdefault("TCP", {})[port] = {"HTTPS": True}
+            funnel = self.serve.setdefault("AllowFunnel", {})
+            if argv[0] == "funnel":
+                funnel[f"{NAME}:{port}"] = True
+            else:
+                funnel.pop(f"{NAME}:{port}", None)
+            return 0, "Available within your tailnet"
+        if argv[0] == "serve" and argv[-1] == "off":
+            port = argv[1].split("=")[1]
+            self.serve.get("TCP", {}).pop(port, None)
+            return 0, ""
+        if argv[:2] == ["serve", "reset"]:
+            self.serve = {}
+            return 0, ""
+        if argv[0] == "logout":
+            self.status = SIGNED_OUT
+            return 0, ""
+        if argv[:2] == ["lock", "init"]:
+            self.lock["Enabled"] = True
+            return 0, ("You are initializing tailnet lock...\n"
+                       "\tdisablement-secret:AAAA1111\n\tdisablement-secret:BBBB2222\n"
+                       "Initialization complete.\n")
+        if argv[:2] == ["lock", "sign"]:
+            return 0, ""
+        raise AssertionError(f"unexpected tailscale call: {argv}")
+
+    def close(self):
+        mesh.run = self._saved
+
+    def verbs(self):
+        return [(c[0], next((a for a in c if a.startswith("--https=")), "")) for c in self.calls
+                if c[0] in ("serve", "funnel") and "--bg" in c]
+
+
+def _post(h, path, payload=None):
+    with h.client.session_transaction() as sess:
+        sess["authenticated"] = True
+    return h.client.post(path, json=payload or {})
+
+
+# --- module -----------------------------------------------------------------
+
+def test_urls_put_the_dashboard_on_its_own_port():
+    u = mesh.urls(NAME)
+    assert u == {
+        "nextcloud": f"https://{NAME}:9443",
+        "vault": f"https://{NAME}:8443",
+        "homeassistant": f"https://{NAME}:10000",
+        "dashboard": f"https://{NAME}:4443",
+    }
+    assert mesh.urls("") == {}
+
+
+def test_no_published_port_is_one_the_lan_edge_uses():
+    """The client binds <tailnet address>:<port> on the host. On 443 that
+    stopped Docker publishing Caddy, and homebrain.local went dark (.69)."""
+    ports = [p for p, _ in mesh.APPS.values()] + [mesh.DASHBOARD[0]]
+    assert len(set(ports)) == 4
+    assert not {80, 443} & set(ports)
+
+
+def test_not_installed_is_its_own_state():
+    saved = mesh.run
+    mesh.run = lambda argv, timeout=20: (127, "tailscale is not installed")
+    try:
+        assert mesh.status()["state"] == "not_installed"
+    finally:
+        mesh.run = saved
+
+
+def test_signed_out_reports_no_name_even_if_one_is_cached():
+    f = Fake(status=dict(SIGNED_OUT, Self={"DNSName": NAME + "."}))
+    try:
+        st = mesh.status()
+        assert st["state"] == "needs_login"
+        assert st["dns_name"] == ""
+    finally:
+        f.close()
+
+
+def test_an_unknown_backend_state_is_never_running():
+    f = Fake(status=dict(RUNNING, BackendState="SomethingNew"))
+    try:
+        assert mesh.status()["state"] == "stopped"
+    finally:
+        f.close()
+
+
+def test_running_status_strips_the_trailing_dot_and_lists_waiting_devices():
+    f = Fake(lock={"Enabled": True, "NodeKeySigned": True, "PublicKey": TLPUB,
+                   "FilteredPeers": [{"DNSName": "phone.tail1234.ts.net.", "NodeKey": KEY},
+                                     {"DNSName": "junk", "NodeKey": "not-a-key"}]},
+             serve=serve_config(public=True))
+    try:
+        st = mesh.status()
+        assert st["dns_name"] == NAME
+        assert st["https_ready"] is True
+        assert st["lock"] == {"enabled": True, "signed": True,
+                              "pending": [{"name": "phone.tail1234.ts.net", "nodekey": KEY}]}
+        assert st["public"] is True
+        assert st["published"] == {"9443": True, "4443": False, "8443": True, "10000": True}
+    finally:
+        f.close()
+
+
+def test_publish_never_asks_for_a_public_address():
+    """The public address was taken out before release. Nothing this module
+    runs may put a login page on the internet."""
+    f = Fake()
+    try:
+        assert mesh.publish() == {"ok": True}
+        assert sorted(f.verbs()) == sorted([
+            ("serve", "--https=9443"), ("serve", "--https=8443"),
+            ("serve", "--https=10000"), ("serve", "--https=4443")])
+        assert not any(c[0] == "funnel" for c in f.calls)
+    finally:
+        f.close()
+
+
+def test_publish_retires_ports_from_an_earlier_layout():
+    """.69 was first published with Nextcloud on 443. Re-publishing must take
+    that listener away, or the port stays bound and Caddy stays down."""
+    old = serve_config(public=False)
+    old["TCP"]["443"] = {"HTTPS": True}
+    f = Fake(serve=old)
+    try:
+        assert mesh.publish() == {"ok": True}
+        assert ["serve", "--https=443", "off"] in f.calls
+        assert set(mesh.status()["published"]) == {"9443", "8443", "10000", "4443"}
+    finally:
+        f.close()
+
+
+def test_publish_takes_a_hand_made_public_address_away():
+    f = Fake(serve=serve_config(public=True))
+    try:
+        assert mesh.status()["public"] is True, "a public address must be reported, not hidden"
+        assert mesh.publish() == {"ok": True}
+        assert mesh.status()["public"] is False
+    finally:
+        f.close()
+
+
+def test_publish_believes_the_daemon_not_the_exit_code():
+    """Exit 0 with nothing published is the "it said it worked" bug."""
+    f = Fake()
+    real = f.__call__
+
+    def lying(argv, timeout=20):
+        if argv[0] in ("serve", "funnel") and "--bg" in argv:
+            f.calls.append(list(argv))
+            return 0, "ok"
+        return real(argv, timeout)
+    mesh.run = lying
+    try:
+        res = mesh.publish()
+        assert "error" in res, res
+    finally:
+        f.close()
+
+
+def test_a_refusal_carries_the_link_that_fixes_it():
+    link = "https://login.tailscale.com/f/serve?node=n123CNTRL"
+    f = Fake(refuse={"serve": (124, f"Serve is not enabled on your tailnet.\nTo enable, visit:\n\n  {link}\n")})
+    try:
+        res = mesh.publish()
+        assert res["enable_url"] == link
+        assert "https" in res["error"].lower()
+    finally:
+        f.close()
+
+
+def test_a_failed_republish_does_not_cut_off_what_was_working():
+    """Clearing everything on a failure hangs the owner's own request when
+    they are on the dashboard through the private address."""
+    f = Fake(serve=serve_config(public=False), refuse={"serve": (1, "boom")})
+    try:
+        assert "error" in mesh.publish()
+        assert ["serve", "reset"] not in f.calls
+        assert set(mesh.status()["published"]) == {"9443", "8443", "10000", "4443"}
+    finally:
+        f.close()
+
+
+def test_a_refused_first_publish_leaves_nothing_behind():
+    f = Fake(refuse={"serve": (0, "visit https://login.tailscale.com/f/serve?node=n1\n")})
+    try:
+        assert "error" in mesh.publish()
+        assert ["serve", "reset"] in f.calls and mesh.status()["published"] == {}
+    finally:
+        f.close()
+
+
+def test_a_refusal_that_exits_zero_is_still_a_refusal():
+    """The CLI prints the link and exits 0 when it is told not to wait."""
+    link = "https://login.tailscale.com/f/serve?node=n1"
+    f = Fake(refuse={"serve": (0, f"\nServe is not enabled on your tailnet.\n\n         {link}\n\n")})
+    try:
+        res = mesh.publish()
+        assert res.get("enable_url") == link, res
+    finally:
+        f.close()
+
+
+def test_lock_init_returns_the_secrets_and_keeps_tailscale_out():
+    f = Fake()
+    try:
+        res = mesh.lock_init()
+        assert res == {"secrets": ["disablement-secret:AAAA1111", "disablement-secret:BBBB2222"]}
+        init = next(c for c in f.calls if c[:2] == ["lock", "init"])
+        assert TLPUB in init and "--confirm" in init
+        assert not any("support" in a for a in init), \
+            "a support disablement secret lets Tailscale undo the lock"
+    finally:
+        f.close()
+
+
+def test_lock_init_refuses_when_already_on():
+    f = Fake(lock={"Enabled": True, "PublicKey": TLPUB})
+    try:
+        assert "error" in mesh.lock_init()
+        assert not any(c[:2] == ["lock", "init"] for c in f.calls)
+    finally:
+        f.close()
+
+
+def test_sign_rejects_anything_that_is_not_a_node_key():
+    f = Fake()
+    try:
+        for bad in ("", "nodekey:xyz", "tlpub:" + "ab" * 32, KEY + "; rm -rf /"):
+            assert "error" in mesh.lock_sign(bad)
+        assert not any(c[:2] == ["lock", "sign"] for c in f.calls)
+        assert mesh.lock_sign(KEY) == {"ok": True}
+    finally:
+        f.close()
+
+
+def test_health_names_what_is_missing():
+    f = Fake(serve={"TCP": {"9443": {"HTTPS": True}}})
+    try:
+        ok, why = mesh.health()
+        assert not ok and "vault" in why and "dashboard" in why
+    finally:
+        f.close()
+    f = Fake(serve=serve_config(public=False))
+    try:
+        assert mesh.health()[0] is True
+    finally:
+        f.close()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        assert mesh.health()[0] is False
+    finally:
+        f.close()
+
+
+def test_a_locked_out_box_is_not_healthy():
+    f = Fake(lock={"Enabled": True, "NodeKeySigned": False, "PublicKey": TLPUB},
+             serve=serve_config(public=False))
+    try:
+        ok, why = mesh.health()
+        assert not ok and "locked out" in why
+    finally:
+        f.close()
+
+
+# --- routes -----------------------------------------------------------------
+
+def test_publish_writes_the_same_keys_a_tunnel_does():
+    h = _fresh()
+    f = Fake()
+    try:
+        r = _post(h, "/api/mesh/publish", {"public": True})   # the flag is ignored
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json()["status"] == "started"
+        want = {
+            "DEPLOYMENT_MODE": "remote",
+            "MESH_DOMAIN": NAME,
+            "NEWT_ID": "",
+            "PANGOLIN_DOMAIN": "",
+            "MANAGER_DOMAIN": f"{NAME}:4443",
+            "NEXTCLOUD_TRUSTED_DOMAINS": f"{NAME}:9443",
+            "HA_TRUSTED_DOMAINS": f"{NAME}:10000",
+            "VAULT_TRUSTED_DOMAINS": NAME,
+            "VAULT_DOMAIN": f"https://{NAME}:8443",
+        }
+        for key, value in want.items():
+            assert h.written(key) == value, f"{key} = {h.written(key)!r}, wanted {value!r}"
+        assert ("CF_TOKEN_NC", None) in h.writes
+        assert h.threads, "the redeploy that applies the new address never started"
+    finally:
+        f.close()
+        h.close()
+
+
+def test_a_refused_publish_writes_nothing():
+    h = _fresh()
+    f = Fake(refuse={"serve": (124, "Serve is not enabled on your tailnet.\n"
+                                    "To enable, visit:\n  https://login.tailscale.com/f/serve?node=n1\n")})
+    try:
+        r = _post(h, "/api/mesh/publish", {"public": False})
+        assert r.status_code == 409
+        assert r.get_json()["enable_url"].startswith("https://login.tailscale.com/f/serve")
+        assert h.writes == [] and not h.threads
+    finally:
+        f.close()
+        h.close()
+
+
+def test_publish_before_sign_in_is_refused():
+    h = _fresh()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        r = _post(h, "/api/mesh/publish", {"public": False})
+        assert r.status_code == 409
+        assert h.writes == [] and not f.verbs()
+    finally:
+        f.close()
+        h.close()
+
+
+def test_switching_a_tunnel_on_clears_the_mesh_name():
+    h = _fresh()
+    try:
+        r = _post(h, "/api/tunnel", {"endpoint": "https://p.example.com", "id": "i",
+                                     "secret": "s", "main_domain": "home.example.com"})
+        assert r.status_code == 200
+        assert h.written("MESH_DOMAIN") == ""
+    finally:
+        h.close()
+
+
+def test_disconnect_returns_the_box_to_local():
+    h = _fresh()
+    f = Fake(serve=serve_config(public=True))
+    saved = hb.get_env_config
+    hb.get_env_config = lambda: {"MESH_DOMAIN": NAME, "DEPLOYMENT_MODE": "remote"}
+    try:
+        r = _post(h, "/api/mesh/disconnect")
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert ["serve", "reset"] in f.calls and ["logout"] in f.calls
+        assert h.written("DEPLOYMENT_MODE") == "local"
+        assert h.written("MESH_DOMAIN") == ""
+        assert h.written("NEXTCLOUD_TRUSTED_DOMAINS") == ""
+        assert h.written("VAULT_DOMAIN") == "https://vault-homebrain.local"
+        assert h.threads
+    finally:
+        hb.get_env_config = saved
+        f.close()
+        h.close()
+
+
+def test_is_local_mode_follows_the_mesh_name():
+    saved = hb.get_env_config
+    try:
+        hb.get_env_config = lambda: {"MESH_DOMAIN": NAME, "DEPLOYMENT_MODE": "remote"}
+        assert hb.is_local_mode() is False
+        hb.get_env_config = lambda: {"MESH_DOMAIN": NAME, "DEPLOYMENT_MODE": "local"}
+        assert hb.is_local_mode() is True
+        hb.get_env_config = lambda: {"MESH_DOMAIN": ""}
+        assert hb.is_local_mode() is True
+    finally:
+        hb.get_env_config = saved
+
+
+# --- self-test and health ---------------------------------------------------
+
+MESH_ENV = {"DEPLOYMENT_MODE": "remote", "MESH_DOMAIN": NAME}
+
+
+def test_selftest_says_what_it_could_not_prove():
+    saved = selftest.mesh_health
+    try:
+        selftest.mesh_health = lambda: (True, "Connected and published.")
+        row = selftest.check_remote_access(MESH_ENV)
+        assert row["status"] == selftest.OK
+        assert "not tested from here" in row["detail"]
+        selftest.mesh_health = lambda: (False, "The private network is not connected.")
+        assert selftest.check_remote_access(MESH_ENV)["status"] == selftest.FAIL
+    finally:
+        selftest.mesh_health = saved
+
+
+def test_healthcheck_is_crit_when_the_private_network_is_down():
+    f = Fake(status=SIGNED_OUT)
+    try:
+        got = healthcheck.check_tunnel(MESH_ENV)
+        assert got["id"] == "tunnel" and got["level"] == "crit"
+    finally:
+        f.close()
+    f = Fake(serve=serve_config(public=False))
+    try:
+        assert healthcheck.check_tunnel(MESH_ENV)["level"] == "ok"
+    finally:
+        f.close()
+    # Opted out wins, exactly as it does for a tunnel.
+    assert healthcheck.check_tunnel(dict(MESH_ENV, DEPLOYMENT_MODE="local")) is None
+
+
+# --- identity carried in a backup -------------------------------------------
+
+class _Staged:
+    """Points mesh at a temp identity file and stubs the root-only scripts."""
+
+    def __init__(self, staged=True, script_rc=0):
+        import subprocess
+        import tempfile
+        self._file = mesh.IDENTITY_FILE
+        self._run = subprocess.run
+        self.dir = tempfile.mkdtemp()
+        mesh.IDENTITY_FILE = os.path.join(self.dir, "mesh_identity.state")
+        if staged:
+            open(mesh.IDENTITY_FILE, "w").write("{}")
+        self.scripts = []
+
+        def fake_run(cmd, *a, **k):
+            if cmd[0] == "bash":
+                self.scripts.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, script_rc, "", "")
+        subprocess.run = fake_run
+
+    def close(self):
+        import shutil
+        import subprocess
+        subprocess.run = self._run
+        mesh.IDENTITY_FILE = self._file
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def test_status_says_when_a_backup_identity_is_waiting():
+    s = _Staged()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        assert mesh.status()["carried"] is True
+        os.remove(mesh.IDENTITY_FILE)
+        assert mesh.status()["carried"] is False
+    finally:
+        f.close()
+        s.close()
+
+
+def test_resume_without_a_staged_identity_is_refused():
+    h = _fresh()
+    s = _Staged(staged=False)
+    f = Fake()
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 409
+        assert s.scripts == [], "ran the root script with nothing to resume"
+        assert not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_resume_republishes_privately_and_points_the_box_at_it():
+    """The serve config comes back with the identity. Even if that backup had
+    a public address, the resumed box comes up private."""
+    h = _fresh()
+    s = _Staged()
+    f = Fake(serve=serve_config(public=True))
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json() == {"status": "started"}
+        assert "resume_mesh_identity" in s.scripts
+        assert h.written("MESH_DOMAIN") == NAME
+        assert not any(c[0] == "funnel" for c in f.calls)
+        assert mesh.status()["public"] is False
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_resume_onto_an_expired_sign_in_publishes_nothing():
+    h = _fresh()
+    s = _Staged()
+    f = Fake(status=SIGNED_OUT)
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 200
+        assert r.get_json() == {"status": "needs_login"}
+        assert f.verbs() == [] and not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_a_failed_resume_script_changes_nothing():
+    h = _fresh()
+    s = _Staged(script_rc=1)
+    f = Fake()
+    try:
+        r = _post(h, "/api/mesh/resume")
+        assert r.status_code == 500
+        assert f.verbs() == [] and not h.writes
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+def test_publishing_as_a_new_device_drops_the_staged_identity():
+    h = _fresh()
+    s = _Staged()
+    f = Fake()
+    try:
+        assert _post(h, "/api/mesh/publish", {}).status_code == 200
+        assert not os.path.exists(mesh.IDENTITY_FILE), "an abandoned device key was left on disk"
+    finally:
+        f.close()
+        s.close()
+        h.close()
+
+
+# --- phones -----------------------------------------------------------------
+
+def test_pairing_says_when_the_phone_needs_the_network_app_first():
+    f = Fake(serve=serve_config(public=False))
+    try:
+        assert hb.mesh_apps_private({"MESH_DOMAIN": NAME}) is True
+    finally:
+        f.close()
+    f = Fake(serve=serve_config(public=True))
+    try:
+        assert hb.mesh_apps_private({"MESH_DOMAIN": NAME}) is False
+        # No remote access at all: the client must not even be asked.
+        f.calls.clear()
+        assert hb.mesh_apps_private({}) is False
+        assert f.calls == []
+    finally:
+        f.close()
+
+
+def test_status_reports_when_the_sign_in_expires():
+    f = Fake(status=dict(RUNNING, Self=dict(RUNNING["Self"], KeyExpiry="2027-05-13T10:00:00Z")))
+    try:
+        assert mesh.status()["key_expiry"] == "2027-05-13T10:00:00Z"
+    finally:
+        f.close()
+    f = Fake()
+    try:
+        assert mesh.status()["key_expiry"] == ""
+    finally:
+        f.close()
+
+
+# --- the account service is retired -----------------------------------------
+
+def test_no_route_or_gate_depends_on_an_account_service():
+    """HomeBrain operates no servers. Setup used to refuse to finish until an
+    email had been registered with one."""
+    h = _fresh()
+    try:
+        rules = {r.rule for r in hb.app.url_map.iter_rules()}
+        assert "/api/cloud/register" not in rules
+        saved = hb.get_factory_config
+        hb.get_factory_config = lambda: {"REGISTRAR_URL": "https://reg.example.com"}
+        try:
+            r = _post(h, "/api/setup/cleanup_credentials")
+        finally:
+            hb.get_factory_config = saved
+        assert r.status_code == 200, "a leftover factory key still blocks the handover"
+    finally:
+        h.close()
+
+
+if __name__ == "__main__":
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print(f"ok   {name}")
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                print(f"FAIL {name}: {e!r}")
+    sys.exit(1 if failed else 0)

@@ -448,7 +448,26 @@ def check_instance_secrets(env):
     return result("Stored account tokens", OK, "The encryption key is intact.")
 
 
+def mesh_health():
+    """(ok, summary) from the private network client. IO seam."""
+    import mesh
+    return mesh.health()
+
+
 def check_remote_access(env):
+    if env.get("MESH_DOMAIN") and env.get("DEPLOYMENT_MODE", "local") == "remote":
+        # What the box itself can prove: it is connected and the apps are
+        # published. Whether a phone on mobile data gets through is not
+        # something this box can observe from the inside, and we say so.
+        try:
+            ok, summary = mesh_health()
+        except Exception as e:
+            return result("Remote access", FAIL, "Could not read the private network state.",
+                          str(e)[:200])
+        if not ok:
+            return result("Remote access", FAIL, summary, "See Connectivity → Remote access.")
+        return result("Remote access", OK,
+                      f"{summary} Reachability from outside is not tested from here.")
     domain = env.get("PANGOLIN_DOMAIN", "")
     if env.get("DEPLOYMENT_MODE", "local") != "remote" or not domain:
         return result("Remote access", SKIP, "This box is set up for the local network only.")

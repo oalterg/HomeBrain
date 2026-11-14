@@ -33,6 +33,7 @@ import picture
 import media_jobs
 import vault_account
 import member_escrow
+import mesh
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_sock import Sock
@@ -1046,9 +1047,6 @@ def get_one_time_credentials():
         try:
             with open(creds_file, "r") as f:
                 data = json.load(f)
-            # Check if cloud registration is configured in factory settings
-            factory_conf = get_factory_config()
-            data["cloud_enabled"] = bool(factory_conf.get("REGISTRAR_URL"))
             # The handover screen must not tell someone their files are back
             # when the restore died. Credentials are still handed over — they
             # are the only copy — but the screen says what actually happened.
@@ -1062,13 +1060,8 @@ def get_one_time_credentials():
 @app.route("/api/setup/cleanup_credentials", methods=["POST"])
 def cleanup_credentials():
     """Called by the frontend after successfully rendering the success page."""
-    
-    # 1. Enforcement: Check if Registration is required but missing
-    factory_conf = get_factory_config()
-    if factory_conf.get("REGISTRAR_URL") and not os.path.exists(REGISTRATION_MARKER):
-         return jsonify({"error": "Mandatory email registration not completed."}), 403
-
-    # 2. Cleanup
+    # REGISTRATION_MARKER: boxes set up before the account service was retired
+    # may still carry one.
     if os.path.exists(INSTALL_CREDS_PATH):
         os.remove(INSTALL_CREDS_PATH)
     if os.path.exists(REGISTRATION_MARKER):
@@ -1329,8 +1322,9 @@ def is_local_mode():
     When credentials are present, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
     """
     env = get_env_config()
-    # No Pangolin credentials — always local
-    if not all(env.get(k) for k in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"]):
+    # Neither a private-network name (mesh.py) nor Pangolin credentials — always local
+    if not any(env.get(k) for k in ("MESH_DOMAIN", "CF_TOKEN_NC", "CF_TOKEN_HA")) and \
+            not all(env.get(k) for k in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"]):
         return True
     # Credentials present but user opted out
     return env.get("DEPLOYMENT_MODE", "remote") == "local"
@@ -1627,53 +1621,6 @@ def start_setup():
     # Session already established by login
     return jsonify({"status": "started"})
 
-@app.route('/api/cloud/register', methods=['POST'])
-@limiter.limit("5 per minute")
-def register_cloud():
-    # 1. Verify user is authenticated (Factory Password during setup, or Admin Token after)
-    # The auth_gate handles the check, ensuring only owners can trigger this.
-    
-    email = request.json.get('email')
-    if not email: return jsonify({"error": "Email is required"}), 400
-    
-    # 2. Get Device ID
-    config = get_factory_config()
-    registrar_url = config.get("REGISTRAR_URL")
-    registrar_secret = config.get("REGISTRAR_SECRET")
-    device_id = config.get("NEWT_ID", "unknown")
-    
-    if not registrar_url:
-        return jsonify({"error": "Cloud registration not configured on this device."}), 400
-
-    # 3. Call Registrar
-    try:
-        # Timeout is crucial for robustness so we don't hang the UI
-        r = requests.post(
-            registrar_url, 
-            json={"email": email, "device_id": device_id},
-            headers={"Authorization": f"Bearer {registrar_secret}"},
-            timeout=10
-        )
-        if r.status_code in [200, 201]:
-            # Mark registration as complete
-            with open(REGISTRATION_MARKER, 'w') as f:
-                f.write(str(int(time.time())))
-            # Persist Email for Dashboard visibility
-            update_env_var("CLOUD_EMAIL", email)
-            return jsonify({"status": "success", "message": "Invitation sent! Check your email."})
-        else:
-            # Attempt to parse specific error from Worker JSON
-            try:
-                worker_error = r.json().get("error", r.text)
-            except:
-                worker_error = r.text
-            
-            logging.error(f"Registrar Error {r.status_code}: {worker_error}")
-            return jsonify({"error": f"Registration failed: {worker_error}"}), 502
-    except Exception as e:
-        logging.error(f"Registrar Connection Exception: {e}")
-        return jsonify({"error": "Could not connect to registrar service."}), 503
-
 # --- Route: Adopt Existing Drive ---
 @app.route("/api/drives/mount", methods=["POST"])
 @limiter.limit("5 per minute")
@@ -1798,18 +1745,16 @@ def index():
     # Determine Tunnel Provider Mode
     # If any CF token exists, we are in Cloudflare mode
     cf_mode = bool(env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"))
+    mesh_mode = bool(env.get("MESH_DOMAIN"))
 
     # Check if Pangolin is custom
     is_custom_pangolin = False
-    if not cf_mode:
+    if not cf_mode and not mesh_mode:
         # Check if critical tunnel params differ from factory
         is_custom_pangolin = (
             env.get("PANGOLIN_ENDPOINT") != factory.get("PANGOLIN_ENDPOINT") or
             env.get("PANGOLIN_DOMAIN") != factory.get("PANGOLIN_DOMAIN")
         )
-    # Feature Flag: Cloud/Email features only active if Registrar is provisioned
-    cloud_enabled = bool(factory.get("REGISTRAR_URL"))
-
     return render_template(
         "dashboard.html",
         deployment_mode=deployment_mode,
@@ -1822,11 +1767,9 @@ def index():
         tunnel={
             "factory": factory,
             "current": env,
-            "mode": "cloudflare" if cf_mode else "pangolin",
+            "mode": "mesh" if mesh_mode else ("cloudflare" if cf_mode else "pangolin"),
             "is_custom_pangolin": is_custom_pangolin,
         },
-        cloud_enabled=cloud_enabled,
-        cloud_account={"email": env.get("CLOUD_EMAIL", ""), "tier": "Trial (100GB)"},
         has_gpu=has_gpu(),
         password_rule=recovery.NEW_PASSWORD_RULE,
     )
@@ -3071,6 +3014,7 @@ def point_pangolin_at(endpoint, newt_id, secret, domain):
     on = bool(endpoint and newt_id and secret and domain)
     dom = domain if on else ""
     update_env_var("DEPLOYMENT_MODE", "remote" if on else "local")
+    update_env_var("MESH_DOMAIN", "")
     update_env_var("PANGOLIN_ENDPOINT", endpoint)
     update_env_var("NEWT_ID", newt_id)
     update_env_var("NEWT_SECRET", secret)
@@ -3134,8 +3078,12 @@ def update_tunnel_cloudflare():
     service = request.json.get("service")  # 'nc' or 'ha'
     token = request.json.get("token")
 
-    if not token or not service:
+    if not token or service not in ("nc", "ha") or not domain:
         return jsonify({"error": "Missing token or service definition"}), 400
+
+    if get_env_config().get("MESH_DOMAIN"):
+        point_mesh_at("")
+    update_env_var("DEPLOYMENT_MODE", "remote")
 
     # Write Token to .env
     if service == "nc":
@@ -3175,6 +3123,172 @@ def revert_tunnel_provider():
     subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
     cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
     if not start_background_task("Revert to Factory Settings", cmd, "setup"):
+        return jsonify({"error": "Task running"}), 409
+    return jsonify({"status": "started"})
+
+
+# --- Routes: Remote access over the owner's private network (mesh.py) ---
+def point_mesh_at(dns_name):
+    """Make the box's private-network name its away-from-home address, or
+    return it to local when dns_name is empty.
+
+    A third writer of the same keys point_pangolin_at owns, on purpose: one
+    set of facts says where the apps live away from home, and everything
+    downstream (Nextcloud trusted domains, Vaultwarden's DOMAIN, pairing QR
+    codes, the replica URL) already reads them. One provider at a time.
+    """
+    dns_name = sanitize_domain(dns_name)
+    on = bool(dns_name)
+    update_env_var("DEPLOYMENT_MODE", "remote" if on else "local")
+    update_env_var("MESH_DOMAIN", dns_name)
+    for key in ("PANGOLIN_ENDPOINT", "NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"):
+        update_env_var(key, "")
+    update_env_var("CF_TOKEN_NC", None)
+    update_env_var("CF_TOKEN_HA", None)
+    update_env_var("MANAGER_DOMAIN", f"{dns_name}:{mesh.DASHBOARD[0]}" if on else "")
+    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", mesh.host_port(dns_name, "nextcloud") if on else "")
+    update_env_var("HA_TRUSTED_DOMAINS", mesh.host_port(dns_name, "homeassistant") if on else "")
+    update_env_var("VAULT_TRUSTED_DOMAINS", dns_name)
+    update_env_var("VAULT_DOMAIN", mesh.urls(dns_name)["vault"] if on else "https://vault-homebrain.local")
+
+
+def _redeploy_for_mesh(task_name):
+    subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
+    cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
+    return start_background_task(task_name, cmd, "setup")
+
+
+@app.route("/api/mesh/status")
+def mesh_status():
+    st = mesh.status()
+    st["configured_name"] = get_env_config().get("MESH_DOMAIN", "")
+    return jsonify(st)
+
+
+@app.route("/api/mesh/connect", methods=["POST"])
+@limiter.limit("6 per minute")
+def mesh_connect():
+    """Install the pinned client if needed and hand back a sign-in link.
+
+    Joins nothing by itself: the owner finishes in their own browser, with
+    their own account. HomeBrain never sees a credential.
+    """
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    try:
+        r = subprocess.run(["bash", SCRIPT_UTILITIES, "ensure_tailscale"],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            return jsonify({"error": "Could not install the private network software."}), 500
+    except Exception:
+        return jsonify({"error": "Could not install the private network software."}), 500
+    res = mesh.connect()
+    return jsonify(res), (502 if res.get("error") else 200)
+
+
+@app.route("/api/mesh/publish", methods=["POST"])
+@limiter.limit("6 per minute")
+def mesh_publish():
+    """Publish the apps on the box's private-network name.
+
+    Publish first, write .env second: if the owner's network refuses (HTTPS
+    is switched off there) the box must stay exactly as
+    it was, not half-moved to an address nothing answers on.
+    """
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    st = mesh.status()
+    if st.get("state") != "running" or not st.get("dns_name"):
+        return jsonify({"error": "Connect this box to your private network first."}), 409
+    res = mesh.publish()
+    if res.get("error"):
+        return jsonify(res), 409
+    # Published under this identity: one a restored backup carried is now
+    # abandoned, and it is a device key lying on disk.
+    try:
+        os.remove(mesh.IDENTITY_FILE)
+    except OSError:
+        pass
+    return _mesh_apply(st, "Turn on remote access")
+
+
+def _mesh_apply(st, task):
+    """Point .env at the box's name and redeploy, unless it already is."""
+    env = get_env_config()
+    if (env.get("MESH_DOMAIN") == st["dns_name"] and env.get("NEXTCLOUD_TRUSTED_DOMAINS")
+            == mesh.host_port(st["dns_name"], "nextcloud")):
+        return jsonify({"status": "ok"})
+    point_mesh_at(st["dns_name"])
+    if not _redeploy_for_mesh(task):
+        return jsonify({"error": "Task running"}), 409
+    return jsonify({"status": "started"})
+
+
+@app.route("/api/mesh/resume", methods=["POST"])
+@limiter.limit("3 per minute")
+def mesh_resume():
+    """Resume as the device a restored backup came from.
+
+    The owner's call, never automatic: the same key on two live boxes knocks
+    both off the network.
+    """
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    if not os.path.exists(mesh.IDENTITY_FILE):
+        return jsonify({"error": "No backup identity is waiting on this box."}), 409
+    try:
+        r = subprocess.run(["bash", SCRIPT_UTILITIES, "ensure_tailscale"],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            return jsonify({"error": "Could not prepare the private network software."}), 500
+        r = subprocess.run(["bash", SCRIPT_UTILITIES, "resume_mesh_identity"],
+                           capture_output=True, text=True, timeout=60)
+    except Exception:
+        return jsonify({"error": "Could not resume the private network."}), 500
+    if r.returncode != 0:
+        return jsonify({"error": "Could not resume the private network."}), 500
+    st = {}
+    for _ in range(15):
+        st = mesh.status()
+        if st.get("state") in ("running", "needs_login", "needs_approval"):
+            break
+        time.sleep(2)
+    if st.get("state") != "running" or not st.get("dns_name"):
+        # Signed out since the backup (key expired, or removed from the
+        # network). The card now offers the sign-in link; nothing is published.
+        return jsonify({"status": "needs_login"})
+    res = mesh.publish()
+    if res.get("error"):
+        return jsonify(res), 409
+    return _mesh_apply(st, "Resume remote access")
+
+
+@app.route("/api/mesh/lock", methods=["POST"])
+@limiter.limit("3 per minute")
+def mesh_lock():
+    res = mesh.lock_init()
+    return jsonify(res), (409 if res.get("error") else 200)
+
+
+@app.route("/api/mesh/sign", methods=["POST"])
+@limiter.limit("20 per minute")
+def mesh_sign():
+    res = mesh.lock_sign((request.get_json(silent=True) or {}).get("nodekey", ""))
+    return jsonify(res), (400 if res.get("error") else 200)
+
+
+@app.route("/api/mesh/disconnect", methods=["POST"])
+@limiter.limit("3 per minute")
+def mesh_disconnect():
+    if task_running():
+        return jsonify({"error": "Task running"}), 409
+    res = mesh.disconnect()
+    if res.get("error"):
+        return jsonify(res), 502
+    if not get_env_config().get("MESH_DOMAIN"):
+        return jsonify({"status": "ok"})
+    point_mesh_at("")
+    if not _redeploy_for_mesh("Turn off remote access"):
         return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
 
@@ -5474,6 +5588,16 @@ def nc_occ(*args, env_extra=None, timeout=60):
                           capture_output=True, text=True, timeout=timeout)
 
 
+def mesh_apps_private(env):
+    """True when a phone must be on the owner's private network to reach the
+    apps away from home: remote access is on and the apps have no public
+    address. The pairing code is useless to a phone that is not on it yet."""
+    if not env.get("MESH_DOMAIN"):
+        return False
+    published = mesh.status().get("published", {})
+    return not all(published.get(str(port)) for port, _ in mesh.APPS.values())
+
+
 def nc_client_url(env):
     """The address to hand a phone, and whether it works away from home.
 
@@ -5567,7 +5691,8 @@ def pairing_payload(user, password, env):
         raise NextcloudError(f"Could not draw the QR code: {e.stderr[:200]}")
 
     return {"qr": "data:image/svg+xml;base64," + base64.b64encode(qr.encode()).decode(),
-            "url": url, "user": user, "remote": remote}
+            "url": url, "user": user, "remote": remote,
+            "needs_mesh_app": mesh_apps_private(env)}
 
 
 # HomeBrain is deliberately single-admin: one master password opens the

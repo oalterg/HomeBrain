@@ -60,5 +60,8 @@
   },
   "rclone": {
     "version": "1.74.4"
+  },
+  "tailscale": {
+    "version": "1.104.7"
   }
 }

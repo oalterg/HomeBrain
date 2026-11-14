@@ -11,6 +11,14 @@ exec >> "$SETUP_LOG_FILE" 2>&1
 log_info "=== Starting Tunnel Redeploy: $(date) ==="
 load_env
 
+# Retire the previous mesh publication when switching providers, including
+# public Funnel listeners. Clearing .env alone does not stop tailscaled.
+if [[ -z "${MESH_DOMAIN:-}" ]] && command -v tailscale >/dev/null 2>&1; then
+    # Best effort: a client that is installed but signed out, or stopped,
+    # has nothing published and must not abort a tunnel redeploy.
+    tailscale serve reset || true
+fi
+
 # 1. Clean Slate: Stop ALL potential tunnel services first.
 # This prevents zombie containers when switching profiles (e.g. CF -> Pangolin).
 # Docker compose 'up' with profiles ignores services not in the active profile,
@@ -53,6 +61,8 @@ log_info "Refreshing Proxy and Trusted Domain Settings..."
 # missing, and aborting here would skip the restarts and the verification
 # below for a tunnel that is otherwise up. It logs its own [ERROR].
 configure_nc_ha_proxy_settings || true
+bash "$SCRIPT_DIR/utilities.sh" refresh_openclaw_origins \
+    || log_warn "Could not refresh chat origins; check the OpenClaw gateway."
 
 # 4. Selective Restart
 # Home Assistant reads configuration.yaml on startup, so it MUST be restarted if proxies changed.

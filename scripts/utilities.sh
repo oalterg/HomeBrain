@@ -1758,22 +1758,7 @@ openclaw_gateway_dropin_path() {
         "${HOMEBRAIN_HOME:-/home/homebrain}"
 }
 
-# Patch openclaw.json model references to match the selected AI model
-patch_openclaw_config() {
-    local config_file="$1"
-    local model_id="$2"
-    local ctx_size="${3:-}"
-
-    if [[ -z "$model_id" ]]; then
-        log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
-        return 0
-    fi
-
-    if ! command -v jq >/dev/null 2>&1; then
-        log_warn "jq not found. Cannot patch openclaw config model references."
-        return 0
-    fi
-
+openclaw_origins() {
     # Build allowed origins the OpenClaw Control UI accepts. The SPA does a
     # client-side check of `location.origin` against this list before it
     # touches the gateway WS; the proxy-side Origin rewriting we do server-side
@@ -1791,8 +1776,32 @@ patch_openclaw_config() {
     if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
         origins_jq+="\"https://${PANGOLIN_DOMAIN}\","
     fi
+    # The dashboard's private-network address (src/mesh.py DASHBOARD port).
+    if [[ -n "${MESH_DOMAIN:-}" ]]; then
+        origins_jq+="\"https://${MESH_DOMAIN}:4443\","
+    fi
     origins_jq="${origins_jq%,}]"
-    local origins="$origins_jq"
+    printf '%s\n' "$origins_jq"
+}
+
+# Patch openclaw.json model references to match the selected AI model
+patch_openclaw_config() {
+    local config_file="$1"
+    local model_id="$2"
+    local ctx_size="${3:-}"
+
+    if [[ -z "$model_id" ]]; then
+        log_warn "No AI_MODEL_ID set. Leaving openclaw.json model config as-is."
+        return 0
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        log_warn "jq not found. Cannot patch openclaw config model references."
+        return 0
+    fi
+
+    local origins
+    origins=$(openclaw_origins)
 
     # Derive a stable gateway password from MASTER_PASSWORD so it survives
     # redeployment. The dashboard authenticates as a trusted proxy (below); this
@@ -3420,6 +3429,13 @@ case "${1:-}" in
         ensure_rclone "$(jq -r '.rclone.version // empty' \
             "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
         ;;
+    ensure_tailscale)
+        ensure_tailscale "$(jq -r '.tailscale.version // empty' \
+            "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
+        ;;
+    resume_mesh_identity)
+        resume_mesh_identity
+        ;;
     offsite_resume)
         # Driven by homebrain-offsite.timer (on boot, then hourly). A reboot
         # part-way through a multi-hour upload used to mean the archive was not
@@ -3571,6 +3587,20 @@ case "${1:-}" in
         if systemctl is-active --quiet llama-server 2>/dev/null; then
             log_info "SYCL runtime env changed; restarting llama-server."
             systemctl restart llama-server
+        fi
+        ;;
+    refresh_openclaw_origins)
+        load_env
+        CFG="${HOMEBRAIN_HOME}/.openclaw/openclaw.json"
+        [[ -f "$CFG" ]] || exit 0
+        TMP=$(mktemp "${CFG}.origins.XXXXXX")
+        trap 'rm -f "$TMP"' EXIT
+        cp -p "$CFG" "$TMP"
+        jq --argjson origins "$(openclaw_origins)" \
+            '.gateway.controlUi.allowedOrigins = $origins' "$CFG" > "$TMP"
+        if ! cmp -s "$CFG" "$TMP"; then
+            mv "$TMP" "$CFG"
+            run_as_admin systemctl --user restart openclaw-gateway
         fi
         ;;
     refresh_openclaw)

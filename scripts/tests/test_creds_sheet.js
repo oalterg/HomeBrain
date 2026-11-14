@@ -176,6 +176,30 @@ function comparable(text) {
           comparable(c[1]) === comparable(legacyBuild(c[2])));
 });
 
+// --- 8b: phone setup sheet for remote access ------------------------------
+var PU = { nextcloud: 'https://hb.t.ts.net', vault: 'https://hb.t.ts.net:8443',
+           homeassistant: 'https://hb.t.ts.net:10000', dashboard: 'https://hb.t.ts.net:4443' };
+var when = new Date(2026, 10, 14, 9, 5, 7);
+var priv = buildPhoneSheet({ name: 'hb.t.ts.net', urls: PU, isPublic: false, lockOn: true, date: when });
+var pub = buildPhoneSheet({ name: 'hb.t.ts.net', urls: PU, isPublic: true, lockOn: false, date: when });
+check('phone sheet is ASCII and CRLF', /^[\x00-\x7f]*$/.test(priv) && /^[\x00-\x7f]*$/.test(pub)
+      && priv.indexOf('\r\n') > 0 && priv.replace(/\r\n/g, '').indexOf('\n') === -1);
+check('phone sheet lists all four addresses', [priv, pub].every(function (t) {
+    return Object.keys(PU).every(function (k) { return t.indexOf(PU[k]) !== -1; }); }));
+check('private: the Tailscale step comes before any address',
+      priv.indexOf('Install the Tailscale app') !== -1
+      && priv.indexOf('Install the Tailscale app') < priv.indexOf(PU.nextcloud));
+check('public: the apps are not told to install anything first',
+      pub.indexOf('nothing extra on the phone') !== -1
+      && pub.indexOf('Install the Tailscale app') > pub.indexOf(PU.dashboard));
+check('lock on: the approval step is on the sheet', priv.indexOf('Approve') !== -1);
+check('lock off: no approval step', pub.indexOf('Approve') === -1);
+check('phone sheet filename', phoneSheetFilename(when) === 'homebrain-phone-setup-2026-11-14T09-05-07.txt');
+var ms = { name: 'Alex', password: 'pw', date: when, files: { url: PU.nextcloud, user: 'alex' } };
+check('member sheet mentions Tailscale only when the apps are private',
+      buildMemberSheet(ms).indexOf('Tailscale') === -1
+      && buildMemberSheet(Object.assign({ needsMeshApp: true }, ms)).indexOf('Tailscale') !== -1);
+
 // --- 9: saveCredsSheet's contract with the DOM ---------------------------
 // Not a browser test — it cannot be, there is no browser here. It pins the two
 // fixes from RECOVERY_SHEET.md F5.1/F5.2, which are otherwise unverifiable:

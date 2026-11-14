@@ -40,6 +40,7 @@ jobs:
                             scripts/tests/test_setup_credentials.py \
                             scripts/tests/test_pangolin_domain_sanitize.py \
                             scripts/tests/test_owner_tunnel.py \
+                            scripts/tests/test_mesh.py \
                             scripts/tests/test_welcome_wizard.py \
                             scripts/tests/test_backup_discovery.py \
                             scripts/tests/test_backup_crypto.py \
@@ -82,6 +83,8 @@ jobs:
         run: bash scripts/tests/test_backup_vault_fatal.sh
       - name: member escrow travels with the vault DB (shape)
         run: bash scripts/tests/test_backup_member_escrow.sh
+      - name: remote access over the owner's private network (shell half)
+        run: bash scripts/tests/test_mesh.sh
       - name: tunnel DNS survives a boot-before-DHCP race
         run: bash scripts/tests/test_tunnel_dns.sh
       - name: LAN HTTPS is names on 443
