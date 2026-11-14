@@ -200,6 +200,16 @@ rm -f /var/lib/tailscale/tailscaled.state.before-resume 2>/dev/null || true
 log "Removing backup cron..."
 rm -f /etc/cron.d/homebrain-backup 2>/dev/null || true
 
+# Caddy is the only door to the wizard: gunicorn on :8000 answers loopback and
+# the Docker bridge only (manager_firewall.sh), and the `down` above took Caddy
+# with everything else. Without this the box reboots into a setup wizard that
+# nothing on the LAN can reach. Same bring-up as provision.sh.
+log "Restarting the LAN edge so the setup wizard is reachable..."
+_lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+( cd "$INSTALL_DIR" && VAULT_LAN_IP="${_lan_ip:-127.0.0.2}" \
+    docker compose -f "$COMPOSE_FILE" up -d --no-deps caddy ) 2>/dev/null \
+    || log "WARNING: Caddy did not start — the wizard will not be reachable on the LAN."
+
 # --- 5. Final cleanup & reboot -----------------------------------------
 #
 # Deliberately no credentials are minted here. This script used to generate a
