@@ -178,6 +178,78 @@
         "notes": "Standard model for a discrete Arc. 16.4 t/s decode and 548 t/s on an 814-token prompt at the trained context 131072, 21.6 GiB resident, about 2.3 GiB free. Supersedes UD-Q5_K_M. See docs/BENCHMARKS.md (2026-09-26)."
       },
       "default": false
+    },
+    {
+      "id": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB",
+      "filename": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+      "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF/resolve/main/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+      "min_size_bytes": 22000000000,
+      "context_window": 8192,
+      "max_tokens": 16384,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 -b 2048 -ub 512 --threads 6",
+      "profiles": {
+        "x86_64-sycl-xe": {
+          "context_window": 131072,
+          "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 -b 2048 -ub 512 --threads 6",
+          "mmproj_filename": "mmproj-NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+          "mmproj_url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF/resolve/main/mmproj-NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+          "mmproj_min_size_bytes": 1700000000,
+          "notes": "Measured 2026-11-14 on b12359 SYCL. NVIDIA's 24GB build: every routed expert in IQ2_XXS, the rest NVFP4/Q8_0; 22,018,326,528 bytes (20.51 GiB). Mamba-2/attention hybrid with only 8 of 88 layers attending (2 KV heads x 128), so q8_0 KV at ctx 131072 is ~0.53 GiB and the whole model sits on the card: loads in 45 s, 2.9 GiB free idle, 2.6 GiB free after a 58,620-token fill. -ub 512 is NVIDIA's pick. Decode barely moves with depth (17.6 -> 16.8 t/s) but prefill is ~2.5x slower than Glimmer's. The 1.73 GB vision projector is loaded on this profile. Image OCR/shape checks passed at 1024, 2048 and 4000 pixels; a 118,545-token text fill with the projector resident reached 372 t/s prefill and 16.14 t/s decode. After the 4000px image, the same uncached 800-token text probe recovered to 327.6-330.0 t/s prefill and 17.60 t/s decode (text-only baseline 326.4-326.5 / 17.61). Post-image VRAM headroom is only 31 MiB; no GPU resets or OOM errors were observed. The DFlash drafter (LiLiCorr, 1 GB) is not loaded. Chat-template kwargs: enable_thinking (default true), medium_effort (default false = full effort). Tool calls use the Qwen3-Coder XML format and come back as parsed tool_calls. An OpenClaw exec turn (df + free) answered correctly in 149 s from a 46K-token context. Needs llama.cpp b12359+: Bolt's per-layer expert counts arrived in cd0a5b6a1 (#30520, 2026-10-15), and b11292 refuses the file (check_tensor_dims: blk.1.ffn_gate_inp.weight expected 4096,496, got 4096,240), crash-looping llama-server into its start limit."
+        }
+      },
+      "benchmark": {
+        "tg_ts": 17.6,
+        "pp_ts": 326,
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp b12359 (v1.0.0, b1b770d9) SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, ctx 131072, -b 2048 -ub 512",
+        "notes": "17.6 t/s decode and 326 t/s prefill on an 800-token prompt; 16.8 t/s decode and 390 t/s prefill at a 58,620-token prompt. NVIDIA-reported at this IQ2 build: Terminal-Bench 2.1 50.98, BrowseComp 66.75, MCP-Atlas 52.20, PinchBench 87.82 (BF16: 53.93 / 70.00 / 55.60 / 90.35)."
+      },
+      "default": false
+    },
+    {
+      "id": "flint-UD-Q4_K_XL",
+      "filename": "flint-UD-Q4_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/flint-GGUF/resolve/main/flint-UD-Q4_K_XL.gguf",
+      "min_size_bytes": 25000000000,
+      "context_window": 8192,
+      "max_tokens": 32768,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 2048 -ub 1024 --threads 6",
+      "profiles": {
+        "x86_64-sycl-xe": {
+          "context_window": 131072,
+          "extra_flags": "--parallel 1 --jinja -ngl 99 -ot \"blk.(4[1-8]).ffn_.*_exps=CPU\" -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6",
+          "notes": "Measured 2026-11-14 on b12359 SYCL. RecursiveSI flint, 39.8B MoE / ~2.5B active, 256 experts (6 used) + 2 shared, 49 layers of which 14 are full attention (4 KV heads x 128) and 35 sliding-window 513 with attention sinks. 25,054,688,704 bytes (23.33 GiB): 21.47 GiB routed experts + 1.86 GiB everything else, so it cannot sit whole on a 24 GB card. -ot moves the routed experts of blocks 41-48 (3.24 GiB) to the CPU. Loads in 20 s, 1.17 GiB free idle, 0.97 GiB free after a 53,398-token fill. The offload costs little: only ~4 t/s against the all-GPU UD-Q3_K_XL. Decode 54-58 t/s short, 39.5 t/s at 53K. Needs llama.cpp with the flint arch (PR #30928, first in v1.0.0 / b12359); b11292 cannot load it. Tool calls use the GLM-4.5 <arg_key>/<arg_value> format and come back as parsed tool_calls. An OpenClaw exec turn answered correctly in 97 s, though its visible reply carried a self-correction ('1.5 exabytes... no, 1.5 terabytes'). The template has no thinking toggle and replays reasoning_content. max_tokens 32768 because the card says reasoning can exhaust a smaller budget."
+        }
+      },
+      "benchmark": {
+        "tg_ts": 58.0,
+        "pp_ts": 816,
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp b12359 (v1.0.0, b1b770d9) SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, ctx 131072, -b 4096 -ub 2048, -ot blk.(4[1-8]).ffn_.*_exps=CPU",
+        "notes": "54-58 t/s decode and 780-890 t/s prefill on an 800-token prompt; 39.5 t/s decode and 468 t/s prefill at a 53,398-token prompt. RecursiveSI-reported: Terminal-Bench 2.1 (Terminus 2) 54.9, SWE-bench Verified (mini-swe-agent) 74.2."
+      },
+      "default": false
+    },
+    {
+      "id": "flint-UD-Q3_K_XL",
+      "filename": "flint-UD-Q3_K_XL.gguf",
+      "url": "https://huggingface.co/unsloth/flint-GGUF/resolve/main/flint-UD-Q3_K_XL.gguf",
+      "min_size_bytes": 18400000000,
+      "context_window": 8192,
+      "max_tokens": 32768,
+      "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 2048 -ub 1024 --threads 6",
+      "profiles": {
+        "x86_64-sycl-xe": {
+          "context_window": 131072,
+          "extra_flags": "--parallel 1 --jinja -ngl 99 -fa on --cache-type-k q8_0 --cache-type-v q8_0 --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 -b 4096 -ub 2048 --threads 6",
+          "notes": "Measured 2026-11-14 on b12359 SYCL. All-GPU alternative to flint-UD-Q4_K_XL: 18,494,977,472 bytes (17.22 GiB), no expert offload. Loads in 20 s, 4.1 GiB free idle, 3.9 GiB free after a 53,398-token fill, so it has room for a longer context. Only marginally faster than UD-Q4_K_XL (60 vs 56 t/s decode, 40.5 vs 39.5 at 53K) at a lower quant tier, so UD-Q4_K_XL is the better trade. Tool calls parse; an OpenClaw exec turn answered correctly in 85 s. Same llama.cpp requirement (flint arch, b12359+)."
+        }
+      },
+      "benchmark": {
+        "tg_ts": 60.4,
+        "pp_ts": 1181,
+        "measured_on": "Intel Arc Pro B60, AMD Ryzen 5 5600 6-core, llama.cpp b12359 (v1.0.0, b1b770d9) SYCL FP16, Level Zero 26.35, oneAPI 2025.3, q8_0 KV, ctx 131072, -b 4096 -ub 2048",
+        "notes": "60.1-60.4 t/s decode and 1,086-1,181 t/s prefill on an 800-token prompt; 40.5 t/s decode and 483 t/s prefill at a 53,398-token prompt. See flint-UD-Q4_K_XL for the vendor scores."
+      },
+      "default": false
     }
   ],
   "llama_server": {
