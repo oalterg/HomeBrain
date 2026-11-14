@@ -1133,8 +1133,10 @@ get_vault_profiles() {
 # set DEPLOYMENT_MODE=local to opt out despite having credentials.
 # When Pangolin IS provisioned, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
 is_local_mode() {
-    # No Pangolin credentials at all — always local regardless of DEPLOYMENT_MODE
-    [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
+    # Neither a private-network name (MESH_DOMAIN, src/mesh.py) nor Pangolin
+    # credentials — always local regardless of DEPLOYMENT_MODE
+    [[ -z "${MESH_DOMAIN:-}" ]] \
+        && [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
     # Credentials present but user explicitly opted out
     [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
     return 1
@@ -2159,6 +2161,68 @@ ensure_rclone() {
     rm -rf "$tmp"
     hash -r 2>/dev/null || true
     log_info "Installed rclone $(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}') to /usr/local/bin."
+}
+
+# ensure_tailscale [version] — the mesh VPN client behind Remote access
+# (docs/plans/REMOTE_ACCESS.md). Host-level, not a container: it must survive
+# `compose down`, and it owns a network interface.
+#
+# The pinned static build, not the vendor apt repo: an apt repo upgrades the
+# client under us on the next unattended-upgrade, and every other moving part
+# on this box is pinned in versions.json. Installing does not join anything —
+# the box stays signed out until the owner connects it from the dashboard.
+ensure_tailscale() {
+    local want_ver="${1:-}"
+    if [[ -z "$want_ver" ]]; then
+        log_warn "No tailscale version pinned in versions.json."
+        return 1
+    fi
+    if command -v tailscale >/dev/null 2>&1 && command -v tailscaled >/dev/null 2>&1 \
+        && [[ "$(tailscale version 2>/dev/null | head -1)" == "$want_ver" ]]; then
+        systemctl is-active --quiet tailscaled 2>/dev/null \
+            || systemctl enable --now tailscaled >/dev/null 2>&1 || true
+        return 0
+    fi
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        log_warn "tailscale needs installing but this is not running as root — skipping."
+        return 1
+    fi
+
+    local arch url tmp dir
+    case "$(uname -m)" in
+        x86_64)  arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *) log_warn "No tailscale build for $(uname -m)."; return 1 ;;
+    esac
+    url="https://pkgs.tailscale.com/stable/tailscale_${want_ver}_${arch}.tgz"
+    tmp=$(mktemp -d) || return 1
+    if ! curl -fsSL --retry 3 -o "$tmp/ts.tgz" "$url"; then
+        rm -rf "$tmp"; log_warn "Could not download tailscale from $url"; return 1
+    fi
+    if ! tar -xzf "$tmp/ts.tgz" -C "$tmp"; then
+        rm -rf "$tmp"; log_warn "Could not unpack the tailscale download."; return 1
+    fi
+    dir="$tmp/tailscale_${want_ver}_${arch}"
+    if [[ ! -x "$dir/tailscale" || ! -x "$dir/tailscaled" || ! -f "$dir/systemd/tailscaled.service" ]]; then
+        rm -rf "$tmp"; log_warn "The tailscale download is missing a binary or its unit."; return 1
+    fi
+    # The unit's ExecStart is /usr/sbin/tailscaled; keep the vendor layout.
+    install -m 0755 -o root -g root "$dir/tailscale" /usr/bin/tailscale
+    install -m 0755 -o root -g root "$dir/tailscaled" /usr/sbin/tailscaled
+    install -m 0644 -o root -g root "$dir/systemd/tailscaled.service" /etc/systemd/system/tailscaled.service
+    # Keep an existing defaults file: it may carry the owner's port choice.
+    [[ -f /etc/default/tailscaled ]] \
+        || install -m 0644 -o root -g root "$dir/systemd/tailscaled.defaults" /etc/default/tailscaled
+    rm -rf "$tmp"
+    hash -r 2>/dev/null || true
+    systemctl daemon-reload
+    # restart, not start: on an upgrade the old daemon is still the one running.
+    systemctl enable tailscaled >/dev/null 2>&1 || true
+    if ! systemctl restart tailscaled; then
+        log_warn "tailscaled did not start."
+        return 1
+    fi
+    log_info "Installed tailscale $(tailscale version 2>/dev/null | head -1)."
 }
 
 OFFSITE_STATE_FILE="/var/lib/homebrain/offsite.json"

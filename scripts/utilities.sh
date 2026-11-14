@@ -1791,6 +1791,10 @@ patch_openclaw_config() {
     if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
         origins_jq+="\"https://${PANGOLIN_DOMAIN}\","
     fi
+    # The dashboard's private-network address (src/mesh.py DASHBOARD port).
+    if [[ -n "${MESH_DOMAIN:-}" ]]; then
+        origins_jq+="\"https://${MESH_DOMAIN}:4443\","
+    fi
     origins_jq="${origins_jq%,}]"
     local origins="$origins_jq"
 
@@ -3405,6 +3409,10 @@ case "${1:-}" in
         ;;
     ensure_rclone)
         ensure_rclone "$(jq -r '.rclone.version // empty' \
+            "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
+        ;;
+    ensure_tailscale)
+        ensure_tailscale "$(jq -r '.tailscale.version // empty' \
             "${INSTALL_DIR}/config/versions.json" 2>/dev/null || echo "")"
         ;;
     offsite_resume)

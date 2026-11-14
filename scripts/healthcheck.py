@@ -396,6 +396,26 @@ def check_containers():
     return {"id": "containers", "level": "ok", "summary": "Containers healthy"}
 
 
+def check_mesh():
+    """Remote access over the owner's private network (src/mesh.py).
+
+    One owner for "is it up": mesh.health() also backs the self-test row.
+    """
+    try:
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+        if src not in sys.path:
+            sys.path.append(src)
+        import mesh
+        ok, summary = mesh.health()
+    except Exception:
+        return None
+    if ok:
+        return {"id": "tunnel", "level": "ok", "summary": "Remote access connected"}
+    return {"id": "tunnel", "level": "crit",
+            "summary": "Remote access is down — " + summary
+                       + " The box is reachable on the local network only"}
+
+
 def check_tunnel(env):
     """Is remote access actually reachable, not merely configured?
 
@@ -407,11 +427,13 @@ def check_tunnel(env):
     factory Newt credentials and still run LAN-only, in which case no newt
     container exists and its absence is correct, not a fault.
     """
+    if env.get("DEPLOYMENT_MODE", "remote") == "local":
+        return None
+    if env.get("MESH_DOMAIN"):
+        return check_mesh()
     if not shutil.which("docker"):
         return None
     if not (env.get("NEWT_ID") and env.get("NEWT_SECRET") and env.get("PANGOLIN_DOMAIN")):
-        return None
-    if env.get("DEPLOYMENT_MODE", "remote") == "local":
         return None
     # Cloudflare boxes tunnel through cloudflared; newt is not their path.
     if env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"):

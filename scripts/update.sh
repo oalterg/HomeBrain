@@ -341,6 +341,12 @@ fi
 
 bash "$INSTALL_DIR/scripts/utilities.sh" refresh_whisper_runtime \
     || log_warn "Whisper CPU isolation refresh failed — check logs."
+# Only on a box that already has the mesh client: installing it is the owner's
+# choice (dashboard → Remote access). No-op when the pin is what is installed.
+if command -v tailscale >/dev/null 2>&1; then
+    bash "$INSTALL_DIR/scripts/utilities.sh" ensure_tailscale \
+        || log_warn "tailscale pin refresh failed — check logs."
+fi
 # Boxes provisioned before auto-setup, and a failed first attempt. No-op when
 # the stack is installed, opted out, or this GPU is not first-class. Detached,
 # so the update does not wait on the download.

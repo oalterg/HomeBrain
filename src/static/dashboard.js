@@ -354,6 +354,7 @@ function openTab(id) {
     }
     if (id === 'logs') pollLogs();
     if (id === 'connectivity') {
+        loadMesh();
         loadFtpUsers();
         populateFtpNcUserSelect();
         loadNetworkStatus();
@@ -1345,6 +1346,220 @@ async function updatePangolin(e) {
         main_domain: document.getElementById('tun-main-domain').value,
     });
     setTimeout(() => location.reload(), 3000);
+}
+
+/* --- Remote access over the owner's private network (src/mesh.py) --- */
+let _meshTimer = null;
+let _meshQr = '';
+
+function meshMsg(text, isError) {
+    const el = document.getElementById('mesh-msg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.color = isError ? 'var(--danger)' : '';
+}
+
+async function meshPost(path, body) {
+    const res = await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+    });
+    if (res.status === 401) { location.reload(); return null; }
+    const d = await res.json().catch(() => ({}));
+    d._ok = res.ok;
+    return d;
+}
+
+function meshRow(label, value) {
+    return `<div class="stat-item"><span>${label}</span><span>${value}</span></div>`;
+}
+
+function meshLink(url) {
+    const u = escapeHtml(url);
+    return `<a href="${u}" target="_blank" rel="noopener">${u}</a>`;
+}
+
+async function loadMesh() {
+    const body = document.getElementById('mesh-body');
+    if (!body) return;
+    if (_meshTimer) { clearTimeout(_meshTimer); _meshTimer = null; }
+    let st;
+    try {
+        st = await (await fetch('/api/mesh/status', { credentials: 'include' })).json();
+    } catch (e) {
+        body.textContent = 'Remote access status unavailable.';
+        return;
+    }
+    const chip = document.getElementById('mesh-chip');
+    chip.innerHTML = '';
+    const state = st.state;
+
+    if (state === 'needs_login' && st.auth_url) {
+        body.innerHTML =
+            `<p class="small"><strong>Sign in to connect this box.</strong> Open the link on any device ` +
+            `and sign in with your Tailscale account (free; Google or Apple sign-in works).</p>` +
+            `<p class="mono small" style="overflow-wrap:anywhere;">${meshLink(st.auth_url)}</p>` +
+            (_meshQr ? `<img src="${escapeHtml(_meshQr)}" alt="Sign-in QR code" width="160" height="160">` : '') +
+            `<p class="small muted">Waiting for you to finish signing in…</p>`;
+        _meshTimer = setTimeout(loadMesh, 4000);
+        return;
+    }
+    if (state === 'needs_approval' || state === 'starting') {
+        body.innerHTML = `<p class="small">${state === 'starting' ? 'Connecting…'
+            : 'Signed in. This box is waiting for approval in your Tailscale admin console.'}</p>`;
+        _meshTimer = setTimeout(loadMesh, 4000);
+        return;
+    }
+    if (state !== 'running') {
+        body.innerHTML =
+            `<p class="small">Not connected. You need a Tailscale account; the free plan is enough. ` +
+            `This box joins as <code>homebrain</code>, and that name appears in a public certificate log.</p>` +
+            `<button class="btn-primary" id="mesh-connect-btn" onclick="meshConnect()">Connect</button>`;
+        return;
+    }
+
+    _meshQr = '';
+    const name = escapeHtml(st.dns_name || '');
+    const on = st.configured_name && st.configured_name === st.dns_name;
+    if (!on) {
+        body.innerHTML =
+            meshRow('This box', `<code>${name}</code>`) +
+            `<p class="small mt">Connected, but nothing is published yet. Turning it on restarts Nextcloud, ` +
+            `Home Assistant and Vault, and their away-from-home addresses become the ones under this name.</p>` +
+            `<div class="inline-row mt">` +
+            `<button class="btn-primary" onclick="meshPublish(false, true)">Turn on remote access</button>` +
+            `<button class="btn-danger" onclick="meshDisconnect()">Disconnect</button></div>`;
+        return;
+    }
+
+    chip.innerHTML = `<span class="chip chip-local">${st.public ? 'Private network · apps public' : 'Private network'}</span>`;
+    const u = st.urls || {};
+    const lock = st.lock || {};
+    let html =
+        meshRow('Nextcloud', meshLink(u.nextcloud || '')) +
+        meshRow('Vault', meshLink(u.vault || '')) +
+        meshRow('Home Assistant', meshLink(u.homeassistant || '')) +
+        meshRow('Dashboard <span class="muted">— private network only</span>', meshLink(u.dashboard || '')) +
+        meshRow('Phone apps', st.public
+            ? 'Public address — no extra app on the phone'
+            : 'Private — each phone needs the Tailscale app, switched on') +
+        meshRow('Lock', lock.enabled
+            ? (lock.signed ? '<span class="status-badge status-running">On</span>'
+                           : '<span class="status-badge status-stopped">This box is locked out</span>')
+            : '<span class="status-badge status-unknown">Off</span>');
+
+    if (!lock.enabled) {
+        html += `<div class="notice notice-warning mt"><strong>The lock is off.</strong> ` +
+            `<span class="small">Until it is on, Tailscale could add a device of its own to your network. ` +
+            `With it on, every new device has to be approved here. It applies to your whole Tailscale ` +
+            `network; devices already in it stay approved.</span>` +
+            `<div class="mt"><button class="btn-primary" onclick="meshLock()">Turn on the lock</button></div></div>`;
+    }
+    (lock.pending || []).forEach((p) => {
+        html += `<div class="stat-item"><span>Waiting: <code>${escapeHtml(p.name || 'new device')}</code></span>` +
+            `<span><button onclick="meshSign('${escapeHtml(p.nodekey)}')">Approve</button></span></div>`;
+    });
+    html += `<div class="inline-row mt">` +
+        (st.public
+            ? `<button onclick="meshPublish(false)">Make the apps private</button>`
+            : `<button onclick="meshPublish(true)">Give the phone apps a public address</button>`) +
+        `<button class="btn-danger" onclick="meshDisconnect()">Turn off remote access</button></div>`;
+    body.innerHTML = html;
+}
+
+async function meshConnect() {
+    const btn = document.getElementById('mesh-connect-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+    meshMsg('Installing the private network software if needed. This can take a minute.');
+    const d = await meshPost('/api/mesh/connect');
+    if (!d) return;
+    if (!d._ok) { meshMsg(d.error || 'Could not start the sign-in.', true); }
+    else { meshMsg(''); _meshQr = d.qr || ''; }
+    loadMesh();
+}
+
+async function meshPublish(isPublic, first) {
+    if (!await hbConfirm(isPublic ? {
+        title: 'Give the phone apps a public address?',
+        body: 'Nextcloud, Vault and Home Assistant become reachable from the internet at this box\'s name, '
+            + 'so their phone apps work with nothing extra installed. Each still asks for its own login.',
+        detail: 'Encryption still ends on this box. The dashboard stays on the private network.',
+        confirm: 'Make public',
+    } : first ? {
+        title: 'Turn on remote access?',
+        body: 'Nextcloud, Home Assistant and Vault restart and move to their private-network addresses. '
+            + 'This takes a minute or two. Phones already paired need the new address.',
+        detail: 'The names on your home network (nc-homebrain.local and the others) keep working.',
+        confirm: 'Turn on',
+    } : {
+        title: 'Make the apps private?',
+        body: 'Phones without the Tailscale app switched on will stop reaching Nextcloud, Vault and '
+            + 'Home Assistant away from home.',
+        confirm: 'Make private',
+    })) return;
+    meshMsg('Working…');
+    const d = await meshPost('/api/mesh/publish', { public: !!isPublic });
+    if (!d) return;
+    if (!d._ok) {
+        const el = document.getElementById('mesh-msg');
+        el.style.color = 'var(--danger)';
+        el.innerHTML = escapeHtml(d.error || 'That did not work.') +
+            (d.enable_url ? ' ' + meshLink(d.enable_url) : '');
+        return;
+    }
+    meshMsg('');
+    if (d.status === 'started') {
+        hbToast('Turning on remote access…');
+        pollTask();
+        setTimeout(() => location.reload(), 3000);
+        return;
+    }
+    loadMesh();
+}
+
+async function meshLock() {
+    if (!await hbConfirm({
+        title: 'Turn on the lock?',
+        body: 'From now on a new device only joins your Tailscale network after you approve it on this '
+            + 'dashboard. This covers your whole Tailscale network, not only this box.',
+        detail: 'You will be shown two secrets once. They are the only way to turn the lock off if this box is lost.',
+        confirm: 'Turn on the lock',
+    })) return;
+    const d = await meshPost('/api/mesh/lock');
+    if (!d) return;
+    if (!d._ok) { meshMsg(d.error || 'Could not turn on the lock.', true); return; }
+    document.getElementById('mesh-secrets-list').innerHTML =
+        (d.secrets || []).map((s) => `<div>${escapeHtml(s)}</div>`).join('');
+    document.getElementById('mesh-secrets').style.display = 'block';
+    loadMesh();
+}
+
+async function meshSign(nodekey) {
+    const d = await meshPost('/api/mesh/sign', { nodekey });
+    if (!d) return;
+    if (!d._ok) { meshMsg(d.error || 'Could not approve that device.', true); return; }
+    hbToast('Device approved.');
+    loadMesh();
+}
+
+async function meshDisconnect() {
+    if (!await hbConfirm({
+        title: 'Turn off remote access?',
+        body: 'This box signs out of your private network. Nextcloud, Vault and Home Assistant stop '
+            + 'answering away from home, and phones paired to those addresses need pairing again.',
+        detail: 'The names on your home network keep working. The lock, if on, stays on for your other devices.',
+        confirm: 'Turn off', danger: true,
+    })) return;
+    const d = await meshPost('/api/mesh/disconnect');
+    if (!d) return;
+    if (!d._ok) { meshMsg(d.error || 'Could not turn it off.', true); return; }
+    if (d.status === 'started') {
+        hbToast('Turning off remote access…');
+        pollTask();
+        setTimeout(() => location.reload(), 3000);
+        return;
+    }
+    loadMesh();
 }
 
 /* `off`: this box shipped without a tunnel, so "factory" means none. */
