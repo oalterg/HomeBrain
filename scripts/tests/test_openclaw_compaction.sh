@@ -289,8 +289,7 @@ echo "== the heartbeat cannot swallow an owner message =="
 # Left unset, heartbeat.session resolves to the agent main session -- the same
 # one the Telegram chat uses. messages.queue.mode defaults to "steer", so an
 # owner message landing mid-heartbeat is injected into the heartbeat run and
-# inherits its delivery target, which is "none" while heartbeat.target is
-# unset. The answer reaches the transcript and never reaches Telegram. Caught
+# inherits its delivery target, which is "none". The answer reaches the transcript and never reaches Telegram. Caught
 # live on .58 2026-08-15.
 isolated=$(jq -r '.agents.defaults.heartbeat.isolatedSession' "$cfg")
 if [[ "$isolated" == "true" ]]; then
@@ -299,23 +298,35 @@ else
     bad "heartbeats run in their own session" "isolatedSession=$isolated"
 fi
 
-# heartbeat.target must stay unset. "0 of 67 heartbeat replies were ever
+# heartbeat.target must be "none", written out: unset meant "none" until
+# OpenClaw 2026.9 made it "owner". "0 of 67 heartbeat replies were ever
 # delivered" reads like a bug and invites setting a target -- it is not. The
 # agent pings the user with the `message` tool per finding; a target instead
 # delivers the heartbeat's final text, i.e. a full status summary every hour.
 # Tried live on .58 2026-08-15 and reverted. The two routes are additive, and
 # HEARTBEAT_OK/ackMaxChars suppression does not catch a real summary.
 hb_target=$(jq -r '.agents.defaults.heartbeat.target // "unset"' "$cfg")
-if [[ "$hb_target" == "unset" || "$hb_target" == "none" ]]; then
+if [[ "$hb_target" == "none" ]]; then
     ok "heartbeat delivery target stays off; the message tool is the alert route (target=$hb_target)"
 else
     bad "heartbeat delivery target stays off" \
         "target=$hb_target would push an hourly status summary to the channel"
 fi
 
+echo "== tool schemas go to the model directly =="
+# Unset means Tool Search since OpenClaw 2026.9. On .69 the model then looked
+# for heartbeat_respond in the catalog, which direct-only tools are not in,
+# and the heartbeat never saved its scratch.
+got=$(jq -r '.tools.toolSearch' "$cfg")
+if [[ "$got" == "false" ]]; then
+    ok "Tool Search is off"
+else
+    bad "Tool Search is off" "tools.toolSearch=$got"
+fi
+
 echo "== isolated heartbeats stay cheap and on-box =="
 # lightContext skips AGENTS.md/SOUL.md/MEMORY.md on the hourly turn. Continuity
-# is workspace HEARTBEAT.md (this OpenClaw pin). Combined with isolatedSession
+# is the monitor scratch, which the runner appends either way. Combined with isolatedSession
 # that is the context cut; do not turn lightContext off without measuring.
 got=$(jq -r '.agents.defaults.heartbeat.lightContext' "$cfg")
 if [[ "$got" == "true" ]]; then

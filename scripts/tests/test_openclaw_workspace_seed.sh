@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Regression tests for utilities.sh:seed_openclaw_workspace and
-# heartbeat_checklist_is_empty.
+# Regression tests for utilities.sh:seed_openclaw_workspace,
+# seed_heartbeat_scratch and heartbeat_checklist_is_empty.
 #
 #   bash scripts/tests/test_openclaw_workspace_seed.sh
 #
@@ -23,7 +23,7 @@ extract_fn() {
     ' "$UTILITIES"
 }
 
-for fn in heartbeat_checklist_is_empty seed_openclaw_workspace; do
+for fn in heartbeat_checklist_is_empty seed_heartbeat_scratch seed_openclaw_workspace; do
     body="$(extract_fn "$fn")"
     if [[ -z "$body" ]]; then
         echo "could not extract $fn from $UTILITIES"; exit 1
@@ -48,8 +48,9 @@ else
     bad "headings and empty checkboxes count as empty" "treated as body"
 fi
 
-# OpenClaw 2026.7.1-2 ships a comments-only HEARTBEAT.md that skips the
-# hourly turn. We have to classify it empty so an upgrade replaces it.
+# OpenClaw 2026.7.1-2 shipped a comments-only HEARTBEAT.md that skips the
+# hourly turn, and doctor imports it into the scratch as it is. We have to
+# classify it empty so an upgrade replaces it.
 if heartbeat_checklist_is_empty $'<!-- Heartbeat template; comments-only content prevents scheduled heartbeat API calls. -->\n\n# Keep this file empty (or with only comments) to skip heartbeat API calls.\n\n# Add tasks below when you want the agent to check something periodically.\n'; then
     ok "OpenClaw's stock comments-only HEARTBEAT.md counts as empty"
 else
@@ -64,17 +65,103 @@ else
     ok "#TODO without a space is not an ATX heading"
 fi
 
-if heartbeat_checklist_is_empty "$(cat "$TEST_DIR/../../config/openclaw-workspace/HEARTBEAT.md")"; then
-    bad "the seeded HEARTBEAT.md is not empty" "empty-checklist detector would skip hourly heartbeats"
+if heartbeat_checklist_is_empty "$(cat "$TEST_DIR/../../config/openclaw-workspace/heartbeat.scratch")"; then
+    bad "the seeded heartbeat scratch is not empty" "empty-checklist detector would skip hourly heartbeats"
 else
-    ok "the seeded HEARTBEAT.md is not empty"
+    ok "the seeded heartbeat scratch is not empty"
 fi
+
+echo "== heartbeat scratch is seeded through the gateway, never over work =="
+# seed_heartbeat_scratch reaches the gateway through heartbeat_scratch.sh
+# behind run_as_admin. SCRATCH is what its --json read answers ("fail" = no
+# gateway or no heartbeat job); a write lands in $TMP_ROOT/written.
+openclaw() { :; }
+run_as_admin() {
+    case "$*" in
+        "bash $SCRIPT_DIR/heartbeat_scratch.sh --json")
+            [[ "$SCRATCH" == fail ]] && return 1
+            printf '%s' "$SCRATCH" ;;
+        "bash $SCRIPT_DIR/heartbeat_scratch.sh") cat > "$TMP_ROOT/written" ;;
+        *) echo "unexpected: $*" >> "$TMP_ROOT/unexpected" ;;
+    esac
+}
+scratch_case() {   # scratch_case <name> <want: seeded|kept> — uses SCRATCH
+    rm -f "$TMP_ROOT/written"
+    seed_heartbeat_scratch
+    local got=kept
+    [[ -f "$TMP_ROOT/written" ]] && got=seeded
+    if [[ "$got" == "$2" ]]; then ok "$1"; else bad "$1" "scratch was $got"; fi
+}
+SCRATCH='{"scratch":null,"currentRevision":0,"maxBytes":262144}'
+scratch_case "a missing scratch is seeded" seeded
+if cmp -s "$TMP_ROOT/written" "$TEST_DIR/../../config/openclaw-workspace/heartbeat.scratch"; then
+    ok "the seed is the template, byte for byte"
+else
+    bad "the seed is the template, byte for byte" "$(head -3 "$TMP_ROOT/written" 2>/dev/null)"
+fi
+SCRATCH='{"scratch":{"content":"# Heartbeat\n\n- [ ]\n","revision":3},"currentRevision":3,"maxBytes":262144}'
+scratch_case "a headings-only scratch is replaced with the template" seeded
+SCRATCH='{"scratch":{"content":"## Current work\nOliver prefers tea.\n","revision":3},"currentRevision":3,"maxBytes":262144}'
+scratch_case "a filled scratch is not replaced" kept
+SCRATCH=fail
+scratch_case "a scratch that could not be read is not replaced" kept
+SCRATCH=''
+scratch_case "an empty answer is not taken for an empty scratch" kept
+if [[ -f "$TMP_ROOT/unexpected" ]]; then
+    bad "nothing else is run" "$(cat "$TMP_ROOT/unexpected")"
+else
+    ok "nothing else is run"
+fi
+
+echo "== heartbeat_scratch.sh finds the heartbeat job and guards the write =="
+# A fake `openclaw` on PATH: `cron list` answers $JOBS, `cron scratch` logs
+# its arguments and stdin.
+FAKE_BIN="$TMP_ROOT/bin"; mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/openclaw" <<'FAKE'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "cron list") printf '%s' "$JOBS" ;;
+    "cron scratch")
+        echo "$*" >> "$FAKE_LOG"
+        if [[ "$4" == "--json" ]]; then echo '{"scratch":null,"currentRevision":0,"maxBytes":262144}'
+        else cat > "$FAKE_LOG.stdin"; fi ;;
+esac
+FAKE
+chmod +x "$FAKE_BIN/openclaw"
+helper() { PATH="$FAKE_BIN:$PATH" FAKE_LOG="$TMP_ROOT/fake.log" JOBS="$JOBS" bash "$TEST_DIR/../heartbeat_scratch.sh" "$@"; }
+JOBS='{"jobs":[{"id":"job-0","declarationKey":"skill-collection-review:main"},{"id":"job-1","declarationKey":"heartbeat:main"}]}'
+out=$(printf 'Checklist\n\n## Current work\nwater the plants\n' | helper 2>&1); rc=$?
+if [[ $rc -eq 0 && "$(cat "$TMP_ROOT/fake.log")" == "cron scratch job-1 --file -" ]] \
+        && grep -q 'water the plants' "$TMP_ROOT/fake.log.stdin"; then
+    ok "stdin replaces the heartbeat job's scratch"
+else
+    bad "stdin replaces the heartbeat job's scratch" "rc=$rc out=$out log=$(cat "$TMP_ROOT/fake.log" 2>/dev/null)"
+fi
+rm -f "$TMP_ROOT/fake.log"
+if helper --json | jq -e 'has("maxBytes")' >/dev/null && [[ "$(cat "$TMP_ROOT/fake.log")" == "cron scratch job-1 --json" ]]; then
+    ok "--json reads it"
+else
+    bad "--json reads it" "log=$(cat "$TMP_ROOT/fake.log" 2>/dev/null)"
+fi
+rm -f "$TMP_ROOT/fake.log"
+if printf '\n  \n' | helper >/dev/null 2>&1 || [[ -f "$TMP_ROOT/fake.log" ]]; then
+    bad "an empty scratch is refused" "it would skip every heartbeat from then on"
+else
+    ok "an empty scratch is refused"
+fi
+for JOBS in '{"jobs":[{"id":"job-0","declarationKey":"skill-collection-review:main"}]}' ''; do
+    if echo text | helper >/dev/null 2>&1 || [[ -f "$TMP_ROOT/fake.log" ]]; then
+        bad "no heartbeat job, no write (jobs='${JOBS:0:20}')" "wrote anyway"
+    else
+        ok "no heartbeat job, no write (jobs='${JOBS:0:20}')"
+    fi
+done
 
 echo "== seed creates missing files and leaves filled ones =="
 mkdir -p "$HOMEBRAIN_HOME/.openclaw"
 seed_openclaw_workspace
 ws="$HOMEBRAIN_HOME/.openclaw/workspace"
-for f in HEARTBEAT.md MEMORY.md; do
+for f in MEMORY.md; do
     if [[ -f "$ws/$f" ]]; then
         ok "seeded $f"
     else
@@ -93,28 +180,17 @@ else
     bad "created memory/" "missing $ws/memory"
 fi
 
-printf '\nOliver prefers tea.\n' >> "$ws/HEARTBEAT.md"
+if [[ ! -e "$ws/HEARTBEAT.md" ]]; then
+    ok "does not write the retired HEARTBEAT.md"
+else
+    bad "does not write the retired HEARTBEAT.md" "doctor would import it over the scratch on every upgrade"
+fi
 printf '\nDo not overwrite me.\n' >> "$ws/MEMORY.md"
 seed_openclaw_workspace
-if grep -q 'Oliver prefers tea' "$ws/HEARTBEAT.md"; then
-    ok "a filled HEARTBEAT.md is not replaced"
-else
-    bad "a filled HEARTBEAT.md is not replaced" "seed overwrote current work"
-fi
 if grep -q 'Do not overwrite me' "$ws/MEMORY.md"; then
     ok "an existing MEMORY.md is not replaced"
 else
     bad "an existing MEMORY.md is not replaced" "seed overwrote durable facts"
-fi
-
-echo "== empty HEARTBEAT.md is re-seeded =="
-printf '# Heartbeat\n\n- [ ]\n' > "$ws/HEARTBEAT.md"
-seed_openclaw_workspace
-if grep -q 'Current work' "$ws/HEARTBEAT.md"; then
-    ok "headings-only HEARTBEAT.md is replaced with the template"
-else
-    bad "headings-only HEARTBEAT.md is replaced with the template" \
-        "left a file that would skip heartbeats"
 fi
 
 echo "== AGENTS.md gets the HomeBrain block once =="
@@ -195,7 +271,7 @@ else
 fi
 
 echo "== missing templates are a skip, not an abort =="
-# production utilities.sh is set -e; a bare cp of a missing HEARTBEAT.md
+# production utilities.sh is set -e; a bare cp of a missing template
 # would take down refresh_openclaw. Empty template dir must return.
 empty_root="$TMP_ROOT/nosrc"
 mkdir -p "$empty_root/scripts" "$empty_root/config/openclaw-workspace"
@@ -203,15 +279,16 @@ if (
     set -euo pipefail
     SCRIPT_DIR="$empty_root/scripts"
     seed_openclaw_workspace 1
+    seed_heartbeat_scratch
 ); then
     ok "empty template dir does not abort under set -e"
 else
     bad "empty template dir does not abort under set -e" "seed exited non-zero"
 fi
-if grep -q 'Current work' "$ws/HEARTBEAT.md"; then
-    ok "a skipped seed leaves the existing HEARTBEAT.md alone"
+if grep -q 'Do not overwrite me' "$ws/MEMORY.md"; then
+    ok "a skipped seed leaves the existing MEMORY.md alone"
 else
-    bad "a skipped seed leaves the existing HEARTBEAT.md alone" \
+    bad "a skipped seed leaves the existing MEMORY.md alone" \
         "existing workspace file was lost"
 fi
 

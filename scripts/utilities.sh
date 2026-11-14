@@ -2108,8 +2108,7 @@ patch_openclaw_config() {
         # own small history instead of the whole chat, and stops evicting the
         # chat’s KV cache on the way through.
         #
-        # heartbeat.target is deliberately left UNSET, which resolves to
-        # DEFAULT_HEARTBEAT_TARGET = "none". That looks like a bug — no
+        # heartbeat.target is "none". That looks like a bug — no
         # heartbeat reply has ever been delivered on .58, 0 of 67 — but it is
         # correct here: the agent pings the user with the `message` tool
         # (action=send, channel=telegram) when a heartbeat finds something
@@ -2118,14 +2117,15 @@ patch_openclaw_config() {
         # is a full status summary every single hour. Tried live 2026-08-15 and
         # reverted: the two routes are not redundant, they are additive, and
         # the ackMaxChars/HEARTBEAT_OK suppression does not help because a real
-        # summary is neither. Leave it unset.
+        # summary is neither. Unset used to mean "none"; since 2026.9 it
+        # means "owner", so it has to be written out.
+        .agents.defaults.heartbeat.target = "none" |
         .agents.defaults.heartbeat.isolatedSession = true |
         # Isolated heartbeats have no chat transcript. lightContext drops
-        # AGENTS.md / SOUL.md / MEMORY.md from the hourly prompt and keeps
-        # only workspace HEARTBEAT.md (OpenClaw 2026.7.1-2; later builds
-        # inject monitor scratch instead). Continuity is that file, seeded
-        # by seed_openclaw_workspace. Do not set lightContext without a
-        # non-empty HEARTBEAT.md — headings-only skips the run.
+        # AGENTS.md / SOUL.md / MEMORY.md from the hourly prompt; the runner
+        # appends the monitor scratch either way. Continuity is that
+        # scratch, seeded by seed_heartbeat_scratch. Do not set lightContext
+        # without a non-empty scratch — headings-only skips the run.
         .agents.defaults.heartbeat.lightContext = true |
         (if $hb_prompt == "" then .
          else .agents.defaults.heartbeat.prompt = $hb_prompt end) |
@@ -2318,6 +2318,14 @@ patch_openclaw_config() {
         # payload: the same 66 tools with cron removed answer 200, cron alone
         # answers 400.
         .tools.deny = ((.tools.deny // []) + ["cron"] | unique) |
+        # Hand the model every tool schema up front, as before 2026.9. Unset
+        # now means Tool Search: schemas wait behind tool_search /
+        # tool_describe / tool_call, which costs a local model extra
+        # generations per tool, and Glimmer then looked up heartbeat_respond
+        # in the catalog it is not part of and never saved its scratch
+        # (.69, a 385 s heartbeat). The prompt is KV-cached after the first
+        # turn, so the schemas up front are close to free here.
+        .tools.toolSearch = false |
         # .approvals.* only controls where approval PROMPTS get delivered. With
         # ask=off nothing ever prompts, so forwarding has nothing to forward.
         .approvals.exec.enabled = false |
@@ -2360,11 +2368,11 @@ patch_openclaw_config() {
     log_info "Patched openclaw.json with model: $model_id (ctx: ${ctx_size:-131072})"
 }
 
-# OpenClaw 2026.7.1-2 skips a heartbeat when HEARTBEAT.md exists but is
+# OpenClaw skips a heartbeat when its monitor scratch exists but is
 # "effectively empty" (isHeartbeatContentEffectivelyEmpty): blank lines,
 # HTML comments, ATX headings (# + space or EOL — not #TODO), fence
 # markers, empty checklist stubs (- / * / + with optional [ ]). Missing
-# file still runs (cold). Match that so we only seed when the next hourly
+# scratch still runs (cold). Match that so we only seed when the next hourly
 # turn would skip or start blank. Being more aggressive than OpenClaw
 # here would overwrite a #TODO line on the next update.
 heartbeat_checklist_is_empty() {
@@ -2379,9 +2387,39 @@ heartbeat_checklist_is_empty() {
     [[ -z "$stripped" ]]
 }
 
+# The isolated heartbeat's working pad is the monitor scratch of its
+# automation job. It lives in OpenClaw's state database, so only a running
+# gateway can read or write it. OpenClaw retired the workspace HEARTBEAT.md
+# that used to hold it: the runtime never reads that file, and doctor imports
+# one it finds into the scratch and removes it.
+#
+# Seed only a missing or effectively empty scratch, and only after a read
+# that answered — a failed read looks empty too, and writing then would
+# replace the agent's current work with the template.
+seed_heartbeat_scratch() {
+    command -v openclaw >/dev/null 2>&1 || return 0
+    local src="${SCRIPT_DIR}/../config/openclaw-workspace/heartbeat.scratch"
+    local helper="${SCRIPT_DIR}/heartbeat_scratch.sh"
+    if [[ ! -f "$src" ]]; then
+        log_warn "OpenClaw heartbeat scratch template missing at $src — skipping."
+        return 0
+    fi
+    local current
+    current=$(run_as_admin bash "$helper" --json 2>/dev/null || true)
+    if ! jq -e 'has("maxBytes")' >/dev/null 2>&1 <<<"$current"; then
+        log_warn "Could not read the OpenClaw heartbeat scratch — not seeded."
+        return 0
+    fi
+    heartbeat_checklist_is_empty "$(jq -r '.scratch.content // empty' <<<"$current")" || return 0
+    if run_as_admin bash "$helper" <"$src" >/dev/null 2>&1; then
+        log_info "Seeded OpenClaw heartbeat scratch"
+    else
+        log_warn "Could not seed the OpenClaw heartbeat scratch."
+    fi
+}
+
 # Copy workspace templates if missing. Never overwrite a file the agent or
-# owner already filled. HEARTBEAT.md is the isolated-heartbeat working pad
-# on this OpenClaw pin (later builds use monitor scratch instead).
+# owner already filled.
 #
 # AGENTS.md: OpenClaw writes the default operating file on first gateway
 # start. Pass 1 after that start so we append our block instead of replacing
@@ -2409,13 +2447,6 @@ seed_openclaw_workspace() {
     _own "$ws" 2>/dev/null || true
     _own "${ws}/memory"
 
-    if [[ ! -f "${src}/HEARTBEAT.md" ]]; then
-        log_warn "OpenClaw HEARTBEAT.md template missing at ${src}/HEARTBEAT.md — skipping."
-    elif [[ ! -f "${ws}/HEARTBEAT.md" ]] || heartbeat_checklist_is_empty "$(cat "${ws}/HEARTBEAT.md" 2>/dev/null || true)"; then
-        cp "${src}/HEARTBEAT.md" "${ws}/HEARTBEAT.md"
-        _own "${ws}/HEARTBEAT.md"
-        log_info "Seeded OpenClaw HEARTBEAT.md"
-    fi
     if [[ ! -f "${src}/MEMORY.md" ]]; then
         log_warn "OpenClaw MEMORY.md template missing at ${src}/MEMORY.md — skipping."
     elif [[ ! -f "${ws}/MEMORY.md" ]]; then
@@ -2611,31 +2642,33 @@ setup_openclaw() {
             die "No internet connection. Cannot install OpenClaw."
         fi
 
-        # Ensure Node.js 22+ is available
+        # Ensure Node.js 24 is available. OpenClaw 2026.9 dropped Node 22
+        # (engines: >=24.22.1 <25), so a box on NodeSource's 22.x repo is
+        # repointed at 24.x; setup_24.x rewrites the apt source in place.
         local need_node=false
         if ! command -v node >/dev/null 2>&1; then
             need_node=true
         else
             local node_major
             node_major=$(node --version 2>/dev/null | sed 's/v\([0-9]*\).*/\1/')
-            if [[ "$node_major" -lt 22 ]]; then
-                log_info "Node.js ${node_major} found but 22+ is required. Upgrading..."
+            if [[ "$node_major" -lt 24 ]]; then
+                log_info "Node.js ${node_major} found but 24 is required. Upgrading..."
                 need_node=true
             fi
         fi
 
         if [[ "$need_node" == "true" ]]; then
-            log_info "Installing Node.js 22 LTS via NodeSource..."
+            log_info "Installing Node.js 24 LTS via NodeSource..."
             wait_for_apt_lock
             export DEBIAN_FRONTEND=noninteractive
-            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
             apt-get install -y -qq nodejs
         fi
 
         # OpenClaw's engines range moves at PATCH granularity (2026.7.1
-        # wants >=22.22.3; a box provisioned a month earlier has 22.22.2).
+        # wanted >=22.22.3; a box provisioned a month earlier had 22.22.2).
         # The major-version guard above can't see that, so always pull the
-        # latest 22.x from the NodeSource repo — a no-op when current.
+        # latest 24.x from the NodeSource repo — a no-op when current.
         wait_for_apt_lock
         DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade -y -qq nodejs 2>/dev/null \
             || log_warn "nodejs upgrade failed — openclaw may refuse to run if its engines range moved."
@@ -2769,6 +2802,7 @@ setup_openclaw() {
             # OpenClaw has now written default bootstrap files. Append the
             # memory block (or write it if the default never appeared).
             seed_openclaw_workspace 1
+            seed_heartbeat_scratch
             # Watcher unit is ConditionPathExists on openclaw.json; start now
             # so we do not wait for the next reboot.
             systemctl enable --now homebrain-ha-watch.service 2>/dev/null \
@@ -3566,6 +3600,8 @@ case "${1:-}" in
             chown "${HOMEBRAIN_USER:-homebrain}:${HOMEBRAIN_USER:-homebrain}" "$CFG" 2>/dev/null || true
             chmod 600 "$CFG" 2>/dev/null || true
             seed_openclaw_workspace 1
+            # Before the restart below: the scratch needs a gateway that answers.
+            seed_heartbeat_scratch
             if ! cmp -s "${CFG}.preupdate" "$CFG" || [[ "$DROPIN_CHANGED" == "true" ]]; then
                 log_info "openclaw plugins/config/drop-in changed — restarting daemon to apply."
                 run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
