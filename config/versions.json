@@ -1,16 +1,16 @@
 {
   "llama_cpp": {
-    "tag": "b11292",
+    "tag": "b12359",
     "assets": {
-      "x86_64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b11292/llama-b11292-bin-ubuntu-vulkan-x64.tar.gz",
-      "aarch64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b11292/llama-b11292-bin-ubuntu-vulkan-arm64.tar.gz"
+      "x86_64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b12359/llama-b12359-bin-ubuntu-vulkan-x64.tar.gz",
+      "aarch64-vulkan": "https://github.com/ggml-org/llama.cpp/releases/download/b12359/llama-b12359-bin-ubuntu-vulkan-arm64.tar.gz"
     },
     "source_build": {
       "aarch64-cuda": {
         "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
       },
       "x86_64-sycl": {
-        "git_ref": "90c908d06d82ab02d0204a44c4a46fd3348f0535",
+        "git_ref": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {
           "package": "intel-deep-learning-essentials-2025.3",

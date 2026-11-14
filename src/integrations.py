@@ -1246,8 +1246,29 @@ def _approve_pairing(channel: str, code: str) -> tuple[dict, int]:
     except Exception as e:  # pragma: no cover - defensive
         return {"error": str(e)}, 500
     if proc.returncode == 0:
+        if channel == "telegram":
+            _sync_elevated_allow_from()
         return {"status": "approved", "output": proc.stdout.strip()}, 200
     return {"error": _clean_openclaw_error(proc.stderr, proc.stdout)}, 400
+
+
+def _sync_elevated_allow_from() -> None:
+    """Let the paired Telegram chats use elevated exec straight away.
+
+    OpenClaw 2026.9 refuses elevated exec unless the sender is listed in
+    tools.elevated.allowFrom.telegram. patch_openclaw_config writes the paired
+    chats there on every update; this covers a pairing made in between.
+    """
+    import activation
+    ids = activation.telegram_paired_ids(OPENCLAW_DIR)
+    data = _read_openclaw_config()
+    elevated = (data.get("tools") or {}).get("elevated")
+    if not ids or not isinstance(elevated, dict) or elevated.get("enabled") is not True:
+        return
+    elevated.setdefault("allowFrom", {})["telegram"] = ids
+    with open(_OPENCLAW_CONFIG_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
 
 # ---------------------------------------------------------------------------
 # Flask routes
