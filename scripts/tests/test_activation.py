@@ -259,6 +259,34 @@ def test_a_state_db_without_the_pairing_table_falls_back_to_the_json(tmp_path):
     assert activation.telegram_paired_ids(str(tmp_path)) == ["99"]
 
 
+def test_approving_a_telegram_pairing_grants_elevated_exec(monkeypatch, tmp_path):
+    """OpenClaw 2026.9 refuses elevated exec unless the sender is listed in
+    tools.elevated.allowFrom.telegram ("Failing gates: allowFrom")."""
+    root = tmp_path / ".openclaw"
+    root.mkdir()
+    cfg = root / "openclaw.json"
+    cfg.write_text(json.dumps({"tools": {
+        "exec": {"mode": "full"},
+        "elevated": {"enabled": True, "allowFrom": {"telegram": ["*"]}},
+    }}))
+    _pairing_db(root, [("telegram", "default", "8842631355", 0)])
+    monkeypatch.setattr(integrations, "OPENCLAW_DIR", str(root))
+    monkeypatch.setattr(integrations, "_OPENCLAW_CONFIG_PATH", str(cfg))
+
+    def approve(rc):
+        monkeypatch.setattr(integrations.subprocess, "run",
+                            lambda argv, **kw: integrations.subprocess.CompletedProcess(argv, rc, "", "bad code"))
+        return integrations._approve_pairing("telegram", "ABCD1234")
+
+    before = cfg.read_text()
+    assert approve(1)[1] == 400
+    assert cfg.read_text() == before
+    assert approve(0)[1] == 200
+    tools = json.loads(cfg.read_text())["tools"]
+    assert tools["elevated"] == {"enabled": True, "allowFrom": {"telegram": ["8842631355"]}}
+    assert tools["exec"] == {"mode": "full"}
+
+
 def test_telegram_ui_explains_the_two_credentials():
     root = os.path.join(os.path.dirname(__file__), "..", "..", "src")
     html = open(os.path.join(root, "templates", "dashboard.html")).read()

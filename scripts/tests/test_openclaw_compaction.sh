@@ -606,5 +606,40 @@ else
         "$(diff <(echo "$before") <(jq -S . "$cfg7") | head -5)"
 fi
 
+echo "== elevated exec: the paired Telegram chats, and nobody else =="
+# OpenClaw 2026.9 refuses elevated exec unless the sender is listed in
+# tools.elevated.allowFrom.telegram ("Failing gates: allowFrom"), so
+# {"enabled": true} alone left the owner without sudo from Telegram. "*" would
+# work but the security audit rates it critical. Pairings live in the 2026.8+
+# SQLite store; this is its real schema.
+mkdir -p "$TMP_ROOT/paired/state"
+cfg8="$TMP_ROOT/paired/openclaw.json"
+write_fixture "$cfg8"
+jq '.tools.elevated = {"enabled": true, "allowFrom": {"telegram": ["*"]}}' "$cfg8" > "$cfg8.tmp" && mv "$cfg8.tmp" "$cfg8"
+python3 - "$TMP_ROOT/paired/state/openclaw.sqlite" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("""CREATE TABLE channel_pairing_allow_entries (
+    channel_key TEXT NOT NULL, account_id TEXT NOT NULL, entry TEXT NOT NULL,
+    sort_order INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (channel_key, account_id, entry)) STRICT""")
+con.executemany("INSERT INTO channel_pairing_allow_entries VALUES (?, ?, ?, ?, 0)",
+                [("telegram", "default", "8842631355", 0), ("whatsapp", "default", "3333", 0)])
+con.commit()
+PY
+patch_openclaw_config "$cfg8" "$GLIMMER" 131072 >/dev/null 2>&1
+got=$(jq -c '.tools.elevated' "$cfg8")
+if [[ "$got" == '{"enabled":true,"allowFrom":{"telegram":["8842631355"]}}' ]]; then
+    ok "the paired chat may use elevated exec, and a hand-set \"*\" is replaced"
+else
+    bad "the paired chat may use elevated exec, and a hand-set \"*\" is replaced" "got $got"
+fi
+got=$(jq -c '.tools.elevated' "$(run_patch 131072 "$GLIMMER")")
+if [[ "$got" == '{"enabled":true}' ]]; then
+    ok "before anyone pairs there is no allowFrom, not an empty one"
+else
+    bad "before anyone pairs there is no allowFrom, not an empty one" "got $got"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]

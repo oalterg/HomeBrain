@@ -1929,9 +1929,16 @@ patch_openclaw_config() {
     local transcript_bytes=$(( (${ctx_size:-131072} - max_tokens) * 16 / 5 - 176000 ))
     (( transcript_bytes >= 32768 )) || transcript_bytes=32768
 
+    # Paired Telegram chats, for tools.elevated.allowFrom below. Read from
+    # OpenClaw's pairing store with the dashboard's own helper.
+    local elevated_telegram
+    elevated_telegram=$(python3 -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import activation; print(json.dumps(activation.telegram_paired_ids(sys.argv[2])))' \
+        "${SCRIPT_DIR}/../src" "$(dirname "$config_file")" 2>/dev/null) || true
+    [[ -n "$elevated_telegram" ]] || elevated_telegram='[]'
+
     jq --arg id "$model_id" --argjson ctx "${ctx_size:-131072}" --argjson origins "$origins" \
         --argjson max_tokens "$max_tokens" --arg think "$think_level" --arg vision "$vision" \
-        --argjson transcript_bytes "$transcript_bytes" \
+        --argjson transcript_bytes "$transcript_bytes" --argjson elevated_telegram "$elevated_telegram" \
         "${jq_extra_args[@]}" '
         # OpenClaw 2026.5+ schema makes both required and refuses to start
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
@@ -2302,9 +2309,15 @@ patch_openclaw_config() {
         # provisioned before the gate existed inherit that refusal silently on
         # upgrade, which reads as "sudo stopped working" long after the fact.
         # Same trust boundary as tools.exec above, not a new capability.
-        # allowFrom is deliberately unset: HomeBrain owns the whole box and the
-        # channel policy (telegram dmPolicy=pairing) is the sender gate.
-        .tools.elevated = {"enabled": true} |
+        # OpenClaw 2026.9 adds a second gate: the sender must be listed in
+        # tools.elevated.allowFrom.<provider>, and no channel plugin supplies a
+        # fallback, so "enabled" alone refuses every Telegram request ("Failing
+        # gates: allowFrom"). List the paired chats -- the people pairing
+        # already let in -- rather than "*", which the security audit reports
+        # as critical. Assigned whole, so a stale hand-set list cannot linger.
+        .tools.elevated = {"enabled": true}
+            + (if ($elevated_telegram | length) > 0
+               then {"allowFrom": {"telegram": $elevated_telegram}} else {} end) |
         # The cron tool ships a schema llama.cpp cannot compile. Its
         # job.declarationKey carries an unanchored regex, and llama.cpp turns
         # tool schemas into GBNF where a pattern must be anchored at BOTH ends,
