@@ -156,6 +156,12 @@ def _ensure_self_nonce() -> None:
         return
     nonce = secrets.token_hex(16)
     env_file = os.path.join(INSTALL_DIR, ".env")
+    # Never create .env here. On a box that has not been set up (first boot,
+    # or just factory-reset) the append below made a one-line file, and the
+    # wizard then skipped seeding it from .env.template because it "existed" —
+    # no MYSQL_DATABASE, no MYSQL_USER, and a Nextcloud that never installs.
+    if not os.path.exists(env_file):
+        return
     try:
         with open(env_file, "a") as f:
             f.write(f"\nHOMEBRAIN_SELF_NONCE={nonce}\n")
