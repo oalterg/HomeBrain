@@ -466,7 +466,12 @@ fi
 
 # 10. Restart Services
 log_info "Resuming services..."
-if [[ -n "$HA_CID" ]]; then docker start "$HA_CID"; fi
+# `|| log_warn`: under set -e a Home Assistant that cannot start (its Zigbee
+# stick is unplugged, so Docker refuses the device mapping) ended the backup
+# here, after everything had been staged and before anything was archived.
+if [[ -n "$HA_CID" ]]; then
+    docker start "$HA_CID" || log_warn "Home Assistant did not restart — the backup continues."
+fi
 set_maintenance_mode "--off"
 
 # Restart OpenClaw daemon
