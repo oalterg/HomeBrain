@@ -1563,7 +1563,7 @@ ha_wait_auth_api() {
     local _
     for _ in $(seq 1 30); do
         [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-            http://127.0.0.1:8123/api/onboarding 2>/dev/null)" == "200" ]] && return 0
+            http://127.0.0.1:8123/auth/providers 2>/dev/null)" == "200" ]] && return 0
         sleep 2
     done
     return 1

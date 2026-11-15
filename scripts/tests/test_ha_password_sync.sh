@@ -68,7 +68,7 @@ docker() {
 curl() {
     local url="${*: -1}"
     case "$url" in
-        */api/onboarding)   echo 200 ;;
+        */auth/providers)   echo 200 ;;
         */auth/login_flow)  echo '{"flow_id":"F1"}' ;;
         */auth/login_flow/*) echo "$LOGIN" ;;
     esac
@@ -377,7 +377,7 @@ curl() {
     local url="${*: -1}" n
     n=$(cat "$READY_AFTER")
     case "$url" in
-        */api/onboarding)
+        */auth/providers)
             if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$READY_AFTER"; echo 000
             else echo 200; fi ;;
         */auth/login_flow)   [ "$n" -gt 0 ] && echo "" || echo '{"flow_id":"F1"}' ;;
@@ -414,7 +414,7 @@ rm -f "$READY_AFTER"
 curl() {
     local url="${*: -1}"
     case "$url" in
-        */api/onboarding)   echo 200 ;;
+        */auth/providers)   echo 200 ;;
         */auth/login_flow)  echo '{"flow_id":"F1"}' ;;
         */auth/login_flow/*) echo "$LOGIN" ;;
     esac
