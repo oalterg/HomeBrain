@@ -66,6 +66,11 @@ cleanup() {
     if [[ -n "${VAULT_CID:-}" ]]; then
         docker start "$VAULT_CID" >/dev/null 2>&1 || true
     fi
+    # The agent is stopped for the snapshot too. A run that failed or was
+    # killed before the restart below left it down until someone noticed.
+    if [[ "${OPENCLAW_STOPPED:-false}" == "true" ]]; then
+        sudo -u "${HOMEBRAIN_USER}" openclaw daemon start >/dev/null 2>&1 || true
+    fi
     
     # Remove staging directory safely
     if [[ -n "${STAGING_DIR:-}" && -d "$STAGING_DIR" ]]; then
@@ -115,6 +120,11 @@ rm -f "$BACKUP_MOUNTDIR"/.homebrain_backup*.part
 # is a full-size archive that no retention pattern matches, so it would sit on
 # the drive forever.
 rm -f "$BACKUP_MOUNTDIR"/.hbk1_*.tmp
+# And for staging trees from a run that lost power, where the cleanup trap
+# never ran. Each is a full plaintext copy — files, database dumps, the vault
+# dump, instance secrets — sitting next to the encrypted archives, and nothing
+# else ever removes it. The name is this script's own mktemp template.
+find "$BACKUP_MOUNTDIR" -maxdepth 1 -type d -name 'staging_??????' -exec rm -rf {} +
 
 # 2. Check Service Health (Required to identify volumes)
 HA_CID=$(get_ha_cid)
@@ -263,6 +273,7 @@ log_info "Preparing services..."
 # Stop OpenClaw daemon for consistent snapshot
 if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw &>/dev/null; then
     log_info "Stopping OpenClaw daemon for consistent backup..."
+    OPENCLAW_STOPPED=true
     timeout 10 sudo -u "${HOMEBRAIN_USER}" openclaw daemon stop 2>/dev/null \
         || log_warn "OpenClaw daemon stop timed out — backup may be inconsistent"
 fi
@@ -479,6 +490,7 @@ if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw &>/dev/null; then
     log_info "Restarting OpenClaw daemon..."
     sudo -u "${HOMEBRAIN_USER}" openclaw daemon start 2>/dev/null \
         || log_warn "OpenClaw daemon restart failed after backup — restart manually if needed"
+    OPENCLAW_STOPPED=false
 fi
 
 # 11. Compress (+ encrypt)
