@@ -725,6 +725,15 @@ export_env_file() {
                 val="${val#\"}"
                 val="${val%\"}"
                 ;;
+            *)
+                # Unquoted: a trailing " # comment" is not part of the value.
+                # `source` used to drop it; this loop kept it, so the
+                # template's BACKUP_OPENCLAW_WORKSPACE=true  # ... never
+                # equalled "true" and every backup silently left the agent
+                # workspace out.
+                val="${val%%[[:space:]]#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+                ;;
         esac
         printf -v "$key" '%s' "$val"
         export "$key"
