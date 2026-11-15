@@ -84,6 +84,25 @@ mkdir -p "$LOG_DIR"
 echo "=== NUCLEAR RESET STARTED $(date -Iseconds) ===" > "$LOG_FILE"
 log "Wipe AI models: $WIPE_AI_MODELS | Wipe AI runtime: $WIPE_AI_RUNTIME"
 
+# The wizard this reset reboots into is opened with the factory password and
+# nothing else. A box that has lost it (updates before 5772121 deleted
+# factory_config.txt on x86) would wipe itself into a login nobody can pass.
+# Mint one, keep it where provision.sh keeps it, and say it wherever the owner
+# can still read it: the reset log and the final status message.
+FACTORY_CONFIG="/opt/homebrain/factory_config.txt"
+[[ -d /boot/firmware ]] && FACTORY_CONFIG="/boot/firmware/factory_config.txt"
+NEW_FACTORY_PASS=""
+if ! grep -q '^FACTORY_PASSWORD=.' "$FACTORY_CONFIG" 2>/dev/null; then
+    # `|| true`: head closes the pipe early and pipefail would report tr's SIGPIPE.
+    NEW_FACTORY_PASS="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)"
+    [[ ${#NEW_FACTORY_PASS} -eq 16 ]] || die "Could not generate a factory password."
+    [[ -f "$FACTORY_CONFIG" ]] && sed -i '/^FACTORY_PASSWORD=/d' "$FACTORY_CONFIG"
+    echo "FACTORY_PASSWORD=${NEW_FACTORY_PASS}" >> "$FACTORY_CONFIG"
+    chmod 600 "$FACTORY_CONFIG"
+    log "No factory password on this box. GENERATED FACTORY PASSWORD: ${NEW_FACTORY_PASS}"
+    log "Record it — it opens the setup wizard after the reboot."
+fi
+
 write_status "running" "Nuclear reset in progress — stopping services..."
 
 # --- 1. Clean shutdown -------------------------------------------------
@@ -240,7 +259,11 @@ printf '{"ts": %d, "rotated_at": "%s"}\n' \
     && mv "${EPOCH_FILE}.tmp" "$EPOCH_FILE"
 log "Backup epoch recorded — existing archives need the pre-reset password."
 
-write_status "success" "Nuclear reset complete. Rebooting now..."
+if [[ -n "$NEW_FACTORY_PASS" ]]; then
+    write_status "success" "Nuclear reset complete. Rebooting now. Log in to the setup wizard with this new factory password: ${NEW_FACTORY_PASS}"
+else
+    write_status "success" "Nuclear reset complete. Rebooting now..."
+fi
 
 log "Syncing disks..."
 sync
