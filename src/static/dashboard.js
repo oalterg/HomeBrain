@@ -1432,7 +1432,7 @@ async function loadMesh() {
     _meshQr = '';
     const name = escapeHtml(st.dns_name || '');
     const on = st.configured_name && st.configured_name === st.dns_name &&
-        ['443', '8443', '10000', '4443'].every(p => Object.hasOwn(st.published || {}, p));
+        ['9443', '8443', '10000', '4443'].every(p => Object.hasOwn(st.published || {}, p));
     if (!on) {
         body.innerHTML =
             meshRow('This box', `<code>${name}</code>`) +
