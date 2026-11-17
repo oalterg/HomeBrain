@@ -22,7 +22,8 @@
 #     old secret, changeable from their own UIs).
 #
 # NB: not `set -e` — every step's failure is handled explicitly so a single
-# non-critical hiccup can't abort a partially-applied rotation.
+# service hiccup does not prevent the remaining services from being updated.
+# A partial result exits nonzero so the dashboard cannot report success.
 set -uo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -58,7 +59,23 @@ if ! [[ "$NEW_PASS" =~ ^[A-Za-z0-9][A-Za-z0-9_.@!#%+=:?-]{7,127}$ ]]; then
 fi
 
 load_env
+
+# Serialize account migration/rotation with snapshots and restores.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+flock -n 198 || die "Another account, backup, or restore operation is running."
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
 log_info "=== Master password rotation starting ==="
+PARTIAL=0
+ROTATION_PENDING="${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/master_rotation_pending"
+(umask 077; touch "$ROTATION_PENDING")
+
+# The personal owner vault is distinct from Vaultwarden's administration token.
+# Its old credential remains sealed until the new login and account key are verified.
+if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" ]]; then
+    "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" rotate --password-file "$SECRETS_FILE" \
+        || die "Owner vault change is incomplete. Its recovery checkpoint is retained; retry to resume."
+fi
 
 # --- 1. MariaDB root (CRITICAL: abort before any .env change on failure) ---
 DB_CID="$(get_nc_db_cid 2>/dev/null || true)"
@@ -71,15 +88,16 @@ if [[ -n "$DB_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$DB_CID" 
         ALTER USER IF EXISTS 'root'@'%'        IDENTIFIED BY '${NEW_PASS}';
         FLUSH PRIVILEGES;
     "; then
-        die "MariaDB root rotation failed — aborting before any .env change. Box unchanged."
+        die "MariaDB root rotation failed — aborting before any .env change. Earlier completed steps are retained; inspect the log and retry."
     fi
     if ! docker exec -e MYSQL_PWD="$NEW_PASS" "$DB_CID" mariadb -u root -e "SELECT 1;" >/dev/null 2>&1; then
-        die "MariaDB new-password verification failed — aborting. Box unchanged."
+        die "MariaDB new-password verification failed — aborting. Earlier completed steps are retained; inspect the log and retry."
     fi
     update_env_var "MYSQL_ROOT_PASSWORD" "$NEW_PASS"
     log_info "MariaDB root rotated and verified."
 else
-    log_warn "DB container not running — skipping MariaDB rotation."
+    PARTIAL=1
+        log_warn "DB container not running — skipping MariaDB rotation."
 fi
 
 # --- 2. Nextcloud admin login (uses unchanged nextcloud_user DB creds) -----
@@ -91,10 +109,12 @@ if [[ -n "$NC_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$NC_CID" 
         update_env_var "NEXTCLOUD_ADMIN_PASSWORD" "$NEW_PASS"
         log_info "Nextcloud admin password rotated."
     else
+        PARTIAL=1
         log_warn "Nextcloud admin reset failed — NEXTCLOUD_ADMIN_PASSWORD left unchanged (non-fatal)."
     fi
 else
-    log_warn "Nextcloud container not running — skipping NC admin rotation (non-fatal)."
+    PARTIAL=1
+        log_warn "Nextcloud container not running — skipping NC admin rotation (non-fatal)."
 fi
 
 # --- 3. Home Assistant admin login (BEST-EFFORT) ---------------------------
@@ -112,9 +132,11 @@ case "$ha_rc" in
         # believing their new master password opens Home Assistant too.
         log_info "Home Assistant manages its own password — left untouched."
         log_info "Its login is unchanged; the new master password does not open it." ;;
-    2)  log_warn "Could not read which account owns Home Assistant — nothing was changed."
+    2)  PARTIAL=1
+        log_warn "Could not read which account owns Home Assistant — nothing was changed."
         log_warn "Home Assistant keeps its old password (non-fatal)." ;;
-    *)  log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
+    *)  PARTIAL=1
+        log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
         log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)." ;;
 esac
 # ha_set_password restarts HA; if that restart didn't come back, don't leave
@@ -159,11 +181,13 @@ if bash "$SCRIPT_DIR/provision_vault.sh" >/dev/null 2>&1; then
         if docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d --no-deps --force-recreate vaultwarden >/dev/null 2>&1; then
             log_info "Vaultwarden recreated with new admin token."
         else
-            log_warn "Vaultwarden recreate failed — admin SSO needs a redeploy (non-fatal)."
+            PARTIAL=1
+        log_warn "Vaultwarden recreate failed — admin SSO needs a redeploy (non-fatal)."
         fi
     fi
 else
-    log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
+    PARTIAL=1
+        log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
 fi
 
 # --- 6. Re-derive OpenClaw gateway password (BEST-EFFORT, GPU boxes only) ---
@@ -183,6 +207,7 @@ if [[ "${HAS_GPU:-false}" == "true" ]] && [[ -f "$CFG" ]] && command -v jq >/dev
         log_info "OpenClaw gateway password re-derived."
     else
         rm -f "$TMP_CFG"
+        PARTIAL=1
         log_warn "jq patch of openclaw.json failed — gateway password unchanged (non-fatal)."
     fi
 fi
@@ -203,10 +228,17 @@ refresh_self_token "$NEW_PASS"
 # with a scheduled run is handled there.
 if [[ -x "$SCRIPT_DIR/backup.sh" ]] || [[ -f "$SCRIPT_DIR/backup.sh" ]]; then
     log_info "Starting a full backup under the new password (detached)."
+    flock -u 198
+    exec 198>&-
     nohup setsid bash "$SCRIPT_DIR/backup.sh" --strategy full >/dev/null 2>&1 &
     disown 2>/dev/null || true
 else
     log_warn "backup.sh not found — take a backup manually; existing archives need the OLD password."
 fi
 
+if [[ "$PARTIAL" == "1" ]]; then
+    log_warn "=== Password rotation incomplete: some services could not be updated. Review the failures above and retry. Completed changes are retained. ==="
+    exit 1
+fi
+rm -f "$ROTATION_PENDING"
 log_info "=== Master password rotation complete ==="

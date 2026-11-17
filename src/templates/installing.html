@@ -198,7 +198,7 @@
         }
 
         function showSuccess(data) {
-            handoverCreds = { password: data.password, phrase: data.recovery_phrase };
+            handoverCreds = { password: data.password, phrase: data.recovery_phrase, ownerVault: data.owner_vault };
             const page = document.getElementById('install-page');
             page.innerHTML = `
                 <div class="brand">Home<span>${BRAND_SUFFIX}</span></div>
@@ -216,13 +216,16 @@
                         <div class="creds-secret">${data.password}</div>
                     </div>
 
+                    <p class="hint">Owner vault: ${escapeHtml(data.owner_vault?.email || 'not linked')} — ${escapeHtml(data.owner_vault?.status || 'check Household')}.</p>
+                    <p class="hint">Sign in as admin. Phone QR pairing requires an additional non-admin member.</p>
+
                     ${data.recovery_phrase ? `
                     <div class="creds-block">
                         <span class="creds-label">Recovery phrase</span>
                         <div class="creds-secret">${data.recovery_phrase}</div>
                         <p class="hint">Write these words down and keep them safe. They are your only way back in
                             if you forget the master password, and they are shown only once. They reset
-                            administrative access and open your encrypted backups; they do not unlock individual vault items.</p>
+                            administrative access and open your encrypted backups; managed owner vaults participate in recovery; independently managed vaults keep their own password.</p>
                     </div>` : ''}
 
                     <button type="button" onclick="downloadHandoverSheet()">Download as .txt</button>

@@ -16,6 +16,12 @@ if [ -t 1 ]; then :; else exec >> "$RESTORE_LOG_FILE" 2>&1; fi
 
 load_env
 
+# Serialize account migration/rotation with snapshots and restores.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+flock -n 198 || die "Another account, backup, or restore operation is running."
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
+
 # --- Input Parsing ---
 # Positional archive plus flags, in any order. --no-prompt used to be matched
 # positionally as $2; keeping it a flag means --from-offsite can be added
@@ -633,6 +639,17 @@ elif [[ "$HAS_VAULT_DB" == "false" && "$HAS_ESCROW" == "true" ]]; then
     log_warn "Archive has member vault recovery but no vault database — restoring neither (they are one unit)."
 fi
 rm -f /var/lib/homebrain/member_escrow.wrap
+
+# Restore owner linkage only with its vault database and recovery material.
+if [[ "$HAS_VAULT_DB" == "true" ]]; then
+    "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" restore-binding --directory "$TMP_DIR" \
+        || die "Could not restore owner vault linkage."
+    load_env
+    if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" || -f "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/owner_vault.json" ]]; then
+        "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" restore \
+            || die "Vault data restored, but owner password verification needs repair. Recovery material retained."
+    fi
+fi
 
 # --- Home Assistant admin password -----------------------------------------
 # The mirror of the Nextcloud sync above, which HA never had. Restoring HA's

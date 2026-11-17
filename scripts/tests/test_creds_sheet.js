@@ -125,10 +125,8 @@ check('member filename has second resolution',
       mname === 'homebrain-alex-2026-08-20T09-05-00.txt');
 check('member filename leaks no password', mname.indexOf(MEMBER_PW) === -1);
 
-// --- 8: regression against the sheet that actually shipped ---------------
-// Verbatim body of the pre-consolidation builder (installing.html @ 6fcee05),
-// parameterised only where it read a closure variable. A broken handover sheet
-// costs a factory reset, so the wording is pinned, not merely reviewed.
+// --- 8: approved recovery-sheet wording ----------------------------------
+// Original handover golden, updated for managed owner vault recovery.
 function legacyBuild(handoverCreds) {
     const lines = [
         'HomeBrain — recovery sheet',
@@ -137,6 +135,7 @@ function legacyBuild(handoverCreds) {
         '',
     ];
     if (handoverCreds.password) lines.push(`Master password:  ${handoverCreds.password}`);
+    lines.push('See Household for the owner login in each service. Phone QR pairing requires a non-admin member.');
     if (handoverCreds.phrase) lines.push(`Recovery phrase:  ${handoverCreds.phrase}`);
     lines.push(
         '',
@@ -155,8 +154,8 @@ function legacyBuild(handoverCreds) {
     );
     lines.push(
         'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
-        'It does NOT unlock individual Vault items — those are encrypted with each',
-        "user's own password and cannot be recovered from here.",
+        'Managed owner vaults participate in password changes and recovery.',
+        'Independently managed vaults keep their own password.',
         '',
     );
     return lines.join('\n');
@@ -172,7 +171,7 @@ function comparable(text) {
 [['handover (both)', both, { password: PW, phrase: PHRASE }],
  ['phrase reveal', phraseOnly, { phrase: PHRASE }],
  ['wordlist-missing handover', pwOnly, { password: PW }]].forEach(function (c) {
-    check('wording unchanged vs shipped sheet — ' + c[0],
+    check('approved recovery sheet wording — ' + c[0],
           comparable(c[1]) === comparable(legacyBuild(c[2])));
 });
 

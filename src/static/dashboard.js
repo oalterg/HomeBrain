@@ -1120,7 +1120,7 @@ async function fetchVaultStatus() {
         }
 
         // First-run prompt: container running, no users yet, signups still open.
-        const showBootstrap = v.signups_allowed && (v.users === 0 || v.users === null) &&
+        const showBootstrap = v.users === 0 &&
             v.container && v.container !== 'stopped';
         const bootstrap = document.getElementById('vault-bootstrap');
         if (bootstrap) bootstrap.style.display = showBootstrap ? '' : 'none';
@@ -2294,6 +2294,44 @@ function applyHouseholdFlags(flags) {
     }
 }
 
+async function manageOwnerVault() {
+    const panel = document.getElementById('owner-vault-panel');
+    const select = document.getElementById('owner-vault-account');
+    try {
+        const r = await fetch('/api/household/owner/vault', { credentials: 'include' });
+        const d = await r.json();
+        if (!r.ok) { hbToast(d.error || 'Could not read vault accounts.', 'error'); return; }
+        select.replaceChildren(...d.accounts.map(a => new Option(a.email, a.id)));
+        if (d.linked_id) select.value = d.linked_id;
+        document.getElementById('owner-vault-create').hidden = !!d.linked_id;
+        document.getElementById('owner-vault-verify').hidden = !d.linked_id;
+        document.getElementById('owner-vault-link').disabled = !d.accounts.length;
+        panel.hidden = false;
+    } catch (e) { hbToast('Could not reach the vault.', 'error'); }
+}
+
+async function ownerVaultAction(action) {
+    const password = document.getElementById('owner-vault-password');
+    const body = { action };
+    if (action === 'link') {
+        body.id = document.getElementById('owner-vault-account').value;
+        body.managed = document.getElementById('owner-vault-managed').checked;
+        body.password = password.value;
+    }
+    try {
+        const r = await fetch('/api/household/owner/vault', {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const d = await r.json();
+        if (!r.ok) { hbToast(d.error || 'Owner vault setup is incomplete.', 'error'); return; }
+        hbToast(`Owner vault: ${d.status}. ${d.email || ''}`);
+        await loadHousehold();
+        await manageOwnerVault();
+    } catch (e) { hbToast('Could not reach the vault; retry to resume.', 'error'); }
+    finally { password.value = ''; }
+}
+
 async function loadHousehold() {
     const el = document.getElementById('household-list');
     const errEl = document.getElementById('household-errors');
@@ -2307,13 +2345,14 @@ async function loadHousehold() {
         applyHouseholdFlags(d.flags || {});
         if (errEl) {
             const bits = [];
+            if (d.errors && d.errors.files) bits.push(`Files list unavailable: ${d.errors.files}`);
             if (d.errors && d.errors.vault) bits.push(`Vault list unavailable: ${d.errors.vault}`);
             if (d.errors && d.errors.ha) bits.push(`Home Assistant list unavailable: ${d.errors.ha}`);
             errEl.innerHTML = bits.length
                 ? `<p class="faint small">${bits.map(escapeHtml).join(' ')}</p>` : '';
         }
         if (!d.members.length) {
-            el.innerHTML = '<p class="faint small">Nobody has an account on this box yet — add yourself first.</p>';
+            el.innerHTML = d.owner ? '' : '<p class="faint small">No household accounts could be found.</p>';
         } else {
             el.innerHTML = d.members.map(m => `
             <div class="drive-row">
@@ -2335,9 +2374,28 @@ async function loadHousehold() {
             </div>
             <div id="detail-${m.user}" class="mt" style="display:none;"></div>`).join('');
         }
+        if (d.owner) {
+            const o = d.owner;
+            const vaultState = ({disabled: 'Disabled', unknown: 'Could not check',
+                unlinked: 'No owner vault linked', missing: 'Linked account missing',
+                needs_relink: 'Account changed — relink in Household',
+                managed: `${o.vault_email} (managed password)`,
+                independent: `${o.vault_email} (independent password)`})[o.vault_status] || 'Could not check';
+            el.insertAdjacentHTML('afterbegin', `
+              <p class="hint">${d.total} ${d.total === 1 ? 'person' : 'people'} in this household</p>
+              <div class="drive-row" id="household-owner">
+                <div class="row-main">
+                  <div class="inline-row"><strong>${escapeHtml(o.user)}</strong><span class="chip chip-local">Owner</span></div>
+                  <div class="svc-chips">${svcChip('files', o.files)}${svcChip('vault', o.vault)}${svcChip('home', o.home)}</div>
+                  <span class="row-meta">Files: ${escapeHtml(o.user)} · Vault: ${escapeHtml(vaultState)} · Home: ${escapeHtml(o.home_user || 'Could not check')}</span>
+                  ${o.vault_status === 'disabled' ? '' : '<button type="button" onclick="manageOwnerVault()">Manage owner vault</button>'}
+                  <p class="hint">The owner manages this box. Phone QR pairing is available for additional, non-admin members.</p>
+                </div>
+              </div>`);
+        }
         if (unmatchedEl) {
             if (d.unmatched && d.unmatched.length) {
-                unmatchedEl.innerHTML = '<p class="hint">Not matched to a person — left as they are.</p>' +
+                unmatchedEl.innerHTML = '<p class="hint">Accounts not linked to a household person — left as they are.</p>' +
                     d.unmatched.map(u => {
                         const who = u.kind === 'vault' ? (u.email || u.name) : (u.username || u.name);
                         return `<div class="drive-row"><div class="row-main">

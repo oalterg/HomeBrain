@@ -40,7 +40,7 @@ from flask import jsonify, request, session
 # Constants — single source of truth for paths used by the MCP servers too.
 # ---------------------------------------------------------------------------
 
-INSTALL_DIR = "/opt/homebrain"
+INSTALL_DIR = os.environ.get("INSTALL_DIR", "/opt/homebrain")
 HOMEBRAIN_HOME = os.environ.get("HOMEBRAIN_HOME", "/home/homebrain")
 OPENCLAW_DIR = os.path.join(HOMEBRAIN_HOME, ".openclaw")
 LOG_DIR = "/var/log/homebrain"

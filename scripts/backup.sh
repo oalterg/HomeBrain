@@ -37,6 +37,12 @@ fi
 
 load_env
 
+# Serialize account migration/rotation with snapshots and restores.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+flock -n 198 || die "Another account, backup, or restore operation is running."
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
+
 # --- Validation ---
 : "${BACKUP_RETENTION:?BACKUP_RETENTION not set}"
 : "${NEXTCLOUD_DATA_DIR:?NEXTCLOUD_DATA_DIR not set}"
@@ -253,6 +259,9 @@ fi
 
 # The box's place on the owner's private network (common.sh).
 capture_mesh_identity "$STAGING_DIR" "$ENCRYPT"
+# Owner linkage and any sealed rotation checkpoint travel with the vault snapshot.
+"$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" snapshot --directory "$STAGING_DIR" \
+    || die "Could not capture owner vault linkage."
 
 # Member vault-recovery escrow: ciphertext plus the wrap key that sealed it.
 # The wrap file is 0600 and lives in staging only until tar+gpg; cleanup

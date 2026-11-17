@@ -25,7 +25,8 @@ def vault_email_for(uid):
 
 
 def merge_roster(nc_users, vault_users, ha_users, owner_uid,
-                 reserved=(), sealed_uids=(), vault_known=True, ha_known=True):
+                 reserved=(), sealed_uids=(), vault_known=True, ha_known=True,
+                 owner_vault_id="", nc_known=True):
     """Union of the three services, keyed by Nextcloud uid.
 
     nc_users: {uid: {display_name, quota, last_seen}}
@@ -41,9 +42,25 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
     sealed = set(sealed_uids)
     owner = owner_uid or ""
 
+    owner_vault = next((v for v in vault_users or []
+                        if owner_vault_id and v.get("id") == owner_vault_id), None)
+    owner_home = next((h for h in ha_users or [] if h.get("is_owner")), None)
+    owner_account = next((a for uid, a in (nc_users or {}).items()
+                          if uid.lower() == owner.lower()), None)
+    owner_row = {
+        "user": owner, "name": owner, "role": "owner",
+        "files": (owner_account is not None) if nc_known else None,
+        "vault": (owner_vault is not None) if vault_known else None,
+        "home": (owner_home is not None) if ha_known else None,
+        "vault_email": (owner_vault or {}).get("email", ""),
+        "home_user": (owner_home or {}).get("username", ""),
+    } if owner else None
+
     vault_by_local = {}
     unmatched_vault = []
     for v in vault_users or []:
+        if owner_vault is v:
+            continue
         email = (v.get("email") or "").strip().lower()
         local = email.split("@", 1)[0] if email.endswith(f"@{VAULT_DOMAIN}") else None
         if local and local not in reserved and local != owner:
@@ -58,7 +75,7 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
         username = (h.get("username") or "").strip()
         if not username:
             continue
-        if username == owner or username in reserved:
+        if h.get("is_owner") or username == owner or username in reserved:
             continue
         if username in (nc_users or {}) and username != owner:
             ha_by_user[username] = h
@@ -68,7 +85,7 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
 
     members = []
     for uid, acct in (nc_users or {}).items():
-        if uid in reserved or uid == owner:
+        if uid in reserved or uid.lower() == owner.lower():
             continue
         vault = vault_by_local.pop(uid, None)
         home = ha_by_user.get(uid)
@@ -92,7 +109,8 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
 
     members.sort(key=lambda m: m["name"].lower())
     unmatched = unmatched_vault + unmatched_ha
-    return {"members": members, "unmatched": unmatched}
+    return {"owner": owner_row, "members": members, "unmatched": unmatched,
+            "total": len(members) + (1 if owner_row else 0)}
 
 
 def ha_usernames_from_auth_list(payload):
@@ -260,6 +278,10 @@ def ha_change_password(token, user_id, password):
 
 
 def ha_delete_member(token, username, user_id):
+    users = ha_list_users(token)
+    target = next((u for u in users if u["user_id"] == user_id), None)
+    if not target or target.get("is_owner"):
+        raise HouseholdError("Home Assistant's owner cannot be removed as a member")
     ha_ws_call(token, [
         {"type": "config/auth_provider/homeassistant/delete", "username": username},
         {"type": "config/auth/delete", "user_id": user_id},

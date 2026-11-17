@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 
-ESCROW_PATH = "/var/lib/homebrain/member_escrow.json"
+ESCROW_PATH = os.path.join(os.environ.get("HOMEBRAIN_STATE_DIR", "/var/lib/homebrain"), "member_escrow.json")
 INFO = b"homebrain-member-escrow-v1"
 NONCE_LEN = 12
 
@@ -160,7 +160,7 @@ def prune(live_uids, path=ESCROW_PATH):
     with _locked(path):
         data = _load_strict(path)
         wraps = data.get("wraps") or {}
-        stale = [uid for uid in wraps if uid not in live]
+        stale = [uid for uid in wraps if uid not in live and not uid.startswith("owner-vault:")]
         if not stale:
             return 0
         for uid in stale:
