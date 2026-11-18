@@ -473,7 +473,13 @@ if [ "$HAS_NC_DB" = true ]; then
     DB_CID=$(get_nc_db_cid)
     
     # 4a. Import SQL
-    SQL_FILE=$(find "$TMP_DIR" -name "*.sql" | head -n 1)
+    # Named, not searched for. `find "$TMP_DIR" -name "*.sql" | head -n 1`
+    # walked the owner's whole file library: with enough files find is still
+    # writing when head exits, takes SIGPIPE, and pipefail ends the restore
+    # here (exit 141) with the data in place and no database. It could also
+    # hand back vaultwarden.sql, or a .sql file from someone's Nextcloud folder.
+    SQL_FILE="$TMP_DIR/nc_db/nextcloud.sql"
+    [[ -f "$SQL_FILE" ]] || SQL_FILE="$TMP_DIR/db/nextcloud.sql"
     if [[ -f "$SQL_FILE" ]]; then
         log_info "Importing SQL Dump..."
         docker run --rm \
