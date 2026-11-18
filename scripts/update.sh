@@ -69,11 +69,13 @@ abort_if_downgrade() {
             cmp_status=$(curl -f -s --max-time 20 \
                 "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/compare/${TARGET_REF}...${inst_commit}" \
                 2>/dev/null | jq -r '.status // empty' 2>/dev/null) || cmp_status=""
+            local installed="$inst_ref"
+            [[ "$inst_commit" != "$inst_ref" ]] && installed="${inst_ref} @ ${inst_commit:0:7}"
             if [[ "$cmp_status" == "behind" || "$cmp_status" == "identical" ]]; then
-                log_info "Channel move ${inst_channel} (${inst_ref} @ ${inst_commit:0:7}) -> stable ${TARGET_REF} is a roll-forward (the tag contains ${inst_commit:0:7}); allowing."
+                log_info "Channel move ${inst_channel} (${installed}) -> stable ${TARGET_REF} is a roll-forward (the tag contains ${inst_commit:0:7}); allowing."
                 return 0
             fi
-            log_info "GitHub compare ${TARGET_REF}...${inst_commit:0:7}: ${cmp_status:-no answer}."
+            log_info "GitHub compare ${TARGET_REF}...${inst_commit:0:7} (installed ${installed}): ${cmp_status:-no answer}."
         fi
         if [[ "${ALLOW_DOWNGRADE:-0}" == "1" ]]; then
             log_warn "DOWNGRADE OVERRIDE (ALLOW_DOWNGRADE=1): $reason"
