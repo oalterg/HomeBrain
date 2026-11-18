@@ -81,6 +81,28 @@ parse_nc_tag() {
     grep -Eo 'nextcloud:[0-9]+\.[0-9]+\.[0-9]+' "$1" 2>/dev/null | head -n1 | cut -d: -f2
 }
 
+# tarball_commit ARCHIVE -> echoes the commit a GitHub (git archive) tarball was
+# cut from, read from its pax global header. Empty for an archive that carries
+# none, so callers fall back to the ref they asked for.
+tarball_commit() {
+    python3 -I - "$1" 2>/dev/null <<'PY' || true
+import re, sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    c = t.pax_headers.get("comment", "")
+print(c if re.fullmatch(r"[0-9a-f]{40}", c) else "")
+PY
+}
+
+# installed_compare_ref VERSION_JSON -> echoes what the downgrade guard asks
+# GitHub to compare a release tag against: the commit update.sh last installed.
+# A version.json from before commits were recorded gives its ref instead. On a
+# beta box that ref is the literal "main", which moves with every merge, so a
+# release cut before the latest merge looked older than the box.
+installed_compare_ref() {
+    [[ -f "$1" ]] || return 0
+    jq -r 'if (.commit // "") != "" then .commit else (.ref // empty) end' "$1" 2>/dev/null || true
+}
+
 # detect_downgrade <inst_channel> <inst_ref> <tgt_channel> <tgt_ref> \
 #                  <inst_nc_tag> <tgt_nc_tag>
 # Echoes a human-readable reason and returns 0 when moving installed->target is
