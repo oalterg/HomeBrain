@@ -42,10 +42,11 @@ TARGET_REF="${2:-main}"
 abort_if_downgrade() {
     local target_compose="${1:-}"
 
-    local inst_channel="" inst_ref=""
+    local inst_channel="" inst_ref="" inst_commit=""
     if [[ -f "$INSTALL_DIR/version.json" ]] && command -v jq >/dev/null 2>&1; then
         inst_channel=$(jq -r '.channel // empty' "$INSTALL_DIR/version.json" 2>/dev/null || echo "")
         inst_ref=$(jq -r '.ref // empty' "$INSTALL_DIR/version.json" 2>/dev/null || echo "")
+        inst_commit=$(installed_compare_ref "$INSTALL_DIR/version.json")
     fi
 
     local inst_nc="" tgt_nc=""
@@ -59,17 +60,20 @@ abort_if_downgrade() {
         # cannot see ancestry, so ask the GitHub compare API: "behind" or
         # "identical" means the tag contains the installed ref — a roll-forward
         # onto the release channel, which is exactly how a box that once took a
-        # beta build gets back onto stable. Network failure leaves the guard
-        # conservative (refuse).
-        if [[ "$inst_channel" != "stable" && "$CHANNEL" == "stable" && -n "$inst_ref" ]]; then
+        # beta build gets back onto stable. Compare against the installed
+        # commit, not the ref: a beta ref is "main", and once anything merges
+        # after a release, TAG...main reads "ahead" however old the box is.
+        # Network failure leaves the guard conservative (refuse).
+        if [[ "$inst_channel" != "stable" && "$CHANNEL" == "stable" && -n "$inst_commit" ]]; then
             local cmp_status=""
             cmp_status=$(curl -f -s --max-time 20 \
-                "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/compare/${TARGET_REF}...${inst_ref}" \
+                "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/compare/${TARGET_REF}...${inst_commit}" \
                 2>/dev/null | jq -r '.status // empty' 2>/dev/null) || cmp_status=""
             if [[ "$cmp_status" == "behind" || "$cmp_status" == "identical" ]]; then
-                log_info "Channel move ${inst_channel} (${inst_ref}) -> stable ${TARGET_REF} is a roll-forward (the tag contains ${inst_ref}); allowing."
+                log_info "Channel move ${inst_channel} (${inst_ref} @ ${inst_commit:0:7}) -> stable ${TARGET_REF} is a roll-forward (the tag contains ${inst_commit:0:7}); allowing."
                 return 0
             fi
+            log_info "GitHub compare ${TARGET_REF}...${inst_commit:0:7}: ${cmp_status:-no answer}."
         fi
         if [[ "${ALLOW_DOWNGRADE:-0}" == "1" ]]; then
             log_warn "DOWNGRADE OVERRIDE (ALLOW_DOWNGRADE=1): $reason"
@@ -154,6 +158,14 @@ curl -L -f -s --max-time 60 --retry 3 --retry-delay 5 "$URL" -o "$TEMP_DIR/updat
 log_info "Extracting..."
 mkdir -p "$TEMP_DIR/extract"
 tar -xzf "$TEMP_DIR/update.tar.gz" --strip-components=1 -C "$TEMP_DIR/extract" || { log_error "Extraction failed"; exit 1; }
+# Beta downloads whatever main is at this moment, so record the commit the
+# archive itself names; the downgrade guard compares a release against it.
+INSTALLED_COMMIT="$(tarball_commit "$TEMP_DIR/update.tar.gz")"
+if [[ -n "$INSTALLED_COMMIT" ]]; then
+    log_info "Archive is commit ${INSTALLED_COMMIT:0:7}."
+else
+    log_warn "Archive names no commit; a later move to stable will compare against '${TARGET_REF}'."
+fi
 
 # Downgrade guard (Layer 2) — authoritative, network-free re-check now that the
 # real target tree is on disk. Runs before the destructive rsync so a downgrade
@@ -528,6 +540,7 @@ cat > "$INSTALL_DIR/version.json" <<EOF
 {
   "channel": "$CHANNEL",
   "ref": "$TARGET_REF",
+  "commit": "$INSTALLED_COMMIT",
   "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF

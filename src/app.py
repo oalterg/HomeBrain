@@ -3506,7 +3506,8 @@ def check_manager_update():
             resp = requests.get(f"{REPO_API_URL}/commits/main", timeout=5)
             if resp.status_code == 200:
                 remote_ref = (resp.json().get("sha") or "")[:7]
-                if beta_ahead(local_ver.get("ref"), remote_ref):
+                # A beta ref is usually "main"; the commit says what is installed.
+                if beta_ahead(local_ver.get("commit") or local_ver.get("ref"), remote_ref):
                     update_available = True
                     message = f"New Beta Commit: {remote_ref}"
                 else:

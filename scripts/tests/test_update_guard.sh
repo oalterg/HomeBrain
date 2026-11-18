@@ -72,6 +72,43 @@ safe "stable re-run same tag"           stable v1.1.0 stable v1.1.0 32.0.9 32.0.
 safe "fresh install (no signals)"       ""   ""      stable v1.1.0 ""     32.0.3
 safe "beta->beta, NC unknown"           beta main   beta main   ""     ""
 
+echo "== installed_compare_ref =="
+# The guard compares a release tag against this. A beta box's ref is "main",
+# which moves on every merge; the recorded commit does not.
+cref() { local f; f="$(mktemp)"; printf '%s' "$2" > "$f"; got="$(installed_compare_ref "$f")"; rm -f "$f"
+         if [ "$got" = "$3" ]; then ok "$1"; else bad "$1 -> '$got' (expected '$3')"; fi; }
+sha=1111111111111111111111111111111111111111
+cref "beta box with a recorded commit -> commit" "{\"channel\":\"beta\",\"ref\":\"main\",\"commit\":\"$sha\"}" "$sha"
+cref "pre-fix version.json (no commit) -> ref"   '{"channel":"beta","ref":"main"}'                        main
+cref "archive named no commit -> ref"            '{"channel":"beta","ref":"main","commit":""}'            main
+cref "stable box -> its commit"                  "{\"channel\":\"stable\",\"ref\":\"v2026.11.18\",\"commit\":\"$sha\"}" "$sha"
+cref "unreadable version.json -> empty"          'not json'                                               ""
+got="$(installed_compare_ref /nonexistent/version.json)"
+if [ -z "$got" ]; then ok "missing version.json -> empty"; else bad "missing version.json -> '$got'"; fi
+
+echo "== tarball_commit =="
+if command -v git >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    tc_tmp="$(mktemp -d)"
+    git -C "$tc_tmp" init -q repo
+    printf 'x\n' > "$tc_tmp/repo/f"
+    git -C "$tc_tmp/repo" add f
+    git -C "$tc_tmp/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m t
+    want="$(git -C "$tc_tmp/repo" rev-parse HEAD)"
+    # GitHub's archive endpoint is git archive: the commit sits in the pax header.
+    git -C "$tc_tmp/repo" archive --format=tar.gz --prefix=HomeBrain-main/ HEAD > "$tc_tmp/gh.tar.gz"
+    got="$(tarball_commit "$tc_tmp/gh.tar.gz")"
+    if [ "$got" = "$want" ]; then ok "git archive -> its commit"; else bad "git archive -> '$got' (expected $want)"; fi
+    tar -czf "$tc_tmp/plain.tar.gz" -C "$tc_tmp/repo" f
+    got="$(tarball_commit "$tc_tmp/plain.tar.gz")"
+    if [ -z "$got" ]; then ok "hand-made tarball -> empty"; else bad "hand-made tarball -> '$got'"; fi
+    printf 'not an archive' > "$tc_tmp/junk.tar.gz"
+    got="$(tarball_commit "$tc_tmp/junk.tar.gz")"
+    if [ -z "$got" ]; then ok "corrupt download -> empty, no error"; else bad "corrupt download -> '$got'"; fi
+    rm -rf "$tc_tmp"
+else
+    bad "git and python3 are needed to check tarball_commit"
+fi
+
 echo "== nc_status_needs_upgrade =="
 needs() { if printf '%s' "$2" | nc_status_needs_upgrade; then ok "$1"; else bad "$1 (expected needs-upgrade)"; fi; }
 clean() { if printf '%s' "$2" | nc_status_needs_upgrade; then bad "$1 (expected up-to-date)"; else ok "$1"; fi; }

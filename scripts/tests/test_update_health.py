@@ -87,6 +87,28 @@ def test_check_update_offers_a_newer_stable(monkeypatch):
         assert data["target_ref"] == "v2026.07.21"
 
 
+def test_beta_check_uses_the_installed_commit(monkeypatch):
+    # update.sh records ref "main" plus the commit it extracted. Comparing the
+    # ref offered an update forever; the commit says the box is current.
+    sha = "d3182f9217bb2bbc18566f570a91b000e6532057"
+    monkeypatch.setattr(hb.requests, "get", lambda *a, **k: _Resp(200, {"sha": sha}))
+    with _client({"channel": "beta", "ref": "main", "commit": sha}) as client:
+        data = client.get("/api/manager/check_update?channel=beta").get_json()
+        assert data["available"] is False
+        assert "up to date" in data["message"]
+    monkeypatch.setattr(hb.requests, "get", lambda *a, **k: _Resp(200, {"sha": "abcdef1" + "0" * 33}))
+    with _client({"channel": "beta", "ref": "main", "commit": sha}) as client:
+        data = client.get("/api/manager/check_update?channel=beta").get_json()
+        assert data["available"] is True
+
+
+def test_beta_check_without_a_commit_still_offers(monkeypatch):
+    monkeypatch.setattr(hb.requests, "get", lambda *a, **k: _Resp(200, {"sha": "d3182f9" + "0" * 33}))
+    with _client({"channel": "beta", "ref": "main"}) as client:
+        data = client.get("/api/manager/check_update?channel=beta").get_json()
+        assert data["available"] is True
+
+
 def test_upgrade_409_when_a_task_is_running():
     with _client() as client:
         hb.write_status({"status": "running", "message": "busy", "log_type": "setup"})
