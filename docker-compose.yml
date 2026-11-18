@@ -71,7 +71,7 @@ services:
       retries: 5
 
   homeassistant:
-    image: homeassistant/home-assistant:2026.7.2
+    image: homeassistant/home-assistant:2026.11.2
     restart: unless-stopped
     # Loopback only — Caddy is the LAN face. Health/MCP/self-test use 127.0.0.1.
     ports:

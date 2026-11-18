@@ -1646,37 +1646,24 @@ ha_adopt_admin_password() {
     update_env_var "HA_ADMIN_PASSWORD" "$pw"
 }
 
-# Configures Trusted Proxies in Home Assistant configuration.yaml
+# Makes Home Assistant trust the Docker subnet Caddy proxies from. HA 2026.8+
+# keeps this in .storage/http and reads http: YAML only once, so a fresh
+# install (HA starts before the subnet is known) or a restore onto another
+# subnet must go through HA's API — see scripts/ha_trust_proxy.py.
 configure_ha_proxy_settings() {
     local subnet="$1"
     local cid="$2"
 
     log_info "Configuring Home Assistant trusted proxies for subnet: $subnet"
-
-    docker exec "$cid" sh -c "
-        CONF='/config/configuration.yaml'
-        # 1. Check if the subnet is already trusted
-        if grep -Fq '$subnet' \"\$CONF\"; then
-            echo 'Subnet already trusted.'
-        else
-            # 2. Check if trusted_proxies block exists
-            if grep -q 'trusted_proxies:' \"\$CONF\"; then
-                # Append to existing list
-                sed -i '/trusted_proxies:/a \    - $subnet' \"\$CONF\"
-            # 3. Check if http block exists but no proxies
-            elif grep -q '^http:' \"\$CONF\"; then
-                sed -i '/^http:/a \  use_x_forwarded_for: true\n  trusted_proxies:\n    - $subnet' \"\$CONF\"
-            # 4. No http block at all
-            else
-                echo '
-http:
-  use_x_forwarded_for: true
-  trusted_proxies:
-    - $subnet
-' >> \"\$CONF\"
-            fi
-        fi
-    "
+    if ! docker exec "$cid" python3 -c "
+import json, sys
+d = json.load(open('/config/.storage/http'))['data']
+c = d.get('stable', d)
+sys.exit(0 if c.get('use_x_forwarded_for') and sys.argv[1] in c.get('trusted_proxies', []) else 1)" "$subnet" 2>/dev/null; then
+        "$(backup_crypto_python)" "$INSTALL_DIR/scripts/ha_trust_proxy.py" "$subnet" || return 1
+    fi
+    # HomeBrain's old http: block is ignored now and only raises a repair in HA.
+    docker exec "$cid" sed -i '/^http:/,/^[^ ]/{/^http:/d;/^ /d;/^$/d}' /config/configuration.yaml
 }
 
 configure_nc_ha_proxy_settings() {
@@ -1758,7 +1745,8 @@ configure_nc_ha_proxy_settings() {
 
     # 2. Update Home Assistant Trusted Proxies
     if [[ -n "$ha_cid" ]]; then
-        configure_ha_proxy_settings "$subnet" "$ha_cid"
+        configure_ha_proxy_settings "$subnet" "$ha_cid" \
+            || log_warn "Home Assistant does not trust $subnet yet; it will refuse requests through Caddy."
     fi
 }
 
