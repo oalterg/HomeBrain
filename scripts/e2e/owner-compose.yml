@@ -1,0 +1,49 @@
+name: homebrain-owner-e2e
+services:
+  db:
+    image: mariadb:11.4.12
+    environment:
+      MYSQL_ROOT_PASSWORD: ${E2E_PASSWORD:?}
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${E2E_PASSWORD:?}
+    volumes: ["db:/var/lib/mysql"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  vaultwarden:
+    image: vaultwarden/server:1.37.2
+    environment:
+      ADMIN_TOKEN: ${E2E_VAULT_TOKEN:?}
+      SIGNUPS_ALLOWED: "false"
+      INVITATIONS_ALLOWED: "true"
+      SIGNUPS_VERIFY: "false"
+      ROCKET_PORT: "80"
+    ports: ["127.0.0.1:18082:80"]
+    volumes: ["vault:/data"]
+  nextcloud:
+    image: nextcloud:33.0.6-apache
+    environment:
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: ${E2E_PASSWORD:?}
+      NEXTCLOUD_TRUSTED_DOMAINS: "127.0.0.1 localhost"
+      MYSQL_HOST: db
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD: ${E2E_PASSWORD:?}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ["127.0.0.1:18080:80"]
+    volumes: ["nextcloud:/var/www/html"]
+  homeassistant:
+    image: homeassistant/home-assistant:2026.7.2
+    ports: ["127.0.0.1:18123:8123"]
+    volumes: ["ha:/config"]
+volumes:
+  db:
+  vault:
+  nextcloud:
+  ha:

@@ -170,6 +170,13 @@ if [[ -d "/boot/firmware" ]]; then
     fi
 fi
 
+# Only a genuinely fresh installation creates the owner vault. Upgrades adopt explicitly,
+# and wizard restores must restore the real vault before any owner reconciliation.
+if [[ ! -f "$INSTALL_DIR/.setup_complete" && ! -f "$INSTALL_DIR/.restoring" && "${VAULT_ENABLED:-true}" == "true" ]]; then
+    "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" provision \
+        || log_warn "Owner vault setup incomplete — retry from Household."
+fi
+
 log_info "=== Deployment Complete ==="
 
 # ATOMIC HANDOVER: Move credentials from staging to final path

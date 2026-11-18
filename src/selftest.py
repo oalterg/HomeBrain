@@ -44,7 +44,7 @@ SKIP = "skip"
 
 DAY = 86400
 
-INSTALL_DIR = "/opt/homebrain"
+INSTALL_DIR = os.environ.get("INSTALL_DIR", "/opt/homebrain")
 COMPOSE_FILE = f"{INSTALL_DIR}/docker-compose.yml"
 
 
@@ -302,11 +302,14 @@ def check_vault(env):
                 n = int(raw)
                 pruned = _prune_orphan_escrow(env)
                 extra = f" Pruned {pruned} orphan escrow." if pruned else ""
+                if n == 0 or not env.get("VAULT_OWNER_ID"):
+                    return result("Vault", OK,
+                                  "Vaultwarden is answering. Owner setup is incomplete: link or create the owner vault in Household.")
                 return result("Vault", OK,
-                              f"Vaultwarden is answering. {n} user(s).{extra}")
+                              f"Vaultwarden is answering. {n} user(s). Owner vault is linked.{extra}")
     pruned = _prune_orphan_escrow(env)
     extra = f" Pruned {pruned} orphan escrow." if pruned else ""
-    return result("Vault", OK, f"Vaultwarden is answering.{extra}")
+    return result("Vault", OK, f"Vaultwarden is answering; owner readiness could not be checked. Open Household.{extra}")
 
 
 def _prune_orphan_escrow(env):
@@ -350,6 +353,8 @@ def _prune_orphan_escrow(env):
         email = line.strip().lower()
         if email.endswith("@homebrain.local"):
             live.add(email.split("@", 1)[0])
+    if env.get("VAULT_OWNER_ID"):
+        live.add(env.get("NEXTCLOUD_ADMIN_USER", "admin"))
     try:
         import member_escrow
         return member_escrow.prune(live)

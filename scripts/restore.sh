@@ -16,6 +16,16 @@ if [ -t 1 ]; then :; else exec >> "$RESTORE_LOG_FILE" 2>&1; fi
 
 load_env
 
+# A restore must not overlap a backup. Take locks in the same order.
+exec 200>"${HOMEBRAIN_BACKUP_LOCK:-/var/run/homebrain-backup.lock}"
+flock -n 200 || die "A backup or migration is running; retry the restore when it finishes."
+
+# Serialize account migration/rotation with snapshots and restores.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+flock -n 198 || die "Another account, backup, or restore operation is running."
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
+
 # --- Input Parsing ---
 # Positional archive plus flags, in any order. --no-prompt used to be matched
 # positionally as $2; keeping it a flag means --from-offsite can be added
@@ -463,7 +473,13 @@ if [ "$HAS_NC_DB" = true ]; then
     DB_CID=$(get_nc_db_cid)
     
     # 4a. Import SQL
-    SQL_FILE=$(find "$TMP_DIR" -name "*.sql" | head -n 1)
+    # Named, not searched for. `find "$TMP_DIR" -name "*.sql" | head -n 1`
+    # walked the owner's whole file library: with enough files find is still
+    # writing when head exits, takes SIGPIPE, and pipefail ends the restore
+    # here (exit 141) with the data in place and no database. It could also
+    # hand back vaultwarden.sql, or a .sql file from someone's Nextcloud folder.
+    SQL_FILE="$TMP_DIR/nc_db/nextcloud.sql"
+    [[ -f "$SQL_FILE" ]] || SQL_FILE="$TMP_DIR/db/nextcloud.sql"
     if [[ -f "$SQL_FILE" ]]; then
         log_info "Importing SQL Dump..."
         docker run --rm \
@@ -671,6 +687,24 @@ fi
 log_info "Disabling maintenance mode"
 set_maintenance_mode "--off"
 
+OWNER_VAULT_FAILED=false
+# Restore owner linkage only with its vault database and recovery material.
+if [[ "$HAS_VAULT_DB" == "true" ]]; then
+    if ! "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" restore-binding --directory "$TMP_DIR"; then
+        OWNER_VAULT_FAILED=true
+        log_warn "Vault data restored, but owner linkage needs repair."
+    else
+        load_env
+        if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" || -f "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/owner_vault.json" ]]; then
+            if ! "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" restore; then
+                OWNER_VAULT_FAILED=true
+                update_env_var "VAULT_OWNER_PASSWORD_STATUS" "needs_attention"
+                log_warn "Vault data restored, but owner access needs repair. Recovery material retained."
+            fi
+        fi
+    fi
+fi
+
 # Trigger Repairs/Scan
 if [ "$HAS_NC_DATA" = true ]; then
     log_info "Running post-restore upgrade if needed..."
@@ -683,6 +717,10 @@ if [ "$HAS_NC_DATA" = true ]; then
     
     log_info "Triggering Nextcloud data scan for all users"
     docker exec -u www-data "$(get_nc_cid)" php occ files:scan --all || log_error "Nextcloud file scan failed."
+fi
+
+if [[ "$OWNER_VAULT_FAILED" == "true" ]]; then
+    die "Data restore completed and services resumed; owner vault access still needs repair in Household."
 fi
 
 log_info "=== Restore Complete From: $BACKUP_FILE ==="

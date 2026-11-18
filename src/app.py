@@ -21,6 +21,7 @@ import tempfile
 import platform
 import requests
 import fcntl
+from functools import wraps
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, Response, session, abort, send_file, stream_with_context
 import migration
@@ -32,6 +33,8 @@ import household
 import picture
 import media_jobs
 import vault_account
+import vault_admin
+import owner_vault
 import member_escrow
 import mesh
 from flask_limiter import Limiter
@@ -486,7 +489,7 @@ def get_models():
 # --- Configuration & Constants ---
 # Boot config path detection (filesystem-based)
 FACTORY_CONFIG = "/boot/firmware/factory_config.txt" if os.path.isdir("/boot/firmware") else "/opt/homebrain/factory_config.txt"
-HOMEBRAIN_ROOT = "/opt/homebrain"
+HOMEBRAIN_ROOT = os.environ.get("INSTALL_DIR", "/opt/homebrain")
 INSTALL_DIR = HOMEBRAIN_ROOT # Alias for backward compatibility if needed
 SETUP_STARTED_MARKER = f"{INSTALL_DIR}/.setup_started"
 # Present only while a wizard-driven off-site restore is running. The install
@@ -1051,6 +1054,13 @@ def get_one_time_credentials():
             # when the restore died. Credentials are still handed over — they
             # are the only copy — but the screen says what actually happened.
             data["restore_failed"] = os.path.exists(RESTORE_FAILED_MARKER)
+            env = get_env_config()
+            data["owner_vault"] = {
+                "email": env.get("VAULT_OWNER_EMAIL", ""),
+                "status": ("skipped" if env.get("VAULT_ENABLED", "true") == "false" else
+                           "managed" if env.get("VAULT_OWNER_PASSWORD_MANAGED") == "true" else
+                           "independently managed" if env.get("VAULT_OWNER_ID") else "setup incomplete"),
+            }
             return jsonify(data)
         except Exception as e:
             logging.error(f"Failed to read creds file: {e}")
@@ -4403,43 +4413,20 @@ def vault_status():
 # form (the very prompt we're trying to avoid). Proxying through the
 # manager keeps the user same-origin (the dashboard's HTTP origin), keeps
 # the admin token server-side, and removes any cross-site cookie issues.
+def _vault_admin_client():
+    return vault_admin.VaultAdmin(_vault_base_url(), _vault_admin_token_plain())
+
+
 def _vault_admin_jwt():
-    """Get a fresh VW_ADMIN JWT for proxying. Cached in the manager session
-    until ~30s before its Max-Age expiry, then re-issued by POSTing the admin
-    token to the internal vault endpoint. Returns None if the vault isn't
-    provisioned or the login fails."""
-    now = int(time.time())
-    cached = session.get('vault_admin_jwt')
-    cached_exp = session.get('vault_admin_jwt_exp', 0)
-    if cached and cached_exp > now + 30:
-        return cached
-    token = _vault_admin_token_plain()
-    if not token:
-        return None
-    try:
-        r = requests.post(
-            f"{_vault_base_url()}/admin",
-            data={"token": token},
-            allow_redirects=False,
-            timeout=5,
-        )
-    except Exception as e:
-        logging.error(f"vault admin login failed: {e}")
-        return None
-    if r.status_code not in (200, 302):
-        return None
-    set_cookie = r.headers.get("Set-Cookie", "")
-    jwt = r.cookies.get("VW_ADMIN")
-    if not jwt:
-        m = re.search(r"VW_ADMIN=([^;]+)", set_cookie)
-        jwt = m.group(1) if m else None
-    if not jwt:
-        return None
-    ma = re.search(r"Max-Age=(\d+)", set_cookie, re.IGNORECASE)
-    ttl = int(ma.group(1)) if ma else 1200
-    session['vault_admin_jwt'] = jwt
-    session['vault_admin_jwt_exp'] = now + ttl
-    return jwt
+    return _vault_admin_client().jwt()
+
+
+@app.errorhandler(vault_admin.VaultAdminError)
+def vault_admin_error(error):
+    response = jsonify({"error": str(error)})
+    if error.retry_after:
+        response.headers["Retry-After"] = str(error.retry_after)
+    return response, error.status
 
 
 _VAULT_PROXY_HOP_HEADERS = {
@@ -4454,23 +4441,20 @@ def _vault_proxy(upstream_path: str):
     cached admin JWT attached. Streams the response body."""
     if not session.get("authenticated"):
         abort(401)
-    jwt = _vault_admin_jwt()
-    if not jwt:
-        return Response("Vault admin not configured.", status=503)
-    upstream = f"{_vault_base_url()}{upstream_path}"
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _VAULT_PROXY_HOP_HEADERS}
     try:
-        upstream_resp = requests.request(
-            request.method, upstream,
+        upstream_resp = _vault_admin_client().request(
+            request.method, upstream_path,
             params=request.args,
             data=request.get_data() if request.method != "GET" else None,
             headers=headers,
-            cookies={"VW_ADMIN": jwt},
             allow_redirects=False,
             stream=True,
             timeout=30,
         )
+    except vault_admin.VaultAdminError:
+        raise
     except Exception as e:
         logging.error(f"vault admin proxy upstream error: {e}")
         return Response(f"Vault unreachable: {e}", status=502)
@@ -4536,17 +4520,22 @@ def _vault_bw_url():
     return "https://vault-homebrain.local"
 
 
+def _vault_bw_executable():
+    search = "/usr/local/bin:/usr/bin:/bin:/home/homebrain/.npm-global/bin:/home/homebrain/.local/bin"
+    r = subprocess.run(["sudo", "-u", "homebrain", "env", f"PATH={search}",
+                        "sh", "-c", "command -v bw"], capture_output=True, text=True, timeout=10)
+    path = r.stdout.strip()
+    if r.returncode or not path.startswith("/"):
+        raise household.HouseholdError("Bitwarden CLI is not installed for the homebrain service user")
+    return path
+
+
 def _vault_bw_argv(*bw_args, session=None):
-    """Build a `sudo -u homebrain env … bw …` argv that survives sudo's
-    env-stripping. We need NODE_TLS_REJECT_UNAUTHORIZED=0 (Caddy's
-    internal CA is not in the system store; vault-homebrain.local is
-    loopback via /etc/hosts — MITM there already implies root) and
-    optionally BW_SESSION inside the bw process's environment, not just
-    the sudo wrapper's."""
-    extra_env = ["NODE_TLS_REJECT_UNAUTHORIZED=0"]
+    extra_env = ["NODE_TLS_REJECT_UNAUTHORIZED=0",
+                 "PATH=/usr/local/bin:/usr/bin:/bin:/home/homebrain/.npm-global/bin:/home/homebrain/.local/bin"]
     if session:
         extra_env.append(f"BW_SESSION={session}")
-    return ["sudo", "-u", "homebrain", "env", *extra_env, "bw", *bw_args]
+    return ["sudo", "-u", "homebrain", "env", *extra_env, _vault_bw_executable(), *bw_args]
 
 
 def _vault_first_user_email():
@@ -4605,7 +4594,11 @@ def vault_mcp_status():
         "needs_login": False,
         "known_email": "",
     }
-    info["bw_installed"] = shutil.which("bw") is not None
+    try:
+        _vault_bw_executable()
+        info["bw_installed"] = True
+    except (household.HouseholdError, OSError, subprocess.SubprocessError) as e:
+        info["cli_error"] = str(e)
     if info["openclaw_available"]:
         try:
             out = subprocess.check_output(
@@ -4651,11 +4644,10 @@ def vault_mcp_unlock():
     The password is never logged or persisted."""
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
-    if shutil.which("bw") is None:
-        return jsonify({
-            "error": "Bitwarden CLI not installed",
-            "hint": "Run `sudo npm install -g @bitwarden/cli` then retry.",
-        }), 503
+    try:
+        _vault_bw_executable()
+    except (household.HouseholdError, OSError, subprocess.SubprocessError):
+        return jsonify({"error": "Bitwarden CLI is not installed for the homebrain service user"}), 503
 
     data = request.get_json(silent=True) or {}
     master_pw = data.get("master_password", "")
@@ -4670,10 +4662,13 @@ def vault_mcp_unlock():
 
     # Point bw at the local vault. Idempotent; safe to re-run every call.
     try:
-        subprocess.run(
+        configured = subprocess.run(
             _vault_bw_argv("config", "server", bw_url),
             capture_output=True, timeout=10,
         )
+        if configured.returncode:
+            return jsonify({"error": "Bitwarden CLI could not configure the vault server",
+                            "cli_exit_code": configured.returncode}), 502
     except subprocess.TimeoutExpired:
         return jsonify({"error": "bw config timed out"}), 504
 
@@ -4814,13 +4809,14 @@ def vault_mcp_lock():
     try:
         if os.path.exists(VAULT_MCP_SESSION_FILE):
             os.remove(VAULT_MCP_SESSION_FILE)
-        subprocess.run(
-            _vault_bw_argv("lock"),
-            capture_output=True, timeout=10,
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify({"status": "locked"})
+        result = subprocess.run(_vault_bw_argv("lock"), capture_output=True, timeout=10)
+        if result.returncode:
+            return jsonify({"error": "Saved session removed, but Bitwarden CLI lock failed",
+                            "session_removed": True, "cli_exit_code": result.returncode}), 502
+    except Exception:
+        return jsonify({"error": "Saved session removed, but Bitwarden CLI could not run",
+                        "session_removed": not os.path.exists(VAULT_MCP_SESSION_FILE)}), 503
+    return jsonify({"status": "locked", "session_removed": True})
 
 
 @app.route("/api/vault/docs/status")
@@ -4994,47 +4990,18 @@ def vault_bootstrap():
     if not email or "@" not in email:
         return jsonify({"error": "valid email required"}), 400
 
-    token = _vault_admin_token_plain()
-    if not token:
-        return jsonify({"error": "vault not provisioned"}), 503
-
-    base = _vault_base_url()
     try:
-        # Vaultwarden's /admin POST exchanges the plaintext admin token for a
-        # JWT cookie (VW_ADMIN). All subsequent /admin/* calls require the JWT.
-        s = requests.Session()
-        login = s.post(f"{base}/admin", data={"token": token}, timeout=5, allow_redirects=False)
-        if login.status_code not in (200, 302):
-            return jsonify({"error": f"admin login failed: HTTP {login.status_code}"}), 502
-        if not s.cookies.get("VW_ADMIN"):
-            return jsonify({"error": "admin login produced no session cookie — check ADMIN_TOKEN"}), 502
-
-        # Existing users?
-        r = s.get(f"{base}/admin/users", headers={"Accept": "application/json"}, timeout=5)
-        if r.status_code == 200:
-            try:
-                existing = r.json()
-                if isinstance(existing, list) and len(existing) > 0:
-                    update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
-                    return jsonify({"already_bootstrapped": True, "users": len(existing)})
-            except Exception:
-                pass
-
-        # Issue invite. Without SMTP, Vaultwarden creates the invite locally;
-        # the recipient finishes signup by visiting the public vault URL.
-        # /admin/invite expects JSON (Form on POST / login, Json on /invite).
-        r = s.post(f"{base}/admin/invite", json={"email": email}, timeout=10, allow_redirects=False)
-        if r.status_code not in (200, 302):
-            return jsonify({"error": f"invite failed: HTTP {r.status_code}", "body": r.text[:300]}), 502
-
+        existing = _list_vault_users()
+        if existing:
+            return jsonify({"already_bootstrapped": True, "users": len(existing)})
+        r = _vault_admin_client().request("POST", "/admin/invite", json={"email": email})
+        if r.status_code not in (200, 201, 302):
+            return jsonify({"error": f"Vault invite failed (HTTP {r.status_code})"}), 502
         update_env_var("VAULT_SIGNUPS_ALLOWED", "false")
-        return jsonify({
-            "status": "invited",
-            "email": email,
-            "next": "Open the public vault URL to set the master password for this user.",
-        })
-    except requests.RequestException as e:
-        return jsonify({"error": f"vault unreachable: {e}"}), 503
+        return jsonify({"status": "invited", "email": email,
+                        "next": "Open the vault to finish registration, then link it in Household."})
+    except household.HouseholdError as e:
+        return jsonify({"error": str(e)}), 503
 
 
 @app.route("/api/redis/status")
@@ -5110,6 +5077,19 @@ def nuclear_reset():
         "status": "started",
         "message": "Nuclear reset initiated. Device will reboot when complete."
     })
+
+
+# What a household call into Vaultwarden or Home Assistant can raise. Caught per
+# service so a failure there is reported beside what already succeeded.
+SERVICE_ERRORS = (household.HouseholdError, vault_admin.VaultAdminError, requests.RequestException)
+
+
+def account_mutation(function):
+    @wraps(function)
+    def guarded(*args, **kwargs):
+        with owner_vault.account_lock():
+            return function(*args, **kwargs)
+    return guarded
 
 
 # --- Master password rotation ---
@@ -5194,7 +5174,8 @@ def change_master_password():
 
     # A no-op rotation would still restart containers and kick off a full
     # backup, so refuse it rather than doing all that work for nothing.
-    if hmac.compare_digest(new_password.encode(), current_pw.encode()):
+    if (hmac.compare_digest(new_password.encode(), current_pw.encode())
+            and not (owner_vault.STATE_DIR / "master_rotation_pending").exists()):
         return jsonify({"error": "That is already your current password."}), 400
 
     if not _launch_master_rotation(new_password):
@@ -5540,6 +5521,7 @@ def recovery_enable_backup_unlock():
 
 @app.route("/api/recovery/regenerate", methods=["POST"])
 @limiter.limit("5 per hour")
+@account_mutation
 def recovery_regenerate():
     """Mint a NEW phrase, return it once, replace the stored hash. The old
     phrase can never be revealed (only its hash is stored) — only regenerated."""
@@ -5661,7 +5643,7 @@ def pairing_payload(user, password, env):
     and every other account behind a QR code held up to a phone camera. The
     admin account runs `occ` and holds the Vault; it is never a phone's login.
     Every pairing route funnels through here so the rule cannot be forgotten."""
-    if user and user == env.get("NEXTCLOUD_ADMIN_USER", ""):
+    if user and user.lower() == env.get("NEXTCLOUD_ADMIN_USER", "").lower():
         raise NextcloudError(
             "The owner's account cannot be paired to a phone — add yourself as "
             "a person and pair that account instead")
@@ -5733,8 +5715,7 @@ def _list_vault_users():
     jwt = _vault_admin_jwt()
     if not jwt:
         raise household.HouseholdError("Vault admin is not available")
-    r = requests.get(f"{_vault_base_url()}/admin/users",
-                     cookies={"VW_ADMIN": jwt}, timeout=10)
+    r = _vault_admin_client().request("GET", "/admin/users", timeout=10)
     if r.status_code == 429:
         # Vaultwarden rate-limits the admin endpoint (a handful of logins per
         # five minutes, keyed by IP). Reporting that as "no vault accounts"
@@ -5745,8 +5726,10 @@ def _list_vault_users():
         raise household.HouseholdError("Could not list vault accounts")
     data = r.json()
     if isinstance(data, dict):
-        data = data.get("users") or data.get("data") or []
-    return data if isinstance(data, list) else []
+        data = data.get("users", data.get("data"))
+    if not isinstance(data, list):
+        raise household.HouseholdError("Vault returned an invalid account list")
+    return data
 
 
 def _ha_token_cached(env):
@@ -5812,8 +5795,8 @@ def _create_vault_account(uid, name, password):
     if not jwt:
         raise household.HouseholdError("Vault admin is not available")
     email = vault_account.vault_email(uid)
-    inv = requests.post(f"{_vault_base_url()}/admin/invite",
-                        json={"email": email}, cookies={"VW_ADMIN": jwt}, timeout=15)
+    inv = _vault_admin_client().request("POST", "/admin/invite",
+                                      json={"email": email}, timeout=15)
     if inv.status_code not in (200, 201):
         raise household.HouseholdError(
             (inv.text or "Vault invite failed")[:200])
@@ -5956,6 +5939,7 @@ def not_a_member(user, env):
     hang a second vault on the owner's account."""
     owner = (env.get("NEXTCLOUD_ADMIN_USER") or "").lower()
     return (not NC_UID.match(user) or user.lower() in RESERVED_MEMBERS
+            or vault_account.vault_email(user) == env.get("VAULT_OWNER_EMAIL", "").lower()
             or (owner and user.lower() == owner))
 
 
@@ -6001,6 +5985,44 @@ def ensure_default_quota():
     nc_occ("config:app:set", "files", "default_quota", "--value", f"{quota_gb} GB")
 
 
+@app.route("/api/household/owner/vault", methods=["GET", "POST"])
+@limiter.limit("10 per minute")
+def household_owner_vault():
+    if not session.get("authenticated"):
+        return jsonify({"error": "unauthenticated"}), 401
+    vault = owner_vault.OwnerVault(get_env_config(), update_env_var)
+    try:
+        # A synthetic vault already mapped to a household member cannot be
+        # adopted as the owner. Validate live membership on GET and POST.
+        members = nc_occ_json("user:list")
+        member_emails = {vault_account.vault_email(uid) for uid in members
+                         if uid.lower() != vault.uid.lower()}
+        available = [u for u in vault.users() if u.get("email", "").lower() not in member_emails]
+        if request.method == "GET":
+            return jsonify({"accounts": [{"id": u["id"], "email": u["email"]}
+                                         for u in available],
+                            "linked_id": vault.env.get("VAULT_OWNER_ID", ""),
+                            "managed": vault.env.get("VAULT_OWNER_PASSWORD_MANAGED") == "true"})
+        body = request.get_json(silent=True) or {}
+        if body.get("action") == "create":
+            result = vault.provision()
+        elif body.get("action") == "link":
+            if not any(u["id"] == body.get("id") for u in available):
+                return jsonify({"error": "Choose an unlinked vault; a household member’s vault cannot become the owner vault"}), 409
+            result = vault.link(body.get("id"), body.get("password", ""),
+                                body.get("managed") is True)
+        elif body.get("action") == "verify":
+            result = vault.verify()
+        else:
+            return jsonify({"error": "Choose create, link, or verify"}), 400
+        return jsonify(result)
+    except (owner_vault.OwnerVaultError, member_escrow.EscrowError,
+            vault_account.VaultAccountError, NextcloudError) as e:
+        return jsonify({"error": str(e)}), 409
+    except requests.RequestException:
+        return jsonify({"error": "Vault is unreachable; retry when it is available"}), 503
+
+
 @app.route("/api/household/members")
 def list_household_members():
     env = get_env_config()
@@ -6009,15 +6031,19 @@ def list_household_members():
     try:
         accounts = nc_occ_json("user:list", "--info")
     except NextcloudError as e:
-        return jsonify({"error": str(e)}), 503
+        accounts = None
+        errors["files"] = str(e)
 
     vault_users, ha_users = [], []
     vault_known, ha_known = True, False
-    try:
-        vault_users = _list_vault_users()
-    except Exception as e:
-        errors["vault"] = str(e)[:200]
+    if env.get("VAULT_ENABLED", "true") == "false":
         vault_known = False
+    else:
+        try:
+            vault_users = _list_vault_users()
+        except Exception as e:
+            errors["vault"] = str(e)[:200]
+            vault_known = False
     if env.get("HA_PASSWORD_MANAGED") == "true":
         try:
             ha_users = _list_ha_users(env)
@@ -6033,8 +6059,19 @@ def list_household_members():
     roster = household.merge_roster(
         accounts, vault_users, ha_users, admin_user,
         reserved=RESERVED_MEMBERS, sealed_uids=member_escrow.sealed_uids(),
-        vault_known=vault_known, ha_known=ha_known)
+        vault_known=vault_known, ha_known=ha_known,
+        owner_vault_id=env.get("VAULT_OWNER_ID", ""), nc_known=accounts is not None)
     roster["errors"] = errors
+    if roster["owner"]:
+        owner = roster["owner"]
+        owner["vault_status"] = (
+            "disabled" if env.get("VAULT_ENABLED", "true") == "false" else
+            "unknown" if not vault_known else
+            "unlinked" if not env.get("VAULT_OWNER_ID") else
+            "missing" if not owner["vault"] else
+            "needs_relink" if owner["vault_email"].lower() != env.get("VAULT_OWNER_EMAIL", "").lower() else
+            "needs_attention" if env.get("VAULT_OWNER_PASSWORD_STATUS") == "needs_attention" else
+            "managed" if env.get("VAULT_OWNER_PASSWORD_MANAGED") == "true" else "independent")
     roster["flags"] = {
         "ha_managed": env.get("HA_PASSWORD_MANAGED") == "true",
         "vault_known": vault_known,
@@ -6084,6 +6121,7 @@ def household_member_detail(user):
 
 @app.route("/api/household/members/<user>/devices/<int:token_id>", methods=["DELETE"])
 @limiter.limit("20 per minute")
+@account_mutation
 def revoke_household_device(user, token_id):
     """Cut off one device without disturbing the others or the account."""
     env = get_env_config()
@@ -6101,6 +6139,7 @@ def revoke_household_device(user, token_id):
 
 @app.route("/api/household/members/<user>/quota", methods=["POST"])
 @limiter.limit("20 per minute")
+@account_mutation
 def set_household_quota(user):
     """Set one person's ceiling.
 
@@ -6196,6 +6235,7 @@ def _taken_in_home_assistant(user, env):
     return None
 
 
+@account_mutation
 def create_household_member(name, user, services, pair=True):
     """Create a person. Files always; vault and home only if in services.
 
@@ -6231,7 +6271,7 @@ def create_household_member(name, user, services, pair=True):
 
     try:
         clash = _taken_outside_nextcloud(user, env)
-    except household.HouseholdError as e:
+    except SERVICE_ERRORS as e:
         return {"error": str(e)}, 502
     if clash:
         return {"error": clash}, 400
@@ -6242,7 +6282,7 @@ def create_household_member(name, user, services, pair=True):
     try:
         _seal_password(user, password, env)
         sealed_here = True
-    except household.HouseholdError as e:
+    except SERVICE_ERRORS as e:
         if "vault" in services:
             return {"error": str(e)}, 409
 
@@ -6268,14 +6308,14 @@ def create_household_member(name, user, services, pair=True):
         try:
             _create_vault_account(user, name or user, password)
             results["vault"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     if "home" in services:
         try:
             token = _ha_token_cached(env)
             household.ha_create_member(token, name or user, user, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     payload["name"] = name or user
@@ -6307,6 +6347,7 @@ def add_household_member():
 
 @app.route("/api/household/members/<user>/services", methods=["POST"])
 @limiter.limit("10 per minute")
+@account_mutation
 def add_household_services(user):
     """Add vault and/or HA using the sealed (or typed) password. Does not mint."""
     env = get_env_config()
@@ -6344,12 +6385,12 @@ def add_household_services(user):
             if not _nc_password_works(user, password, env):
                 return jsonify({"error": "That is not their Files password — "
                                          "nothing was changed."}), 400
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             return jsonify({"error": str(e)}), 502
     if key:
         try:
             _seal_password(user, password, env)
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             return jsonify({"error": str(e)}), 409
 
     info = {}
@@ -6363,14 +6404,14 @@ def add_household_services(user):
         try:
             _create_vault_account(user, name, password)
             results["vault"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     if "home" in wanted:
         try:
             token = _ha_token_cached(env)
             household.ha_create_member(token, name, user, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     # Their password does not change here — but a vault they cannot find is a
@@ -6389,6 +6430,7 @@ def add_household_services(user):
 
 @app.route("/api/household/members/<user>/password", methods=["POST"])
 @limiter.limit("10 per minute")
+@account_mutation
 def reset_household_password(user):
     """Issue a new password for every service they are already on."""
     env = get_env_config()
@@ -6422,6 +6464,8 @@ def reset_household_password(user):
     if env.get("HA_PASSWORD_MANAGED") == "true":
         try:
             ha_users = _list_ha_users(env)
+            if any(h.get("is_owner") and h.get("username", "").lower() == user.lower() for h in ha_users):
+                return jsonify({"error": "Home Assistant’s owner cannot be reset as a member"}), 400
             ha_uid = _ha_user_id(ha_users, user)
             on_home = bool(ha_uid)
         except Exception:
@@ -6467,7 +6511,7 @@ def reset_household_password(user):
         try:
             verdict = _reset_vault_password(user, old, password)
             results["vault"] = "ok" if verdict == "recoverable" else verdict
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     elif vault_note:
         results["vault"] = vault_note
@@ -6475,7 +6519,7 @@ def reset_household_password(user):
         try:
             household.ha_change_password(_ha_token_cached(env), ha_uid, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     cache = session.get("vault_probe") or {}
@@ -6492,12 +6536,19 @@ def reset_household_password(user):
 
 @app.route("/api/household/members/<user>", methods=["DELETE"])
 @limiter.limit("10 per minute")
+@account_mutation
 def delete_household_member(user):
     env = get_env_config()
     if not_a_member(user, env):
         return jsonify({"error": "Not a household member"}), 400
     body = request.get_json(silent=True) or {}
     wanted = _services_from_body(body, default=("files", "vault", "home"))
+    if "home" in wanted and env.get("HA_PASSWORD_MANAGED") == "true":
+        try:
+            if any(h.get("is_owner") and h.get("username") == user for h in _list_ha_users(env)):
+                return jsonify({"error": "Home Assistant's owner cannot be deleted"}), 400
+        except SERVICE_ERRORS as e:
+            return jsonify({"error": "Could not verify Home Assistant ownership: " + str(e)}), 503
     results = {}
 
     if "vault" in wanted:
@@ -6508,9 +6559,8 @@ def delete_household_member(user):
                 if (v.get("email") or "").strip().lower() == email:
                     vid = v.get("id") or v.get("_id") or v.get("uuid")
                     if vid and jwt:
-                        dr = requests.post(
-                            f"{_vault_base_url()}/admin/users/{vid}/delete",
-                            json={}, cookies={"VW_ADMIN": jwt}, timeout=15)
+                        dr = _vault_admin_client().request(
+                            "POST", f"/admin/users/{vid}/delete", json={}, timeout=15)
                         if dr.status_code not in (200, 201, 204):
                             raise household.HouseholdError(
                                 f"Vault refused to delete the account ({dr.status_code})")
@@ -6526,7 +6576,7 @@ def delete_household_member(user):
             if uid:
                 household.ha_delete_member(_ha_token_cached(env), user, uid)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     if "files" in wanted:
@@ -6958,7 +7008,7 @@ def custom_401(e):
       {% if show_recovery %}
       <div id="recovery-view" class="hidden">
         <h1>Recover Access</h1>
-        <p class="hint">Enter your recovery phrase and choose a new master password. This resets access to the Dashboard, Nextcloud and Home Assistant — it cannot decrypt individual vault items.</p>
+        <p class="hint">Enter your recovery phrase and choose a new master password. This resets access to the Dashboard, Nextcloud and Home Assistant — it also recovers managed owner vaults; independently managed vaults keep their own password.</p>
         <p class="hint"><strong>About your existing backups:</strong> they are sealed with the master password that was in use when each one was made, so they will still need that old password to restore. A fresh backup is taken automatically under your new password as soon as the reset finishes.</p>
         <form id="rf" autocomplete="off">
           <label class="field-label" for="rec-phrase">Recovery phrase</label>

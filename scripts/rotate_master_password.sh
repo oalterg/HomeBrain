@@ -22,7 +22,8 @@
 #     old secret, changeable from their own UIs).
 #
 # NB: not `set -e` — every step's failure is handled explicitly so a single
-# non-critical hiccup can't abort a partially-applied rotation.
+# service hiccup does not prevent the remaining services from being updated.
+# A partial result exits nonzero so the dashboard cannot report success.
 set -uo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -57,8 +58,17 @@ if ! [[ "$NEW_PASS" =~ ^[A-Za-z0-9][A-Za-z0-9_.@!#%+=:?-]{7,127}$ ]]; then
     die "new password fails safe-charset policy; aborting rotation"
 fi
 
+# Serialize account migration/rotation with snapshots and restores.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+log_info "Waiting for any active account operation or vault snapshot..."
+flock 198 || die "Could not acquire the account-operation lock."
 load_env
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
 log_info "=== Master password rotation starting ==="
+PARTIAL=0
+ROTATION_PENDING="${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/master_rotation_pending"
+(umask 077; touch "$ROTATION_PENDING")
 
 # --- 1. MariaDB root (CRITICAL: abort before any .env change on failure) ---
 DB_CID="$(get_nc_db_cid 2>/dev/null || true)"
@@ -79,6 +89,7 @@ if [[ -n "$DB_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$DB_CID" 
     update_env_var "MYSQL_ROOT_PASSWORD" "$NEW_PASS"
     log_info "MariaDB root rotated and verified."
 else
+    PARTIAL=1
     log_warn "DB container not running — skipping MariaDB rotation."
 fi
 
@@ -91,9 +102,11 @@ if [[ -n "$NC_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$NC_CID" 
         update_env_var "NEXTCLOUD_ADMIN_PASSWORD" "$NEW_PASS"
         log_info "Nextcloud admin password rotated."
     else
+        PARTIAL=1
         log_warn "Nextcloud admin reset failed — NEXTCLOUD_ADMIN_PASSWORD left unchanged (non-fatal)."
     fi
 else
+    PARTIAL=1
     log_warn "Nextcloud container not running — skipping NC admin rotation (non-fatal)."
 fi
 
@@ -112,9 +125,11 @@ case "$ha_rc" in
         # believing their new master password opens Home Assistant too.
         log_info "Home Assistant manages its own password — left untouched."
         log_info "Its login is unchanged; the new master password does not open it." ;;
-    2)  log_warn "Could not read which account owns Home Assistant — nothing was changed."
+    2)  PARTIAL=1
+        log_warn "Could not read which account owns Home Assistant — nothing was changed."
         log_warn "Home Assistant keeps its old password (non-fatal)." ;;
-    *)  log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
+    *)  PARTIAL=1
+        log_warn "HA did not accept the new password — HA_ADMIN_PASSWORD left unchanged in .env."
         log_warn "Home Assistant keeps its old password; change it via HA → Profile (non-fatal)." ;;
 esac
 # ha_set_password restarts HA; if that restart didn't come back, don't leave
@@ -122,6 +137,16 @@ esac
 # briefly, for its own snapshot).
 if ha_cid="$(get_ha_cid 2>/dev/null)"; then
     docker start "$ha_cid" >/dev/null 2>&1 || true
+fi
+
+# The personal vault is best-effort, like HA. Its sealed checkpoint survives
+# failures, while the dashboard and other services can still be recovered.
+if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" ]]; then
+    if ! "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" rotate --password-file "$SECRETS_FILE"; then
+        PARTIAL=1
+        update_env_var "VAULT_OWNER_PASSWORD_STATUS" "needs_attention"
+        log_warn "Owner vault was not updated. Its credential/checkpoint is retained; verify or relink it in Household, then retry."
+    fi
 fi
 
 # --- 4. Canonical master + dashboard-login password ------------------------
@@ -153,16 +178,22 @@ log_info "Backup epoch recorded — archives older than now need the previous pa
 update_env_var "VAULT_ADMIN_TOKEN" ""   # force provision_vault.sh to re-derive
 if bash "$SCRIPT_DIR/provision_vault.sh" >/dev/null 2>&1; then
     log_info "Vault admin token re-derived."
+    # load_env above exported the OLD VAULT_ADMIN_TOKEN, and Compose prefers the
+    # shell's value over --env-file: the recreated container kept the old token
+    # and every admin call (Household, vault SSO, owner vault) got 401.
+    load_env
     VAULT_CID="$(get_vault_cid 2>/dev/null || true)"
     if [[ -n "$VAULT_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$VAULT_CID" 2>/dev/null)" == "true" ]]; then
         # shellcheck disable=SC2046  # get_compose_args is intentionally word-split
         if docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d --no-deps --force-recreate vaultwarden >/dev/null 2>&1; then
             log_info "Vaultwarden recreated with new admin token."
         else
+            PARTIAL=1
             log_warn "Vaultwarden recreate failed — admin SSO needs a redeploy (non-fatal)."
         fi
     fi
 else
+    PARTIAL=1
     log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
 fi
 
@@ -183,6 +214,7 @@ if [[ "${HAS_GPU:-false}" == "true" ]] && [[ -f "$CFG" ]] && command -v jq >/dev
         log_info "OpenClaw gateway password re-derived."
     else
         rm -f "$TMP_CFG"
+        PARTIAL=1
         log_warn "jq patch of openclaw.json failed — gateway password unchanged (non-fatal)."
     fi
 fi
@@ -203,10 +235,17 @@ refresh_self_token "$NEW_PASS"
 # with a scheduled run is handled there.
 if [[ -x "$SCRIPT_DIR/backup.sh" ]] || [[ -f "$SCRIPT_DIR/backup.sh" ]]; then
     log_info "Starting a full backup under the new password (detached)."
+    flock -u 198
+    exec 198>&-
     nohup setsid bash "$SCRIPT_DIR/backup.sh" --strategy full >/dev/null 2>&1 &
     disown 2>/dev/null || true
 else
     log_warn "backup.sh not found — take a backup manually; existing archives need the OLD password."
 fi
 
+if [[ "$PARTIAL" == "1" ]]; then
+    log_warn "=== Password rotation incomplete: some services could not be updated. Review the failures above and retry. Completed changes are retained. ==="
+    exit 1
+fi
+rm -f "$ROTATION_PENDING"
 log_info "=== Master password rotation complete ==="

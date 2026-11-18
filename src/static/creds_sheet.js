@@ -47,7 +47,7 @@ function memberSheetFilename(name, date) {
  * than with toLocaleString() for the same reason — modern ICU emits a narrow
  * no-break space (U+202F) inside en-US times, which is neither ASCII nor
  * something anyone would notice until a printout looked wrong. */
-function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
+function buildCredsSheet({ password, phrase, device, date, phraseUnchanged, ownerVault }) {
     const p = _hbSheetParts(date);
     const lines = [
         'HomeBrain -- recovery sheet',
@@ -56,6 +56,8 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
         '',
     ];
     if (password) lines.push(`Master password:  ${password}`);
+    if (ownerVault) lines.push(`Owner vault: ${ownerVault.email || 'not linked'} -- ${ownerVault.status}`);
+    lines.push('See Household for the owner login in each service. Phone QR pairing requires a non-admin member.');
     // Mutually exclusive: a sheet that stated both would contradict itself about
     // what the owner's phrase is, which is the one thing it must never do.
     if (phrase) lines.push(`Recovery phrase:  ${phrase}`);
@@ -86,8 +88,8 @@ function buildCredsSheet({ password, phrase, device, date, phraseUnchanged }) {
     );
     lines.push(
         'Admin access covers the Dashboard, Nextcloud and Home Assistant.',
-        'It does NOT unlock individual Vault items -- those are encrypted with each',
-        "user's own password and cannot be recovered from here.",
+        'Managed owner vaults participate in password changes and recovery.',
+        'Independently managed vaults keep their own password.',
         '',
     );
     return lines.join('\r\n');

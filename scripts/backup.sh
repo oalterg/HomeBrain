@@ -6,7 +6,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
 
 # --- Configuration ---
-LOCK_FILE="/var/run/homebrain-backup.lock"
+LOCK_FILE="${HOMEBRAIN_BACKUP_LOCK:-/var/run/homebrain-backup.lock}"
 BACKUP_LOG_FILE="$LOG_DIR/backup.log"
 STRATEGY="full"
 SKIP_OFFSITE="false"
@@ -253,20 +253,6 @@ fi
 
 # The box's place on the owner's private network (common.sh).
 capture_mesh_identity "$STAGING_DIR" "$ENCRYPT"
-
-# Member vault-recovery escrow: ciphertext plus the wrap key that sealed it.
-# The wrap file is 0600 and lives in staging only until tar+gpg; cleanup
-# removes staging on every path, including signals.
-ESCROW_SRC="/var/lib/homebrain/member_escrow.json"
-if [[ -f "$ESCROW_SRC" && -n "${RECOVERY_BACKUP_KEY:-}" ]]; then
-    cp "$ESCROW_SRC" "$STAGING_DIR/member_escrow.json" || die "Could not capture member vault escrow."
-    chmod 600 "$STAGING_DIR/member_escrow.json"
-    printf '%s' "$RECOVERY_BACKUP_KEY" > "$STAGING_DIR/member_escrow.wrap" \
-        || die "Could not capture member vault escrow wrap key."
-    chmod 600 "$STAGING_DIR/member_escrow.wrap"
-    log_info "Member vault escrow captured for restore."
-fi
-
 # 5. Stop Services / Enable Maintenance Mode
 log_info "Preparing services..."
 
@@ -440,6 +426,31 @@ if [[ "${HAS_GPU:-false}" == "true" ]]; then
     fi
 fi
 
+# Serialize only the vault/escrow snapshot, not the long Nextcloud copy,
+# compression, verification or off-site upload. Refresh credentials after waiting.
+mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
+flock 198 || die "Could not lock the vault snapshot."
+export HOMEBRAIN_ACCOUNTS_LOCKED=1
+load_env
+
+# Owner linkage and any sealed rotation checkpoint travel with the vault snapshot.
+"$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" snapshot --directory "$STAGING_DIR" \
+    || die "Could not capture owner vault linkage."
+
+# Member vault-recovery escrow: ciphertext plus the wrap key that sealed it.
+# The wrap file is 0600 and lives in staging only until tar+gpg; cleanup
+# removes staging on every path, including signals.
+ESCROW_SRC="/var/lib/homebrain/member_escrow.json"
+if [[ -f "$ESCROW_SRC" && -n "${RECOVERY_BACKUP_KEY:-}" ]]; then
+    cp "$ESCROW_SRC" "$STAGING_DIR/member_escrow.json" || die "Could not capture member vault escrow."
+    chmod 600 "$STAGING_DIR/member_escrow.json"
+    printf '%s' "$RECOVERY_BACKUP_KEY" > "$STAGING_DIR/member_escrow.wrap" \
+        || die "Could not capture member vault escrow wrap key."
+    chmod 600 "$STAGING_DIR/member_escrow.wrap"
+    log_info "Member vault escrow captured for restore."
+fi
+
 # ── Vault (Vaultwarden) ─────────────────────────────────────────────────────
 # Backup the vault DB + data dir. The rsa_key.* files inside the data dir are
 # critical — losing them invalidates every active Bitwarden client session.
@@ -474,6 +485,10 @@ if [[ "${VAULT_ENABLED:-true}" == "true" ]] && [[ -n "$VAULT_CID" ]]; then
     log_info "Restarting Vaultwarden..."
     docker start "$VAULT_CID" >/dev/null 2>&1 || log_warn "Failed to restart vaultwarden — start manually if needed."
 fi
+
+flock -u 198
+exec 198>&-
+unset HOMEBRAIN_ACCOUNTS_LOCKED
 
 # 10. Restart Services
 log_info "Resuming services..."
