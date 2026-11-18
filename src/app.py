@@ -2407,7 +2407,7 @@ def backup_offsite():
         # to Nextcloud and so fails every multi-GB archive with a 413 from the
         # receiving Apache — leaving an off-site copy that holds the small
         # system snapshots and none of the user's files. ensure_rclone installs
-        # a pinned current build only when the present one is too old.
+        # the pinned build whenever another version is present.
         try:
             r = subprocess.run(
                 ["bash", SCRIPT_UTILITIES, "ensure_rclone"],
