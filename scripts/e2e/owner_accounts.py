@@ -144,7 +144,9 @@ if v.env.get('VAULT_OWNER_ID'):
 time.sleep(15)
 auth = v.login(v.env['VAULT_OWNER_EMAIL'], password)
 fixture = 'owner-e2e-secret-value'
-item = {'type': 1, 'name': vault_account.encstring2(b'Owner E2E', auth[2]),
+# Vaultwarden 1.37.5 rejects a cipher without encryptedFor (HTTP 422).
+item = {'type': 1, 'encryptedFor': v.env['VAULT_OWNER_ID'],
+        'name': vault_account.encstring2(b'Owner E2E', auth[2]),
         'notes': None, 'favorite': False, 'reprompt': 0,
         'login': {'username': vault_account.encstring2(b'owner', auth[2]),
                   'password': vault_account.encstring2(fixture.encode(), auth[2]), 'uris': []}}

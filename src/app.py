@@ -5801,7 +5801,18 @@ def _create_vault_account(uid, name, password):
         raise household.HouseholdError(
             (inv.text or "Vault invite failed")[:200])
     payload, _ = vault_account.register_payload(uid, name, password)
-    reg = requests.post(f"{_vault_base_url()}/identity/accounts/register",
+    # Vaultwarden 1.37.4 removed /identity/accounts/register. With mail off and
+    # the invite above on file, send-verification-email returns the token
+    # register/finish needs; the name travels in that token, not the payload.
+    tok = requests.post(
+        f"{_vault_base_url()}/identity/accounts/register/send-verification-email",
+        json={"email": email, "name": payload["name"]},
+        headers={"Accept": "application/json"}, timeout=15)
+    if tok.status_code != 200:
+        raise household.HouseholdError(
+            (tok.text or "Vault register failed")[:200])
+    payload["emailVerificationToken"] = tok.json()
+    reg = requests.post(f"{_vault_base_url()}/identity/accounts/register/finish",
                         json=payload, timeout=60)
     if reg.status_code not in (200, 201):
         raise household.HouseholdError(

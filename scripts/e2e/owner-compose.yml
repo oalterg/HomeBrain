@@ -1,7 +1,7 @@
 name: homebrain-owner-e2e
 services:
   db:
-    image: mariadb:11.4.12
+    image: mariadb:11.4.13
     environment:
       MYSQL_ROOT_PASSWORD: ${E2E_PASSWORD:?}
       MYSQL_DATABASE: nextcloud
@@ -14,7 +14,7 @@ services:
       timeout: 5s
       retries: 30
   vaultwarden:
-    image: vaultwarden/server:1.37.2
+    image: vaultwarden/server:1.37.5
     environment:
       ADMIN_TOKEN: ${E2E_VAULT_TOKEN:?}
       SIGNUPS_ALLOWED: "false"
@@ -24,7 +24,7 @@ services:
     ports: ["127.0.0.1:18082:80"]
     volumes: ["vault:/data"]
   nextcloud:
-    image: nextcloud:33.0.6-apache
+    image: nextcloud:33.0.11-apache
     environment:
       NEXTCLOUD_ADMIN_USER: admin
       NEXTCLOUD_ADMIN_PASSWORD: ${E2E_PASSWORD:?}

@@ -1,6 +1,6 @@
 services:
   db:
-    image: mariadb:11.4.12
+    image: mariadb:11.4.13
     restart: unless-stopped
     command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
     volumes:
@@ -22,7 +22,7 @@ services:
       retries: 5
   
   redis:
-    image: redis:8.6.4-alpine
+    image: redis:8.6.8-alpine
     restart: unless-stopped
     # Loopback-only publish: the manager (gunicorn on the host) uses Redis as
     # shared rate-limit storage — its 3 workers otherwise each count limits
@@ -38,7 +38,7 @@ services:
       retries: 5
 
   nextcloud:
-    image: nextcloud:33.0.6-apache
+    image: nextcloud:33.0.11-apache
     restart: unless-stopped
     # Loopback only — Caddy is the LAN face. Health/MCP/self-test use 127.0.0.1.
     ports:
@@ -90,7 +90,7 @@ services:
     # The only process that faces the LAN: HTTPS on 443, HTTP on 80 to redirect.
     # Always runs, including remote mode — LAN names stay live when the tunnel
     # is down, and the box CA is downloadable from homebrain.local either way.
-    image: caddy:2.11.4-alpine
+    image: caddy:2.11.9-alpine
     restart: unless-stopped
     ports:
       - "80:80"
@@ -118,7 +118,7 @@ services:
       retries: 5
 
   vaultwarden:
-    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.37.2}
+    image: vaultwarden/server:${VAULTWARDEN_TAG:-1.37.5}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${VAULT_PORT:-8082}:80"

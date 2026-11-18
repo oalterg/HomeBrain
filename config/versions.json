@@ -53,7 +53,7 @@
     "searxng_plugin": "2026.9.37"
   },
   "vaultwarden": {
-    "tag": "1.37.2"
+    "tag": "1.37.5"
   },
   "proton_bridge": {
     "tag": "3.19.0-1"

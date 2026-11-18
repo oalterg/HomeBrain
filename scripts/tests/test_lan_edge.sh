@@ -84,7 +84,7 @@ docker run -d --name hb-backend-test --network hb-edge-test \
     python:3.12-alpine sh /start.sh >/dev/null
 docker run -d --name hb-edge-test --network hb-edge-test \
     --add-host host.docker.internal:host-gateway -p 80:80 -p 443:443 \
-    -v "$ROOT/config/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine >/dev/null
+    -v "$ROOT/config/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.9-alpine >/dev/null
 for _ in {1..30}; do
     curl -kfsS https://127.0.0.1/healthz && break
     sleep 1
