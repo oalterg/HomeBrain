@@ -68,6 +68,7 @@ jobs:
                             scripts/tests/test_openclaw_proxy.py \
                             scripts/tests/test_dashboard_hardware.py \
                             scripts/tests/test_activation.py \
+                            scripts/tests/test_agent_audit.py \
                             scripts/tests/test_email_send_direct_toggle.py -q
       - name: recovery sheet text + DOM contract
         run: node scripts/tests/test_creds_sheet.js

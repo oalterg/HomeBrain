@@ -176,6 +176,15 @@ def decrypt_secret(blob: str, key: str) -> str:
 AUDIT_DIR = os.environ.get("HOMEBRAIN_AUDIT_DIR", "/var/log/homebrain")
 
 def audit(server: str, action: str, **fields: Any) -> None:
+    """Record one privileged agent action.
+
+    This is a debugging and review aid, not a forensic control. The agent runs
+    as `homebrain` with NOPASSWD sudo and these files are homebrain-owned, so a
+    compromised agent can rewrite them. That is consistent with the trust
+    boundary (the agent is root-equivalent by design); do not build a security
+    claim on this log. Never pass a secret value in **fields — reference the
+    item, as vault.reveal does with item_id/item_name.
+    """
     rec = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "server": server,
@@ -190,8 +199,14 @@ def audit(server: str, action: str, **fields: Any) -> None:
         path = os.path.join(AUDIT_DIR, f"mcp-{server}-audit.log")
         with open(path, "a") as f:
             f.write(line + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        # The dashboard reads these files, so a silent write failure would show
+        # an incomplete audit view as if it were a quiet day. stderr reaches the
+        # gateway journal, which the Logs tab can read — say so there.
+        sys.stderr.write(json.dumps({
+            "ts": rec["ts"], "server": server,
+            "action": "audit.write_failed", "error": str(e)}) + "\n")
+        sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------
