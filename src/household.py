@@ -280,7 +280,9 @@ def ha_change_password(token, user_id, password):
 def ha_delete_member(token, username, user_id):
     users = ha_list_users(token)
     target = next((u for u in users if u["user_id"] == user_id), None)
-    if not target or target.get("is_owner"):
+    if not target:
+        raise HouseholdError("That Home Assistant account no longer exists")
+    if target.get("is_owner"):
         raise HouseholdError("Home Assistant's owner cannot be removed as a member")
     ha_ws_call(token, [
         {"type": "config/auth_provider/homeassistant/delete", "username": username},

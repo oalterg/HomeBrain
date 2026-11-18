@@ -13,7 +13,7 @@ import time
 import requests
 
 root = Path(os.environ['INSTALL_DIR']).resolve()
-assert root == Path('/tmp/homebrain-owner-e2e'), 'Use the dedicated disposable install directory'
+assert root in (Path('/tmp/homebrain-owner-e2e'),Path('/var/lib/homebrain-owner-e2e')), 'Use a dedicated disposable install directory'
 root.mkdir(mode=0o700, exist_ok=True)
 if (root/'.env').exists():
     raise SystemExit('Fixture already exists; reuse it or explicitly remove its compose volumes first')

@@ -349,7 +349,8 @@ def main():
     if args.action!='inspect' and not args.job_dir: p.error('--job-dir is required')
     m = None
     try:
-        with locked(Path(os.environ.get('HOMEBRAIN_STATE_DIR','/var/lib/homebrain'))/'accounts.lock',timeout=1):
+        with locked(os.environ.get('HOMEBRAIN_BACKUP_LOCK','/var/run/homebrain-backup.lock'),timeout=1), \
+             locked(Path(os.environ.get('HOMEBRAIN_STATE_DIR','/var/lib/homebrain'))/'accounts.lock',timeout=1):
             m=Migration(args)
             if args.action=='inspect':
                 info=m.inspect()

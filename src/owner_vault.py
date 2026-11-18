@@ -91,7 +91,8 @@ class OwnerVault:
 
     def _bind(self, user, managed):
         for key, value in [('VAULT_OWNER_ID', user['id']), ('VAULT_OWNER_EMAIL', user['email']),
-                           ('VAULT_OWNER_PASSWORD_MANAGED', 'true' if managed else 'false')]:
+                           ('VAULT_OWNER_PASSWORD_MANAGED', 'true' if managed else 'false'),
+                           ('VAULT_OWNER_PASSWORD_STATUS', 'ready')]:
             self.save(key, value)
             self.env[key] = value
 
@@ -159,6 +160,7 @@ class OwnerVault:
             password = member_escrow.open_password(self.uid, self._key())
             if not self.login(user['email'], password):
                 raise OwnerVaultError('Owner vault password changed independently; relink with its current password')
+            self.save('VAULT_OWNER_PASSWORD_STATUS', 'ready')
         return {'status': 'ready' if managed else 'independently_managed',
                 'email': user['email'], 'managed': managed}
 
@@ -177,11 +179,16 @@ class OwnerVault:
         if not state and old == new_password:
             return self.verify()
         resuming = bool(state)
+        current = None
         if not state:
-            # Keep old/new sealed until the remote response and persisted state agree.
+            # No checkpoint is needed until the old credential is proved. A
+            # changed password, MFA or throttling must leave explicit relinking available.
+            current = self.login(user['email'], old)
+            if not current:
+                raise OwnerVaultError('Owner vault password changed independently; relink with its current password')
             member_escrow.seal(PENDING, new_password, key)
             state = {'phase': 'rotate', 'vault_id': user['id'], 'uid': self.uid,
-                     'email': user['email']}
+                     'email': user['email'], 'key_hash': hashlib.sha256(current[2]).hexdigest()}
             write_json(STATE_FILE, state)
         pending = member_escrow.open_password(PENDING, key)
         if pending != new_password:
@@ -190,7 +197,7 @@ class OwnerVault:
         if verified and state.get('key_hash') and hashlib.sha256(verified[2]).hexdigest() != state['key_hash']:
             raise OwnerVaultError('Resumed vault key verification failed; recovery checkpoint retained')
         if not verified:
-            current = self.login(user['email'], old)
+            current = current or self.login(user['email'], old)
             if not current:
                 raise OwnerVaultError('Owner vault password changed independently; no reset was attempted')
             data, iterations, raw_key = current
@@ -209,6 +216,7 @@ class OwnerVault:
         member_escrow.seal(self.uid, pending, key)
         STATE_FILE.unlink(missing_ok=True)
         member_escrow.drop(PENDING)
+        self.save('VAULT_OWNER_PASSWORD_STATUS', 'ready')
         return {'status': 'ready', 'email': user['email'], 'managed': True}
 
 
@@ -232,7 +240,7 @@ def main():
         if args.action == 'snapshot':
             directory = Path(args.directory)
             binding = {k: vault.env.get(k, '') for k in
-                       ('VAULT_OWNER_ID', 'VAULT_OWNER_EMAIL', 'VAULT_OWNER_PASSWORD_MANAGED')}
+                       ('VAULT_OWNER_ID', 'VAULT_OWNER_EMAIL', 'VAULT_OWNER_PASSWORD_MANAGED', 'VAULT_OWNER_PASSWORD_STATUS')}
             write_json(directory / 'owner_vault_binding.json', binding)
             if STATE_FILE.exists():
                 write_json(directory / 'owner_vault_pending.json', read_json(STATE_FILE))
@@ -240,7 +248,7 @@ def main():
         if args.action == 'restore-binding':
             directory = Path(args.directory)
             binding = read_json(directory / 'owner_vault_binding.json')
-            for k in ('VAULT_OWNER_ID', 'VAULT_OWNER_EMAIL', 'VAULT_OWNER_PASSWORD_MANAGED'):
+            for k in ('VAULT_OWNER_ID', 'VAULT_OWNER_EMAIL', 'VAULT_OWNER_PASSWORD_MANAGED', 'VAULT_OWNER_PASSWORD_STATUS'):
                 save(k, str(binding.get(k, '')))
             pending = read_json(directory / 'owner_vault_pending.json')
             if pending:

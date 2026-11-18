@@ -18,6 +18,8 @@ Runnable two ways (needs Flask — install requirements.txt first):
 import contextlib
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, "src"))
 
@@ -39,6 +41,9 @@ def _client(vault_fails=False, ha_fails=False):
     saved["is_setup_complete"] = hb.is_setup_complete
     saved["ha_create_member"] = household.ha_create_member
     saved["TESTING"] = hb.app.config.get("TESTING")
+    previous_lock = hb.owner_vault.LOCK_FILE
+    lock_directory = tempfile.TemporaryDirectory()
+    hb.owner_vault.LOCK_FILE = Path(lock_directory.name) / "accounts.lock"
 
     def _vault(uid, name, password):
         if vault_fails:
@@ -65,6 +70,8 @@ def _client(vault_fails=False, ha_fails=False):
             sess["authenticated"] = True
         yield c
     finally:
+        hb.owner_vault.LOCK_FILE = previous_lock
+        lock_directory.cleanup()
         for n, v in saved.items():
             if n == "TESTING":
                 hb.app.config["TESTING"] = v

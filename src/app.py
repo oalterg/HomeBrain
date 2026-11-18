@@ -5079,6 +5079,11 @@ def nuclear_reset():
     })
 
 
+# What a household call into Vaultwarden or Home Assistant can raise. Caught per
+# service so a failure there is reported beside what already succeeded.
+SERVICE_ERRORS = (household.HouseholdError, vault_admin.VaultAdminError, requests.RequestException)
+
+
 def account_mutation(function):
     @wraps(function)
     def guarded(*args, **kwargs):
@@ -5138,8 +5143,8 @@ def change_master_password():
 
     * No pre-write — the caller still knows the old password, so there is no
       lockout to pre-empt. Leaving MANAGER_PASSWORD to the script's own step
-      keeps the dashboard login unchanged until service rotation reaches that step.
-      Earlier completed service changes remain recoverable after a failure.
+      preserves its guarantee that a MariaDB failure aborts *before* any .env
+      write, leaving the box exactly as it was.
     * No session clear — the script rewrites MANAGER_PASSWORD partway through,
       so for a few seconds neither password would work; logging the user out
       into that window strands them. There is one session and it belongs to the
@@ -5987,15 +5992,23 @@ def household_owner_vault():
         return jsonify({"error": "unauthenticated"}), 401
     vault = owner_vault.OwnerVault(get_env_config(), update_env_var)
     try:
+        # A synthetic vault already mapped to a household member cannot be
+        # adopted as the owner. Validate live membership on GET and POST.
+        members = nc_occ_json("user:list")
+        member_emails = {vault_account.vault_email(uid) for uid in members
+                         if uid.lower() != vault.uid.lower()}
+        available = [u for u in vault.users() if u.get("email", "").lower() not in member_emails]
         if request.method == "GET":
             return jsonify({"accounts": [{"id": u["id"], "email": u["email"]}
-                                         for u in vault.users()],
+                                         for u in available],
                             "linked_id": vault.env.get("VAULT_OWNER_ID", ""),
                             "managed": vault.env.get("VAULT_OWNER_PASSWORD_MANAGED") == "true"})
         body = request.get_json(silent=True) or {}
         if body.get("action") == "create":
             result = vault.provision()
         elif body.get("action") == "link":
+            if not any(u["id"] == body.get("id") for u in available):
+                return jsonify({"error": "Choose an unlinked vault; a household member’s vault cannot become the owner vault"}), 409
             result = vault.link(body.get("id"), body.get("password", ""),
                                 body.get("managed") is True)
         elif body.get("action") == "verify":
@@ -6004,7 +6017,7 @@ def household_owner_vault():
             return jsonify({"error": "Choose create, link, or verify"}), 400
         return jsonify(result)
     except (owner_vault.OwnerVaultError, member_escrow.EscrowError,
-            vault_account.VaultAccountError) as e:
+            vault_account.VaultAccountError, NextcloudError) as e:
         return jsonify({"error": str(e)}), 409
     except requests.RequestException:
         return jsonify({"error": "Vault is unreachable; retry when it is available"}), 503
@@ -6057,6 +6070,7 @@ def list_household_members():
             "unlinked" if not env.get("VAULT_OWNER_ID") else
             "missing" if not owner["vault"] else
             "needs_relink" if owner["vault_email"].lower() != env.get("VAULT_OWNER_EMAIL", "").lower() else
+            "needs_attention" if env.get("VAULT_OWNER_PASSWORD_STATUS") == "needs_attention" else
             "managed" if env.get("VAULT_OWNER_PASSWORD_MANAGED") == "true" else "independent")
     roster["flags"] = {
         "ha_managed": env.get("HA_PASSWORD_MANAGED") == "true",
@@ -6257,7 +6271,7 @@ def create_household_member(name, user, services, pair=True):
 
     try:
         clash = _taken_outside_nextcloud(user, env)
-    except household.HouseholdError as e:
+    except SERVICE_ERRORS as e:
         return {"error": str(e)}, 502
     if clash:
         return {"error": clash}, 400
@@ -6268,7 +6282,7 @@ def create_household_member(name, user, services, pair=True):
     try:
         _seal_password(user, password, env)
         sealed_here = True
-    except household.HouseholdError as e:
+    except SERVICE_ERRORS as e:
         if "vault" in services:
             return {"error": str(e)}, 409
 
@@ -6294,14 +6308,14 @@ def create_household_member(name, user, services, pair=True):
         try:
             _create_vault_account(user, name or user, password)
             results["vault"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     if "home" in services:
         try:
             token = _ha_token_cached(env)
             household.ha_create_member(token, name or user, user, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     payload["name"] = name or user
@@ -6371,12 +6385,12 @@ def add_household_services(user):
             if not _nc_password_works(user, password, env):
                 return jsonify({"error": "That is not their Files password — "
                                          "nothing was changed."}), 400
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             return jsonify({"error": str(e)}), 502
     if key:
         try:
             _seal_password(user, password, env)
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             return jsonify({"error": str(e)}), 409
 
     info = {}
@@ -6390,14 +6404,14 @@ def add_household_services(user):
         try:
             _create_vault_account(user, name, password)
             results["vault"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     if "home" in wanted:
         try:
             token = _ha_token_cached(env)
             household.ha_create_member(token, name, user, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     # Their password does not change here — but a vault they cannot find is a
@@ -6497,7 +6511,7 @@ def reset_household_password(user):
         try:
             verdict = _reset_vault_password(user, old, password)
             results["vault"] = "ok" if verdict == "recoverable" else verdict
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["vault"] = str(e)
     elif vault_note:
         results["vault"] = vault_note
@@ -6505,7 +6519,7 @@ def reset_household_password(user):
         try:
             household.ha_change_password(_ha_token_cached(env), ha_uid, password)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     cache = session.get("vault_probe") or {}
@@ -6533,7 +6547,7 @@ def delete_household_member(user):
         try:
             if any(h.get("is_owner") and h.get("username") == user for h in _list_ha_users(env)):
                 return jsonify({"error": "Home Assistant's owner cannot be deleted"}), 400
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             return jsonify({"error": "Could not verify Home Assistant ownership: " + str(e)}), 503
     results = {}
 
@@ -6562,7 +6576,7 @@ def delete_household_member(user):
             if uid:
                 household.ha_delete_member(_ha_token_cached(env), user, uid)
             results["home"] = "ok"
-        except household.HouseholdError as e:
+        except SERVICE_ERRORS as e:
             results["home"] = str(e)
 
     if "files" in wanted:

@@ -7,6 +7,7 @@ No service mocks. The .env must contain E2E_PASSWORD and E2E_VAULT_TOKEN.
 import concurrent.futures
 import json
 import hashlib
+import base64
 import multiprocessing
 import os
 from pathlib import Path
@@ -150,6 +151,20 @@ item = {'type': 1, 'name': vault_account.encstring2(b'Owner E2E', auth[2]),
 r = requests.post(v.base + '/api/ciphers', json=item,
                   headers={'Authorization': 'Bearer ' + auth[0]['access_token']}, timeout=20)
 check(r.status_code == 200, 'encrypted fixture saved')
+cipher_id = r.json()['id']
+attachment_key = os.urandom(64)
+encrypted = vault_account.encstring2(b'owner-attachment-fixture', attachment_key)
+iv, ciphertext, mac = (base64.b64decode(p) for p in encrypted[2:].split('|'))
+blob = bytes([2]) + iv + mac + ciphertext
+headers = {'Authorization': 'Bearer ' + auth[0]['access_token']}
+attachment = requests.post(v.base + '/api/ciphers/' + cipher_id + '/attachment/v2', headers=headers,
+    json={'key': vault_account.encstring2(attachment_key, auth[2]),
+          'fileName': vault_account.encstring2(b'fixture.txt', auth[2]), 'fileSize': len(blob)}, timeout=30)
+attachment.raise_for_status()
+upload = requests.post(v.base + '/api' + attachment.json()['url'], headers=headers,
+                       files={'data': ('fixture', blob)}, timeout=30)
+upload.raise_for_status()
+check(True, 'encrypted attachment uploaded through the vault API')
 new = 'e2e-rotated-owner-password-2026'
 eventually(lambda: v.rotate(new))
 time.sleep(30)

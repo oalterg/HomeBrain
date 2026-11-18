@@ -81,4 +81,15 @@ r=requests.get(v.base+'/api/sync',headers={'Authorization':'Bearer '+auth[0]['ac
 r.raise_for_status()
 assert any(vault_account.decstring2(i['login']['password'],auth[2]).decode()=='owner-e2e-secret-value'
            for i in r.json()['ciphers'] if i.get('login'))
+item = next(i for i in r.json()['ciphers'] if i.get('attachments'))
+attachment = item['attachments'][0]
+attachment_key = vault_account.decstring2(attachment['key'],auth[2])
+meta=requests.get(v.base+'/api/ciphers/'+item['id']+'/attachment/'+attachment['id'],
+                  headers={'Authorization':'Bearer '+auth[0]['access_token']},timeout=20)
+meta.raise_for_status()
+blob=requests.get(meta.json()['url'],timeout=20).content
+assert blob[0]==2
+encoded='2.'+'|'.join(base64.b64encode(part).decode() for part in (blob[1:17],blob[49:],blob[17:49]))
+assert vault_account.decstring2(encoded,attachment_key)==b'owner-attachment-fixture'
+print('PASS encrypted attachment survives cross-instance restore')
 print('PASS cross-instance restore: owner identity, rewrapped recovery credential, new password, decrypted item')

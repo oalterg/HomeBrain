@@ -58,24 +58,17 @@ if ! [[ "$NEW_PASS" =~ ^[A-Za-z0-9][A-Za-z0-9_.@!#%+=:?-]{7,127}$ ]]; then
     die "new password fails safe-charset policy; aborting rotation"
 fi
 
-load_env
-
 # Serialize account migration/rotation with snapshots and restores.
 mkdir -p "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
 exec 198>"${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/accounts.lock"
-flock -n 198 || die "Another account, backup, or restore operation is running."
+log_info "Waiting for any active account operation or vault snapshot..."
+flock 198 || die "Could not acquire the account-operation lock."
+load_env
 export HOMEBRAIN_ACCOUNTS_LOCKED=1
 log_info "=== Master password rotation starting ==="
 PARTIAL=0
 ROTATION_PENDING="${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/master_rotation_pending"
 (umask 077; touch "$ROTATION_PENDING")
-
-# The personal owner vault is distinct from Vaultwarden's administration token.
-# Its old credential remains sealed until the new login and account key are verified.
-if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" ]]; then
-    "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" rotate --password-file "$SECRETS_FILE" \
-        || die "Owner vault change is incomplete. Its recovery checkpoint is retained; retry to resume."
-fi
 
 # --- 1. MariaDB root (CRITICAL: abort before any .env change on failure) ---
 DB_CID="$(get_nc_db_cid 2>/dev/null || true)"
@@ -88,16 +81,16 @@ if [[ -n "$DB_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$DB_CID" 
         ALTER USER IF EXISTS 'root'@'%'        IDENTIFIED BY '${NEW_PASS}';
         FLUSH PRIVILEGES;
     "; then
-        die "MariaDB root rotation failed — aborting before any .env change. Earlier completed steps are retained; inspect the log and retry."
+        die "MariaDB root rotation failed — aborting before any .env change. Box unchanged."
     fi
     if ! docker exec -e MYSQL_PWD="$NEW_PASS" "$DB_CID" mariadb -u root -e "SELECT 1;" >/dev/null 2>&1; then
-        die "MariaDB new-password verification failed — aborting. Earlier completed steps are retained; inspect the log and retry."
+        die "MariaDB new-password verification failed — aborting. Box unchanged."
     fi
     update_env_var "MYSQL_ROOT_PASSWORD" "$NEW_PASS"
     log_info "MariaDB root rotated and verified."
 else
     PARTIAL=1
-        log_warn "DB container not running — skipping MariaDB rotation."
+    log_warn "DB container not running — skipping MariaDB rotation."
 fi
 
 # --- 2. Nextcloud admin login (uses unchanged nextcloud_user DB creds) -----
@@ -114,7 +107,7 @@ if [[ -n "$NC_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$NC_CID" 
     fi
 else
     PARTIAL=1
-        log_warn "Nextcloud container not running — skipping NC admin rotation (non-fatal)."
+    log_warn "Nextcloud container not running — skipping NC admin rotation (non-fatal)."
 fi
 
 # --- 3. Home Assistant admin login (BEST-EFFORT) ---------------------------
@@ -144,6 +137,16 @@ esac
 # briefly, for its own snapshot).
 if ha_cid="$(get_ha_cid 2>/dev/null)"; then
     docker start "$ha_cid" >/dev/null 2>&1 || true
+fi
+
+# The personal vault is best-effort, like HA. Its sealed checkpoint survives
+# failures, while the dashboard and other services can still be recovered.
+if [[ "${VAULT_OWNER_PASSWORD_MANAGED:-false}" == "true" ]]; then
+    if ! "$(backup_crypto_python)" "$INSTALL_DIR/src/owner_vault.py" rotate --password-file "$SECRETS_FILE"; then
+        PARTIAL=1
+        update_env_var "VAULT_OWNER_PASSWORD_STATUS" "needs_attention"
+        log_warn "Owner vault was not updated. Its credential/checkpoint is retained; verify or relink it in Household, then retry."
+    fi
 fi
 
 # --- 4. Canonical master + dashboard-login password ------------------------
@@ -182,12 +185,12 @@ if bash "$SCRIPT_DIR/provision_vault.sh" >/dev/null 2>&1; then
             log_info "Vaultwarden recreated with new admin token."
         else
             PARTIAL=1
-        log_warn "Vaultwarden recreate failed — admin SSO needs a redeploy (non-fatal)."
+            log_warn "Vaultwarden recreate failed — admin SSO needs a redeploy (non-fatal)."
         fi
     fi
 else
     PARTIAL=1
-        log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
+    log_warn "Vault token re-derivation failed — admin SSO may need a manual re-provision (non-fatal)."
 fi
 
 # --- 6. Re-derive OpenClaw gateway password (BEST-EFFORT, GPU boxes only) ---

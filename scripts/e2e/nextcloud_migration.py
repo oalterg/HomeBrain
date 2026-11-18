@@ -15,6 +15,7 @@ import requests
 
 root = Path(os.environ['INSTALL_DIR'])
 assert root.name == 'homebrain-owner-e2e'
+os.environ['HOMEBRAIN_BACKUP_LOCK']=str(root/'backup.lock')
 env = dict(dotenv_values(root/'.env'))
 container = 'homebrain-owner-e2e-nextcloud-1'
 source = 'migration'+str(int(time.time()))

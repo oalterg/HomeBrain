@@ -303,8 +303,8 @@ def check_vault(env):
                 pruned = _prune_orphan_escrow(env)
                 extra = f" Pruned {pruned} orphan escrow." if pruned else ""
                 if n == 0 or not env.get("VAULT_OWNER_ID"):
-                    return result("Vault", SKIP,
-                                  "Vaultwarden is answering; link or create your owner vault in Household.")
+                    return result("Vault", OK,
+                                  "Vaultwarden is answering. Owner setup is incomplete: link or create the owner vault in Household.")
                 return result("Vault", OK,
                               f"Vaultwarden is answering. {n} user(s). Owner vault is linked.{extra}")
     pruned = _prune_orphan_escrow(env)

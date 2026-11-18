@@ -2379,6 +2379,7 @@ async function loadHousehold() {
             const vaultState = ({disabled: 'Disabled', unknown: 'Could not check',
                 unlinked: 'No owner vault linked', missing: 'Linked account missing',
                 needs_relink: 'Account changed — relink in Household',
+                needs_attention: 'Password change incomplete — verify or relink',
                 managed: `${o.vault_email} (managed password)`,
                 independent: `${o.vault_email} (independent password)`})[o.vault_status] || 'Could not check';
             el.insertAdjacentHTML('afterbegin', `
