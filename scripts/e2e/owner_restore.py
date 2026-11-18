@@ -57,7 +57,7 @@ token=hashlib.sha256(f'{new_password}:{nonce}'.encode()).hexdigest()
 r=subprocess.run(['docker','run','-d','--name','homebrain-owner-e2e-restored',
     '--label','homebrain.e2e=owner','-p','127.0.0.1:18083:80','-v',str(data)+':/data',
     '-e','ADMIN_TOKEN='+token,'-e','SIGNUPS_ALLOWED=false','-e','ROCKET_PORT=80',
-    'vaultwarden/server:1.37.2'],capture_output=True)
+    'vaultwarden/server:1.37.5'],capture_output=True)
 assert r.returncode==0,'Could not start restore fixture'
 for _ in range(60):
     try:
