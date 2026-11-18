@@ -592,6 +592,84 @@ def compose_ps_q(service):
 
 JOURNAL_SERVICES = {"openclaw", "llama-server"}
 
+
+def journal_match(target):
+    """journalctl selector for a log target.
+
+    The OpenClaw gateway is a *user* unit — utilities.sh installs
+    ~/.config/systemd/user/openclaw-gateway.service — so `-u openclaw` matches
+    nothing and journalctl prints "-- No entries --" and exits 0, i.e. an empty
+    log pane with no error. Root cannot use `--user` for another account
+    either; it selects a user unit by unit name plus uid.
+    """
+    if target == "openclaw":
+        import pwd
+        sel = ["_SYSTEMD_USER_UNIT=openclaw-gateway.service"]
+        try:
+            sel.append(f"_UID={pwd.getpwnam('homebrain').pw_uid}")
+        except KeyError:
+            pass          # unit name alone is enough; the box has one agent
+        return sel
+    return ["-u", target]
+
+
+# The five MCP servers each append JSON lines to $LOG_DIR (mcp_common.audit).
+AUDIT_SERVERS = ("homeassistant", "nextcloud", "vault", "email", "homebrain")
+
+
+def read_agent_audit(limit=200):
+    """One merged, human-readable view of the MCP audit logs.
+
+    Formatted server-side rather than served as raw JSON: renderLogs() in
+    dashboard.js classifies a line by the level token in it, and a line with
+    none falls under "Debug / raw", which is unchecked by default. Raw JSON
+    would render an empty console. Emitting a level instead reuses the existing
+    filter, colouring and escaping, and makes "show only failures" work.
+    """
+    records = []
+    for name in AUDIT_SERVERS:
+        # logrotate (config/logrotate-homebrain) runs weekly with copytruncate
+        # and delaycompress: just after a rotation the live file is empty and
+        # last week's records sit uncompressed in .1. Without it the view says
+        # "no activity" on a box that has plenty.
+        path = os.path.join(LOG_DIR, f"mcp-{name}-audit.log")
+        lines = []
+        for part in (path + ".1", path):
+            try:
+                with open(part) as f:
+                    lines += f.readlines()
+            except OSError:
+                continue                 # server never ran — not an error
+        for line in lines[-limit:]:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue                 # a torn line must not blank the view
+
+    if not records:
+        return "No agent activity recorded yet."
+
+    records.sort(key=lambda r: r.get("ts", ""))   # ISO-8601 UTC sorts lexically
+    out = []
+    for r in records[-limit:]:
+        action = r.get("action", "?")
+        if action.endswith(".fail") or "error" in action:
+            level = "ERROR"
+        elif "too_large" in action:
+            level = "WARN"
+        else:
+            level = "INFO"
+        # Collapse whitespace in values: an upstream error body can carry real
+        # newlines (HA records a 500 page verbatim), and one record spilling
+        # onto three console lines leaves two of them without a level token,
+        # which the default filters then hide. One record, one line.
+        extra = " ".join(f"{k}={' '.join(str(v).split())}"
+                         for k, v in r.items()
+                         if k not in ("ts", "server", "action"))
+        out.append(f"{r.get('ts', '')} {level} "
+                   f"{r.get('server', '?')}.{action} {extra}".rstrip())
+    return "\n".join(out)
+
 # --- Logging Configuration (Global & Robust) ---
 # Configure logging immediately so Gunicorn or Dev server both use it
 log_file = LOG_FILES["manager"]
@@ -1958,11 +2036,15 @@ def system_status():
 
 @app.route("/api/logs/<log_target>")
 def get_logs(log_target):
+    # The agent's own activity, merged across the five MCP audit logs.
+    if log_target == "agent-audit":
+        return read_agent_audit()
+
     # If target is a systemd service, read from journal
     if log_target in JOURNAL_SERVICES:
         try:
             cmd = [
-                "journalctl", "-u", log_target,
+                "journalctl", *journal_match(log_target),
                 "-n", "200", "--no-pager", "--output=short-iso"
             ]
             output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=10).decode("utf-8", errors="replace")

@@ -3606,8 +3606,10 @@ function renderLogs() {
     const showDebug = document.getElementById('chk-debug').checked;
 
     let html = '';
+    let total = 0;
     rawLogData.split('\n').forEach(line => {
         if (!line.trim()) return;
+        total++;
         const upper = line.toUpperCase();
         let cssClass = 'log-debug';
         let visible = false;
@@ -3627,6 +3629,17 @@ function renderLogs() {
         }
         if (visible) html += `<div class="log-line ${cssClass}">${escapeHtml(line)}</div>`;
     });
+
+    // A source can return plenty and still render nothing: journal and
+    // container lines often carry no ERROR/WARN/INFO token, so every one of
+    // them lands under "Debug / raw", which ships unchecked. Nextcloud and the
+    // OpenClaw gateway are both like this. An empty console then reads as
+    // "nothing happened" when it means "all of it is filtered" — say which.
+    if (!html && total) {
+        html = '<div class="log-line log-info">' +
+               escapeHtml(`${total} lines hidden by the filters above — tick "Debug / raw" to see them.`) +
+               '</div>';
+    }
 
     div.innerHTML = html;
     div.scrollTop = div.scrollHeight;
