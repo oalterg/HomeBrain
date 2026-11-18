@@ -752,11 +752,6 @@ def inject_platform():
         product = {"product_name": "HomeBrain", "product_suffix": "Brain"}
     else:
         product = {"product_name": "HomeCloud", "product_suffix": "Cloud"}
-    # shenxn/protonmail-bridge publishes amd64 only — every other image in the
-    # compose file is multi-arch. The service is profile-gated so an arm64 box
-    # still comes up healthy; the Email form just must not tell the user to go
-    # and use a bridge that cannot start here.
-    product["proton_bridge"] = get_platform().get("arch") == "x86_64"
     return {"platform": product, "asset_v": ASSET_VERSION}
 
 def get_factory_password():
