@@ -2801,8 +2801,11 @@ setup_openclaw() {
     # openclaw-gateway.service failed`. Reload-and-reset before start.
     run_as_admin systemctl --user daemon-reload 2>/dev/null || true
     run_as_admin systemctl --user reset-failed openclaw-gateway 2>/dev/null || true
+    # 2026.10 `daemon start` waits 45 s for the gateway to report ready and
+    # fails while it is still starting (92 s on a Pi 4). The port probe below
+    # is what decides; a gateway that never binds still fails there.
     run_as_admin openclaw daemon start \
-        || { log_error "daemon start failed. Try: sudo -u ${HOMEBRAIN_USER} openclaw daemon install --force"; return 1; }
+        || log_warn "openclaw daemon start did not see the gateway ready yet; probing its port."
 
     # Verify startup (up to 60 s) by probing the gateway's TCP port directly.
     # The old check grepped `openclaw gateway status` for keywords, but that
