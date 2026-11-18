@@ -191,14 +191,16 @@ services:
     # and SMTP on :12025 on localhost; the email MCP server connects there.
     profiles:
       - proton-bridge
-    # Pinned like every other image in this stack. This one handles mail
-    # credentials and was the only :latest left, so an upstream push could
-    # swap it under a running box on the next pull.
-    #
-    # ARCH: amd64 only — the sole single-arch image in this file. On an arm64
-    # box the profile simply never activates and the dashboard's Email form
-    # says so (see inject_platform in app.py); everything else still runs.
-    image: shenxn/protonmail-bridge:${PROTON_BRIDGE_TAG:-3.19.0-1}
+    # Built on the box from Proton's source at this tag (config/proton-bridge):
+    # Bridge holds the mail credentials and sees every mail in plaintext, and
+    # the third-party image it came from stopped at 3.19. The image name is
+    # local only; update.sh pulls with --ignore-buildable, and `up`/`run`
+    # build it when the tag moves.
+    build:
+      context: ./config/proton-bridge
+      args:
+        BRIDGE_VERSION: ${PROTON_BRIDGE_TAG:-3.27.2}
+    image: homebrain-proton-bridge:${PROTON_BRIDGE_TAG:-3.27.2}
     restart: unless-stopped
     ports:
       - "127.0.0.1:12143:143"
