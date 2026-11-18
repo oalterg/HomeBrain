@@ -49,8 +49,8 @@
     "git_ref": "v1.8.4"
   },
   "openclaw": {
-    "version": "2026.9.37",
-    "searxng_plugin": "2026.9.37"
+    "version": "2026.10.33",
+    "searxng_plugin": "2026.10.33"
   },
   "vaultwarden": {
     "tag": "1.37.5"
