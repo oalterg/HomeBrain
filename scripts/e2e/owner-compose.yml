@@ -39,7 +39,7 @@ services:
     ports: ["127.0.0.1:18080:80"]
     volumes: ["nextcloud:/var/www/html"]
   homeassistant:
-    image: homeassistant/home-assistant:2026.7.2
+    image: homeassistant/home-assistant:2026.11.2
     ports: ["127.0.0.1:18123:8123"]
     volumes: ["ha:/config"]
 volumes:
