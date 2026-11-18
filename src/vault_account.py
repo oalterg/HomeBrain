@@ -90,7 +90,7 @@ def decstring2(blob, under):
 
 
 def register_payload(uid, name, password, *, user_key=None):
-    """Body for POST /identity/accounts/register. user_key is 64 random bytes."""
+    """Body for POST /identity/accounts/register/finish. user_key is 64 random bytes."""
     email = vault_email(uid)
     mp_hash, mk = master_password_hash(password, email)
     if user_key is None:
