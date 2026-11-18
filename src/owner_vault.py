@@ -126,7 +126,16 @@ class OwnerVault:
         verified = self.login(email, password) if existing else None
         if not verified:
             payload, _ = vault_account.register_payload(self.uid, self.uid, password)
-            r = requests.post(self.base + '/identity/accounts/register', json=payload, timeout=60)
+            # Vaultwarden 1.37.4 removed /identity/accounts/register. With mail off,
+            # the invitation lets send-verification-email return the token directly;
+            # 1.37.5 reads the name only from that token. Both steps exist on 1.37.2.
+            tok = requests.post(self.base + '/identity/accounts/register/send-verification-email',
+                                json={'email': email, 'name': self.uid},
+                                headers={'Accept': 'application/json'}, timeout=15)
+            if tok.status_code != 200:
+                raise OwnerVaultError(f'Vault registration could not start (HTTP {tok.status_code})')
+            payload['emailVerificationToken'] = tok.json()
+            r = requests.post(self.base + '/identity/accounts/register/finish', json=payload, timeout=60)
             if r.status_code not in (200, 201):
                 raise OwnerVaultError('Vault registration is incomplete; existing account was not reset')
             verified = self.login(email, password)

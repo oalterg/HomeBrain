@@ -178,6 +178,10 @@ log_info "Backup epoch recorded — archives older than now need the previous pa
 update_env_var "VAULT_ADMIN_TOKEN" ""   # force provision_vault.sh to re-derive
 if bash "$SCRIPT_DIR/provision_vault.sh" >/dev/null 2>&1; then
     log_info "Vault admin token re-derived."
+    # load_env above exported the OLD VAULT_ADMIN_TOKEN, and Compose prefers the
+    # shell's value over --env-file: the recreated container kept the old token
+    # and every admin call (Household, vault SSO, owner vault) got 401.
+    load_env
     VAULT_CID="$(get_vault_cid 2>/dev/null || true)"
     if [[ -n "$VAULT_CID" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$VAULT_CID" 2>/dev/null)" == "true" ]]; then
         # shellcheck disable=SC2046  # get_compose_args is intentionally word-split
