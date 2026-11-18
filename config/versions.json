@@ -59,7 +59,7 @@
     "tag": "3.19.0-1"
   },
   "rclone": {
-    "version": "1.74.4"
+    "version": "1.76.0"
   },
   "tailscale": {
     "version": "1.104.7"

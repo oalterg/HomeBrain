@@ -2142,19 +2142,28 @@ offsite_prune_full() {
 #
 # Installs to /usr/local/bin, which precedes /usr/bin in PATH, so the distro
 # package can stay where it is.
+#
+# With a pin (versions.json passes one) anything but the pinned version is
+# replaced. Against the 1.64 floor alone a box kept the rclone it first got,
+# so raising the pin for a security fix never reached an installed box.
 RCLONE_MIN_MAJOR=1
 RCLONE_MIN_MINOR=64
 ensure_rclone() {
     local want_ver="${1:-}"
     if command -v rclone >/dev/null 2>&1; then
         local cur major minor
-        cur=$(rclone version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        major="${cur%%.*}"; minor="${cur##*.}"
-        if [[ -n "$cur" ]] && { [[ "$major" -gt "$RCLONE_MIN_MAJOR" ]] || \
-            { [[ "$major" -eq "$RCLONE_MIN_MAJOR" ]] && [[ "$minor" -ge "$RCLONE_MIN_MINOR" ]]; }; }; then
-            return 0
+        cur=$(rclone version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+        if [[ -n "$want_ver" ]]; then
+            [[ "$cur" == "$want_ver" ]] && return 0
+            log_info "rclone ${cur:-unknown} is not the pinned ${want_ver}; installing it."
+        else
+            major=$(cut -d. -f1 <<<"$cur"); minor=$(cut -d. -f2 <<<"$cur")
+            if [[ -n "$cur" ]] && { [[ "$major" -gt "$RCLONE_MIN_MAJOR" ]] || \
+                { [[ "$major" -eq "$RCLONE_MIN_MAJOR" ]] && [[ "$minor" -ge "$RCLONE_MIN_MINOR" ]]; }; }; then
+                return 0
+            fi
+            log_warn "rclone ${cur:-unknown} cannot chunk uploads to Nextcloud (needs >= ${RCLONE_MIN_MAJOR}.${RCLONE_MIN_MINOR}); installing a current build."
         fi
-        log_warn "rclone ${cur:-unknown} cannot chunk uploads to Nextcloud (needs >= ${RCLONE_MIN_MAJOR}.${RCLONE_MIN_MINOR}); installing a current build."
     fi
 
     # Installing needs root. Bail before spending a download we cannot use —
