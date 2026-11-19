@@ -69,7 +69,8 @@ jobs:
                             scripts/tests/test_dashboard_hardware.py \
                             scripts/tests/test_activation.py \
                             scripts/tests/test_agent_audit.py \
-                            scripts/tests/test_email_send_direct_toggle.py -q
+                            scripts/tests/test_email_send_direct_toggle.py \
+                            scripts/tests/test_mcp_wiring.py -q
       - name: recovery sheet text + DOM contract
         run: node scripts/tests/test_creds_sheet.js
       - name: backup encryption round-trip (gpg)
