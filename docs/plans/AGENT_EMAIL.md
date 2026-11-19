@@ -3,6 +3,10 @@
 **Status:** in tree (2026-09-11). P0–P2 shipped: agent mailbox flag,
 HomeBrain email prompting channel, `homebrain-email-watch.service`.
 Daemon SMTP of `openclaw agent` output is still later.
+2026-11-19: owner email (`NOTIFY_EMAIL`, Settings → Owner email) added.
+System mail (alerts, Nextcloud) is sent from the agent mailbox, so replies
+reach the agent; `email.send_owner` mails only that address and is not
+behind the send_direct toggle.
 **Date:** 2026-09-11
 **Essence:** Connected IMAP is not “the owner’s inbox the clerk may rummage.”
 An account the HomeBrain admin flags as an **agent mailbox** is the
@@ -78,8 +82,9 @@ Email is a task drop, like HA watch, not a second messenger:
 - Subject + new body in. Quoted `>` history stripped.
 - No “got it,” no Telegram carbon-copy, no thread continuity promise.
 - HomeBrain does **not** send the model’s final text. The agent replies
-  with `email.draft` (default) or `email.send_direct` if the admin
-  already enabled that toggle. The wake prompt says so.
+  with `email.send_direct` if the admin enabled that toggle, else
+  `email.send_owner` when an owner email is set, else `email.draft`.
+  The wake prompt says which.
 
 Enabling the channel **is** consent to put that owner message body in
 the prompt. MCP fetch of anyone else’s mail is unchanged

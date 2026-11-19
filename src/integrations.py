@@ -453,6 +453,7 @@ def _spec_email() -> dict | None:
             "HOMEBRAIN_EMAIL_ACCOUNTS": EMAIL_ACCOUNTS_FILE,
             "HOMEBRAIN_EMAIL_KEY": _email_fernet_key(),
             "HOMEBRAIN_EMAIL_SEND_DIRECT": send_direct,
+            "HOMEBRAIN_OWNER_EMAIL": normalize_email(env.get("NOTIFY_EMAIL", "")),
             "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
             "HOMEBRAIN_OPENCLAW_WORKSPACE": os.path.join(OPENCLAW_DIR, "workspace"),
             # Email MCP writes attachments here so the agent can send them
@@ -960,7 +961,8 @@ def prompting_ready(channel: dict, accounts: list[dict] | None = None) -> bool:
 
 
 def _default_allow_from() -> list[str]:
-    return normalize_allow_from(_read_env().get("CLOUD_EMAIL", ""))
+    env = _read_env()
+    return normalize_allow_from(env.get("NOTIFY_EMAIL") or env.get("CLOUD_EMAIL", ""))
 
 
 def _load_email_channel() -> dict:
@@ -1026,6 +1028,150 @@ def email_channel_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Owner email: where HomeBrain, Nextcloud and the agent reach the owner
+# ---------------------------------------------------------------------------
+# NOTIFY_EMAIL in .env is the one source. System mail goes out through a
+# connected account (mcp_common.system_sender: the agent mailbox first), so
+# no mail server runs on the box and nothing new holds the owner's personal
+# credentials. Vaultwarden and Home Assistant stay without SMTP: neither can
+# reset a password by email, and with SMTP on, Vaultwarden mails invite
+# tokens to @homebrain.local addresses instead of accepting HomeBrain's
+# server-side invite + register.
+
+def owner_email() -> str:
+    return normalize_email(_read_env().get("NOTIFY_EMAIL", ""))
+
+
+def _system_sender(accounts: list[dict] | None = None) -> dict | None:
+    from mcp_common import system_sender  # scripts/ is on sys.path via app.py
+    return system_sender(accounts if accounts is not None else _load_email_accounts())
+
+
+def _sender_password(sender: dict) -> str:
+    from mcp_common import decrypt_secret
+    return decrypt_secret(sender.get("smtp_password", "") or sender.get("imap_password", ""),
+                          _email_fernet_key())
+
+
+def nextcloud_mail_config(sender: dict, password: str) -> tuple[dict, str]:
+    """Nextcloud system config for sending through `sender`. ({}, why) if it can't."""
+    host = (sender.get("smtp_host") or "").strip()
+    port = int(sender.get("smtp_port") or 587)
+    stream: dict = {}
+    if host in ("127.0.0.1", "localhost") and port == 12025:
+        # Proton Bridge: the email form stores its host-loopback port; the
+        # Nextcloud container reaches it on the compose network. Its STARTTLS
+        # certificate is self-signed, and the hop never leaves the box.
+        host, port = "proton-bridge", 25
+        stream = {"ssl": {"allow_self_signed": True, "verify_peer": False,
+                          "verify_peer_name": False}}
+    elif host in ("127.0.0.1", "localhost", "::1"):
+        return {}, f"Nextcloud cannot reach an SMTP server on this box's loopback ({host}:{port})"
+    local, _, domain = (sender.get("user") or "").partition("@")
+    return {
+        "mail_smtpmode": "smtp",
+        "mail_smtphost": host,
+        "mail_smtpport": port,
+        "mail_smtpsecure": "ssl" if port == 465 else "",
+        "mail_smtpauth": True,
+        "mail_smtpname": sender.get("user"),
+        "mail_smtppassword": password,
+        "mail_from_address": local,
+        "mail_domain": domain,
+        "mail_smtpstreamoptions": stream,
+    }, ""
+
+
+def apply_nextcloud_mail() -> str:
+    """Point Nextcloud's outgoing mail and the admin's address at the owner
+    setup. Returns "" on success, else why not.
+
+    The lost-password link goes off either way: the master password and
+    recovery phrase own Nextcloud's passwords, and an email reset would change
+    one behind HomeBrain's back.
+    """
+    env = _read_env()
+    owner = normalize_email(env.get("NOTIFY_EMAIL", ""))
+    sender = _system_sender()
+    problem = ""
+    system: dict = {"mail_smtpmode": "null", "mail_smtppassword": ""}
+    if owner and sender:
+        password = _sender_password(sender)
+        if password:
+            mail, problem = nextcloud_mail_config(sender, password)
+            system = mail or system
+        else:
+            problem = "the sending account's stored password could not be decrypted"
+    system["lost_password_link"] = "disabled"
+    nc_cid = _nc_container_id()
+    if not nc_cid:
+        return "Nextcloud is not running"
+    admin = env.get("NEXTCLOUD_ADMIN_USER", "admin")
+    email_args = [owner] if owner else ["--delete"]
+    for argv, stdin in (
+        (["config:import"], json.dumps({"system": system})),
+        (["user:setting", admin, "settings", "email", *email_args], None),
+    ):
+        try:
+            proc = subprocess.run(
+                ["docker", "exec", "-i", "-u", "www-data", nc_cid, "php", "occ", *argv],
+                input=stdin, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return f"occ {argv[0]} timed out"
+        if proc.returncode != 0:
+            # occ prints some refusals on stdout.
+            return f"occ {argv[0]}: " + (proc.stderr.strip() or proc.stdout.strip())[:200]
+    return problem
+
+
+def _apply_nextcloud_mail_in_background() -> None:
+    """After an account change the sender may be another account, or gone —
+    and Nextcloud must not keep a removed account's password."""
+    if not owner_email():
+        return
+
+    def run() -> None:
+        problem = apply_nextcloud_mail()
+        if problem:
+            logging.warning("Nextcloud mail not updated: %s", problem)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _refresh_email_mcp() -> None:
+    """Re-push the email MCP spec, then restart the daemon. OpenClaw copies a
+    spec's env into openclaw.json at `mcp set` time, so a restart alone keeps
+    serving the old values."""
+    spec = _spec_email()
+    if spec and MCP_NAMES["email"] in _openclaw_wired_names():
+        _openclaw_mcp_set(MCP_NAMES["email"], spec)
+    _openclaw_daemon_restart()
+
+
+def send_owner_test(owner: str, sender: dict) -> str:
+    """One message from the system sender to the owner. "" or the error."""
+    from email.message import EmailMessage
+
+    from mcp_common import smtp_send
+    password = _sender_password(sender)
+    if not password:
+        return "the sending account's stored password could not be decrypted"
+    msg = EmailMessage()
+    msg["From"] = sender.get("user", "")
+    msg["To"] = owner
+    msg["Subject"] = "HomeBrain will email you here"
+    whose = "your agent's mailbox" if sender.get("agent_mailbox") else "a connected inbox"
+    msg.set_content(
+        "This is the address HomeBrain uses to reach you: health alerts, "
+        "Nextcloud notifications and calendar invites, and anything your agent "
+        f"emails you.\n\nIt was sent from {sender.get('user')}, {whose}.\n")
+    try:
+        smtp_send(sender, password, msg, timeout=20)
+    except Exception as e:
+        return str(e)[:200]
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Status aggregation
 # ---------------------------------------------------------------------------
 
@@ -1079,6 +1225,11 @@ def integration_status(key: str) -> dict:
         )
         info["prompting_enabled"] = prompting_ready(_load_email_channel(),
                                                     accounts)
+        sender = _system_sender(accounts)
+        info["owner_email"] = owner_email()
+        info["system_sender"] = ({"name": sender.get("name"), "user": sender.get("user"),
+                                  "agent_mailbox": bool(sender.get("agent_mailbox"))}
+                                 if sender else None)
     return info
 
 
@@ -1444,6 +1595,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not ok_:
             return jsonify({"error": msg}), 400
         reconcile_one("email")
+        _apply_nextcloud_mail_in_background()
         return jsonify({"status": "added"})
 
     def email_remove():
@@ -1453,6 +1605,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         if not remove_email_account(body.get("name", "")):
             return jsonify({"error": "account not found"}), 404
         reconcile_one("email")
+        _apply_nextcloud_mail_in_background()
         return jsonify({"status": "removed"})
 
     def email_agent_mailbox():
@@ -1470,6 +1623,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         ok_, msg = set_email_agent_mailbox(name, bool(body.get("agent_mailbox")))
         if not ok_:
             return jsonify({"error": msg}), 404
+        _apply_nextcloud_mail_in_background()
         return jsonify({"status": "updated"})
 
     def email_send_direct_toggle():
@@ -1487,11 +1641,39 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                 "HOMEBRAIN_EMAIL_SEND_DIRECT",
                 "true" if enabled else "false"):
             return jsonify({"error": "could not update .env"}), 500
-        # The toggle changes an env var that the email MCP server only
-        # reads at spawn time, so bounce the daemon to re-spawn it. No
-        # registry change needed — skip the full reconcile.
-        _openclaw_daemon_restart()
+        # The email MCP server reads this env var at spawn time, and its
+        # spawn env is the copy in openclaw.json — re-push it, then restart.
+        _refresh_email_mcp()
         return jsonify({"status": "ok", "enabled": enabled})
+
+    def email_owner_set():
+        # Dashboard session only, like the agent-mailbox flag. email.send_owner
+        # may skip the send_direct toggle only because the agent cannot pick
+        # this address; a bearer path would make it an exfiltration route.
+        if not session.get("authenticated"):
+            return jsonify({"error": "unauthenticated"}), 401
+        body = request.get_json(silent=True) or {}
+        raw = (body.get("owner_email") or "").strip()
+        addr = normalize_email(raw)
+        if raw and ("@" not in addr or "." not in addr.rsplit("@", 1)[-1]):
+            return jsonify({"error": "That is not an email address."}), 400
+        accounts = _load_email_accounts()
+        if addr and addr in agent_mailbox_addrs(accounts):
+            return jsonify({"error": "That is the agent's own mailbox. "
+                                     "Use your personal address."}), 400
+        from app import update_env_var
+        if not update_env_var("NOTIFY_EMAIL", addr):
+            return jsonify({"error": "could not update .env"}), 500
+        sender = _system_sender(accounts)
+        result = {
+            "status": "ok",
+            "owner_email": addr,
+            "sender": sender.get("user") if sender else None,
+            "nextcloud_error": apply_nextcloud_mail(),
+            "test_error": (send_owner_test(addr, sender) if addr and sender else ""),
+        }
+        threading.Thread(target=_refresh_email_mcp, daemon=True).start()
+        return jsonify(result)
 
     # ---- Self MCP — bearer-auth endpoints ---------------------------------
     def _proxy_view(view_name: str):
@@ -1780,6 +1962,10 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/email/send-direct-toggle",
                      "email_send_direct_toggle",
                      email_send_direct_toggle, methods=["POST"])
+    app.add_url_rule("/api/integrations/email/owner",
+                     "email_owner_set",
+                     limiter.limit("10 per minute")(email_owner_set),
+                     methods=["POST"])
     app.add_url_rule("/api/integrations/email/agent-mailbox",
                      "email_agent_mailbox",
                      limiter.limit("20 per minute")(email_agent_mailbox),

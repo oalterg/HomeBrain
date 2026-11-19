@@ -316,9 +316,13 @@ def header_map(msg) -> dict[str, str]:
 
 def wake_prompt(account_name: str, uid: str, from_h: str, to_h: str,
                 subject: str, body: str, filenames: list[str],
-                send_direct: bool) -> str:
-    reply = ("email.send_direct" if send_direct
-             else "email.draft (send_direct is off)")
+                send_direct: bool, owner_email_set: bool = False) -> str:
+    if send_direct:
+        reply = "email.send_direct"
+    elif owner_email_set:
+        reply = "email.send_owner (send_direct is off)"
+    else:
+        reply = "email.draft (send_direct is off)"
     body = strip_quoted(body or "")
     if len(body) > BODY_CAP:
         body = body[:BODY_CAP]
@@ -436,12 +440,19 @@ def pick_wake(candidates: list[dict], in_flight: bool) -> dict | None:
     return candidates[0]
 
 
-def _send_direct_enabled() -> bool:
+def _read_env_file() -> dict[str, str]:
     try:
-        env = parse_env(open(ENV_FILE).read())
+        return parse_env(open(ENV_FILE).read())
     except OSError:
-        env = {}
-    return env.get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").lower() == "true"
+        return {}
+
+
+def _send_direct_enabled() -> bool:
+    return _read_env_file().get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").lower() == "true"
+
+
+def _owner_email_set() -> bool:
+    return bool(normalize_email(_read_env_file().get("NOTIFY_EMAIL", "")))
 
 
 def _wake_async(prompt: str) -> None:
@@ -516,6 +527,7 @@ def poll_account(account: dict, channel: dict, agent_addrs: list[str],
                 body,
                 attachment_names(full_msg),
                 _send_direct_enabled(),
+                _owner_email_set(),
             )
             log(f"[INFO] {name}: wake uid={uid} from={normalize_email(from_h)}")
             mark_seen(conn, uid)

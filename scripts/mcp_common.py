@@ -170,6 +170,38 @@ def decrypt_secret(blob: str, key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Outgoing mail
+# ---------------------------------------------------------------------------
+
+def system_sender(accounts: list[dict]) -> dict | None:
+    """The connected account HomeBrain sends its own mail from.
+
+    The agent's mailbox first, so the owner's reply to an alert or to
+    email.send_owner lands where the agent reads; otherwise the first account
+    that can send at all.
+    """
+    can_send = [a for a in accounts if a.get("smtp_host") and a.get("user")]
+    return next((a for a in can_send if a.get("agent_mailbox")),
+                can_send[0] if can_send else None)
+
+
+def smtp_send(account: dict, password: str, msg, timeout: int = 15) -> None:
+    """Send one message through an account's SMTP server. Raises on failure."""
+    import smtplib
+    host = account.get("smtp_host", "")
+    port = int(account.get("smtp_port", 587))
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, timeout=timeout) as s:
+            s.login(account.get("user", ""), password)
+            s.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=timeout) as s:
+            s.starttls()
+            s.login(account.get("user", ""), password)
+            s.send_message(msg)
+
+
+# ---------------------------------------------------------------------------
 # Audit log
 # ---------------------------------------------------------------------------
 

@@ -637,10 +637,10 @@ def resolve_email_target(env):
             accounts = json.load(f).get("accounts", [])
     except Exception:
         return None
-    for a in accounts:
-        if a.get("smtp_host") and a.get("user"):
-            return (a, to)
-    return None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mcp_common import system_sender
+    sender = system_sender(accounts)
+    return (sender, to) if sender else None
 
 
 def send_email(env, account, to, subject, text):
