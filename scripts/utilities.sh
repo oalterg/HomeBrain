@@ -2340,6 +2340,17 @@ patch_openclaw_config() {
         # payload: the same 66 tools with cron removed answer 200, cron alone
         # answers 400.
         .tools.deny = ((.tools.deny // []) + ["cron"] | unique) |
+        # Tools a HomeBrain box can never use: they drive a paired desktop or
+        # phone node (computer, nodes, mobile_ui, file_*/dir_*, node_inference)
+        # or the look and widgets of the OpenClaw web UI (theme, dashboard),
+        # plus meeting capture (transcripts). Every schema rides along on every
+        # request: these 11 are ~8.5k of the 43k-token prompt on .69 (Glimmer
+        # template, 2026-11-19), none was ever called in its audit log, and a
+        # 30B model picks better from fewer tools. Additive like cron, so a
+        # hand-added deny survives updates.
+        .tools.deny = ((.tools.deny // []) + ["computer", "nodes", "mobile_ui",
+            "file_write", "file_fetch", "dir_list", "dir_fetch", "node_inference",
+            "theme", "dashboard", "transcripts"] | unique) |
         # Hand the model every tool schema up front, as before 2026.9. Unset
         # now means Tool Search: schemas wait behind tool_search /
         # tool_describe / tool_call, which costs a local model extra
