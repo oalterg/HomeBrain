@@ -68,6 +68,7 @@ MCP_NAMES = {
     "vault":         "homebrain-vault",
     "email":         "homebrain-email",
     "self":          "homebrain-self",
+    "browser":       "homebrain-browser",
 }
 
 # Order matters for the dashboard card.
@@ -532,12 +533,41 @@ def _spec_email() -> dict | None:
     }
 
 
+def _spec_browser() -> dict | None:
+    """The agent's web browser, wired while the camofox image is installed
+    (scripts/common.sh: ensure_camofox, AI boxes only). Not a Connections card:
+    nothing for the owner to configure, so not in INTEGRATION_ORDER either.
+    Without its access key the container would take requests from any local
+    process, so no key means not wired."""
+    key = _read_env().get("CAMOFOX_ACCESS_KEY", "")
+    if not key or shutil.which("docker") is None:
+        return None
+    try:
+        installed = subprocess.run(
+            ["docker", "image", "inspect", "homebrain-camofox:current"],
+            capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if not installed:
+        return None
+    return {
+        "command": PYTHON_BIN,
+        "args": [os.path.join(SCRIPTS_DIR, "mcp-browser.py")],
+        "env": {
+            "CAMOFOX_URL": "http://127.0.0.1:9377",
+            "CAMOFOX_ACCESS_KEY": key,
+            "HOMEBRAIN_AUDIT_DIR": LOG_DIR,
+        },
+    }
+
+
 SPEC_BUILDERS = {
     "self":          _spec_self,
     "homeassistant": _spec_homeassistant,
     "nextcloud":     _spec_nextcloud,
     "vault":         _spec_vault,
     "email":         _spec_email,
+    "browser":       _spec_browser,
 }
 
 
@@ -550,7 +580,7 @@ def reconcile_all_mcp() -> dict:
     _ensure_dir(OPENCLAW_DIR)
     _ensure_self_token()
     results = {}
-    for key in INTEGRATION_ORDER:
+    for key in [*INTEGRATION_ORDER, "browser"]:
         spec = SPEC_BUILDERS[key]()
         name = MCP_NAMES[key]
         if spec is None:
@@ -2207,15 +2237,30 @@ def _startup_sync_self_token() -> None:
         logging.warning("self-MCP token sync failed: %s", e)
 
 
+def _browser_wiring_stale() -> bool:
+    """True when the agent's browser is wired but its image is gone, or the
+    other way round. An update builds the image and then restarts this
+    manager, so boot is where an existing box picks the browser up."""
+    try:
+        want = SPEC_BUILDERS["browser"]() is not None
+        return want != (MCP_NAMES["browser"] in _openclaw_wired_names())
+    except Exception:
+        return False
+
+
 def _startup_wire_if_needed() -> None:
     if not _has_openclaw():
         return
     _startup_sync_self_token()
     try:
         if _self_token() and _wired_in_openclaw(MCP_NAMES["self"]):
-            return
+            if not _browser_wiring_stale():
+                return
+            self_wired = True
+        else:
+            self_wired = False
     except Exception:
-        pass
+        self_wired = False
     import fcntl
     lock_path = "/tmp/homebrain-startup-reconcile.lock"
     try:
@@ -2227,8 +2272,11 @@ def _startup_wire_if_needed() -> None:
             fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        # Re-check inside the lock to avoid a redundant daemon restart if a
-        # sibling worker just finished.
+        # Re-check inside the lock: a sibling worker may just have finished.
+        if self_wired:
+            if _browser_wiring_stale():
+                logging.info("startup: %s", reconcile_one("browser"))
+            return
         if _self_token() and _wired_in_openclaw(MCP_NAMES["self"]):
             return
         logging.info("startup self-heal: wiring missing MCP servers")

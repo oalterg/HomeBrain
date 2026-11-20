@@ -575,6 +575,8 @@ if handover_pending; then
     profiles=""
     stop_tunnel_services
 fi
+# A restored .env from before the agent's browser has no key for it.
+if camofox_installed; then ensure_camofox_key; fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
 
 wait_for_healthy "nextcloud" 180 || log_warn "Nextcloud taking longer to start."

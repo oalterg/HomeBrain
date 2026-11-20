@@ -1828,16 +1828,14 @@ patch_openclaw_config() {
         jq_search_patch='| .tools.web.search.provider = "searxng" | .plugins.entries.searxng.config.webSearch.baseUrl = "http://127.0.0.1:8888"'
     fi
 
-    # Resolve the browser rather than hardcoding Chrome's path: on architectures
-    # Google does not build Chrome for, this is chromium. Empty means no browser
-    # is installed, in which case the key is left alone rather than pointed at a
-    # binary that is not there.
-    local browser_path
-    browser_path=$(resolve_browser_path || true)
-    local jq_browser_patch=""
-    if [[ -n "$browser_path" ]]; then
-        jq_extra_args+=(--arg browser_path "$browser_path")
-        jq_browser_patch='| .browser.executablePath = $browser_path'
+    # The agent browses through homebrain-browser (scripts/mcp-browser.py) once
+    # the camofox container is installed. Turn OpenClaw's own Chrome-driven
+    # browser tool off then. Until then, a box keeps the Chrome it had.
+    local jq_browser_patch='| .browser.noSandbox = true'
+    if camofox_installed; then
+        jq_browser_patch='| .plugins.entries.browser.enabled = false | del(.browser)'
+        jq_browser_patch+=' | (if (.agents.entries.main.tools.alsoAllow | type) == "array"'
+        jq_browser_patch+=' then .agents.entries.main.tools.alsoAllow -= ["browser"] else . end)'
     fi
 
     # Heartbeat prompt is a workspace-adjacent template so the jq program
@@ -2239,7 +2237,6 @@ patch_openclaw_config() {
         # already 95-503 s compaction. Disable it; AGENTS.md tells the model
         # to write daily notes as it goes.
         .agents.defaults.compaction.memoryFlush.enabled = false |
-        .browser.noSandbox = true |
         # One-shot migration: drop the disabled channel skeletons HomeBrain
         # used to seed before the OpenClaw self-config agent tool existed.
         # We only delete entries that still exactly match our old skeleton —
@@ -2640,6 +2637,10 @@ setup_openclaw() {
     fi
 
     load_versions  # sets OPENCLAW_VERSION
+
+    # The agent's web browser. Before the config is written: the patch turns
+    # OpenClaw's Chrome-driven browser tool off once the camofox image exists.
+    ensure_camofox || log_warn "The agent has no web browser until the next update."
 
     # Sweep stale plugin-runtime-deps trees from prior OpenClaw versions.
     # Each setup leaves ~200-700 MB of staged node_modules under

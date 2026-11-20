@@ -62,9 +62,9 @@ done
 log_info()  { :; }
 log_warn()  { :; }
 log_error() { :; }
-# No browser on a CI runner; the real one returns empty there too, which is
-# the branch that leaves .browser.executablePath untouched.
-resolve_browser_path() { return 0; }
+# No Docker on a CI runner, so no camofox image: the branch that keeps the
+# box's existing browser settings.
+camofox_installed() { return 1; }
 # No OpenClaw on a CI runner, so no SearXNG plugin either.
 searxng_plugin_version() { return 0; }
 

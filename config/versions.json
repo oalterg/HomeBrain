@@ -63,5 +63,24 @@
   },
   "tailscale": {
     "version": "1.104.7"
+  },
+  "camofox": {
+    "browser": {
+      "repo": "https://github.com/jo-inc/camofox-browser.git",
+      "version": "1.19.0",
+      "commit": "31376c27db94204ffdc635ae71a7f61328e91a5e"
+    },
+    "camoufox": {
+      "version": "152.0.4",
+      "release": "beta.30",
+      "x86_64": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-lin.x86_64.zip",
+        "sha256": "5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672"
+      },
+      "aarch64": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.30/camoufox-152.0.4-beta.30-lin.arm64.zip",
+        "sha256": "60447260af8bebdb0ec3f2aa72f687b879e5598367303de2e3fdbc7a5be8c124"
+      }
+    }
   }
 }

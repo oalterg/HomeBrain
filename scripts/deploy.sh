@@ -102,6 +102,7 @@ if handover_pending; then
 fi
 
 ensure_searxng_secret
+if camofox_installed; then ensure_camofox_key; fi
 vault_profiles=$(get_vault_profiles)
 log_info "Starting Stack with Tunnel Profile: ${profiles:-None} · Vault Profile: ${vault_profiles:-None}"
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
