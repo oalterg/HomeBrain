@@ -544,6 +544,10 @@ configure_nc_ha_proxy_settings || die "Failed to apply LAN HTTPS proxy settings.
 # updater" page. reconcile_nextcloud is an idempotent no-op when nothing pends.
 reconcile_nextcloud
 
+# 6d. The images this update replaced. After the stack is up, so a failed
+# update keeps them.
+prune_superseded_images || log_warn "Could not remove superseded images."
+
 # 7. Write Version File
 cat > "$INSTALL_DIR/version.json" <<EOF
 {

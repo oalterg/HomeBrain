@@ -2439,6 +2439,22 @@ heartbeat_checklist_is_empty() {
     [[ -z "$stripped" ]]
 }
 
+# Wait up to $1 seconds (default 90) for the gateway to bind its port. Gives
+# up at once when its unit is not running, since nothing is coming then.
+wait_for_openclaw_gateway() {
+    local secs="${1:-90}" port="${OPENCLAW_PORT:-18789}" state
+    while (( secs > 0 )); do
+        state=$(run_as_admin systemctl --user is-active openclaw-gateway 2>/dev/null || true)
+        [[ "$state" == "active" || "$state" == "activating" ]] || return 1
+        if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+        secs=$((secs - 2))
+    done
+    return 1
+}
+
 # The isolated heartbeat's working pad is the monitor scratch of its
 # automation job. It lives in OpenClaw's state database, so only a running
 # gateway can read or write it. OpenClaw retired the workspace HEARTBEAT.md
@@ -2447,7 +2463,8 @@ heartbeat_checklist_is_empty() {
 #
 # Seed only a missing or effectively empty scratch, and only after a read
 # that answered — a failed read looks empty too, and writing then would
-# replace the agent's current work with the template.
+# replace the agent's current work with the template. The read gets a few
+# tries in case the gateway is still starting.
 seed_heartbeat_scratch() {
     command -v openclaw >/dev/null 2>&1 || return 0
     local src="${SCRIPT_DIR}/../config/openclaw-workspace/heartbeat.scratch"
@@ -2456,9 +2473,14 @@ seed_heartbeat_scratch() {
         log_warn "OpenClaw heartbeat scratch template missing at $src — skipping."
         return 0
     fi
-    local current
-    current=$(run_as_admin bash "$helper" --json 2>/dev/null || true)
-    if ! jq -e 'has("maxBytes")' >/dev/null 2>&1 <<<"$current"; then
+    local current="" try
+    for try in 1 2 3; do
+        current=$(run_as_admin bash "$helper" --json 2>/dev/null || true)
+        jq -e 'has("maxBytes")' >/dev/null 2>&1 <<<"$current" && break
+        current=""
+        if [[ $try -lt 3 ]]; then sleep 5; fi
+    done
+    if [[ -z "$current" ]]; then
         log_warn "Could not read the OpenClaw heartbeat scratch — not seeded."
         return 0
     fi
@@ -3690,14 +3712,21 @@ case "${1:-}" in
             chown "${HOMEBRAIN_USER:-homebrain}:${HOMEBRAIN_USER:-homebrain}" "$CFG" 2>/dev/null || true
             chmod 600 "$CFG" 2>/dev/null || true
             seed_openclaw_workspace 1
-            # Before the restart below: the scratch needs a gateway that answers.
-            seed_heartbeat_scratch
             if ! cmp -s "${CFG}.preupdate" "$CFG" || [[ "$DROPIN_CHANGED" == "true" ]]; then
                 log_info "openclaw plugins/config/drop-in changed — restarting daemon to apply."
                 run_as_admin systemctl --user restart openclaw-gateway >/dev/null 2>&1 \
                     || log_warn "openclaw-gateway restart failed — check logs."
             else
                 log_info "openclaw plugins/config already current — no daemon restart."
+            fi
+            # After the restart: the scratch lives in the gateway's database,
+            # so the read needs a gateway that answers. Before it, the read
+            # could land while OpenClaw restarted itself for the patched config
+            # (a `browser` change does that) and fail.
+            if wait_for_openclaw_gateway 90; then
+                seed_heartbeat_scratch
+            else
+                log_warn "The OpenClaw gateway is not answering — heartbeat scratch not seeded."
             fi
         fi
         rm -f "${CFG}.preupdate"
