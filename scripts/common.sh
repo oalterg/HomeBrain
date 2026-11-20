@@ -588,6 +588,10 @@ ensure_camofox() {
             log_warn "Building the agent's web browser failed."
             return 1
         fi
+        # The build cache is as large as the image again, and nothing else
+        # removes it, so every pin change would leave ~3 GB behind. The box
+        # runs the image; the cache only speeds up a rebuild.
+        docker builder prune -af >/dev/null 2>&1 || true
     fi
     docker tag "${CAMOFOX_IMAGE}:${tag}" "${CAMOFOX_IMAGE}:current"
     if ! ( cd "${INSTALL_DIR}" && docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d camofox ); then
