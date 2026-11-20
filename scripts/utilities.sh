@@ -802,6 +802,7 @@ install_llamacpp() {
     # already current and the install short-circuits below.
     _install_llama_radv_dropin
     _install_sycl_runtime
+    [[ "${HB_GPU_BACKEND:-}" != "sycl" ]] || _install_arc_firmware
 
     local resolved kind payload ref
     resolved=$(_resolve_llama_source) \
@@ -1003,6 +1004,48 @@ _install_sycl_runtime() {
     chmod 644 "$dropin_file"
     systemctl daemon-reload 2>/dev/null || true
     log_info "SYCL runtime ready (${prefix})."
+}
+
+# GuC firmware for the Arc, newer than the distro's. Ubuntu 26.04 ships GuC
+# 70.58.0, whose crash on the first job after a long idle wedged the B60 on
+# .69 (docs/BENCHMARKS.md, 2026-11-20). The kernel looks in
+# /lib/firmware/updates before the distro's copy, and no package writes
+# there, so a linux-firmware upgrade cannot silently roll this back. xe loads
+# it when it next probes the card: the next boot, or a rebind. A failed
+# download keeps the firmware the system has.
+_install_arc_firmware() {
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    local n i path url sha version dest tmp changed=0
+    n=$(jq -r '.arc_firmware.files // [] | length' "$versions_file" 2>/dev/null || echo 0)
+    for ((i = 0; i < n; i++)); do
+        path=$(jq -r ".arc_firmware.files[$i].path" "$versions_file")
+        url=$(jq -r ".arc_firmware.files[$i].url" "$versions_file")
+        sha=$(jq -r ".arc_firmware.files[$i].sha256" "$versions_file")
+        version=$(jq -r ".arc_firmware.files[$i].version" "$versions_file")
+        dest="/lib/firmware/updates/${path}"
+        if [[ -f "$dest" && "$(sha256sum "$dest" | cut -d' ' -f1)" == "$sha" ]]; then
+            continue
+        fi
+        tmp=$(mktemp)
+        if ! curl -fsSL --retry 3 -o "$tmp" "$url" \
+            || [[ "$(sha256sum "$tmp" | cut -d' ' -f1)" != "$sha" ]]; then
+            rm -f "$tmp"
+            log_warn "Could not fetch GPU firmware ${path} ${version}; keeping the system's."
+            continue
+        fi
+        mkdir -p "$(dirname "$dest")"
+        install -m 644 "$tmp" "$dest"
+        rm -f "$tmp"
+        log_info "Installed GPU firmware ${path} ${version}."
+        changed=1
+    done
+    [[ "$changed" == 1 ]] || return 0
+    # An xe in the initramfs loads its firmware from there.
+    if lsinitramfs "/boot/initrd.img-$(uname -r)" 2>/dev/null | grep -q 'firmware/xe/'; then
+        update-initramfs -u >/dev/null 2>&1 || log_warn "Could not refresh the initramfs."
+    fi
+    touch /var/run/reboot-required
+    log_info "The new GPU firmware loads at the next restart."
 }
 
 # oneAPI's setvars.sh is what makes Level Zero visible. A unit that only sets
@@ -3656,6 +3699,7 @@ case "${1:-}" in
         dropin="/etc/systemd/system/llama-server.service.d/10-sycl.conf"
         before=$(cat "$launcher" "$dropin" 2>/dev/null || true)
         _install_sycl_runtime
+        _install_arc_firmware
         _write_sycl_launcher "$bin_path" >/dev/null
         after=$(cat "$launcher" "$dropin" 2>/dev/null || true)
         if [[ "$before" == "$after" ]]; then

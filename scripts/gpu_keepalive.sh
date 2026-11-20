@@ -14,4 +14,8 @@ env_sh="$(dirname "$exec_path")/sycl-env.sh"
 # Only SYCL boxes have it, and only they need this.
 [[ -x "$env_sh" ]] || exit 0
 user=$(systemctl show -p User --value llama-server)
-exec runuser -u "${user:-homebrain}" -- "$env_sh" /usr/bin/python3 "$here/gpu_keepalive.py"
+user=${user:-homebrain}
+# setpriv, not runuser: no PAM session, so no two journal lines per run.
+home=$(getent passwd "$user" | cut -d: -f6)
+exec env HOME="${home:-/}" setpriv --reuid="$user" --regid="$user" --init-groups -- \
+    "$env_sh" /usr/bin/python3 "$here/gpu_keepalive.py"

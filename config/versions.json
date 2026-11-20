@@ -82,5 +82,16 @@
         "sha256": "60447260af8bebdb0ec3f2aa72f687b879e5598367303de2e3fdbc7a5be8c124"
       }
     }
+  },
+  "arc_firmware": {
+    "source": "linux-firmware f51d6d83dbadf2890b7639be6bd6e35803fd02f5 (2026-11-14). Ubuntu 26.04 ships GuC 70.58.0.",
+    "files": [
+      {
+        "path": "xe/bmg_guc_70.bin",
+        "version": "70.83.0",
+        "url": "https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/xe/bmg_guc_70.bin?id=f51d6d83dbadf2890b7639be6bd6e35803fd02f5",
+        "sha256": "dcb24691903fb670b867bf8fb4f4048dabef2021afd95296bfa80ba27c9a3f8c"
+      }
+    ]
   }
 }
