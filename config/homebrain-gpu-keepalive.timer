@@ -1,0 +1,11 @@
+[Unit]
+Description=Wake the Arc every three minutes
+
+[Timer]
+OnBootSec=2min
+# Oneshot: count from when the last run finished (see homebrain-gpu-recover.timer).
+OnUnitInactiveSec=3min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Let an Intel Arc reach its low-power idle states (PCIe ASPM L1)
+ConditionPathExists=/opt/homebrain/scripts/gpu_aspm.sh
+Before=llama-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/homebrain/scripts/gpu_aspm.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

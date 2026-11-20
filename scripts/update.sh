@@ -385,6 +385,8 @@ for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.
             homebrain-ha-watch.service homebrain-email-watch.service \
             homebrain-media.service homebrain-picture.service homebrain-video.service \
             homebrain-gpu-recover.service homebrain-gpu-recover.timer \
+            homebrain-gpu-wedged.service homebrain-gpu-aspm.service \
+            homebrain-gpu-keepalive.service homebrain-gpu-keepalive.timer \
             homebrain-mdns.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
@@ -421,7 +423,9 @@ if [[ -f /etc/systemd/system/llama-server.service ]]; then
     command -v fuser >/dev/null 2>&1 || apt-get install -y -qq psmisc \
         || log_warn "GPU recovery needs psmisc (fuser)."
     systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null || true
+    systemctl enable --now homebrain-gpu-keepalive.timer 2>/dev/null || true
 fi
+install_gpu_power_units
 # Same for the off-site resume timer on boxes provisioned before it existed.
 systemctl enable --now homebrain-offsite.timer 2>/dev/null || true
 # HA watchers: ping on HA state_changed. Unit condition is OpenClaw present.

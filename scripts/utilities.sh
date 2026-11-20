@@ -1013,15 +1013,16 @@ _install_sycl_runtime() {
 # setvars selects when the variable is empty.
 _write_sycl_launcher() {
     local bin_path="$1"
-    local work_dir launcher versions_file spec setvars prefix key val
+    local work_dir launcher env_sh versions_file spec setvars prefix key val env_lines
     work_dir=$(dirname "$bin_path")
     launcher="${work_dir}/llama-sycl-server.sh"
+    env_sh="${work_dir}/sycl-env.sh"
     versions_file="${SCRIPT_DIR}/../config/versions.json"
     spec='.llama_cpp.source_build["x86_64-sycl"]'
     setvars=$(jq -r "${spec}.oneapi.setvars" "$versions_file")
     prefix=$(jq -r "${spec}.neo_prefix" "$versions_file")
     mkdir -p "$work_dir"
-    {
+    env_lines=$(
         echo '#!/bin/bash'
         echo 'set +u'
         echo "source \"${setvars}\" >/dev/null"
@@ -1032,9 +1033,13 @@ _write_sycl_launcher() {
         done < <(jq -r "${spec}.env | to_entries[] | [.key, .value] | @tsv" "$versions_file")
         printf 'export OCL_ICD_FILENAMES=%q\n' \
             "${prefix}/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
-        printf 'exec %q "$@"\n' "$bin_path"
-    } > "$launcher"
+    )
+    { printf '%s\n' "$env_lines"; printf 'exec %q "$@"\n' "$bin_path"; } > "$launcher"
     chmod 755 "$launcher"
+    # The same environment for any command, so gpu_keepalive.sh reaches the
+    # GPU through llama-server's driver.
+    { printf '%s\n' "$env_lines"; echo 'exec "$@"'; } > "$env_sh"
+    chmod 755 "$env_sh"
     printf '%s\n' "$launcher"
 }
 
@@ -1120,6 +1125,9 @@ enable_gpu_recover_timer() {
         || log_warn "GPU recovery needs psmisc (fuser)."
     systemctl enable --now homebrain-gpu-recover.timer 2>/dev/null || \
         log_warn "Failed to enable GPU recovery timer."
+    [[ -f /etc/systemd/system/homebrain-gpu-keepalive.timer ]] || return 0
+    systemctl enable --now homebrain-gpu-keepalive.timer 2>/dev/null || \
+        log_warn "Failed to enable the GPU keep-alive timer."
 }
 
 # Main setup orchestrator

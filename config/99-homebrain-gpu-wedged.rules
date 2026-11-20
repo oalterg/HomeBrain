@@ -1,0 +1,6 @@
+# xe announces a wedged GPU with a WEDGED= uevent on its card node. Start the
+# recovery now instead of on the next timer run. SYNTH_ARG_WEDGED is the same
+# key in a synthetic event, which tests the chain without a real wedge:
+#   echo "change $(uuidgen) WEDGED=rebind" > /sys/class/drm/card0/uevent
+ACTION=="change", SUBSYSTEM=="drm", ENV{WEDGED}=="?*", RUN+="/usr/bin/systemctl --no-block start homebrain-gpu-wedged.service"
+ACTION=="change", SUBSYSTEM=="drm", ENV{SYNTH_ARG_WEDGED}=="?*", RUN+="/usr/bin/systemctl --no-block start homebrain-gpu-wedged.service"

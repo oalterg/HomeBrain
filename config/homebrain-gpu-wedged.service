@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover llama-server right after xe declares the GPU wedged
+ConditionPathExists=/etc/systemd/system/llama-server.service
+ConditionPathExists=/opt/homebrain/scripts/recover_gpu.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/homebrain/scripts/recover_gpu.sh --wedged
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

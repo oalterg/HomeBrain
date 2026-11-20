@@ -172,7 +172,7 @@ install_needrestart_guard() {
     cat > "$NEEDRESTART_GUARD" <<'EOF'
 # Managed by HomeBrain (scripts/common.sh:install_needrestart_guard).
 # Never restart a HomeBrain job mid-run: a restart kills it and starts it over.
-$nrconf{override_rc}{qr(^homebrain-(update|ai-setup|backup|offsite|picture|video|gpu-recover)\.service$)} = 0;
+$nrconf{override_rc}{qr(^homebrain-(update|ai-setup|backup|offsite|picture|video|gpu-recover|gpu-wedged|gpu-keepalive|gpu-aspm)\.service$)} = 0;
 EOF
 }
 
@@ -995,6 +995,22 @@ refresh_self_token() {
     chmod 600 "$tok_file" 2>/dev/null || true
     chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$tok_file" 2>/dev/null || true
     log_info "Self-MCP bearer token re-derived."
+}
+
+# The Arc's idle power and its wedge fast path. Both are no-ops on a box
+# without an Arc on xe, so they go everywhere: gpu_aspm.sh finds nothing to
+# do, and the udev rule never sees a WEDGED event. Restart, not start, so an
+# update runs a changed gpu_aspm.sh without a reboot.
+install_gpu_power_units() {
+    local rule=/etc/udev/rules.d/99-homebrain-gpu-wedged.rules
+    local src="${INSTALL_DIR}/config/99-homebrain-gpu-wedged.rules"
+    if [[ -f "$src" ]] && ! cmp -s "$src" "$rule"; then
+        cp "$src" "$rule" && chmod 644 "$rule"
+        udevadm control --reload-rules 2>/dev/null || true
+    fi
+    systemctl enable homebrain-gpu-aspm.service 2>/dev/null || true
+    systemctl restart homebrain-gpu-aspm.service 2>/dev/null \
+        || log_warn "Could not set the GPU's PCIe power saving."
 }
 
 # --- Docker Helpers ---

@@ -1,0 +1,12 @@
+[Unit]
+Description=Give the Arc a little work so it never idles for minutes
+ConditionPathExists=/etc/systemd/system/llama-server.service
+ConditionPathExists=/opt/homebrain/scripts/gpu_keepalive.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/homebrain/scripts/gpu_keepalive.sh
+TimeoutStartSec=60
+Nice=10
+StandardOutput=journal
+StandardError=journal
