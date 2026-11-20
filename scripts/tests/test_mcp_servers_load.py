@@ -1,4 +1,4 @@
-"""Import smoke test for the five MCP servers.
+"""Import smoke test for the MCP servers.
 
 CI ran `compileall`, which proves a file parses and nothing more. Every one of
 these servers is a standalone stdio process that OpenClaw spawns on demand, so
@@ -25,6 +25,7 @@ SCRIPTS = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, SCRIPTS)
 
 SERVERS = [
+    "mcp-browser.py",
     "mcp-email.py",
     "mcp-homeassistant.py",
     "mcp-homebrain.py",

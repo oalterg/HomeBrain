@@ -530,54 +530,93 @@ _harden_gpu_amdgpu() {
     log_info "Deployed amdgpu modprobe config (VCN/JPEG masked) to /etc/modprobe.d/"
 }
 
-# --- Headless browser ---
-# Path to the Chromium-family binary OpenClaw should drive, or empty when none
-# is installed. Both the installer and the openclaw.json patcher resolve through
-# here so the config can never point at a binary this box does not have.
-resolve_browser_path() {
-    local candidate
-    for candidate in google-chrome-stable chromium chromium-browser; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            command -v "$candidate"
-            return 0
-        fi
-    done
-    return 1
+# --- The agent's web browser (camofox) ---
+# AI boxes run the agent's browser as a container built on the box from the
+# pins in config/versions.json: camofox-browser driving Camoufox, a Firefox
+# fork that sites treat as an ordinary browser. It replaced Chrome on the host,
+# which ran as homebrain, a docker-group user: a browser exploit there was root.
+CAMOFOX_IMAGE="homebrain-camofox"
+
+camofox_installed() {
+    docker image inspect "${CAMOFOX_IMAGE}:current" >/dev/null 2>&1
 }
 
-# Google publishes no arm64 Linux build of Chrome at all, so on anything that is
-# not amd64 we install the distro's chromium instead. Non-fatal either way: the
-# browse tool degrades, the rest of the agent is unaffected.
-install_headless_browser() {
-    local browser
-    browser=$(resolve_browser_path || true)
-    if [[ -n "$browser" ]]; then
-        log_info "Headless browser already present: ${browser}"
-        return 0
-    fi
+# One tag per pin set: a changed pin builds a new image, an unchanged one
+# builds nothing. INSTALL_DIR, not SCRIPT_DIR: update.sh re-execs itself from
+# a temp dir that holds only update.sh and common.sh.
+camofox_tag() {
+    jq -r '.camofox | "\(.browser.version)-\(.camoufox.version)-\(.camoufox.release)"' \
+        "${INSTALL_DIR}/config/versions.json"
+}
 
-    local deb_arch
-    deb_arch=$(dpkg --print-architecture 2>/dev/null || echo "unknown")
-    if [[ "$deb_arch" == "amd64" ]]; then
-        # deb rather than snap: snap confinement breaks on headless servers.
-        log_info "Installing Google Chrome for headless browsing..."
-        wget -q -O /tmp/google-chrome.deb \
-            "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb" \
-            && apt-get install -y -qq /tmp/google-chrome.deb \
-            && rm -f /tmp/google-chrome.deb \
-            || log_warn "Chrome install failed."
-    else
-        log_info "Installing Chromium for headless browsing (Google ships no Chrome build for ${deb_arch})..."
-        apt-get install -y -qq chromium 2>/dev/null \
-            || apt-get install -y -qq chromium-browser 2>/dev/null \
-            || log_warn "Chromium install failed."
-    fi
+# The key the browser container requires on every request. Exported as well:
+# load_env already exported the old empty value, and Compose prefers the shell
+# environment over --env-file.
+ensure_camofox_key() {
+    [[ -n "${CAMOFOX_ACCESS_KEY:-}" ]] && return 0
+    CAMOFOX_ACCESS_KEY="$(openssl rand -hex 32)"
+    update_env_var "CAMOFOX_ACCESS_KEY" "$CAMOFOX_ACCESS_KEY"
+    export CAMOFOX_ACCESS_KEY
+    log_info "Generated CAMOFOX_ACCESS_KEY."
+}
 
-    browser=$(resolve_browser_path || true)
-    if [[ -n "$browser" ]]; then
-        log_info "Headless browser available: ${browser}"
+# Build the browser for the current pins if needed, then (re)start it. AI
+# boxes only. Returns 1 on failure, and callers carry on: a box whose build
+# failed keeps the browser it had.
+ensure_camofox() {
+    [[ "${HAS_GPU:-false}" == "true" ]] || return 0
+    local versions="${INSTALL_DIR}/config/versions.json" arch tag
+    case "$(uname -m)" in
+        x86_64) arch=x86_64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *) log_warn "No Camoufox build for $(uname -m); the agent has no web browser."; return 1 ;;
+    esac
+    tag="$(camofox_tag)"
+    ensure_camofox_key
+    if ! docker image inspect "${CAMOFOX_IMAGE}:${tag}" >/dev/null 2>&1; then
+        log_info "Building the agent's web browser (camofox ${tag}), a few minutes..."
+        # The Camoufox download is checked against the pinned sha256 inside the
+        # build; a mismatch fails it here.
+        if ! docker build --quiet \
+                --build-arg CAMOFOX_REPO="$(jq -r .camofox.browser.repo "$versions")" \
+                --build-arg CAMOFOX_COMMIT="$(jq -r .camofox.browser.commit "$versions")" \
+                --build-arg CAMOUFOX_VERSION="$(jq -r .camofox.camoufox.version "$versions")" \
+                --build-arg CAMOUFOX_RELEASE="$(jq -r .camofox.camoufox.release "$versions")" \
+                --build-arg CAMOUFOX_URL="$(jq -r ".camofox.camoufox.${arch}.url" "$versions")" \
+                --build-arg CAMOUFOX_SHA256="$(jq -r ".camofox.camoufox.${arch}.sha256" "$versions")" \
+                -t "${CAMOFOX_IMAGE}:${tag}" "${INSTALL_DIR}/config/camofox" >/dev/null; then
+            log_warn "Building the agent's web browser failed."
+            return 1
+        fi
+    fi
+    docker tag "${CAMOFOX_IMAGE}:${tag}" "${CAMOFOX_IMAGE}:current"
+    if ! ( cd "${INSTALL_DIR}" && docker compose --env-file "$ENV_FILE" $(get_compose_args) up -d camofox ); then
+        log_warn "The agent's web browser did not start."
+        return 1
+    fi
+    local old
+    for old in $(docker images "${CAMOFOX_IMAGE}" --format '{{.Tag}}'); do
+        [[ "$old" == "current" || "$old" == "$tag" ]] && continue
+        docker rmi "${CAMOFOX_IMAGE}:${old}" >/dev/null 2>&1 || true
+    done
+    log_info "The agent's web browser is running (camofox ${tag})."
+    retire_headless_browser
+}
+
+# Chrome or Chromium that HomeBrain installed on AI boxes for OpenClaw's own
+# browser tool, before the agent's browser moved into a container.
+retire_headless_browser() {
+    local pkg found=()
+    for pkg in google-chrome-stable chromium chromium-browser; do
+        dpkg -s "$pkg" >/dev/null 2>&1 && found+=("$pkg")
+    done
+    [[ ${#found[@]} -gt 0 ]] || return 0
+    wait_for_apt_lock
+    if apt-get purge -y -qq "${found[@]}" >/dev/null 2>&1; then
+        rm -f /etc/apt/sources.list.d/google-chrome.list
+        log_info "Removed ${found[*]}: the agent's browser runs in its own container now."
     else
-        log_warn "No headless browser available. The OpenClaw browser tool will not work."
+        log_warn "Could not remove ${found[*]}."
     fi
 }
 
@@ -957,6 +996,12 @@ get_compose_args() {
     local args="-f $COMPOSE_FILE"
     if [[ -f "$OVERRIDE_FILE" ]]; then
         args="$args -f $OVERRIDE_FILE"
+    fi
+    # The agent's browser is part of this box once its image exists. Here
+    # rather than with the tunnel profiles: every compose call goes through
+    # this, so no `up --remove-orphans` path can stop it.
+    if camofox_installed; then
+        args="$args --profile camofox"
     fi
     echo "$args"
 }
@@ -1365,11 +1410,6 @@ install_deps_enable_docker() {
     local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode avahi-daemon avahi-utils libnss-mdns"
     apt-get install -y -qq $common_pkgs
     install_needrestart_guard || true
-
-    # Headless browser for the OpenClaw browser tool (non-fatal)
-    if [[ "$HAS_GPU" == "true" ]]; then
-        install_headless_browser
-    fi
 
     # Docker setup
     if ! [ -f /etc/apt/keyrings/docker.gpg ]; then

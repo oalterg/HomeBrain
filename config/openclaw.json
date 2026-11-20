@@ -1,9 +1,4 @@
 {
-  "browser": {
-    "enabled": true,
-    "headless": true,
-    "noSandbox": true
-  },
   "models": {
     "mode": "merge",
     "providers": {
@@ -78,10 +73,7 @@
     "entries": {
       "main": {
         "tools": {
-          "profile": "full",
-          "alsoAllow": [
-            "browser"
-          ]
+          "profile": "full"
         }
       }
     }
@@ -162,7 +154,7 @@
   "plugins": {
     "entries": {
       "browser": {
-        "enabled": true
+        "enabled": false
       },
       "memory-core": {
         "config": {

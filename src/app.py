@@ -613,8 +613,8 @@ def journal_match(target):
     return ["-u", target]
 
 
-# The five MCP servers each append JSON lines to $LOG_DIR (mcp_common.audit).
-AUDIT_SERVERS = ("homeassistant", "nextcloud", "vault", "email", "homebrain")
+# The MCP servers each append JSON lines to $LOG_DIR (mcp_common.audit).
+AUDIT_SERVERS = ("homeassistant", "nextcloud", "vault", "email", "homebrain", "browser")
 
 
 def read_agent_audit(limit=200):

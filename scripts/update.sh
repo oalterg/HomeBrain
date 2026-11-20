@@ -276,6 +276,12 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         # today, but only when utilities.sh is present and executable.)
         export VAULTWARDEN_TAG="$new_vault_tag"
     fi
+    # The agent's web browser, before the OpenClaw refresh below: that refresh
+    # turns OpenClaw's Chrome-driven browser tool off only once the camofox
+    # image exists.
+    if [[ "${HAS_GPU:-false}" == "true" ]] && command -v openclaw >/dev/null 2>&1; then
+        ensure_camofox || log_warn "The agent keeps the browser it had until the next update."
+    fi
     # Resolve from INSTALL_DIR, not SCRIPT_DIR: after the self-reload re-exec'd
     # the new update.sh from /tmp/homebrain_self_update, $SCRIPT_DIR points there
     # — and only update.sh + common.sh are downloaded into that dir. A
@@ -520,6 +526,7 @@ cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
 # is not treated as an orphan by `up --remove-orphans`.
 profiles=$(get_runtime_profiles)
 ensure_searxng_secret
+if camofox_installed; then ensure_camofox_key; fi
 # Pull latest images defined in compose
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} pull --ignore-buildable || { log_error "Docker pull failed"; exit 1; }
 # Restart containers (recreates them if image changed or compose file changed)
