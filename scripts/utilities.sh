@@ -1736,7 +1736,16 @@ write_openclaw_gateway_dropin() {
         return 0
     }
 
-    cat > "$dropin" <<'DROPIN'
+    # Written beside it and swapped in only when different: rewriting the same
+    # content still moves the mtime, and systemd then flags the gateway as
+    # changed on disk ("run daemon-reload") after every update. The temp name
+    # does not end in .conf, so systemd never reads it.
+    local tmp
+    tmp=$(mktemp "${dropin}.XXXXXX") || {
+        log_warn "Could not write $dropin_dir — gateway drop-in not written."
+        return 0
+    }
+    cat > "$tmp" <<'DROPIN'
 # Managed by HomeBrain (scripts/utilities.sh:write_openclaw_gateway_dropin).
 # Edits are overwritten on every deploy.
 [Service]
@@ -1747,8 +1756,14 @@ write_openclaw_gateway_dropin() {
 Environment=OPENCLAW_TELEGRAM_SPOOLED_HANDLER_TIMEOUT_MS=14400000
 DROPIN
 
+    if cmp -s "$tmp" "$dropin"; then
+        rm -f "$tmp"
+    else
+        chmod 644 "$tmp"
+        mv -f "$tmp" "$dropin"
+        log_info "Wrote gateway drop-in: $dropin"
+    fi
     chown -R "${hb_user}:${hb_user}" "${hb_home}/.config/systemd" 2>/dev/null || true
-    log_info "Wrote gateway drop-in: $dropin"
 }
 
 # Absolute path of the drop-in above, so callers can diff it without
