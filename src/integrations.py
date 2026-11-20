@@ -1205,13 +1205,13 @@ def _apply_nextcloud_mail_in_background() -> None:
 
 
 def _refresh_email_mcp() -> None:
-    """Re-push the email MCP spec, then restart the daemon. OpenClaw copies a
-    spec's env into openclaw.json at `mcp set` time, so a restart alone keeps
-    serving the old values."""
+    """Re-push the email MCP spec. OpenClaw copies a spec's env into
+    openclaw.json at `mcp set` time, so a restart alone keeps serving the old
+    values; the running gateway restarts the server with the new spec on its
+    own."""
     spec = _spec_email()
     if spec and MCP_NAMES["email"] in _openclaw_wired_names():
         _openclaw_mcp_set(MCP_NAMES["email"], spec)
-    _openclaw_daemon_restart()
 
 
 def send_owner_test(owner: str, sender: dict) -> str:
@@ -1709,7 +1709,7 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                 "true" if enabled else "false"):
             return jsonify({"error": "could not update .env"}), 500
         # The email MCP server reads this env var at spawn time, and its
-        # spawn env is the copy in openclaw.json — re-push it, then restart.
+        # spawn env is the copy in openclaw.json: re-push it.
         _refresh_email_mcp()
         return jsonify({"status": "ok", "enabled": enabled})
 
