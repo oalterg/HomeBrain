@@ -2021,6 +2021,13 @@ patch_openclaw_config() {
         # thinking-capable so the Control UI and /reasoning actually render it.
         .models.providers.llamacpp.models[0].reasoning = true |
         .models.providers.llamacpp.models[0].compat.thinkingFormat = "deepseek" |
+        # OpenClaw 2026.10 offers a custom model the levels off..high only. A
+        # thinkingDefault above that is lowered on every turn, and the owner
+        # gets a "Thinking level clamped to high" message after each reply.
+        # The model really runs the catalog level (pinned server-side, see
+        # think_level), so declare that level supported.
+        (if $think == "" then del(.models.providers.llamacpp.models[0].compat.supportedReasoningEfforts)
+         else .models.providers.llamacpp.models[0].compat.supportedReasoningEfforts = (["low", "medium", "high"] + [$think] | unique) end) |
         .models.providers.llamacpp.models[0].input = (if $vision == "true" then ["text", "image"] else ["text"] end) |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
@@ -2464,6 +2471,7 @@ seed_openclaw_workspace() {
     local marker="## HomeBrain memory"
     local identity_marker="## HomeBrain identity"
     local setup_marker="## HomeBrain setup"
+    local alerts_marker="## HomeBrain alerts"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2519,6 +2527,15 @@ seed_openclaw_workspace() {
                 >> "${ws}/AGENTS.md"
             _own "${ws}/AGENTS.md"
             log_info "Appended HomeBrain setup block to OpenClaw AGENTS.md"
+        fi
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$alerts_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$alerts_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            awk "index(\$0, \"$alerts_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain alerts block to OpenClaw AGENTS.md"
         fi
     fi
 }
