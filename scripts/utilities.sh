@@ -2021,6 +2021,13 @@ patch_openclaw_config() {
         # thinking-capable so the Control UI and /reasoning actually render it.
         .models.providers.llamacpp.models[0].reasoning = true |
         .models.providers.llamacpp.models[0].compat.thinkingFormat = "deepseek" |
+        # OpenClaw 2026.10 offers a custom model the levels off..high only. A
+        # thinkingDefault above that is lowered on every turn, and the owner
+        # gets a "Thinking level clamped to high" message after each reply.
+        # The model really runs the catalog level (pinned server-side, see
+        # think_level), so declare that level supported.
+        (if $think == "" then del(.models.providers.llamacpp.models[0].compat.supportedReasoningEfforts)
+         else .models.providers.llamacpp.models[0].compat.supportedReasoningEfforts = (["low", "medium", "high"] + [$think] | unique) end) |
         .models.providers.llamacpp.models[0].input = (if $vision == "true" then ["text", "image"] else ["text"] end) |
         # OpenClaw 2026.5+ removed agents.defaults.llm. The new
         # models.providers.<id>.timeoutSeconds is a per-request HTTP
@@ -2340,6 +2347,17 @@ patch_openclaw_config() {
         # payload: the same 66 tools with cron removed answer 200, cron alone
         # answers 400.
         .tools.deny = ((.tools.deny // []) + ["cron"] | unique) |
+        # Tools a HomeBrain box can never use: they drive a paired desktop or
+        # phone node (computer, nodes, mobile_ui, file_*/dir_*, node_inference)
+        # or the look and widgets of the OpenClaw web UI (theme, dashboard),
+        # plus meeting capture (transcripts). Every schema rides along on every
+        # request: these 11 are ~8.5k of the 43k-token prompt on .69 (Glimmer
+        # template, 2026-11-19), none was ever called in its audit log, and a
+        # 30B model picks better from fewer tools. Additive like cron, so a
+        # hand-added deny survives updates.
+        .tools.deny = ((.tools.deny // []) + ["computer", "nodes", "mobile_ui",
+            "file_write", "file_fetch", "dir_list", "dir_fetch", "node_inference",
+            "theme", "dashboard", "transcripts"] | unique) |
         # Hand the model every tool schema up front, as before 2026.9. Unset
         # now means Tool Search: schemas wait behind tool_search /
         # tool_describe / tool_call, which costs a local model extra
@@ -2453,6 +2471,7 @@ seed_openclaw_workspace() {
     local marker="## HomeBrain memory"
     local identity_marker="## HomeBrain identity"
     local setup_marker="## HomeBrain setup"
+    local alerts_marker="## HomeBrain alerts"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2508,6 +2527,15 @@ seed_openclaw_workspace() {
                 >> "${ws}/AGENTS.md"
             _own "${ws}/AGENTS.md"
             log_info "Appended HomeBrain setup block to OpenClaw AGENTS.md"
+        fi
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$alerts_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$alerts_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            awk "index(\$0, \"$alerts_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain alerts block to OpenClaw AGENTS.md"
         fi
     fi
 }

@@ -8,7 +8,7 @@ Vault, Email, Self):
     derived from MASTER_PASSWORD or scoped tokens generated against the
     upstream service.
   * Wires the corresponding MCP server into ~/.openclaw/openclaw.json
-    via `openclaw mcp set <name> <json-spec>`. The reconciler is the only
+    via `openclaw config set mcp.servers.<name>` (see _openclaw_mcp_set). The reconciler is the only
     code that writes that file; manual edits are detected and warned but
     not silently overwritten.
   * Exposes `/api/integrations/<name>/<verb>` endpoints for the dashboard
@@ -26,9 +26,11 @@ import hmac
 import json
 import logging
 import os
+import pwd
 import secrets
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from email.utils import parseaddr
@@ -277,6 +279,46 @@ def _has_openclaw() -> bool:
 _OPENCLAW_CONFIG_PATH = os.path.join(OPENCLAW_DIR, "openclaw.json")
 
 
+def _live_openclaw_dir() -> str | None:
+    """The ~/.openclaw that `sudo -u homebrain openclaw` edits, whatever
+    HOMEBRAIN_HOME says. None where there is no homebrain user (CI)."""
+    try:
+        return os.path.join(pwd.getpwnam("homebrain").pw_dir, ".openclaw")
+    except KeyError:
+        return None
+
+
+def _openclaw_isolated() -> bool:
+    """True when HOMEBRAIN_HOME points away from the agent's real home.
+
+    The reconciler reads the account files from OPENCLAW_DIR, but the CLI
+    always edits the homebrain user's own config. An E2E run with
+    HOMEBRAIN_HOME on a scratch copy therefore found no accounts and unset
+    the LIVE servers: .69 lost Home Assistant, Nextcloud and email on
+    2026-11-17 and nothing put them back. With the two homes apart, the
+    OpenClaw side is left alone."""
+    live = _live_openclaw_dir()
+    return live is not None and os.path.realpath(OPENCLAW_DIR) != os.path.realpath(live)
+
+
+def _redact(text: str, spec: dict | None) -> str:
+    """Drop the spec's env values (tokens, Fernet keys) from CLI output that
+    may end up in an API response or a log."""
+    for v in ((spec or {}).get("env") or {}).values():
+        if isinstance(v, str) and len(v) >= 12:
+            text = text.replace(v, "***")
+    return text
+
+
+def _openclaw_cli(args: list[str], timeout: int) -> subprocess.CompletedProcess:
+    return subprocess.run(["sudo", "-u", "homebrain", "openclaw", *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _cli_tail(r: subprocess.CompletedProcess) -> str:
+    return ((r.stdout or "") + (r.stderr or "")).strip()[-400:]
+
+
 def _openclaw_wired_names() -> set[str]:
     """Read the set of currently-wired MCP server names from
     `~/.openclaw/openclaw.json`. Returns an empty set if the file is
@@ -291,34 +333,59 @@ def _openclaw_wired_names() -> set[str]:
     return set(servers.keys()) if isinstance(servers, dict) else set()
 
 
+# OpenClaw 2026.10 made `openclaw mcp set|unset` offline-only: with the
+# gateway running they refuse ("requires exclusive offline state
+# ownership") and change nothing, so every Connections change failed on a
+# live box. `config set|unset` hand the write to the running gateway, which
+# validates it and hot-reloads the MCP servers; with no gateway they write
+# the file directly. The spec goes in a batch file rather than argv, because
+# argv carries the integrations key into `ps` and sudo's journal line.
 def _openclaw_mcp_set(name: str, spec: dict) -> tuple[bool, str]:
+    if _openclaw_isolated():
+        return False, "skipped: HOMEBRAIN_HOME is not the agent's home"
     if not _has_openclaw():
         return False, "openclaw CLI not found"
+    batch = json.dumps([{"path": f"mcp.servers.{name}", "value": spec}])
+    fd, path = tempfile.mkstemp(prefix=".mcp-set-", suffix=".json", dir=OPENCLAW_DIR)
     try:
-        subprocess.check_call(
-            ["sudo", "-u", "homebrain", "openclaw", "mcp", "set",
-             name, json.dumps(spec)],
-            stderr=subprocess.STDOUT, timeout=15,
-        )
-        return True, ""
-    except subprocess.CalledProcessError as e:
-        return False, f"openclaw mcp set failed: {e}"
+        # The CLI runs as homebrain and must read the file; sudo's stdin
+        # pipe stays root's (EACCES on /dev/stdin), hence a file.
+        try:
+            st = os.stat(OPENCLAW_DIR)
+            os.fchown(fd, st.st_uid, st.st_gid)
+        except PermissionError:
+            pass
+        with os.fdopen(fd, "w") as f:
+            f.write(batch)
+        r = _openclaw_cli(["config", "set", "--batch-file", path], timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"openclaw config set failed: {_redact(str(e), spec)}"
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    if r.returncode != 0:
+        return False, f"openclaw config set failed: {_redact(_cli_tail(r), spec)}"
+    return True, ""
 
 
-def _openclaw_mcp_unset(name: str) -> None:
-    if not _has_openclaw():
-        return
+def _openclaw_mcp_unset(name: str) -> bool:
+    if _openclaw_isolated() or not _has_openclaw():
+        return False
     try:
-        subprocess.run(
-            ["sudo", "-u", "homebrain", "openclaw", "mcp", "unset", name],
-            capture_output=True, timeout=10,
-        )
-    except Exception:
-        pass
+        r = _openclaw_cli(["config", "unset", f"mcp.servers.{name}"], timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        logging.warning("openclaw config unset mcp.servers.%s failed: %s", name, e)
+        return False
+    if r.returncode == 0 or "Config path not found" in _cli_tail(r):
+        return True
+    logging.warning("openclaw config unset mcp.servers.%s failed: %s", name, _cli_tail(r))
+    return False
 
 
 def _openclaw_daemon_restart() -> None:
-    if not _has_openclaw():
+    if _openclaw_isolated() or not _has_openclaw():
         return
     try:
         subprocess.run(
@@ -492,7 +559,9 @@ def reconcile_all_mcp() -> dict:
             continue
         ok, msg = _openclaw_mcp_set(name, spec)
         results[key] = "wired" if ok else f"failed: {msg}"
-    _openclaw_daemon_restart()
+    # No gateway restart: `config set|unset` reach the running gateway, which
+    # stops the changed MCP server and starts it fresh on next use (measured
+    # on OpenClaw 2026.10.33). A restart only cost the owner a dropped chat.
     return results
 
 
@@ -506,7 +575,7 @@ def reconcile_one(key: str) -> dict:
     Use this from /api/integrations/<k>/add and /remove instead of
     `reconcile_all_mcp()` — running the full sweep on every account
     mutation can blow past gunicorn's worker timeout (5 × CLI calls @
-    1-5 s each + a daemon restart).
+    1-5 s each).
     """
     _ensure_dir(OPENCLAW_DIR)
     name = MCP_NAMES[key]
@@ -515,13 +584,11 @@ def reconcile_one(key: str) -> dict:
     if spec is None:
         if wired:
             _openclaw_mcp_unset(name)
-            _openclaw_daemon_restart()
             return {key: "unwired"}
         return {key: "not_configured"}
     if not wired:
         ok, msg = _openclaw_mcp_set(name, spec)
         if ok:
-            _openclaw_daemon_restart()
             return {key: "wired"}
         return {key: f"failed: {msg}"}
     return {key: "wired (no-op; file change visible to MCP on next call)"}
@@ -1695,6 +1762,11 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "unauthorised"}), 401
         return _proxy_view("system_status")
 
+    def self_health():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        return _proxy_view("health_status")
+
     def self_gpu():
         if not _check_bearer():
             return jsonify({"error": "unauthorised"}), 401
@@ -1980,6 +2052,8 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/self/system-status",
                      "self_system_status",
                      self_status, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/health",
+                     "self_health", self_health, methods=["GET"])
     app.add_url_rule("/api/integrations/self/gpu",
                      "self_gpu", self_gpu, methods=["GET"])
     app.add_url_rule("/api/integrations/self/version",

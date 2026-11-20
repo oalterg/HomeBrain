@@ -4678,14 +4678,9 @@ def vault_mcp_status():
     except (household.HouseholdError, OSError, subprocess.SubprocessError) as e:
         info["cli_error"] = str(e)
     if info["openclaw_available"]:
-        try:
-            out = subprocess.check_output(
-                ["sudo", "-u", "homebrain", "openclaw", "mcp", "show"],
-                stderr=subprocess.DEVNULL, timeout=5,
-            ).decode()
-            info["openclaw_wired"] = "homebrain-vault" in out
-        except Exception:
-            pass
+        # A file read, like the Connections card: the CLI is a multi-second
+        # Node start, so a 5 s timeout made this read as "not wired".
+        info["openclaw_wired"] = "homebrain-vault" in integrations._openclaw_wired_names()
     if info["bw_installed"]:
         bw_state = _vault_bw_status()
         info["bw_status"] = bw_state.get("status", "unknown")
@@ -4813,7 +4808,7 @@ def vault_mcp_unlock():
 @limiter.limit("5 per minute")
 def vault_mcp_wire_up():
     """Register the Vault MCP server with the local OpenClaw daemon via
-    `openclaw mcp set`. Idempotent — re-running just overwrites the entry.
+    integrations._openclaw_mcp_set. Idempotent — re-running just overwrites the entry.
     Restarts the OpenClaw daemon so it picks up the new MCP server."""
     if not session.get("authenticated"):
         return jsonify({"error": "unauthenticated"}), 401
@@ -4833,27 +4828,10 @@ def vault_mcp_wire_up():
             "NODE_TLS_REJECT_UNAUTHORIZED": "0",
         },
     }
-    try:
-        # `openclaw mcp set` runs as the homebrain user (config lives at
-        # /home/homebrain/.openclaw/openclaw.json owned by homebrain).
-        subprocess.check_call(
-            ["sudo", "-u", "homebrain", "openclaw", "mcp", "set",
-             "homebrain-vault", json.dumps(spec)],
-            stderr=subprocess.STDOUT, timeout=15,
-        )
-    except subprocess.CalledProcessError as e:
-        return jsonify({"error": f"openclaw mcp set failed: {e}"}), 500
-
-    # Restart the daemon so the new MCP server is picked up. Best-effort —
-    # if the daemon isn't running we just leave the config in place.
-    try:
-        subprocess.run(
-            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
-            capture_output=True, timeout=20,
-        )
-    except Exception:
-        pass
-
+    ok, msg = integrations._openclaw_mcp_set("homebrain-vault", spec)
+    if not ok:
+        return jsonify({"error": msg}), 500
+    # The gateway hot-reloads MCP servers; no restart.
     return jsonify({"status": "registered", "name": "homebrain-vault"})
 
 
@@ -4864,18 +4842,8 @@ def vault_mcp_unwire():
         return jsonify({"error": "unauthenticated"}), 401
     if shutil.which("openclaw") is None:
         return jsonify({"error": "openclaw CLI not found"}), 503
-    try:
-        subprocess.run(
-            ["sudo", "-u", "homebrain", "openclaw", "mcp", "unset",
-             "homebrain-vault"],
-            capture_output=True, timeout=10,
-        )
-        subprocess.run(
-            ["sudo", "-u", "homebrain", "openclaw", "daemon", "restart"],
-            capture_output=True, timeout=20,
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if not integrations._openclaw_mcp_unset("homebrain-vault"):
+        return jsonify({"error": "openclaw config unset failed; see the manager log"}), 500
     return jsonify({"status": "removed"})
 
 
@@ -5309,12 +5277,24 @@ def system_selftest():
     remote — so it is a button, not a poll. The rate limit is what keeps it
     from being used as one.
     """
-    local = get_local_version().get("ref", "")
+    installed = get_local_version()
+    channel = installed.get("channel", "")
     latest = ""
+    if channel == "beta":
+        # update.sh records the installed commit; files from before it don't
+        # have one, which check_version reports as unknown.
+        local = installed.get("commit") or "unknown"
+    else:
+        local = installed.get("ref", "")
     try:
-        r = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
-        if r.status_code == 200:
-            latest = r.json().get("tag_name", "")
+        if channel == "beta":
+            r = requests.get(f"{REPO_API_URL}/commits/main", timeout=5)
+            if r.status_code == 200:
+                latest = r.json().get("sha", "")
+        else:
+            r = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
+            if r.status_code == 200:
+                latest = r.json().get("tag_name", "")
     except Exception:
         pass  # check_version reports this as "could not tell", not as a pass
     return jsonify(selftest.run_all(
@@ -5322,6 +5302,7 @@ def system_selftest():
         storage_dir=backup_storage_dir(),
         local_version=local,
         latest_version=latest,
+        channel=channel,
     ))
 
 

@@ -324,6 +324,17 @@ else
     bad "Tool Search is off" "tools.toolSearch=$got"
 fi
 
+echo "== tools a HomeBrain box cannot use are denied =="
+# Paired-node and web-UI-only tools cost ~8.5k prompt tokens per request.
+for t in computer nodes mobile_ui file_write file_fetch dir_list dir_fetch \
+         node_inference theme dashboard transcripts cron; do
+    if jq -e --arg t "$t" '.tools.deny | index($t)' "$cfg" >/dev/null; then
+        ok "tools.deny has $t"
+    else
+        bad "tools.deny has $t" "deny=$(jq -c '.tools.deny' "$cfg")"
+    fi
+done
+
 echo "== isolated heartbeats stay cheap and on-box =="
 # lightContext skips AGENTS.md/SOUL.md/MEMORY.md on the hourly turn. Continuity
 # is the monitor scratch, which the runner appends either way. Combined with isolatedSession

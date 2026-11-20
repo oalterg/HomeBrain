@@ -98,7 +98,15 @@ def t_service_status(_args: dict) -> dict:
     code, body = _http("GET", "/api/integrations/self/system-status")
     if code != 200:
         return unavailable(f"dashboard unreachable: {code}")
-    return ok(**(body if isinstance(body, dict) else {"raw": body}))
+    out = body if isinstance(body, dict) else {"raw": body}
+    # The health checker messages the owner directly, outside the agent's
+    # conversation. This is where the agent can see what those alerts say.
+    hcode, health = _http("GET", "/api/integrations/self/health")
+    if hcode == 200 and isinstance(health, dict):
+        out["alerts"] = [{"level": c.get("level"), "summary": c.get("summary")}
+                         for c in health.get("checks") or []
+                         if c.get("level") not in (None, "ok")]
+    return ok(**out)
 
 
 def t_gpu_stats(_args: dict) -> dict:
@@ -417,7 +425,8 @@ def t_household_add(args: dict) -> dict:
 
 TOOLS = [
     {"name": "homebrain.service_status",
-     "description": "HomeBrain service health (Nextcloud, HA, Vault, tunnel).",
+     "description": "HomeBrain service health (Nextcloud, HA, Vault, tunnel), plus "
+                    "the alerts HomeBrain has sent the owner (backup drive, disks, updates).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.gpu_stats",
      "description": "Current GPU utilisation, VRAM use, and temperature.",
