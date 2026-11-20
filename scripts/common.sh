@@ -1013,6 +1013,40 @@ get_compose_args() {
     echo "$args"
 }
 
+# Every image bump leaves the old tag on disk, and nothing removed them: a
+# box had 10.8 GB of superseded Nextcloud, Home Assistant, MariaDB, Redis,
+# Caddy and Vaultwarden images after a few releases. Remove an image only if
+# its repository is one the compose file uses (any profile), its tag is not
+# the one the compose file names, and no container, running or stopped, uses
+# it. Images HomeBrain did not pull, such as a test container's, stay. The
+# camofox repository keeps its own tags (ensure_camofox): its versioned tag
+# is what tells an update the browser needs no rebuild.
+prune_superseded_images() {
+    local wanted ref id
+    wanted="$(cd "${INSTALL_DIR}" && docker compose --env-file "$ENV_FILE" $(get_compose_args) \
+        --profile '*' config --images 2>/dev/null)" || return 0
+    [[ -n "$wanted" ]] || return 0
+    local -A keep=() repos=() used=()
+    while read -r ref; do
+        [[ -n "$ref" ]] || continue
+        keep["$ref"]=1
+        repos["${ref%:*}"]=1
+    done <<<"$wanted"
+    unset 'repos[${CAMOFOX_IMAGE}]'
+    while read -r id; do
+        if [[ -n "$id" ]]; then used["$id"]=1; fi
+    done < <(docker ps -aq --no-trunc | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null)
+    while read -r ref id; do
+        [[ "$ref" == *"<none>"* ]] && continue
+        [[ -n "${repos[${ref%:*}]:-}" && -z "${keep[$ref]:-}" && -z "${used[$id]:-}" ]] || continue
+        if docker rmi "$ref" >/dev/null 2>&1; then
+            log_info "Removed superseded image ${ref}."
+        fi
+    done < <(docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.ID}}')
+    # Untagged leftovers. Never one a container still uses.
+    docker image prune -f >/dev/null 2>&1 || true
+}
+
 # Clear every trace of a partial first install — named volumes AND host bind
 # mounts, together. Called by deploy.sh only when .setup_complete is absent.
 #
