@@ -9,7 +9,14 @@ here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 for unit in homebrain-gpu-recover.service homebrain-gpu-wedged.service; do
     [[ "$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)" == activating ]] && exit 0
 done
-exec_path=$(systemctl show -p ExecStart --value llama-server | grep -o 'path=[^ ;]*' | head -1 | cut -d= -f2)
+exec_start=$(systemctl show -p ExecStart --value llama-server)
+# A GPU that is answering is not idle. Running alongside is safe, but there
+# is nothing to gain from it.
+port=$(grep -o -- '--port [0-9]*' <<<"$exec_start" | head -1 | cut -d' ' -f2)
+if curl -sf -m 2 "http://127.0.0.1:${port:-8001}/slots" 2>/dev/null | grep -q '"is_processing":true'; then
+    exit 0
+fi
+exec_path=$(grep -o 'path=[^ ;]*' <<<"$exec_start" | head -1 | cut -d= -f2)
 env_sh="$(dirname "$exec_path")/sycl-env.sh"
 # Only SYCL boxes have it, and only they need this.
 [[ -x "$env_sh" ]] || exit 0
