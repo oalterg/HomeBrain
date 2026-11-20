@@ -317,6 +317,26 @@ that toggle is on). HomeBrain does not SMTP the model's last token.
 - [ ] Unflag the agent mailbox: further mail does not wake.
 - [ ] `email_channel.json` is mode 0600 and in the backup archive.
 
+### Owner email (GPU only)
+
+`NOTIFY_EMAIL`, set in Settings → Owner email. System mail goes out through
+the agent mailbox (else the first connected account). Automated:
+`scripts/e2e/owner_email.py` (recipe in its docstring).
+
+- [ ] Save → test email arrives at the owner, From the agent mailbox.
+      The agent mailbox's own address is refused as owner email.
+- [ ] Nextcloud: `occ config:system:get mail_from_address` is the agent
+      mailbox; admin's email is the owner; `lost_password_link` is
+      `disabled`; Settings → Basic settings → Send email arrives (real
+      provider, so certificate checks stay on).
+- [ ] Proton agent mailbox: Nextcloud uses `proton-bridge:25`.
+- [ ] Agent: "email me the backup status" → `email.send_owner` delivers
+      with send_direct off. `email.list_accounts` names `owner_email`.
+- [ ] Owner replies to a health alert with Email prompts on → one
+      `email-in` turn, answered with `email.send_owner`.
+- [ ] Remove the sending account → Nextcloud moves to the next account,
+      or to `mail_smtpmode` `null` with no password left in config.
+
 ### Cross-cutting
 
 - [ ] All `*.token`, `vault.session`, `email_accounts.json` are mode 0600

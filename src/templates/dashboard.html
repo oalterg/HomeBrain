@@ -953,6 +953,22 @@
     <div id="settings" class="tab-content">
         <div class="stack">
 
+            {% if has_gpu %}
+            <section class="section" id="owner-email-card">
+                <h3>Owner email <span class="h-note">— where HomeBrain and Nextcloud reach you</span></h3>
+                <p class="lede">Health alerts, Nextcloud notifications and calendar invites, and anything
+                    your agent emails you go here. Password resets stay with your master password and
+                    recovery phrase.</p>
+                <div class="stat-item"><span>Sent from</span> <span id="owner-email-sender" class="skeleton sk-wide"></span></div>
+                <div class="inline-row mt">
+                    <input type="email" id="owner-email" class="grow" placeholder="you@example.com"
+                           onkeydown="if (event.key === 'Enter') { event.preventDefault(); ownerEmailSave(); }">
+                    <button class="btn-primary" onclick="ownerEmailSave()">Save &amp; send test</button>
+                </div>
+                <small id="owner-email-msg" class="hint"></small>
+            </section>
+            {% endif %}
+
             <section class="section" id="vault-config-card">
                 <h3>Vault</h3>
                 <p class="lede">Self-hosted password manager. Use the official

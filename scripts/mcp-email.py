@@ -17,6 +17,9 @@ Tier policy (see INTEGRATIONS_PLAN.md §3.4):
                 email.flag. Consent-gated. email.send_direct is OFF by
                 default (gated behind a settings-level toggle the dashboard
                 sets via env HOMEBRAIN_EMAIL_SEND_DIRECT=true).
+                email.send_owner is not behind that toggle: it can only
+                reach the owner address set in the dashboard
+                (HOMEBRAIN_OWNER_EMAIL), never an address the agent picks.
 
 If HOMEBRAIN_EMAIL_KEY is not set, accounts are assumed to be stored in
 plaintext (development mode). The dashboard always sets it on the live box.
@@ -28,7 +31,6 @@ import imaplib
 import json
 import os
 import re
-import smtplib
 import sys
 import time
 from email.header import decode_header, make_header
@@ -37,7 +39,8 @@ from email.utils import parsedate_to_datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_common import (  # noqa: E402
-    Consent, audit, consent_required, decrypt_secret, err, ok, serve, unavailable,
+    Consent, audit, consent_required, decrypt_secret, err, ok, serve, smtp_send,
+    system_sender, unavailable,
 )
 
 ACCOUNTS_FILE = os.environ.get(
@@ -46,6 +49,7 @@ ACCOUNTS_FILE = os.environ.get(
 )
 KEY_B64 = os.environ.get("HOMEBRAIN_EMAIL_KEY", "")
 SEND_DIRECT_ENABLED = os.environ.get("HOMEBRAIN_EMAIL_SEND_DIRECT", "false").lower() == "true"
+OWNER_EMAIL = os.environ.get("HOMEBRAIN_OWNER_EMAIL", "").strip()
 
 MAX_ATTACHMENT_BYTES = 20_000_000
 _SEND_FILE_HINT = (
@@ -131,8 +135,11 @@ def t_list_accounts(_args: dict) -> dict:
             "user": a.get("user"),
             "role": role,
         })
+    sender = system_sender(_accounts())
     return ok(accounts=accounts, total=len(accounts),
-              send_direct_enabled=SEND_DIRECT_ENABLED)
+              send_direct_enabled=SEND_DIRECT_ENABLED,
+              owner_email=OWNER_EMAIL or None,
+              send_owner_from=sender.get("user") if sender else None)
 
 
 _APP_PART_RE = re.compile(
@@ -713,20 +720,9 @@ def t_send_direct(args: dict) -> dict:
     msg["Subject"] = redeemed["subject"]
     msg.set_content(redeemed["body"])
 
-    smtp_host = acc.get("smtp_host", "")
-    smtp_port = int(acc.get("smtp_port", 587))
-    smtp_user = acc.get("user", "")
     smtp_pw = _decrypt(acc.get("smtp_password", "") or acc.get("imap_password", ""))
     try:
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15) as s:
-                s.login(smtp_user, smtp_pw)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as s:
-                s.starttls()
-                s.login(smtp_user, smtp_pw)
-                s.send_message(msg)
+        smtp_send(acc, smtp_pw, msg)
     except Exception as e:
         audit("email", "send.fail", account=redeemed["account"],
               to=redeemed["to"], error=str(e))
@@ -734,6 +730,46 @@ def t_send_direct(args: dict) -> dict:
     audit("email", "send", account=redeemed["account"],
           to=redeemed["to"], subject=redeemed["subject"])
     return ok(sent=True, account=redeemed["account"], to=redeemed["to"])
+
+
+def t_send_owner(args: dict) -> dict:
+    # No `to` and no `account`: the recipient is the dashboard's owner
+    # address and the sender is the system sender, so a prompt-injected turn
+    # cannot point this at anyone else. That is why it is not behind the
+    # send_direct toggle.
+    if not OWNER_EMAIL:
+        return unavailable("No owner email is set. The owner sets it in the "
+                           "HomeBrain dashboard: Settings → Owner email.")
+    subject = args.get("subject") or ""
+    body = args.get("body") or ""
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not subject:
+        return err("subject is required")
+    summary = f"Email: SEND to the owner ({OWNER_EMAIL}), subject '{subject}'"
+    if not confirm:
+        action_id = Consent.issue("email", summary,
+                                  {"subject": subject, "body": body}, chat_id)
+        return consent_required(action_id, summary)
+    redeemed = Consent.verify(confirm, "email", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    acc = system_sender(_accounts())
+    if not acc:
+        return unavailable("no connected email account can send")
+
+    msg = EmailMessage()
+    msg["From"] = acc.get("user", "")
+    msg["To"] = OWNER_EMAIL
+    msg["Subject"] = redeemed["subject"]
+    msg.set_content(redeemed["body"])
+    try:
+        smtp_send(acc, _decrypt(acc.get("smtp_password", "") or acc.get("imap_password", "")), msg)
+    except Exception as e:
+        audit("email", "send_owner.fail", account=acc.get("name"), error=str(e))
+        return err(f"send failed: {e}")
+    audit("email", "send_owner", account=acc.get("name"), subject=redeemed["subject"])
+    return ok(sent=True, account=acc.get("name"), to=OWNER_EMAIL)
 
 
 def t_archive(args: dict) -> dict:
@@ -825,9 +861,9 @@ def t_flag(args: dict) -> dict:
 TOOLS = [
     {"name": "email.list_accounts",
      "description": (
-         "Your mailboxes (role=agent_mailbox) and owner inboxes you may "
-         "operate (role=owner_inbox). Names, addresses, role — never "
-         "credentials."
+         "Your mailboxes (role=agent_mailbox), owner inboxes you may "
+         "operate (role=owner_inbox), and owner_email, which "
+         "email.send_owner reaches. Never credentials."
      ),
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "email.list_unread",
@@ -888,6 +924,16 @@ TOOLS = [
                                     "body": {"type": "string"},
                                     "confirmation_token": {"type": "string"}},
                      "required": ["to", "subject"]}},
+    {"name": "email.send_owner",
+     "description": (
+         "Email the owner now, from your mailbox, at the address set in the "
+         "dashboard. Works while send_direct is off. For mail the owner asked for."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {"subject": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "confirmation_token": {"type": "string"}},
+                     "required": ["subject"]}},
     {"name": "email.archive",
      "description": "Archive a message (mark seen + move to Archive folder).",
      "inputSchema": {"type": "object",
@@ -915,6 +961,7 @@ DISPATCH = {
     "email.attachment": t_attachment,
     "email.draft": t_draft,
     "email.send_direct": t_send_direct,
+    "email.send_owner": t_send_owner,
     "email.archive": t_archive,
     "email.flag": t_flag,
 }

@@ -707,6 +707,8 @@ async function connRefresh() {
         const d = await r.json();
         const items = (d.integrations || []).filter(x => x.key !== 'self');
         const selfItem = (d.integrations || []).find(x => x.key === 'self');
+        const emailItem = items.find(x => x.key === 'email');
+        if (emailItem) ownerEmailRender(emailItem);
 
         const summary = document.getElementById('sys-integrations-status');
         if (summary) {
@@ -800,6 +802,47 @@ async function connRefresh() {
         const cb = document.getElementById('em-send-direct');
         if (cb && sd) cb.checked = !!sd.send_direct_enabled;
     } catch (e) { console.warn('connRefresh failed', e); }
+}
+
+function ownerEmailRender(em) {
+    const input = document.getElementById('owner-email');
+    const senderEl = document.getElementById('owner-email-sender');
+    if (input && document.activeElement !== input && input.dataset.saved !== (em.owner_email || '')) {
+        input.value = em.owner_email || '';
+        input.dataset.saved = em.owner_email || '';
+    }
+    if (senderEl) {
+        senderEl.classList.remove('skeleton', 'sk-wide');
+        const s = em.system_sender;
+        senderEl.innerText = s
+            ? `${s.user}${s.agent_mailbox ? ' (agent mailbox)' : ''}`
+            : 'No connected email account. Add one under AI → Agent Integrations → Email.';
+    }
+}
+
+async function ownerEmailSave() {
+    const input = document.getElementById('owner-email');
+    const msg = document.getElementById('owner-email-msg');
+    const owner_email = input.value.trim();
+    msg.innerText = 'Saving…';
+    try {
+        const r = await fetch('/api/integrations/email/owner', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ owner_email }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { msg.innerText = d.error || 'Save failed'; return; }
+        input.dataset.saved = d.owner_email || '';
+        const parts = [];
+        if (!d.owner_email) parts.push('Cleared. Nextcloud no longer sends mail.');
+        else if (!d.sender) parts.push('Saved. Nothing can send until you connect an email account.');
+        else if (d.test_error) parts.push(`Saved, but the test email failed: ${d.test_error}`);
+        else parts.push(`Saved. Test email sent to ${d.owner_email} from ${d.sender}.`);
+        if (d.nextcloud_error) parts.push(`Nextcloud not updated: ${d.nextcloud_error}`);
+        msg.innerText = parts.join(' ');
+    } catch (e) { msg.innerText = 'Error: ' + e; }
+    connRefresh();
 }
 
 async function connReconcile() {
