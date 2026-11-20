@@ -716,10 +716,13 @@ harden_env_file() {
 # appending needs write on the *file*, while unlinking or replacing it needs
 # write on the *directory*. Keeping the directory root-owned means the agent can
 # add to its own audit trail but cannot remove it.
+#
+# Keep the list in step with AUDIT_SERVERS in src/app.py: a server missing here
+# has every audit write fail, and the Logs tab shows it as quiet.
 ensure_mcp_audit_logs() {
     local server f
     mkdir -p "$LOG_DIR" 2>/dev/null || return 0
-    for server in vault nextcloud homeassistant homebrain email; do
+    for server in vault nextcloud homeassistant homebrain email browser; do
         f="${LOG_DIR}/mcp-${server}-audit.log"
         [[ -e "$f" ]] || : > "$f" 2>/dev/null || continue
         chown "${HOMEBRAIN_USER}:${HOMEBRAIN_USER}" "$f" 2>/dev/null || true
