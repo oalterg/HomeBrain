@@ -1540,20 +1540,47 @@ After #289 and #290 on .69: kernel 7.0.0-43 → 7.0.0-44, GuC 70.58.0 → 70.83.
 (`/lib/firmware/updates`, from `versions.json` `arc_firmware`), Ubuntu's
 pending point releases including systemd 259.9, and Docker 29.10.0 with
 Compose 5.8.0. fwupd reports the B60's own firmware (GSC, OptionROM) as
-current. Prompt of 17,290 tokens, no prompt cache, two runs each:
+current. Prompt of 17,290 tokens, no prompt cache; the two 7.0.0-44 rows ran
+without `OverrideCsrAllocationSize` (below):
 
 | stack | prompt | generation |
 |---|---:|---:|
 | 7.0.0-43, GuC 70.58.0, compute-runtime 26.35 | 995 / 1,028 t/s | 19.59 t/s |
-| 7.0.0-44, GuC 70.83.0, compute-runtime 26.35 | 988 / 1,029 t/s | 19.57 t/s |
-| 7.0.0-44, GuC 70.83.0, compute-runtime 26.40 | 910 / 982 t/s | 19.51 t/s |
+| 7.0.0-44, GuC 70.83.0, compute-runtime 26.35 | 1,029 to 1,030 t/s (4 runs) | 19.58 t/s |
+| 7.0.0-44, GuC 70.83.0, compute-runtime 26.40 | 982 to 983 t/s (4 runs) | 19.50 t/s |
 
-**Compute-runtime stays on 26.35.** With 26.40.40196.8 (IGC 2.42.6) the first
-llama-server start page-faulted the compute engine 54 s into loading the
-model (`Fault response: Unsuccessful -ENOENT`, engine reset,
-`UR_RESULT_ERROR_DEVICE_LOST`, abort). systemd's restart then loaded it, but
-prompt processing was 2 to 8 % slower. Four starts on 26.35 under GuC 70.83.0
-were clean.
+**Compute-runtime stays on 26.35:** 26.40.40196.8 (IGC 2.42.6) is 4.7 % slower
+at prompt processing, every run. It is stable: the first 26.40 start crashed,
+but that was the fault below, not 26.40.
+
+### The keep-alive crashed llama-server: `OverrideCsrAllocationSize`
+
+The SYCL env carried NEO's `OverrideCsrAllocationSize=1048576` (with
+`NEOReadDebugKeys=1`) since the SYCL path shipped on 2026-09-26, with no
+recorded reason. It shrinks each context's save area, where the GPU stores
+a context's state when the GuC preempts it. With llama-server alone on the
+compute engine nothing ever preempted it. The keep-alive is a second
+context on that engine, and whenever it ran while llama-server was busy,
+llama-server's context page-faulted (`Engine memory CAT error`, `Fault
+response: Unsuccessful -ENOENT` at addresses next to each other), its engine
+was reset, and llama-server aborted with `UR_RESULT_ERROR_DEVICE_LOST`.
+
+| llama-server env | keep-alive runs overlapping llama-server's work | llama-server aborts |
+|---|---:|---:|
+| with the override | 3 (one model load, one prompt, one load after the restart) | 3 |
+| without it | 52 (40 during a model load and two prompts, 12 during two prompts) | 0 |
+
+Same speed without it (1,028 to 1,030 t/s prompt, 19.58 t/s generation),
+and llama-server's VRAM is unchanged at 22.6 GiB of 23.9. The timer's own
+runs from 18:23 to 18:52 all fell while llama-server was idle, so no agent
+reply was hit, only the tests. The env no longer sets either variable,
+and the keep-alive also skips a run while `/slots` reports a reply in
+progress, because then the GPU is not idle anyway.
+
+Open question: the first GuC crashes on record (2026-09-28 and 09-29) came
+two days after the override arrived. Whether the two are related is not
+known. The crash count per day of uptime with the override gone and the
+keep-alive running will tell, but not which of the two helped.
 
 After both reboots the boot-time ASPM unit gave the Arc's links L1 before
 llama-server started, and the card idled at 8 W with the package in G8, the

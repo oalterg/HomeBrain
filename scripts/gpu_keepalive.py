@@ -11,6 +11,12 @@ This fills and copies a small device buffer on the compute engine, the one
 llama-server uses, through the same Level Zero driver. It never talks to
 llama-server, so the agent's prompt cache stays where it is.
 
+This puts a second context on the compute engine, so the GuC preempts
+llama-server's to run it. llama-server must not run with NEO's
+OverrideCsrAllocationSize: with a 1 MiB context save area, that preemption
+page-faulted llama-server's context and aborted it on .69, on every overlap,
+during a model load and during a reply alike.
+
 Run it inside llama-server's SYCL environment (sycl-env.sh), so the loader
 picks the same driver. --verbose prints how much compute-engine time the
 work took, which proves the GPU ran it.

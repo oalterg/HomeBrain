@@ -35,8 +35,6 @@
           "https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5/intel-igc-opencl-2_2.41.5+22716_amd64.deb"
         ],
         "env": {
-          "OverrideCsrAllocationSize": "1048576",
-          "NEOReadDebugKeys": "1",
           "ONEAPI_DEVICE_SELECTOR": "level_zero:0",
           "SYCL_CACHE_PERSISTENT": "0",
           "UR_L0_USE_COPY_ENGINE": "0",
