@@ -116,8 +116,8 @@ function buildMemberSheet({ name, password, date, files, vault, home, needsMeshA
     if (needsMeshApp) lines.push(
         '',
         'Away from home these addresses need the Tailscale app on your phone,',
-        'joined to the owner\'s network and switched on. Ask the owner for an',
-        'invitation.',
+        'switched on. Sign in to it with your own account, then open the share',
+        'link the owner sends you and accept.',
     );
     lines.push(
         '',
@@ -149,8 +149,8 @@ function buildPhoneSheet({ name, urls, isPublic, lockOn, date }) {
     const join = [
         '1. Install the Tailscale app from the App Store or Play Store.',
         '2. Sign in. The owner uses the account this box was connected with.',
-        '   Anyone else first needs an invitation from the owner: Tailscale',
-        '   admin console, Users, Invite.',
+        '   Anyone else signs in with their own Google, Apple or Microsoft',
+        '   account, then opens the share link the owner sends and accepts.',
     ];
     if (lockOn) join.push(
         '3. The owner approves the phone: Dashboard, Connectivity, Remote',
