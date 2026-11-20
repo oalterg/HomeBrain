@@ -1533,3 +1533,28 @@ links L1 only: no L0s, no L1 substates and no clock power management, which
 need CLKREQ# that a riser may not carry. NVMe, the Realtek NIC and the chipset
 keep what the BIOS gave them. No AER errors followed, and a 200-token
 generation ran at 21.4 tokens/s.
+
+### Driver updates the same evening
+
+After #289 and #290 on .69: kernel 7.0.0-43 → 7.0.0-44, GuC 70.58.0 → 70.83.0
+(`/lib/firmware/updates`, from `versions.json` `arc_firmware`), Ubuntu's
+pending point releases including systemd 259.9, and Docker 29.10.0 with
+Compose 5.8.0. fwupd reports the B60's own firmware (GSC, OptionROM) as
+current. Prompt of 17,290 tokens, no prompt cache, two runs each:
+
+| stack | prompt | generation |
+|---|---:|---:|
+| 7.0.0-43, GuC 70.58.0, compute-runtime 26.35 | 995 / 1,028 t/s | 19.59 t/s |
+| 7.0.0-44, GuC 70.83.0, compute-runtime 26.35 | 988 / 1,029 t/s | 19.57 t/s |
+| 7.0.0-44, GuC 70.83.0, compute-runtime 26.40 | 910 / 982 t/s | 19.51 t/s |
+
+**Compute-runtime stays on 26.35.** With 26.40.40196.8 (IGC 2.42.6) the first
+llama-server start page-faulted the compute engine 54 s into loading the
+model (`Fault response: Unsuccessful -ENOENT`, engine reset,
+`UR_RESULT_ERROR_DEVICE_LOST`, abort). systemd's restart then loaded it, but
+prompt processing was 2 to 8 % slower. Four starts on 26.35 under GuC 70.83.0
+were clean.
+
+After both reboots the boot-time ASPM unit gave the Arc's links L1 before
+llama-server started, and the card idled at 8 W with the package in G8, the
+fan at 37 rpm and the chip at 38 °C.
