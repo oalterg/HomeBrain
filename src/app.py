@@ -4831,9 +4831,7 @@ def vault_mcp_wire_up():
     ok, msg = integrations._openclaw_mcp_set("homebrain-vault", spec)
     if not ok:
         return jsonify({"error": msg}), 500
-    # Best-effort; the gateway also hot-reloads MCP servers on its own.
-    integrations._openclaw_daemon_restart()
-
+    # The gateway hot-reloads MCP servers; no restart.
     return jsonify({"status": "registered", "name": "homebrain-vault"})
 
 
@@ -4846,7 +4844,6 @@ def vault_mcp_unwire():
         return jsonify({"error": "openclaw CLI not found"}), 503
     if not integrations._openclaw_mcp_unset("homebrain-vault"):
         return jsonify({"error": "openclaw config unset failed; see the manager log"}), 500
-    integrations._openclaw_daemon_restart()
     return jsonify({"status": "removed"})
 
 
@@ -5280,12 +5277,24 @@ def system_selftest():
     remote — so it is a button, not a poll. The rate limit is what keeps it
     from being used as one.
     """
-    local = get_local_version().get("ref", "")
+    installed = get_local_version()
+    channel = installed.get("channel", "")
     latest = ""
+    if channel == "beta":
+        # update.sh records the installed commit; files from before it don't
+        # have one, which check_version reports as unknown.
+        local = installed.get("commit") or "unknown"
+    else:
+        local = installed.get("ref", "")
     try:
-        r = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
-        if r.status_code == 200:
-            latest = r.json().get("tag_name", "")
+        if channel == "beta":
+            r = requests.get(f"{REPO_API_URL}/commits/main", timeout=5)
+            if r.status_code == 200:
+                latest = r.json().get("sha", "")
+        else:
+            r = requests.get(f"{REPO_API_URL}/releases/latest", timeout=5)
+            if r.status_code == 200:
+                latest = r.json().get("tag_name", "")
     except Exception:
         pass  # check_version reports this as "could not tell", not as a pass
     return jsonify(selftest.run_all(
@@ -5293,6 +5302,7 @@ def system_selftest():
         storage_dir=backup_storage_dir(),
         local_version=local,
         latest_version=latest,
+        channel=channel,
     ))
 
 

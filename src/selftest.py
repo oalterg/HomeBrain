@@ -492,7 +492,7 @@ def check_remote_access(env):
     return result("Remote access", OK, f"https://{domain} answers (HTTP {code}).")
 
 
-def check_version(local_version, latest_version):
+def check_version(local_version, latest_version, channel="stable"):
     # get_local_version() returns the literal string "unknown" for a box that
     # is not on a released ref — a dev checkout, or one built from a branch.
     # Reporting that as "you are behind" is the same lie in the other
@@ -502,6 +502,14 @@ def check_version(local_version, latest_version):
                       "This box is not running a tagged release.")
     if not latest_version:
         return result("Version", SKIP, "Could not reach GitHub to check for updates.")
+    # A beta box runs main, so it is compared by commit with main's head,
+    # not by ref with the latest tag ("main" never equals a tag).
+    if channel == "beta":
+        if local_version[:7] == latest_version[:7]:
+            return result("Version", OK, f"Running the latest beta ({local_version[:7]}).")
+        return result("Version", FAIL,
+                      f"Running beta {local_version[:7]}; {latest_version[:7]} is available.",
+                      "Update from the dashboard.")
     if local_version != latest_version:
         return result("Version", FAIL, f"Running {local_version}; {latest_version} is available.",
                       "Update from the dashboard.")
@@ -523,7 +531,7 @@ def summarise(rows):
 
 
 def run_all(env, *, now=None, storage_dir="/mnt/backup",
-            local_version="", latest_version=""):
+            local_version="", latest_version="", channel="stable"):
     now = now if now is not None else time.time()
     rows = [
         check_dashboard_password(env),
@@ -535,6 +543,6 @@ def run_all(env, *, now=None, storage_dir="/mnt/backup",
         check_offsite(env, now),
         check_instance_secrets(env),
         check_remote_access(env),
-        check_version(local_version, latest_version),
+        check_version(local_version, latest_version, channel),
     ]
     return {"checks": rows, "summary": summarise(rows), "ran_at": int(now)}

@@ -558,7 +558,9 @@ def reconcile_all_mcp() -> dict:
             continue
         ok, msg = _openclaw_mcp_set(name, spec)
         results[key] = "wired" if ok else f"failed: {msg}"
-    _openclaw_daemon_restart()
+    # No gateway restart: `config set|unset` reach the running gateway, which
+    # stops the changed MCP server and starts it fresh on next use (measured
+    # on OpenClaw 2026.10.33). A restart only cost the owner a dropped chat.
     return results
 
 
@@ -572,7 +574,7 @@ def reconcile_one(key: str) -> dict:
     Use this from /api/integrations/<k>/add and /remove instead of
     `reconcile_all_mcp()` — running the full sweep on every account
     mutation can blow past gunicorn's worker timeout (5 × CLI calls @
-    1-5 s each + a daemon restart).
+    1-5 s each).
     """
     _ensure_dir(OPENCLAW_DIR)
     name = MCP_NAMES[key]
@@ -581,13 +583,11 @@ def reconcile_one(key: str) -> dict:
     if spec is None:
         if wired:
             _openclaw_mcp_unset(name)
-            _openclaw_daemon_restart()
             return {key: "unwired"}
         return {key: "not_configured"}
     if not wired:
         ok, msg = _openclaw_mcp_set(name, spec)
         if ok:
-            _openclaw_daemon_restart()
             return {key: "wired"}
         return {key: f"failed: {msg}"}
     return {key: "wired (no-op; file change visible to MCP on next call)"}
@@ -1580,6 +1580,11 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
             return jsonify({"error": "unauthorised"}), 401
         return _proxy_view("system_status")
 
+    def self_health():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        return _proxy_view("health_status")
+
     def self_gpu():
         if not _check_bearer():
             return jsonify({"error": "unauthorised"}), 401
@@ -1861,6 +1866,8 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
     app.add_url_rule("/api/integrations/self/system-status",
                      "self_system_status",
                      self_status, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/health",
+                     "self_health", self_health, methods=["GET"])
     app.add_url_rule("/api/integrations/self/gpu",
                      "self_gpu", self_gpu, methods=["GET"])
     app.add_url_rule("/api/integrations/self/version",

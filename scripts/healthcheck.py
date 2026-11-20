@@ -208,8 +208,18 @@ def check_backup(env, now):
     # so "not mounted" is normal and disk_root covers the space check.
     internal = env.get("BACKUP_INTERNAL", "false").lower() == "true"
     if not internal and not os.path.ismount(BACKUP_DIR):
-        return {"id": "backup", "level": "crit",
-                "summary": "Backup drive is not connected"}
+        # A USB drive that drops off and reconnects comes back unmounted: the
+        # fstab entry only mounts at boot. Mount it again if it is there.
+        # `mount` exits 0 on a nofail entry whose device is gone, so ask
+        # ismount again instead of trusting the exit code.
+        try:
+            subprocess.run(["mount", BACKUP_DIR], capture_output=True, timeout=60)
+        except Exception:
+            pass
+        if not os.path.ismount(BACKUP_DIR):
+            return {"id": "backup", "level": "crit",
+                    "summary": "Backup drive is not connected"}
+        log(f"[INFO] backup drive was not mounted; mounted {BACKUP_DIR} again")
 
     # Pre-update system snapshots don't contain the user's files — they must
     # not satisfy "your data is backed up".
