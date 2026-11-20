@@ -12,6 +12,11 @@
 # while /health still says ok. Killing it then wedges the device. On the Arc
 # Pro B60 the GuC firmware then fails authentication on every rebind, and
 # only a reboot brings the GPU back.
+#
+# The GuC firmware can also crash on the first job after a long idle, fail to
+# reload and leave the device wedged. xe then sends a WEDGED uevent, and
+# 99-homebrain-gpu-wedged.rules runs this with --wedged right away. Waiting
+# for llama-server to spend its start limit first cost 2.5 minutes of chat.
 
 STAMP=/var/lib/homebrain/gpu-recover.stamp
 PENDING=/var/lib/homebrain/gpu-recover.pci
@@ -25,6 +30,8 @@ COOLDOWN=600
 STUCK_GRACE=50
 # Never reboot-loop the whole box over one bad card.
 REBOOT_COOLDOWN=21600
+LOCK=/run/lock/homebrain-gpu-recover.lock
+ASPM_SCRIPT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/gpu_aspm.sh"
 
 say() { echo "$(date -Is) $*"; }
 
@@ -117,6 +124,22 @@ confirm_stuck() {
 xe_wedged_since() {
     journalctl -k -b --since "@$1" -o cat --no-pager 2>/dev/null \
         | grep -q 'as wedged'
+}
+
+# Epoch of the last recovery this script started, 0 when there was none.
+last_recovery() {
+    local then
+    then=$(cat "$STAMP" 2>/dev/null || echo 0)
+    case "$then" in
+        ''|*[!0-9]*) echo 0 ;;
+        *) echo "$then" ;;
+    esac
+}
+
+# A rebind probes the card again. Put its links back into ASPM L1.
+apply_aspm() {
+    [[ -f "$ASPM_SCRIPT" ]] || return 0
+    SYSFS="$SYSFS" bash "$ASPM_SCRIPT" || say "could not re-apply ASPM after the rebind"
 }
 
 reboot_box() {
@@ -235,12 +258,41 @@ start_llama() {
 main() {
     command -v systemctl >/dev/null 2>&1 || return 0
     systemctl cat llama-server.service >/dev/null 2>&1 || return 0
+    # The wedge event and the timer can fire together. One run at a time.
+    exec 9>"$LOCK"
+    flock -w 280 9 || { say "another GPU recovery is still running"; return 0; }
 
-    local state result media=0 cooldown=0 nodevice=0 unresponsive=0 pending=0 action text invocation since
+    local state result media=0 cooldown=0 nodevice=0 unresponsive=0 pending=0 action text invocation since i
     state=$(systemctl show -p ActiveState --value llama-server)
     result=$(systemctl show -p Result --value llama-server)
     media_busy && media=1
     cooldown_active && cooldown=1
+
+    # xe declared the Arc wedged after the last recovery. Starting
+    # llama-server on it again only spends its start limit, so rebind now. The
+    # uevent can beat the kernel message into the journal, hence the retries
+    # when the event is what started this run.
+    if [[ "$media" == 0 && "$cooldown" == 0 ]]; then
+        for i in 1 2 3 4 5; do
+            if xe_wedged_since "$(last_recovery)"; then
+                mark_cooldown
+                rm -f "$STUCK"
+                say "xe declared the Arc wedged; rebinding now"
+                systemctl stop llama-server || return 1
+                if ! rebind_xe; then
+                    say "rebind failed; trying once more in 20s"
+                    sleep 20
+                    rebind_xe || { say "xe rebind failed"; reboot_box; return 1; }
+                fi
+                apply_aspm
+                start_llama
+                return 0
+            fi
+            [[ "${1:-}" == --wedged ]] || break
+            sleep 1
+        done
+        [[ "${1:-}" != --wedged ]] || say "wedge event, but xe has not declared the Arc wedged; nothing to do"
+    fi
     if [[ "$state" == active && "$media" == 0 && "$cooldown" == 0 ]]; then
         llama_unresponsive && unresponsive=1
         confirm_stuck "$unresponsive" || unresponsive=0
@@ -263,6 +315,7 @@ main() {
             say "llama-server failed and SYCL sees no device; rebinding the Arc"
             systemctl stop llama-server || return 1
             rebind_xe || { say "xe rebind failed"; reboot_box; return 1; }
+            apply_aspm
             start_llama
             ;;
         restart)
@@ -276,6 +329,7 @@ main() {
             if xe_wedged_since "$since"; then
                 say "xe declared the Arc wedged; rebinding"
                 rebind_xe || { say "xe rebind failed"; reboot_box; return 1; }
+                apply_aspm
             fi
             start_llama
             ;;
@@ -283,5 +337,5 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    main
+    main "$@"
 fi

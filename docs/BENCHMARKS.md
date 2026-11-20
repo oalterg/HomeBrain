@@ -1464,3 +1464,72 @@ profile, `patch_openclaw_config` lists Bolt with image input. An OpenClaw
 image-tool turn read the test picture correctly in 199 s from a 50K-token
 context. With the projector on the CPU, the first image after nine idle
 minutes answered in 45 s, with no GuC reset, and text decode stayed at 17.6 t/s.
+
+## 2026-11-20 — Arc Pro B60: the idle crash came back, and the card idled at 33 W
+
+Same card and model as 2026-09-30, kernel 7.0.0-43, GuC 70.58.0,
+compute-runtime 26.35, llama.cpp b12359, copies on the compute queue. The box
+was off from 2026-09-30 to 11-13, so the copy-queue workaround above had a few
+hours of testing, not days. From 11-14 to 11-20 the GuC crashed 8 times, the
+same sequence as before. 4 resets succeeded and the reply went on; 4 failed
+`firmware signature verification`, wedged the card, and cost about 2.5 minutes
+of chat each.
+
+Every crash was the first llama-server job after the GPU had been idle, almost
+always the hourly heartbeat. Idle time before each of 1,012 jobs (11-13 to
+11-20) against the crashes on that job:
+
+| idle before the job | jobs | crashes |
+|---|---:|---:|
+| under 1 min | 877 | 0 |
+| 1 to 5 min | 41 | 0 |
+| 5 to 20 min | 26 | 1 |
+| 20 to 45 min | 13 | 1 |
+| over 45 min | 55 | 6 |
+
+Three changes, each in its own place:
+
+- **Keep-alive** (`gpu_keepalive.py`, `homebrain-gpu-keepalive.timer`): every
+  three minutes, fill and copy 64 MiB eight times on the compute engine
+  through llama-server's own Level Zero driver (`sycl-env.sh`). The GPU then
+  never idles past the range where no job ever crashed. It does not go
+  through llama-server: a different prompt in its only slot pushes the agent's
+  conversation into the RAM prompt cache, and when that entry is evicted the
+  next reply re-reads 40K to 68K tokens (40 to 80 s, seen several times on
+  11-20). One run takes about 1.1 s of wall time and 96 MB of RAM; the driver
+  counted about 54K compute-engine cycles for it.
+- **Wedge fast path** (`99-homebrain-gpu-wedged.rules`, `recover_gpu.sh
+  --wedged`): xe sends a `WEDGED` uevent with `device wedged, needs recovery`.
+  The rebind used to wait until llama-server had failed five starts and the
+  next timer run; now it starts on the event.
+- **ASPM L1** (`gpu_aspm.sh`, `homebrain-gpu-aspm.service`): see below.
+
+Whether the keep-alive stops the crash is not proven yet: it changes what the
+GPU sees, not what llama-server's own queue sees. With no keep-alive, about
+one hourly heartbeat in nine crashed. Count `GuC Crash dump` lines per day of
+uptime to tell (`journalctl _TRANSPORT=kernel`, not `journalctl -k`, which
+only reads the current boot).
+
+### Idle power: ASPM
+
+With the GPU fully idle (`gt-c6`, no display connected) the card drew 33 W
+and sat at 70 °C, the memory at 78 °C, and the blower at 2,070 rpm. Every link
+from the root port to the GPU had ASPM disabled: the B550 BIOS leaves it off
+and Linux keeps the BIOS setting under the `default` policy. The xe package
+residency counters (`/sys/kernel/debug/dri/0/dgfx_pkg_residencies`) showed
+the package in G2 all the time. G8 only ever counted while the link was in
+L1. Intel: ASPM L1 is required for every package state deeper than G2.
+
+| | card power | package | chip | memory | fan |
+|---|---:|---|---:|---:|---:|
+| ASPM off | 33 W | G2 | 70 °C | 78 °C | 2,070 rpm |
+| L1 on the Arc's links, after 20 s | 7 W | G8 | 70 °C | 78 °C | 1,527 rpm |
+| the same, 2 minutes later | | G8 | 45 °C | 46 °C | 541 rpm |
+
+The kernel only enables ASPM under a policy other than `default`, and the
+policy covers every link. `gpu_aspm.sh` therefore locks every control that is
+off on any other link before it switches to `powersave`, and gives the Arc's
+links L1 only: no L0s, no L1 substates and no clock power management, which
+need CLKREQ# that a riser may not carry. NVMe, the Realtek NIC and the chipset
+keep what the BIOS gave them. No AER errors followed, and a 200-token
+generation ran at 21.4 tokens/s.
