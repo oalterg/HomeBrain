@@ -3252,6 +3252,12 @@ def mesh_status():
     return jsonify(st)
 
 
+@app.route("/api/mesh/household")
+def mesh_household():
+    res = mesh.household()
+    return jsonify(res), (409 if res.get("error") else 200)
+
+
 @app.route("/api/mesh/connect", methods=["POST"])
 @limiter.limit("6 per minute")
 def mesh_connect():

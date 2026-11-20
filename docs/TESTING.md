@@ -633,6 +633,11 @@ release's source, and by nothing else. Treat each as unproven until ticked.
       `ha-homebrain.local` still answer on the LAN, including after a reboot.
 - [ ] Switching to Pangolin or Cloudflare removes the old Serve/Funnel listeners;
       chat's allowed origins match the new dashboard address after redeploy.
+- [ ] Household: with the default rule the card's access rule says **Not
+      limited**. Paste the rule, **Check access**: **Limited**. Share the box with a second account; from that phone on
+      mobile data 9443, 8443 and 10000 open, 4443 and SSH do not, the owner's
+      laptop does not answer, and the card lists the person as **Three apps
+      only**. Revoke: the phone loses the box.
 
 ## Nuclear Reset (Destructive — Run Last on Test Hardware)
 
