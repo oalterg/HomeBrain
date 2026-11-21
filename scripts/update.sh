@@ -298,9 +298,9 @@ if command -v jq >/dev/null 2>&1 && [[ -f "$INSTALL_DIR/config/versions.json" ]]
         llama_want="$new_llama_tag"
         llama_src=""
         if [[ -n "${HB_PLATFORM_TAG:-}" ]]; then
-            llama_src=$(jq -r --arg t "$HB_PLATFORM_TAG" \
-                '.llama_cpp.source_build[$t].git_ref // empty' \
-                "$INSTALL_DIR/config/versions.json" 2>/dev/null || echo "")
+            # git_ref plus a hash of any patches, as install_llamacpp records it
+            llama_src=$(llama_source_build_id "$INSTALL_DIR/config/versions.json" \
+                "$HB_PLATFORM_TAG") || die "Could not resolve the llama.cpp source build; check the pinned patches."
             [[ -n "$llama_src" ]] && llama_want="$llama_src"
         fi
         llama_have=""

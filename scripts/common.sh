@@ -147,6 +147,30 @@ pin_lags() {   # pin_lags <pinned> <installed>
     [[ -n "$1" && -n "$2" && "$1" != "$2" ]]
 }
 
+# What a llama.cpp source build records as its version: the recipe's git_ref,
+# then "+p" and a hash of the patches it applies on top, if any. Editing or
+# adding a patch then rebuilds the same way moving the pin does. Prints nothing
+# when the platform has no source recipe with a git_ref; fails when a listed
+# patch is missing. Patch paths are relative to the directory above config/.
+llama_source_build_id() {   # llama_source_build_id <versions.json> <platform_tag>
+    local versions_file="$1" tag="$2" root ref p
+    local -a patches=()
+    ref=$(jq -r --arg t "$tag" '.llama_cpp.source_build[$t].git_ref // empty' "$versions_file" 2>/dev/null) || return 1
+    [[ -n "$ref" ]] || return 0
+    root="$(dirname "$versions_file")/.."
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && patches+=("$p")
+    done < <(jq -r --arg t "$tag" '.llama_cpp.source_build[$t].patches // [] | .[]' "$versions_file")
+    if (( ${#patches[@]} == 0 )); then
+        echo "$ref"
+        return 0
+    fi
+    for p in "${patches[@]}"; do
+        [[ -f "$root/$p" ]] || { echo "llama.cpp patch not found: $p" >&2; return 1; }
+    done
+    echo "${ref}+p$(for p in "${patches[@]}"; do cat "$root/$p"; done | sha256sum | cut -c1-12)"
+}
+
 # The installed OpenClaw version: the install record, else the CLI's own report
 # ("OpenClaw 2026.8.33 (f773aa0)"). Empty when neither knows.
 installed_openclaw_version() {   # installed_openclaw_version <installed_versions.json>

@@ -1,0 +1,66 @@
+sycl: strided SCALE for views
+
+HomeBrain patch on ggml-sycl. Applies on top of 0002.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+Inkling 2's SITU activation scales non-contiguous views of the fused gate/up
+output. ggml-sycl only took a contiguous SCALE, so each one became a CPU split
+(96 per graph). An element-wise kernel over the view strides keeps them on the
+GPU: measured on an Arc Pro B60 with Inkling-2-Mini Q4_K_XL, graph splits went
+194 -> 2, decode 17.1 -> 20.9 t/s, prefill 156 -> 192 t/s.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index b4ea8aa3c..16105f26d 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -2593,6 +2593,27 @@ static void scale_f32_sycl(const float *x, float *dst, const float scale, const
+ }
+ 
+ 
++// Strided variant for views, e.g. the gate and up halves of a fused gate_up
++// matmul that Inkling 2's SITU activation scales. Without it the op falls back
++// to the CPU, which costs a GPU->CPU->GPU round trip per layer.
++static void scale_f32_nc_sycl(const ggml_tensor * src, ggml_tensor * dst, const float scale, const float bias,
++                              queue_ptr stream) {
++    const int64_t ne0 = src->ne[0], ne1 = src->ne[1], ne2 = src->ne[2];
++    const size_t  s0 = src->nb[0], s1 = src->nb[1], s2 = src->nb[2], s3 = src->nb[3];
++    const size_t  t0 = dst->nb[0], t1 = dst->nb[1], t2 = dst->nb[2], t3 = dst->nb[3];
++    const char *  x = (const char *) src->data;
++    char *        d = (char *) dst->data;
++    stream->parallel_for(sycl::range<1>(ggml_nelements(src)), [=](sycl::id<1> id) {
++        int64_t i = id[0];
++        const int64_t i0 = i % ne0; i /= ne0;
++        const int64_t i1 = i % ne1; i /= ne1;
++        const int64_t i2 = i % ne2;
++        const int64_t i3 = i / ne2;
++        const float v = *(const float *) (x + i0*s0 + i1*s1 + i2*s2 + i3*s3);
++        *(float *) (d + i0*t0 + i1*t1 + i2*t2 + i3*t3) = scale*v + bias;
++    });
++}
++
+ static void sum_rows_f32_sycl(const float *x, float *dst, const int ncols,
+                               const int nrows, queue_ptr stream) {
+     const sycl::range<3> block_dims(1, 1, WARP_SIZE);
+@@ -3582,6 +3603,11 @@ inline void ggml_sycl_op_scale(ggml_backend_sycl_context & ctx, ggml_tensor * ds
+     memcpy(&scale, (float *) dst->op_params + 0, sizeof(float));
+     memcpy(&bias,  (float *) dst->op_params + 1, sizeof(float));
+ 
++    if (!ggml_is_contiguous(dst->src[0]) || !ggml_is_contiguous(dst)) {
++        scale_f32_nc_sycl(dst->src[0], dst, scale, bias, main_stream);
++        return;
++    }
++
+     // the kernel indexes in 32-bit
+     GGML_ASSERT(ggml_nelements(dst->src[0]) <= INT32_MAX);
+ 
+@@ -7634,8 +7660,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
+         case GGML_OP_RMS_NORM_BACK:
+             return ggml_is_contiguous(op->src[0]);
+         case GGML_OP_SCALE:
+-            // the scale kernel is f32 only, and reads src0 flat
+-            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]);
++            // f32 only; views take the strided kernel
++            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32;
+         case GGML_OP_CONT:
+             return true;
+         case GGML_OP_TRI:

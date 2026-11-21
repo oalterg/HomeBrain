@@ -1,0 +1,414 @@
+sycl: indexed attention bias in the flash-attention tile kernel
+
+HomeBrain's port of #32740 to ggml-sycl. Applies on top of 0001.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+Without it, SYCL rejects both the indexed bias and the dense per-head mask the
+graph falls back to, so Inkling 2 attention runs on the CPU. The tile kernel's
+ncols2 == 1 variants (head size 64/128) add table[head, indices[key, query],
+query] to the mask before its F16 rounding. Sinks move to the final scale or
+the combine pass, as in CUDA. oneDNN, MKL, DPAS, VEC and the sparse gather never
+see a node that carries the bias.
+
+Verified on an Arc Pro B60: test-flash-attn-indexed-bias passes, max error <= 3.7e-4.
+
+diff --git a/ggml/src/ggml-sycl/fattn-common.hpp b/ggml/src/ggml-sycl/fattn-common.hpp
+index c37326336..fc85a7b85 100644
+--- a/ggml/src/ggml-sycl/fattn-common.hpp
++++ b/ggml/src/ggml-sycl/fattn-common.hpp
+@@ -20,6 +20,16 @@
+ #define SOFTMAX_FTZ_THRESHOLD -20.0f                   // Softmax exp. of values smaller than this are flushed to zero to avoid NaNs.
+ #define FATTN_KQ_MAX_OFFSET (3.0f*0.6931f)
+ 
++// Compact attention bias (ggml_flash_attn_ext_add_indexed_bias): the kernel adds
++// table[head, indices[key, query], query] to the mask before its F16 rounding.
++// Only the tile kernel reads it; the others take it to share the kernel signature.
++struct fattn_indexed_bias {
++    const float   * table;
++    const int32_t * indices;
++    int64_t         n_bins;
++    int64_t         stride; // int32 elements between the index rows of consecutive queries
++};
++
+ typedef void (*fattn_kernel_t)(
+     const char* Q,
+     const char* K,
+@@ -57,7 +67,8 @@ typedef void (*fattn_kernel_t)(
+     const int32_t ne33,
+     const int32_t nb31,
+     const int32_t nb32,
+-    const int64_t nb33);
++    const int64_t nb33,
++    const fattn_indexed_bias bias);
+ 
+ typedef float (*vec_dot_KQ_t)(
+     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds);
+@@ -784,6 +795,7 @@ static void flash_attn_combine_results(const float * __restrict__ VKQ_parts,
+                                        const sycl::float2 * __restrict__ VKQ_meta,
+                                        float * __restrict__ dst,
+                                        const int parallel_blocks,
++                                       const float * __restrict__ sinks,
+                                        uint8_t * dpct_local) {
+     // Dimension 0: threadIdx.x
+     // Dimension 1: blockIdx.x
+@@ -815,13 +827,14 @@ static void flash_attn_combine_results(const float * __restrict__ VKQ_parts,
+ 
+     item_ct1.barrier(sycl::access::fence_space::local_space);
+ 
+-    float kqmax = meta[0].x();
++    // sinks is set only with an indexed bias, where the kernel leaves the sink to this pass
++    float kqmax = sinks ? sycl::fmax(meta[0].x(), sinks[head]) : meta[0].x();
+     for (int l = 1; l < parallel_blocks; ++l) {
+         kqmax = sycl::max(kqmax, meta[l].x());
+     }
+ 
+     float VKQ_numerator   = 0.0f;
+-    float VKQ_denominator = 0.0f;
++    float VKQ_denominator = sinks ? sycl::native::exp(sinks[head] - kqmax) : 0.0f;
+     for (int l = 0; l < parallel_blocks; ++l) {
+         const float KQ_max_scale = sycl::native::exp(meta[l].x() - kqmax);
+ 
+@@ -897,7 +910,8 @@ static void lauch_kernel(
+     const int32_t ne33,
+     const int32_t nb31,
+     const int32_t nb32,
+-    const int64_t nb33) {
++    const int64_t nb33,
++    const fattn_indexed_bias bias) {
+     GGML_UNUSED(local_mem_size);
+ 
+     const auto rng = sycl::nd_range<3>(
+@@ -910,7 +924,7 @@ static void lauch_kernel(
+                      max_bias, m0, m1, n_head_log2, logit_softcap, ne00,
+                      ne01, ne02, ne03, nb01, nb02, nb03, ne10, ne11,
+                      ne12, ne13, nb11, nb12, nb13, nb21, nb22, nb23,
+-                     ne31, ne32, ne33, nb31, nb32, nb33);
++                     ne31, ne32, ne33, nb31, nb32, nb33, bias);
+     };
+ 
+     q->submit([&](sycl::handler &cgh) {
+@@ -936,6 +950,11 @@ void launch_fattn(
+     const ggml_tensor * mask  = dst->src[3];
+     const ggml_tensor * sinks = dst->src[4];
+ 
++    const bool has_indexed_bias = ggml_flash_attn_ext_has_indexed_bias(dst);
++    const ggml_tensor * bias_table   = has_indexed_bias ? dst->src[6] : nullptr;
++    const ggml_tensor * bias_indices = has_indexed_bias ? dst->src[7] : nullptr;
++    GGML_ASSERT(!has_indexed_bias || (bias_table && bias_indices && mask && mask->ne[2] == 1));
++
+     ggml_tensor * KQV = dst;
+ 
+     GGML_ASSERT(Q->type == GGML_TYPE_F32);
+@@ -1039,7 +1058,9 @@ void launch_fattn(
+     // Optional optimization where the mask is scanned to determine whether part of the calculation can be skipped.
+     // Only worth the overhead if there is at lease one FATTN_KQ_STRIDE x FATTN_KQ_STRIDE square to be skipped or
+     //     multiple sequences of possibly different lengths.
+-    if (mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1)) {
++    // An indexed bias requires an unpadded mask (mask->ne[1] == Q->ne[1]), and the scan reads whole ncols1 tiles.
++    if (mask && K->ne[1] % FATTN_KQ_STRIDE == 0 && (Q->ne[1] >= 1024 || Q->ne[3] > 1) &&
++            (!has_indexed_bias || Q->ne[1] % ncols1 == 0)) {
+         const int s31 = mask->nb[1] / sizeof(sycl::half2);
+         const int s33 = mask->nb[3] / sizeof(sycl::half2);
+ 
+@@ -1153,14 +1174,23 @@ void launch_fattn(
+ 
+     GGML_ASSERT(block_dim.x % warp_size == 0);
+ 
++    const fattn_indexed_bias bias = has_indexed_bias ?
++        fattn_indexed_bias{ (const float *) bias_table->data, (const int32_t *) bias_indices->data,
++                            bias_table->ne[1], (int64_t) (bias_indices->nb[1] / sizeof(int32_t)) } :
++        fattn_indexed_bias{ nullptr, nullptr, 0, 0 };
++
++    // With an indexed bias and several parallel blocks, the sink is folded in by the combine pass.
++    const float * combine_sinks = has_indexed_bias && sinks && !stream_k && parallel_blocks > 1 ?
++        (const float *) sinks->data : nullptr;
++
+     lauch_kernel<fattn_kernel, warp_size, use_large_grf>(
+         blocks_num, block_dim, main_stream, (unsigned int) nbytes_shared, (const char *) Q->data, K_data, V_data,
+-        mask ? ((const char *) mask->data) : nullptr, sinks ? ((const char *) sinks->data) : nullptr, KV_max.ptr,
++        mask ? ((const char *) mask->data) : nullptr, sinks && !combine_sinks ? ((const char *) sinks->data) : nullptr, KV_max.ptr,
+         !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, (sycl::float2 *)dst_tmp_meta.ptr, scale, max_bias, m0, m1,
+         n_head_log2, logit_softcap, Q->ne[0], ne01, Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3], K->ne[0],
+         K->ne[1], K->ne[2], K->ne[3], nb11, nb12, nb13, nb21, nb22, nb23, mask ? mask->ne[1] : 0,
+         mask ? mask->ne[2] : 0, mask ? mask->ne[3] : 0, mask ? mask->nb[1] : 0, mask ? mask->nb[2] : 0,
+-        mask ? mask->nb[3] : 0);
++        mask ? mask->nb[3] : 0, bias);
+     SYCL_CHECK(0);
+ 
+     if (stream_k) {
+@@ -1201,7 +1231,7 @@ void launch_fattn(
+                              [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(warp_size)]] {
+                                  GGML_UNUSED(item_ct1);
+                                  flash_attn_combine_results<DV>(
+-                                     dst_tmp_ptr_ct0, dst_tmp_meta_ptr_ct1, KQV_data_ct2, parallel_blocks,
++                                     dst_tmp_ptr_ct0, dst_tmp_meta_ptr_ct1, KQV_data_ct2, parallel_blocks, combine_sinks,
+                                      dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
+                              });
+         });
+diff --git a/ggml/src/ggml-sycl/fattn-dpas.cpp b/ggml/src/ggml-sycl/fattn-dpas.cpp
+index fb0b3a816..59c72f98b 100644
+--- a/ggml/src/ggml-sycl/fattn-dpas.cpp
++++ b/ggml/src/ggml-sycl/fattn-dpas.cpp
+@@ -641,7 +641,7 @@ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+             cgh.parallel_for(
+                 sycl::nd_range<3>(sycl::range<3>(Q->ne[3], Q->ne[2], (size_t) ne01 * D), sycl::range<3>(1, 1, D)),
+                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
+-                    flash_attn_combine_results<D>(parts_p, meta_p, dst_p, nsplit,
++                    flash_attn_combine_results<D>(parts_p, meta_p, dst_p, nsplit, nullptr,
+                                                   lm.get_multi_ptr<sycl::access::decorated::no>().get());
+                 });
+         });
+diff --git a/ggml/src/ggml-sycl/fattn-sparse.cpp b/ggml/src/ggml-sycl/fattn-sparse.cpp
+index 0c56d43aa..541b6b2b2 100644
+--- a/ggml/src/ggml-sycl/fattn-sparse.cpp
++++ b/ggml/src/ggml-sycl/fattn-sparse.cpp
+@@ -124,6 +124,11 @@ static bool sparse_fa_applicable(const ggml_tensor * dst, int64_t & n_kv_g_out)
+         return false;
+     }
+ 
++    // the indexed bias addresses keys by their position in the full cache, which the gather would shift
++    if (ggml_flash_attn_ext_has_indexed_bias(dst)) {
++        return false;
++    }
++
+     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
+     if (n_kv_max <= 0) {
+         return false;
+diff --git a/ggml/src/ggml-sycl/fattn-tile.hpp b/ggml/src/ggml-sycl/fattn-tile.hpp
+index dcdcad88a..9607165c7 100644
+--- a/ggml/src/ggml-sycl/fattn-tile.hpp
++++ b/ggml/src/ggml-sycl/fattn-tile.hpp
+@@ -429,7 +429,11 @@ static __dpct_inline__ void flash_attn_tile_iter(T_vec_dot * const Q_tmp,
+                                                  const int         k_VKQ_0,
+                                                  const int         k_VKQ_max,
+                                                  const int         col_Q_0,
+-                                                 float *           KQ_max_new_shared) {
++                                                 float *           KQ_max_new_shared,
++                                                 const fattn_indexed_bias bias,
++                                                 const int         head,
++                                                 const int         n_heads,
++                                                 const int         sequence) {
+     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+     constexpr int cpy_nb   = ggml_sycl_get_max_cpy_bytes();
+     constexpr int cpy_ne = cpy_nb / 4;
+@@ -490,10 +494,23 @@ static __dpct_inline__ void flash_attn_tile_iter(T_vec_dot * const Q_tmp,
+             }
+ 
+             if (!oob_check || i_KQ < k_VKQ_sup) {
+-                KQ_acc[(i_KQ_0 / (np * warp_size)) * cpw + jc0] +=
+-                    (ncols2 > 1 || mask) ? slope * sycl::vec<sycl::half, 1>(mask[j * stride_mask + k_VKQ_0 + i_KQ])
+-                                                       .convert<float, sycl::rounding_mode::automatic>()[0] :
+-                                           0.0f;
++                const int k = k_VKQ_0 + i_KQ;
++                float m = (ncols2 > 1 || mask) ?
++                    sycl::vec<sycl::half, 1>(mask[(int64_t) j * stride_mask + k])
++                        .convert<float, sycl::rounding_mode::automatic>()[0] :
++                    0.0f;
++                if constexpr (ncols2 == 1 && (DKQ == 64 || DKQ == 128)) {
++                    if (bias.table) {
++                        // queries of all sequences are flattened in sequence order
++                        const int64_t query = (int64_t) sequence * int(ne01.z()) + j;
++                        const int     bin   = bias.indices[query * bias.stride + k];
++                        if ((uint32_t) bin < bias.n_bins) {
++                            // same F16 rounding as the dense mask the bias replaces
++                            m = (float) sycl::half(m + bias.table[(query * bias.n_bins + bin) * n_heads + head]);
++                        }
++                    }
++                }
++                KQ_acc[(i_KQ_0 / (np * warp_size)) * cpw + jc0] += slope * m;
+ 
+                 KQ_max_new[jc0] =
+                     sycl::fmax((float) KQ_max_new[jc0],
+@@ -694,7 +711,8 @@ static void flash_attn_tile(const char *  Q,
+                             const int32_t        ne33,
+                             const int32_t        nb31,
+                             const int32_t        nb32,
+-                            const int64_t        nb33) {
++                            const int64_t        nb33,
++                            const fattn_indexed_bias bias) {
+ #ifdef SYCL_FLASH_ATTN
+     // Skip unused kernel variants for faster compilation:
+     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+@@ -707,7 +725,7 @@ static void flash_attn_tile(const char *  Q,
+                   nb11, nb12, nb13,
+                   nb21, nb22, nb23,
+                   ne31, ne32, ne33,
+-                  nb31, nb32, nb33);
++                  nb31, nb32, nb33, bias);
+         return;
+     }
+ 
+@@ -869,7 +887,7 @@ static void flash_attn_tile(const char *  Q,
+             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap,
+                                  oob_check>(Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp, stride_K2,
+                                             stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+-                                            KQ_max_new_shared);
++                                            KQ_max_new_shared, bias, head0, ne02, sequence);
+             k_VKQ_0 += item_ct1.get_group_range(1) * nbatch_fa;
+         }
+         if (k_VKQ_0 < k_VKQ_max) {
+@@ -877,7 +895,7 @@ static void flash_attn_tile(const char *  Q,
+             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap,
+                                  oob_check>(Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp, stride_K2,
+                                             stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+-                                            KQ_max_new_shared);
++                                            KQ_max_new_shared, bias, head0, ne02, sequence);
+         }
+     } else {
+         // Branch without out-of-bounds checks.
+@@ -888,7 +906,7 @@ static void flash_attn_tile(const char *  Q,
+             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap,
+                                  oob_check>(Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp, stride_K2,
+                                             stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+-                                            KQ_max_new_shared);
++                                            KQ_max_new_shared, bias, head0, ne02, sequence);
+         }
+     }
+ 
+@@ -970,7 +988,8 @@ static void flash_attn_tile(const char *  Q,
+     }
+ 
+     // Attention sink: adjust KQ max and sum only for the first of all parallel blocks:
+-    if (sinks && item_ct1.get_group(1) == 0) {
++    // With an indexed bias the sink is applied in the final scale or by the combine pass instead.
++    if (sinks && !bias.table && item_ct1.get_group(1) == 0) {
+ #pragma unroll
+         for (int jc0 = 0; jc0 < cpw; ++jc0) {
+             const int   jc   = jc0 + (item_ct1.get_local_id(1) / np) * cpw;
+@@ -1011,7 +1030,17 @@ static void flash_attn_tile(const char *  Q,
+             return;
+         }
+ 
+-        const float scale = item_ct1.get_group_range(1) == 1 ? 1.0f / KQ_sum[jc0] : 1.0f;
++        float scale = 1.0f;
++        if (item_ct1.get_group_range(1) == 1) {
++            if (bias.table && sinks) {
++                const float sink     = ((const float *) sinks)[head0 + c];
++                const float kq_max   = sycl::fmax((float) KQ_max[jc0], sink);
++                const float kq_scale = sycl::native::exp((float) (KQ_max[jc0] - kq_max));
++                scale = kq_scale / (KQ_sum[jc0] * kq_scale + sycl::native::exp(sink - kq_max));
++            } else {
++                scale = 1.0f / KQ_sum[jc0];
++            }
++        }
+ 
+         const int j_dst_unrolled =
+             ((sequence * int(ne01.z()) + col_Q_0 + j) * ne02 + head0 + c) * item_ct1.get_group_range(1) +
+@@ -1064,7 +1093,7 @@ static void flash_attn_tile(const char *  Q,
+               nb11, nb12, nb13,
+               nb21, nb22, nb23,
+               ne31, ne32, ne33,
+-              nb31, nb32, nb33);
++              nb31, nb32, nb33, bias);
+ #endif // SYCL_FLASH_ATTN
+ }
+ 
+@@ -1166,7 +1195,9 @@ static void launch_fattn_tile_switch_ncols2(ggml_backend_sycl_context & ctx, ggm
+     // However, for DKQ == 576, DV == 512 only the kernel variant with GQA optimizations is implemented.
+     //const bool nvidia = GGML_SYCL_CC_IS_NVIDIA(ggml_sycl_info().devices[ggml_sycl_get_device()].cc);
+     const int gqa_limit = gqa_ratio <= 4 && DV <= 256 ? 16 : INT_MAX;
+-    const bool use_gqa_opt = mask && max_bias == 0.0f && Q->ne[1] <= gqa_limit && K->ne[1] % FATTN_KQ_STRIDE == 0;
++    // the indexed bias is per Q head, so it is only applied by the ncols2 == 1 variants
++    const bool use_gqa_opt = !ggml_flash_attn_ext_has_indexed_bias(dst) &&
++        mask && max_bias == 0.0f && Q->ne[1] <= gqa_limit && K->ne[1] % FATTN_KQ_STRIDE == 0;
+ 
+     if constexpr (DV == 512) {
+         if (use_gqa_opt && gqa_ratio % 16 == 0) {
+diff --git a/ggml/src/ggml-sycl/fattn-vec.hpp b/ggml/src/ggml-sycl/fattn-vec.hpp
+index 5e40c88fb..2a890ded3 100644
+--- a/ggml/src/ggml-sycl/fattn-vec.hpp
++++ b/ggml/src/ggml-sycl/fattn-vec.hpp
+@@ -72,7 +72,8 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
+                         const int32_t ne33,
+                         const int32_t nb31,
+                         const int32_t nb32,
+-                        const int64_t nb33) {
++                        const int64_t nb33,
++                        const fattn_indexed_bias bias) {
+ 
+ #ifdef SYCL_FLASH_ATTN
+     // Skip unused kernel variants for faster compilation:
+@@ -87,7 +88,7 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
+                   nb11, nb12, nb13,
+                   nb21, nb22, nb23,
+                   ne31, ne32, ne33,
+-                  nb31, nb32, nb33);
++                  nb31, nb32, nb33, bias);
+         return;
+     }
+ 
+@@ -570,7 +571,7 @@ static void flash_attn_ext_vec(const char* __restrict__ Q,
+               nb11, nb12, nb13,
+               nb21, nb22, nb23,
+               ne31, ne32, ne33,
+-              nb31, nb32, nb33);
++              nb31, nb32, nb33, bias);
+ 
+ #endif // SYCL_FLASH_ATTN
+ }
+diff --git a/ggml/src/ggml-sycl/fattn.cpp b/ggml/src/ggml-sycl/fattn.cpp
+index 525e6fd8c..3bb6f1c68 100644
+--- a/ggml/src/ggml-sycl/fattn.cpp
++++ b/ggml/src/ggml-sycl/fattn.cpp
+@@ -131,10 +131,13 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
+ 
+     bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;
+ 
++    // A compact indexed bias (ggml_flash_attn_ext_add_indexed_bias) is only read by the tile kernel.
++    const bool indexed_bias = ggml_flash_attn_ext_has_indexed_bias(dst);
++
+     // XMX-accelerated path: oneDNN SDPA (native F16 and dequant+non-F16).
+     // ONEDNN requires min 32 query tokens — short-circuit decode to avoid
+     // calling _supported() on every decode FA call.
+-    if (Q->ne[1] >= 32 && !ggml_sycl_flash_attn_ext_onednn_failed(device)
++    if (!indexed_bias && Q->ne[1] >= 32 && !ggml_sycl_flash_attn_ext_onednn_failed(device)
+         && ggml_sycl_flash_attn_ext_onednn_supported(dst)) {
+         return BEST_FATTN_KERNEL_ONEDNN;
+     }
+@@ -157,7 +160,7 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
+         V->ne[0] == 512 && gqa_ratio == 20 &&
+         K->type == GGML_TYPE_F16 && V->type == GGML_TYPE_F16;
+ 
+-    if (g_ggml_sycl_enable_mkl_fa == 1 && mask && !sinks && gqa_ratio >= 2 &&
++    if (!indexed_bias && g_ggml_sycl_enable_mkl_fa == 1 && mask && !sinks && gqa_ratio >= 2 &&
+         (standard_shape || glm_mla_shape) &&
+         Q->ne[1] >= 32 && K->ne[1] >= 1024 &&
+         max_bias == 0.0f && logit_softcap == 0.0f &&
+@@ -246,6 +249,13 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
+         return BEST_FATTN_KERNEL_NONE;
+     }
+ 
++    // The tile kernel applies the indexed bias in its ncols2 == 1 variants for head sizes 64 and 128
++    // (64 has no logit-softcap variant). Other shapes are left to the dense-mask fallback.
++    if (indexed_bias) {
++        return (Q->ne[0] == 128 || (Q->ne[0] == 64 && logit_softcap == 0.0f)) ? BEST_FATTN_KERNEL_TILE
++                                                                               : BEST_FATTN_KERNEL_NONE;
++    }
++
+     // q4_0 / q8_0 K/V decode and small batches on Xe2: read the cache directly, no F16 copy of K and V
+     if (ggml_sycl_flash_attn_ext_dpas_supported(device, dst)) {
+         return BEST_FATTN_KERNEL_DPAS;
+@@ -259,7 +269,7 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const
+ 
+     // Fused-XMX path: oneDNN Graph SDPA (flash attention). Strictly
+     // additive -- taken only when statically supported, otherwise falls through to VEC/TILE below.
+-    if (!ggml_sycl_flash_attn_ext_onednn_failed(device) && ggml_sycl_flash_attn_ext_onednn_supported(dst)) {
++    if (!indexed_bias && !ggml_sycl_flash_attn_ext_onednn_failed(device) && ggml_sycl_flash_attn_ext_onednn_supported(dst)) {
+         return BEST_FATTN_KERNEL_ONEDNN;
+     }
+ 
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 75df12c73..b4ea8aa3c 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -7741,8 +7741,8 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
+         case GGML_OP_SOLVE_TRI:
+             return op->src[0]->ne[0] <= SYCL_SOLVE_TRI_MAX_N && op->src[1]->ne[0] <= SYCL_SOLVE_TRI_MAX_K;
+         case GGML_OP_FLASH_ATTN_EXT:
+-            // K/V row lists and indexed bias are not supported
+-            return op->src[5] == nullptr && !ggml_flash_attn_ext_has_indexed_bias(op) && ggml_sycl_flash_attn_ext_supported(device, op);
++            // K/V row lists are not supported; an indexed bias only by the tile kernel (fattn.cpp)
++            return op->src[5] == nullptr && ggml_sycl_flash_attn_ext_supported(device, op);
+         default:
+             return false;
+     }

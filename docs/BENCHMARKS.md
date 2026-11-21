@@ -1585,3 +1585,120 @@ keep-alive running will tell, but not which of the two helped.
 After both reboots the boot-time ASPM unit gave the Arc's links L1 before
 llama-server started, and the card idled at 8 W with the package in G8, the
 fan at 37 rpm and the chip at 38 °C.
+
+## 2026-11-21 — Arc Pro B60: Inkling-2-Mini, long context and SYCL patches
+
+Inkling-2-Mini UD-Q4_K_XL, 26.2B MoE / 3.4B active, on the Arc Pro B60
+24 GB and Ryzen 5 5600. Layers 6–17 run three times with shared weights:
+24 stored layers become 48 passes per token. Use the pinned Hugging Face
+`Mainline_Support` file (`inkling2_loop`), not the repository-root GGUF.
+The 17,629,760,736-byte model was SHA-256 verified before these runs.
+
+The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
+upstream commits, including the loop architecture and the NVFP4 scale
+fix for passes two and three. Five patches are applied in order:
+
+| patch | purpose |
+|---|---|
+| 0001 | Upstream PR #32740: indexed flash-attention bias and a dense-mask fallback for unsupported backends. |
+| 0002 | SYCL tile-kernel indexed bias and attention sinks; unsupported kernel variants are excluded. |
+| 0003 | Strided SCALE keeps SITU activation views on the GPU: graph splits fall from 194 to 2. |
+| 0004 | Flatten a broadcast 2-D matrix into one GEMM; combine many tiny f32 batch products into one kernel. |
+| 0005 | NVFP4 dequantization in the XMX grouped MoE GEMM. |
+
+Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
+The recipe records the commit plus `+p` and the first 12 hex digits of the
+SHA-256 of the concatenated patches. Changing a patch therefore triggers a
+rebuild. Applying this series to the pin reproduces tree
+`7692b62a4432f44918c85d4735c7760c0b306c92`. The diagnostic op profiler is
+excluded from the patches.
+
+### Incremental speed measurements
+
+Level Zero 26.35, oneAPI 2025.3, flash attention on, q8_0 KV, ctx 131072,
+`-b 2048 -ub 512`, six CPU threads unless noted. The short prompt has 847
+tokens; the larger prefill probe targets 6K tokens. Probes use temperature
+zero and minimal reasoning for repeatability; the catalog retains the
+model's default reasoning effort of 0.9.
+
+| build | prefill, ~6K | prefill, short | decode | note |
+|---|---:|---:|---:|---|
+| 0001 + 0002 | 156 t/s | — | 17.1 t/s | 194 graph splits |
+| + 0003 | 192 t/s | 171 t/s | 20.9 t/s | 2 splits |
+| + 0004 | 258 t/s | 223 t/s | 20.9 t/s | |
+| + 0005 | 391 t/s | 391 t/s | 20.9 t/s | 19.6 GiB VRAM |
+| + 0005, ub2048, MMID_SCHED=3 | 422 t/s | 433 t/s | 20.9 t/s | 21.5 GiB VRAM |
+
+`-ub 512` keeps the memory margin for long context. The extra ~8% prefill
+at ub2048 costs ~1.9 GiB without improving decode.
+
+### Long context and vision
+
+Window 4 used ctx 262144, q8_0 KV and ub512 with the F16 projector:
+
+| probe | prefill | decode | VRAM |
+|---|---:|---:|---:|
+| load, 17 s | — | — | 23.24 GiB |
+| 847-token short prompt | 391.1 t/s | 19.90 t/s | |
+| 58,723-token two-needle fill | 233.6 t/s | 11.46 t/s | 23.31 GiB |
+| short prompt after the fill | 407.2 t/s | 19.85 t/s | |
+
+Both needles were retrieved correctly: code 4417 and captain Odile Varga.
+The image probe correctly described red and blue halves with a central
+white square (85 prompt tokens at 27.3 t/s). Vision works at 262K, but its
+less-than-1-GiB headroom does not meet the profile's memory-margin target.
+The selected **text-only 262144** profile was measured separately:
+22.55 GiB after loading and 22.60 GiB after the 58,723-token fill, leaving
+about 1.3 GiB on the 23.9 GiB device. The short prompt ran at 380.2 t/s
+prefill and 19.78 t/s decode. The deep fill retrieved both needles at
+248.6 t/s prefill and 11.56 t/s decode (245 s wall time). These tests verify
+allocation at 262K and retrieval through 58.7K; they do not test a full
+262K-token prompt.
+
+Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
+131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
+needles at 141 t/s. Tool calls returned parsed `tool_calls`; a cold OpenClaw
+exec turn answered correctly in 398 s. These earlier results are not speed
+measurements of the final patch series.
+
+### Regression and correctness checks
+
+Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
+
+| binary | prefill | decode | output |
+|---|---:|---:|---|
+| production b12359 | 956 t/s | 21.5 t/s | identical |
+| scratch pin + 0001–0005 | 972 t/s | 21.8 t/s | identical |
+
+`test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
+f16 278/278, bf16 239/239, NVFP4 42/42; and MUL_MAT_ID NVFP4 73/73 under
+schedulers 1 and 3. Q8_0 MUL_MAT_ID passed 114/115: the remaining case
+failed to allocate 1.1 GiB while Glimmer was resident, rather than failing
+numerically. The dedicated indexed-bias kernel test passed.
+The full GPU-free FLASH_ATTN_EXT sweep is running; its result is pending.
+Bolt, flint and Qwen have not been re-tested on this pin. The production
+update/rebuild path has not been deployed; scratch execution and patch-tree
+reproduction do not establish a successful installed-version migration.
+
+### Remaining speed costs
+
+A diagnostic run at ub2048 and MMID_SCHED=3 synchronizes after every op, so
+small-op timings include extra synchronization and are not normal throughput:
+
+| operation | time in a 20.4 s profile | share |
+|---|---:|---:|
+| indexed-bias tile flash attention | 4.31 s | 21% |
+| batched NVFP4 MUL_MAT_ID | 4.18 s | 20% |
+| element-wise operations and copies | ~6.4 s | ~31% |
+| small bf16 MUL_MAT, [2304 × 24] | ~1.0 s | 5% |
+| decode-size NVFP4 MUL_MAT_ID | 0.85 s | 4% |
+
+Window 4's ub512 diagnostic probe processed 5,904 tokens at 359.9 t/s and
+16 decode tokens at 8.65 t/s with per-op synchronization. The server timed
+out during shutdown before the exit-time profiler table was written; there
+is no complete per-op table for that run. The production restore trap ran.
+
+The reported 14,100 t/s on an RTX 5090 used a custom engine with native FP4
+tensor-core execution. This B60 path dequantizes NVFP4 into XMX GEMM and
+runs a different graph and attention implementation. That number is not a
+like-for-like llama.cpp or hardware comparison, nor a B60 performance target.
