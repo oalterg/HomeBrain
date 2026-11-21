@@ -327,7 +327,11 @@ fi
 echo "== tools a HomeBrain box cannot use are denied =="
 # Paired-node and web-UI-only tools cost ~8.5k prompt tokens per request.
 for t in computer nodes mobile_ui file_write file_fetch dir_list dir_fetch \
-         node_inference theme dashboard transcripts cron; do
+         node_inference theme dashboard transcripts cron \
+         sessions_spawn sessions_yield subagents agents_wait agents_list \
+         sessions_send sessions progress_card create_goal get_goal update_goal \
+         terminal portal canvas talk_voice github_identity_status \
+         image_generate openclaw gateway plugins presence secrets; do
     if jq -e --arg t "$t" '.tools.deny | index($t)' "$cfg" >/dev/null; then
         ok "tools.deny has $t"
     else

@@ -36,3 +36,12 @@
 - When a HomeBrain tool fails or a service is unreachable, tell the
   owner what failed. Do not read credentials or service storage to
   work around it.
+
+## HomeBrain ownership
+
+- HomeBrain runs OpenClaw for the owner: its version, plugins,
+  channels, model providers, and openclaw.json. Do not change them,
+  with a tool or with exec.
+- Updates and model changes are on the HomeBrain dashboard. Point the
+  owner there, not to /update. HomeBrain picks the plugins; adding one
+  is not offered.
