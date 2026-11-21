@@ -1675,28 +1675,53 @@ f16 278/278, bf16 239/239, NVFP4 42/42; and MUL_MAT_ID NVFP4 73/73 under
 schedulers 1 and 3. Q8_0 MUL_MAT_ID passed 114/115: the remaining case
 failed to allocate 1.1 GiB while Glimmer was resident, rather than failing
 numerically. The dedicated indexed-bias kernel test passed.
-The full GPU-free FLASH_ATTN_EXT sweep is running; its result is pending.
+FLASH_ATTN_EXT passed every case it ran, with no numeric failures:
+
+| run | result |
+|---|---|
+| full sweep, GPU free | 4,309 cases OK, 0 FAIL; stopped by its 900 s timeout, so incomplete |
+| subset `sinks=1` | 2,102/2,102 |
+| subset `type_K=f16,type_V=f16` | 1,975/1,975 |
+| subset `type_K=q8_0,type_V=q8_0` (the shipped KV type) | 373/373 |
+
+The three subsets ran next to Glimmer; unsupported cases are skipped.
 Bolt, flint and Qwen have not been re-tested on this pin. The production
 update/rebuild path has not been deployed; scratch execution and patch-tree
 reproduction do not establish a successful installed-version migration.
 
 ### Remaining speed costs
 
-A diagnostic run at ub2048 and MMID_SCHED=3 synchronizes after every op, so
-small-op timings include extra synchronization and are not normal throughput:
+A diagnostic profiler synchronizes after every op and charges the time to the
+op and its weight name. Small-op timings therefore include extra
+synchronization and are not normal throughput. The probe was two ~6K-token
+prompts at the shipped ub512, 60 graphs in total; prefill dropped from
+391 t/s to 362–367 t/s under the profiler:
 
-| operation | time in a 20.4 s profile | share |
+| operation | time in a 39.6 s profile | share |
 |---|---:|---:|
-| indexed-bias tile flash attention | 4.31 s | 21% |
-| batched NVFP4 MUL_MAT_ID | 4.18 s | 20% |
-| element-wise operations and copies | ~6.4 s | ~31% |
-| small bf16 MUL_MAT, [2304 × 24] | ~1.0 s | 5% |
-| decode-size NVFP4 MUL_MAT_ID | 0.85 s | 4% |
+| indexed-bias tile flash attention (prefill) | 8.90 s | 22% |
+| batched NVFP4 MUL_MAT_ID (`ffn_gate_up_exps` 7.10 s, `ffn_down_exps` 3.69 s) | 10.79 s | 27% |
+| element-wise operations and copies (MUL, CONT, CONCAT, SQR, CPY, TANH, SCALE, RMS_NORM, ADD, SUB, …) | ~11 s | ~28% |
+| tiny f32 MUL_MAT (depth mixing and the bias table) | ~1.5 s | 4% |
+| decode-size NVFP4 MUL_MAT_ID | 1.52 s | 4% |
+| `attn_sink_proj` bf16 MUL_MAT, [2304 × 24] | 1.03 s | 3% |
+| dense q8_0 attention projections | ~1.0 s | 3% |
 
-Window 4's ub512 diagnostic probe processed 5,904 tokens at 359.9 t/s and
-16 decode tokens at 8.65 t/s with per-op synchronization. The server timed
-out during shutdown before the exit-time profiler table was written; there
-is no complete per-op table for that run. The production restore trap ran.
+SYCL graph replay does not help decode. With `GGML_SYCL_ENABLE_GRAPH=1`,
+graphs whose MUL_MAT uses oneDNN are not recorded (`disabling SYCL graphs
+due to MUL_MAT using oneDNN`). With oneDNN also off
+(`GGML_SYCL_ENABLE_DNN=0`):
+
+| | graph replay | baseline |
+|---|---:|---:|
+| decode, 377-token greedy | 21.20 t/s | 20.89 t/s |
+| decode, short prompt | 19.44 t/s | 19.79 t/s |
+| prefill | 389–391 t/s | 389–391 t/s |
+
+So host launch overhead is not what bounds decode. Inkling runs about 12,400
+graph nodes per token, and the likelier bound is their GPU-side cost. Fusing the element-wise
+chains (SITU, the depth mixing, clip and control) reduces that count, and is
+the lever for both prefill and decode.
 
 The reported 14,100 t/s on an RTX 5090 used a custom engine with native FP4
 tensor-core execution. This B60 path dequantizes NVFP4 into XMX GEMM and
