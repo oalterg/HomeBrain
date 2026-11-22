@@ -2475,6 +2475,13 @@ patch_openclaw_config() {
                 "node-inspect-debugger", "python-debugpy", "tmux", "spike",
                 "clawhub", "visualize") as $s
             (.; .skills.entries[$s].enabled = false) |
+        # No /update or /restart from chat. HomeBrain pins OpenClaw, and the
+        # owner’s /update would move it off the pin whatever the tool deny
+        # says. Unset, OpenClaw’s system prompt even tells the model to send
+        # update requests to /update. The gateway’s own config-reload
+        # restarts and `openclaw daemon restart` (systemd) still work, and
+        # /stop still ends a stuck turn.
+        .commands.restart = false |
         # Hand the model every tool schema up front, as before 2026.9. Unset
         # now means Tool Search: schemas wait behind tool_search /
         # tool_describe / tool_call, which costs a local model extra

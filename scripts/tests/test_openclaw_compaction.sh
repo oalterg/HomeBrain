@@ -324,6 +324,15 @@ else
     bad "Tool Search is off" "tools.toolSearch=$got"
 fi
 
+echo "== no OpenClaw self-update from chat =="
+# /update would move OpenClaw off HomeBrain's pin.
+got=$(jq -r '.commands.restart' "$cfg")
+if [[ "$got" == "false" ]]; then
+    ok "commands.restart is off"
+else
+    bad "commands.restart is off" "commands.restart=$got"
+fi
+
 echo "== tools a HomeBrain box cannot use are denied =="
 # Paired-node and web-UI-only tools cost ~8.5k prompt tokens per request.
 for t in computer nodes mobile_ui file_write file_fetch dir_list dir_fetch \
