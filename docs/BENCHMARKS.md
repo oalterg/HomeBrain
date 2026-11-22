@@ -1632,6 +1632,17 @@ model's default reasoning effort of 0.9.
 `-ub 512` keeps the memory margin for long context. The extra ~8% prefill
 at ub2048 costs ~1.9 GiB without improving decode.
 
+f16 KV does not speed up prefill either. Window 7 compared it with q8_0 at
+ctx 131072 and ub512:
+
+| KV | prefill, short | prefill, ~6K | 53,666-token fill | decode after the fill | VRAM after the fill |
+|---|---:|---:|---:|---:|---:|
+| f16 | 370.8 t/s | 384.7 t/s | 240.7 t/s | 13.00 t/s | 21.07 GiB |
+| q8_0 | 381–391 t/s | 388.6 t/s | 240.2 t/s | 11.57 t/s | 19.60 GiB |
+
+f16 gains 12% decode at depth and costs 1.5 GiB at 131072. At 262144 it would
+not fit, so q8_0 stays the long-context choice. Both found the two needles.
+
 ### Long context and vision
 
 Window 4 used ctx 262144, q8_0 KV and ub512 with the F16 projector:
