@@ -1,0 +1,123 @@
+sycl: one GEMM for a broadcast 2-D src0, and a kernel for many tiny f32 matmuls
+
+HomeBrain patch on ggml-sycl. Applies on top of 0003.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+Inkling 2 issues thousands of tiny matmuls per graph: the relative-bias table
+([16 x 1025] against every head and token) and the depth attention over
+earlier block outputs ([2304 x 2..5] per token). The generic path runs one GEMM
+per batch, which for these shapes is all launch overhead.
+- An unquantized 2-D src0 applied to a contiguous src1 is flattened into one
+  GEMM over all columns.
+- Otherwise f32 x f32 batches of at most 65536 MACs each, 32 or more of them,
+  go to one kernel with one sub-group (K >= 128) or one work-item per output.
+Only GGML_OP_MUL_MAT takes these; the MUL_MAT_ID callers are unchanged.
+test-backend-ops MUL_MAT f32/f16/bf16 and SCALE pass on SYCL0. Measured on an Arc
+Pro B60: Inkling prefill 192 -> 258 t/s at -ub 512.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 16105f26d..c2f18e43c 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -5189,9 +5189,101 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
+     return src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+ }
+ 
++// Many independent tiny products dst[:, :, b] = src0[:, :, b]^T src1[:, :, b] (f32), e.g. Inkling 2's
++// per-token attention over earlier block outputs. The generic path issues one GEMM per batch, which
++// for thousands of batches of a few thousand MACs each is all launch overhead.
++static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
++                                                const ggml_tensor * src1, ggml_tensor * dst) {
++    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
++        return false;
++    }
++    const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1];
++    const int64_t B2 = src1->ne[2], B3 = src1->ne[3];
++    if (src0->ne[2] * src0->ne[3] == 1 || B2 * B3 < 32 || M * N * K > 65536) {
++        return false;
++    }
++    if (B2 % src0->ne[2] != 0 || B3 % src0->ne[3] != 0) {
++        return false;
++    }
++    const int64_t r2 = B2 / src0->ne[2], r3 = B3 / src0->ne[3];
++    const size_t a0 = src0->nb[0], a1 = src0->nb[1], a2 = src0->nb[2], a3 = src0->nb[3];
++    const size_t b0 = src1->nb[0], b1 = src1->nb[1], b2 = src1->nb[2], b3 = src1->nb[3];
++    const size_t d0 = dst->nb[0],  d1 = dst->nb[1],  d2 = dst->nb[2],  d3 = dst->nb[3];
++    const char * a = (const char *) src0->data;
++    const char * b = (const char *) src1->data;
++    char *       d = (char *) dst->data;
++    const int64_t n_out = M * N * B2 * B3;
++    queue_ptr stream = ctx.stream();
++
++    if (K >= 128) {
++        // one sub-group per output element, reduce over K
++        stream->parallel_for(sycl::nd_range<1>(sycl::range<1>(n_out * WARP_SIZE), sycl::range<1>(WARP_SIZE)),
++            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                int64_t t = it.get_group(0);
++                const int64_t i  = t % M; t /= M;
++                const int64_t j  = t % N; t /= N;
++                const int64_t i2 = t % B2;
++                const int64_t i3 = t / B2;
++                const char * pa = a + i*a1 + (i2/r2)*a2 + (i3/r3)*a3;
++                const char * pb = b + j*b1 + i2*b2 + i3*b3;
++                float sum = 0.0f;
++                for (int64_t k = it.get_local_id(0); k < K; k += WARP_SIZE) {
++                    sum += *(const float *) (pa + k*a0) * *(const float *) (pb + k*b0);
++                }
++                sum = sycl::reduce_over_group(it.get_sub_group(), sum, sycl::plus<float>());
++                if (it.get_local_id(0) == 0) {
++                    *(float *) (d + i*d0 + j*d1 + i2*d2 + i3*d3) = sum;
++                }
++            });
++    } else {
++        // one work-item per output element
++        stream->parallel_for(sycl::range<1>(n_out), [=](sycl::id<1> id) {
++            int64_t t = id[0];
++            const int64_t i  = t % M; t /= M;
++            const int64_t j  = t % N; t /= N;
++            const int64_t i2 = t % B2;
++            const int64_t i3 = t / B2;
++            const char * pa = a + i*a1 + (i2/r2)*a2 + (i3/r3)*a3;
++            const char * pb = b + j*b1 + i2*b2 + i3*b3;
++            float sum = 0.0f;
++            for (int64_t k = 0; k < K; ++k) {
++                sum += *(const float *) (pa + k*a0) * *(const float *) (pb + k*b0);
++            }
++            *(float *) (d + i*d0 + j*d1 + i2*d2 + i3*d3) = sum;
++        });
++    }
++    return true;
++}
++
+ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     scope_op_debug_print scope_dbg_print(__func__, dst, /*num_src=*/2);
+ 
++    if (dst->op == GGML_OP_MUL_MAT && !ggml_backend_buffer_is_sycl_split(src0->buffer)) {
++        // A 2-D src0 applied to every matrix of a contiguous src1 is one GEMM over the flattened
++        // columns (Inkling 2's relative-bias table: [16 x 1025] times 24 heads x n_tokens). The
++        // generic path would otherwise run one small GEMM per batch.
++        if (!ggml_is_quantized(src0->type) && src0->ne[2] == 1 && src0->ne[3] == 1 &&
++                src1->ne[2] * src1->ne[3] > 1 && ggml_is_contiguous(src1) && ggml_is_contiguous(dst)) {
++            ggml_tensor src1_2d = *src1;
++            ggml_tensor dst_2d  = *dst;
++            // strides from nb[0]: a size-1 dim may carry any stride (e.g. a permuted src1 with ne[1] == 1)
++            src1_2d.ne[1] = src1->ne[1] * src1->ne[2] * src1->ne[3];
++            src1_2d.ne[2] = src1_2d.ne[3] = 1;
++            src1_2d.nb[1] = src1->nb[0] * src1->ne[0];
++            src1_2d.nb[2] = src1_2d.nb[3] = src1_2d.nb[1] * src1_2d.ne[1];
++            dst_2d.ne[1]  = src1_2d.ne[1];
++            dst_2d.ne[2]  = dst_2d.ne[3] = 1;
++            dst_2d.nb[1]  = dst->nb[0] * dst->ne[0];
++            dst_2d.nb[2]  = dst_2d.nb[3] = dst_2d.nb[1] * dst_2d.ne[1];
++            dst_2d.src[1] = &src1_2d;
++            ggml_sycl_mul_mat(ctx, src0, &src1_2d, &dst_2d);
++            return;
++        }
++        if (ggml_sycl_mul_mat_small_batched_f32(ctx, src0, src1, dst)) {
++            return;
++        }
++    }
++
+     // Handle HADAMARAD hint given from further up the pipeline and pass it to the correct
+     // kernel.
+     //

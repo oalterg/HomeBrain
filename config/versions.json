@@ -10,7 +10,14 @@
         "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
       },
       "x86_64-sycl": {
-        "git_ref": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
+        "git_ref": "19bc41dbb41e858eebc269b49ccdec1f0d28880c",
+        "patches": [
+          "config/llama-patches/0001-flash-attn-indexed-bias-pr32740.patch",
+          "config/llama-patches/0002-sycl-flash-attn-indexed-bias.patch",
+          "config/llama-patches/0003-sycl-strided-scale.patch",
+          "config/llama-patches/0004-sycl-small-batched-matmul.patch",
+          "config/llama-patches/0005-sycl-nvfp4-grouped-gemm.patch"
+        ],
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {
           "package": "intel-deep-learning-essentials-2025.3",

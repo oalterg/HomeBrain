@@ -42,7 +42,7 @@ _resolve_llama_source() {
     fi
     flags=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.source_build[$t].cmake_flags // empty' "$versions_file" 2>/dev/null)
     if [[ -n "$flags" ]]; then
-        ref=$(jq -r --arg t "$HB_PLATFORM_TAG" '.llama_cpp.source_build[$t].git_ref // empty' "$versions_file" 2>/dev/null)
+        ref=$(llama_source_build_id "$versions_file" "$HB_PLATFORM_TAG") || return 1
         [[ -n "$ref" ]] || ref="$LLAMA_TAG"
         printf 'source\t%s\t%s\n' "$flags" "$ref"
         return 0
@@ -842,9 +842,21 @@ install_llamacpp() {
 # Build llama-server from source at a pinned tag. Needed where upstream ships no
 # Linux binary for the backend we want — which is every CUDA target: the release
 # page has Windows CUDA zips only. Same shape as install_whisper_server.
+#
+# The tag is a build id from llama_source_build_id: a ref, plus "+p<hash>" when
+# the recipe lists patches. Those are applied in order to a clean checkout, so a
+# change upstream has not merged yet can ship pinned to the commit it was tested on.
 _build_llamacpp_from_source() {
-    local tag="$1" cmake_flags="$2" install_dir="$3"
+    local build_id="$1" cmake_flags="$2" install_dir="$3"
+    local tag="${build_id%%+p*}"
     local src_dir="/tmp/llama.cpp-src"
+    local versions_file="${SCRIPT_DIR}/../config/versions.json"
+    local -a patches=()
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && patches+=("$p")
+    done < <(jq -r --arg t "${HB_PLATFORM_TAG:-}" \
+        '.llama_cpp.source_build[$t].patches // [] | .[]' "$versions_file" 2>/dev/null)
 
     if [[ "$HB_GPU_BACKEND" == "cuda" ]] && ! command -v nvcc >/dev/null 2>&1; then
         die "A CUDA build was requested but nvcc is not on PATH. Install the CUDA toolkit (13.x or newer for Blackwell/sm_121) and re-run."
@@ -859,6 +871,11 @@ _build_llamacpp_from_source() {
 
     if [[ -d "$src_dir/.git" ]]; then
         log_info "Updating existing llama.cpp source to ${tag}..."
+        # A previous build may have left patched or patch-added files behind.
+        git -C "$src_dir" reset -q --hard \
+            || die "Failed to reset the previous llama.cpp source build"
+        git -C "$src_dir" clean -qfdx \
+            || die "Failed to clean the previous llama.cpp source build"
         git -C "$src_dir" fetch --depth 1 origin "$tag" \
             || die "Failed to fetch llama.cpp at ${tag}"
         git -C "$src_dir" checkout -q --detach FETCH_HEAD \
@@ -880,6 +897,12 @@ _build_llamacpp_from_source() {
             || die "Failed to clone llama.cpp at ${tag}"
     fi
 
+    for p in ${patches[@]+"${patches[@]}"}; do
+        log_info "Applying llama.cpp patch ${p}..."
+        git -C "$src_dir" apply --whitespace=nowarn "${SCRIPT_DIR}/../${p}" \
+            || die "llama.cpp patch ${p} does not apply to ${tag}"
+    done
+
     # Subshell so the build never leaks its working directory back to the
     # caller. `die` inside one would only exit the subshell, so every step
     # signals with `exit` and the single die is out here where it can stop us.
@@ -897,13 +920,13 @@ _build_llamacpp_from_source() {
         # shellcheck disable=SC2086  # cmake_flags is a deliberate flag list from versions.json
         cmake -B build $cmake_flags || exit 1
         cmake --build build --target llama-server -j"$(nproc)" || exit 1
-    ) || die "llama-server build failed at ${tag}; see the cmake output above."
+    ) || die "llama-server build failed at ${build_id}; see the cmake output above."
 
     # Co-locate the binary with its ggml backend .so files, matching the layout
     # the prebuilt tarballs produce (the unit sets LD_LIBRARY_PATH to this dir).
     cp -a "$src_dir/build/bin/." "$install_dir/" \
         || die "Could not install build output to $install_dir"
-    log_info "Built llama-server from source at ${tag}."
+    log_info "Built llama-server from source at ${build_id}."
 }
 
 # Apply RADV_PERFTEST=rm_kq=1 via systemd drop-in. b8996+ on RADV/GFX1200
