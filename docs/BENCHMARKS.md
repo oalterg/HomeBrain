@@ -1596,7 +1596,7 @@ The 17,629,760,736-byte model was SHA-256 verified before these runs.
 
 The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
 upstream commits, including the loop architecture and the NVFP4 scale
-fix for passes two and three. Eight patches are applied in order:
+fix for passes two and three. Ten patches are applied in order:
 
 | patch | purpose |
 |---|---|
@@ -1608,13 +1608,15 @@ fix for passes two and three. Eight patches are applied in order:
 | 0006 | SITU as one GLU op (CPU and SYCL kernels); the graph keeps the 9-op chain where a device lacks it. |
 | 0007 | SYCL fusion of `clip()`: the 8-op row-norm clip runs as one kernel. |
 | 0008 | SYCL fusion of `mix()`: the 7-node depth attention runs as one kernel per token. |
+| 0009 | NVFP4 decode without `pow()` or table lookups, in the MoE mat-vec and the grouped GEMM. |
+| 0010 | TANH in the fused unary + mul kernel, for the two `control()` gates. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`487e1c1ef990af9c1d2d48949b64f8e82f6c3c32`. The diagnostic op profiler and
-the `test-backend-ops` cases for 0006–0008 are excluded from the patches.
+`afc7c3c8565ce7ed34efd3b90dde5c18d9209907`. The diagnostic op profiler and
+the `test-backend-ops` cases for 0006–0010 are excluded from the patches.
 
 ### Incremental speed measurements
 
@@ -1632,6 +1634,7 @@ model's default reasoning effort of 0.9.
 | + 0005 | 391 t/s | 391 t/s | 20.9 t/s | 19.6 GiB VRAM |
 | + 0005, ub2048, MMID_SCHED=3 | 422 t/s | 433 t/s | 20.9 t/s | 21.5 GiB VRAM |
 | + 0006–0008 | 428 t/s | 454 t/s | 22.0 t/s | 19.6 GiB VRAM |
+| + 0009–0010 | 472 t/s | 514 t/s | 32.0 t/s | 19.6 GiB VRAM |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -1649,6 +1652,23 @@ wording diverged after its first sentence, as expected from the changed
 rounding; both answers are correct. In window 8 the fused build found both needles in the
 53,666-token fill (254.0 t/s prefill, 11.89 t/s decode, against 240.2 and
 11.57 for 0005 in window 7) and returned a parsed tool call.
+
+The 0009–0010 row comes from windows 12 and 13 on 2026-11-22, run the same
+way. Window 12 compared 0001–0008 with 0009's mat-vec change alone; window 13
+compared that build with the full 0001–0010:
+
+| build, same window | decode, greedy | prefill, short | decode, short | prefill, ~6K |
+|---|---:|---:|---:|---:|
+| window 12: 0001–0008 | 22.22 / 22.22 t/s | 453.9 / 453.1 t/s | 20.91 / 20.91 t/s | 428.1 / 428.5 t/s |
+| window 12: + 0009 mat-vec | 30.61 / 30.83 t/s | 463.5 / 453.7 t/s | 30.14 / 30.31 t/s | 428.6 / 427.9 t/s |
+| window 13: + 0009 mat-vec | 30.52 / 30.94 t/s | 454.8 / 454.7 t/s | 30.27 / 30.53 t/s | 428.5 / 428.9 t/s |
+| window 13: 0001–0010 | 31.87 / 32.04 t/s | 514.2 / 513.2 t/s | 30.92 / 30.85 t/s | 471.8 / 471.9 t/s |
+
+From 0001–0008 to 0001–0010, decode rises 44% and prefill 10–13%. The
+printed start of the greedy reasoning and answer (300–400 characters) matched
+across all three builds. In window 12 the mat-vec build found both needles in
+a 59,054-token fill at 264.7 t/s prefill and 14.61 t/s decode, and returned a
+parsed tool call.
 
 `-ub 512` keeps the memory margin for long context. The extra ~8% prefill
 at ub2048 costs ~1.9 GiB without improving decode.
@@ -1693,6 +1713,12 @@ needles at 263.6 t/s prefill and 11.91 t/s decode (232 s wall time). The short
 prompt ran at 452.2 t/s prefill and 20.79 t/s decode, and 457.1 t/s and
 20.78 t/s after the fill. Vision was not re-measured on 0006–0008.
 
+With 0009–0010 (window 14) memory is unchanged: 22.55 GiB after loading and
+22.60 GiB after the fill. The fill retrieved both needles at 278.6 t/s prefill
+and 14.66 t/s decode (218 s wall time). The short prompt ran at 515.7 t/s
+prefill and 30.96 t/s decode, and 517.5 t/s and 30.93 t/s after the fill.
+Greedy decode ran at 31.67 t/s, and the tool call parsed.
+
 Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
 131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
 needles at 141 t/s. Tool calls returned parsed `tool_calls`; a cold OpenClaw
@@ -1709,12 +1735,19 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 | scratch pin + 0001–0005 | 972 t/s | 21.8 t/s | identical |
 | production v2026.11.22, pin + 0001–0005 | 962 t/s | 21.7 t/s | identical |
 | scratch pin + 0001–0008, same window | 959 t/s | 21.7 t/s | identical |
+| scratch pin + 0001–0009 mat-vec, window 12 | 961 t/s | 21.7 t/s | same opening |
+| scratch pin + 0001–0010, window 13 | 973 t/s | 21.7 t/s | same opening |
+
+For the last two rows only the first 70 characters of the 200-token answer
+were compared; they match production.
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
 f16 278/278, bf16 239/239, NVFP4 42/42; and MUL_MAT_ID NVFP4 73/73 under
 schedulers 1 and 3. Q8_0 MUL_MAT_ID passed 114/115: the remaining case
 failed to allocate 1.1 GiB while Glimmer was resident, rather than failing
 numerically. The dedicated indexed-bias kernel test passed.
+On 0001–0010, NVFP4 passed MUL_MAT 42/42 and MUL_MAT_ID 73/73 again, and the
+fused TANH cases passed 39/39 (unary + mul) and 10/10 (add + unary + mul).
 FLASH_ATTN_EXT passed every case it ran, with no numeric failures:
 
 | run | result |
@@ -1791,6 +1824,39 @@ steps (31 graphs, 21.1 s):
 | CONCAT | 2.2% |
 | fused SITU | 1.0% |
 
-The SITU, `clip()` and `mix()` chains are gone from the profile.
-`attn_sink_proj` takes about 1.2 ms per decode-size call. `control()` is
-still unfused.
+The SITU, `clip()` and `mix()` chains are gone from the profile. This
+profile started from a fresh server, so first calls include SYCL's JIT
+compilation, and the `attn_sink_proj` and SIGMOID rows are inflated by it.
+Over 400 decode tokens `attn_sink_proj` averages 75 µs per call under the
+profiler, against 9.2 µs in isolation. The SIGMOID row is the fused attention
+gate.
+
+### NVFP4 decode and TANH, 0009–0010
+
+A 400-token decode profile of 0001–0008 ranked the decode-size NVFP4
+MUL_MAT_ID first, at 355 µs per `ffn_gate_up_exps` call and 198 µs per
+`ffn_down_exps` call under the profiler. `test-backend-ops` perf measured the
+kernel alone at 128 experts, top-8 and Inkling's shapes. Over 44 NVFP4 layers
+its 1-token times add up to about 21 ms of a 45 ms token:
+
+| type | gate_up, 1 token | down, 1 token | gate_up, 512 tokens | down, 512 tokens |
+|---|---:|---:|---:|---:|
+| NVFP4, 0001–0008 | 300.9 µs | 182.9 µs | 7193 µs | 3637 µs |
+| NVFP4, 0001–0010 | 82.3 µs | 50.3 µs | 5534 µs | 2942 µs |
+| MXFP4, for reference | 73.2 µs | 43.2 µs | 6212 µs | 3706 µs |
+| Q8_0, for reference | 105.9 µs | 40.4 µs | 2662 µs | 1382 µs |
+
+MXFP4 stores the same E2M1 codes, so the 4x gap was decoding, not bandwidth.
+Each 16-value scale went through a `sycl::pow()` call, and the codes went
+through emulated byte permutes. 0009 builds the scale from bits and decodes
+four codes at a time. The 512-token grouped GEMM is still about twice the Q8_0
+time.
+
+0010 lets the existing unary + mul fusion take TANH, which removes 192 MUL
+launches per decode token from `control()`.
+
+SYCL graph replay was re-tested on 0001–0010 with oneDNN off (window 13). It
+raised the 35-token greedy decode from 31.46 / 30.91 to 34.23 / 34.24 t/s, but
+the short-prompt decode only from 30.25 to 30.76 t/s. With oneDNN off the
+greedy text also changes: it stops at 359 tokens instead of running to 400. It
+is not enabled.
