@@ -1596,7 +1596,7 @@ The 17,629,760,736-byte model was SHA-256 verified before these runs.
 
 The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
 upstream commits, including the loop architecture and the NVFP4 scale
-fix for passes two and three. Five patches are applied in order:
+fix for passes two and three. Eight patches are applied in order:
 
 | patch | purpose |
 |---|---|
@@ -1605,13 +1605,16 @@ fix for passes two and three. Five patches are applied in order:
 | 0003 | Strided SCALE keeps SITU activation views on the GPU: graph splits fall from 194 to 2. |
 | 0004 | Flatten a broadcast 2-D matrix into one GEMM; combine many tiny f32 batch products into one kernel. |
 | 0005 | NVFP4 dequantization in the XMX grouped MoE GEMM. |
+| 0006 | SITU as one GLU op (CPU and SYCL kernels); the graph keeps the 9-op chain where a device lacks it. |
+| 0007 | SYCL fusion of `clip()`: the 8-op row-norm clip runs as one kernel. |
+| 0008 | SYCL fusion of `mix()`: the 7-node depth attention runs as one kernel per token. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`7692b62a4432f44918c85d4735c7760c0b306c92`. The diagnostic op profiler is
-excluded from the patches.
+`487e1c1ef990af9c1d2d48949b64f8e82f6c3c32`. The diagnostic op profiler and
+the `test-backend-ops` cases for 0006–0008 are excluded from the patches.
 
 ### Incremental speed measurements
 
@@ -1628,6 +1631,24 @@ model's default reasoning effort of 0.9.
 | + 0004 | 258 t/s | 223 t/s | 20.9 t/s | |
 | + 0005 | 391 t/s | 391 t/s | 20.9 t/s | 19.6 GiB VRAM |
 | + 0005, ub2048, MMID_SCHED=3 | 422 t/s | 433 t/s | 20.9 t/s | 21.5 GiB VRAM |
+| + 0006–0008 | 428 t/s | 454 t/s | 22.0 t/s | 19.6 GiB VRAM |
+
+The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
+warm-up request before the probes, and the window ran two rounds per build.
+The 0001–0005 build was slower that day than in its own row above, so only
+the same-window figures compare:
+
+| build, same window | decode, greedy | prefill, short | decode, short | prefill, ~6K |
+|---|---:|---:|---:|---:|
+| 0001–0005 | 19.92 / 19.91 t/s | 407.6 / 406.1 t/s | 19.02 / 19.03 t/s | 389.5 / 389.0 t/s |
+| 0001–0008 | 22.02 / 22.00 t/s | 453.2 / 454.4 t/s | 20.75 / 20.84 t/s | 428.4 / 428.3 t/s |
+| change | +10.5% | +11.6% | +9.3% | +10.1% |
+
+The first 600 characters of the greedy reasoning matched, and the answer's
+wording diverged after its first sentence, as expected from the changed
+rounding; both answers are correct. In window 8 the fused build found both needles in the
+53,666-token fill (254.0 t/s prefill, 11.89 t/s decode, against 240.2 and
+11.57 for 0005 in window 7) and returned a parsed tool call.
 
 `-ub 512` keeps the memory margin for long context. The extra ~8% prefill
 at ub2048 costs ~1.9 GiB without improving decode.
@@ -1666,6 +1687,12 @@ prefill and 19.78 t/s decode. The deep fill retrieved both needles at
 allocation at 262K and retrieval through 58.7K; they do not test a full
 262K-token prompt.
 
+With 0006–0008 (window 10) the text-only 262144 profile used the same memory:
+22.55 GiB after loading and 22.60 GiB after the fill. The fill retrieved both
+needles at 263.6 t/s prefill and 11.91 t/s decode (232 s wall time). The short
+prompt ran at 452.2 t/s prefill and 20.79 t/s decode, and 457.1 t/s and
+20.78 t/s after the fill. Vision was not re-measured on 0006–0008.
+
 Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
 131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
 needles at 141 t/s. Tool calls returned parsed `tool_calls`; a cold OpenClaw
@@ -1680,6 +1707,8 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 |---|---:|---:|---|
 | production b12359 | 956 t/s | 21.5 t/s | identical |
 | scratch pin + 0001–0005 | 972 t/s | 21.8 t/s | identical |
+| production v2026.11.22, pin + 0001–0005 | 962 t/s | 21.7 t/s | identical |
+| scratch pin + 0001–0008, same window | 959 t/s | 21.7 t/s | identical |
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
 f16 278/278, bf16 239/239, NVFP4 42/42; and MUL_MAT_ID NVFP4 73/73 under
@@ -1738,3 +1767,30 @@ The reported 14,100 t/s on an RTX 5090 used a custom engine with native FP4
 tensor-core execution. This B60 path dequantizes NVFP4 into XMX GEMM and
 runs a different graph and attention implementation. That number is not a
 like-for-like llama.cpp or hardware comparison, nor a B60 performance target.
+
+### Fusion, 0006–0008
+
+`test-backend-ops` against the CPU passed SITU 16/16 (f32 and f16; bf16 is
+unsupported, as for every SYCL GLU op), the `clip()` chain 6/6 and the `mix()`
+subgraph 11/11. Its 6-state case exercises the unfused fallback. The CPU SITU
+kernel is bit-identical to the 9-op chain in f32.
+
+The same profiler on the fused build, one ~6K-token prompt plus its 16 decode
+steps (31 graphs, 21.1 s):
+
+| operation | share |
+|---|---:|
+| indexed-bias tile flash attention | 21% |
+| batched NVFP4 MUL_MAT_ID | 26% |
+| decode-size NVFP4 MUL_MAT_ID | 5% |
+| `attn_sink_proj` bf16 MUL_MAT, [2304 × 24], decode-size | 5.4% |
+| MUL | 5.6% |
+| attention-gate SIGMOID | 4.0% |
+| recurrent conv-state CPY | 3.7% |
+| bias-table permute CONT | 2.4% |
+| CONCAT | 2.2% |
+| fused SITU | 1.0% |
+
+The SITU, `clip()` and `mix()` chains are gone from the profile.
+`attn_sink_proj` takes about 1.2 ms per decode-size call. `control()` is
+still unfused.

@@ -16,7 +16,10 @@
           "config/llama-patches/0002-sycl-flash-attn-indexed-bias.patch",
           "config/llama-patches/0003-sycl-strided-scale.patch",
           "config/llama-patches/0004-sycl-small-batched-matmul.patch",
-          "config/llama-patches/0005-sycl-nvfp4-grouped-gemm.patch"
+          "config/llama-patches/0005-sycl-nvfp4-grouped-gemm.patch",
+          "config/llama-patches/0006-situ-glu-op.patch",
+          "config/llama-patches/0007-sycl-row-norm-clip-fusion.patch",
+          "config/llama-patches/0008-sycl-depth-mix-fusion.patch"
         ],
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {
