@@ -2444,6 +2444,37 @@ patch_openclaw_config() {
         .tools.deny = ((.tools.deny // []) + ["computer", "nodes", "mobile_ui",
             "file_write", "file_fetch", "dir_list", "dir_fetch", "node_inference",
             "theme", "dashboard", "transcripts"] | unique) |
+        # More tools with no use here, ~9.3k of the ~38k-token Glimmer prompt
+        # on .69 and ~12.2k under Inkling’s tokenizer (2026-11-21; none called
+        # by the owner in six days of audit log):
+        # - subagents: one llama slot, so a child is a fresh ~38k prefill
+        #   that also pushes the chat out of the KV cache;
+        # - surfaces of OpenClaw’s own UI that Telegram never shows: session
+        #   labels and groups, progress cards, goals, operator terminals,
+        #   canvas, talk voice, and portal, which also publishes a local app;
+        # - github_identity_status (coding), and image_generate, which has no
+        #   model here: homebrain media_generate makes the box’s images;
+        # - openclaw, gateway, plugins: config, updates and plugins are
+        #   HomeBrain’s. A self-update moves OpenClaw off its pin, and this
+        #   patch rewrites the config anyway;
+        # - presence lists gateway clients, not people at home (that is HA);
+        #   secrets feeds an egress proxy and config SecretRefs, neither used.
+        # exec could still do all of it, so this steers rather than guards;
+        # the AGENTS.md "HomeBrain ownership" block says the rest.
+        .tools.deny = ((.tools.deny // []) + ["sessions_spawn", "sessions_yield",
+            "subagents", "agents_wait", "agents_list", "sessions_send", "sessions",
+            "progress_card", "create_goal", "get_goal", "update_goal", "terminal",
+            "portal", "canvas", "talk_voice", "github_identity_status",
+            "image_generate", "openclaw", "gateway", "plugins", "presence",
+            "secrets"] | unique) |
+        # Skills for OpenClaw development, its macOS and web UI, ClawHub
+        # installs, and channel or provider setup HomeBrain owns. Each one
+        # is a block in every system prompt (~0.8k together on Glimmer).
+        reduce ("add-model-provider", "canvas", "cloud-image-bake",
+                "configure-channel", "control-ui", "node-connect",
+                "node-inspect-debugger", "python-debugpy", "tmux", "spike",
+                "clawhub", "visualize") as $s
+            (.; .skills.entries[$s].enabled = false) |
         # Hand the model every tool schema up front, as before 2026.9. Unset
         # now means Tool Search: schemas wait behind tool_search /
         # tool_describe / tool_call, which costs a local model extra
@@ -2580,6 +2611,7 @@ seed_openclaw_workspace() {
     local identity_marker="## HomeBrain identity"
     local setup_marker="## HomeBrain setup"
     local alerts_marker="## HomeBrain alerts"
+    local ownership_marker="## HomeBrain ownership"
     local owner="${HOMEBRAIN_USER:-}"
 
     _own() {
@@ -2644,6 +2676,15 @@ seed_openclaw_workspace() {
                 >> "${ws}/AGENTS.md"
             _own "${ws}/AGENTS.md"
             log_info "Appended HomeBrain alerts block to OpenClaw AGENTS.md"
+        fi
+    fi
+    if [[ -f "${ws}/AGENTS.md" ]] && ! grep -qF "$ownership_marker" "${ws}/AGENTS.md"; then
+        if grep -qF "$ownership_marker" "${src}/AGENTS.md" 2>/dev/null; then
+            printf '\n' >> "${ws}/AGENTS.md"
+            awk "index(\$0, \"$ownership_marker\"){p=1} p" "${src}/AGENTS.md" \
+                >> "${ws}/AGENTS.md"
+            _own "${ws}/AGENTS.md"
+            log_info "Appended HomeBrain ownership block to OpenClaw AGENTS.md"
         fi
     fi
 }
