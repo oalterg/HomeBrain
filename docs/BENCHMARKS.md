@@ -1751,10 +1751,16 @@ fill after the 4000x3000 image added nothing. At 262144 that leaves 0.2 GiB
 of the 23.9 GiB card. The shipped 196608 keeps 1.7 GiB and full image
 detail, more margin than the text-only 262144 profile had. Text speed does
 not change with a projector (short prompt 516–518 t/s prefill, 33.7 t/s
-decode, also right after an image). The deep fill does: in window 19 the
-text-only 262144 server filled 58,723 tokens at 279.2 t/s prefill and
-15.23 t/s decode, and with the projector loaded the same fill ran at
-261.7 / 15.01 t/s, on the GPU and on the CPU alike. Both found both needles.
+decode, also right after an image). The 58,723-token fill probe, which runs
+with prompt caching on, was slower with a projector: 261.7 / 15.01 t/s on the
+GPU and on the CPU alike, against 279.0–279.2 / 15.23 t/s text-only in windows
+17 and 19. Both found both needles. Window 20 repeated the comparison in one
+window, without the fill probe: a 19,644-token prompt with caching off, two
+rounds each at ctx 196608, projector on the CPU. Text-only ran at 403.5 /
+402.9 / 403.5 / 403.1 t/s and with the projector at 403.6 / 403.1 / 403.7 /
+403.0 t/s, and the per-op profiles match. So a loaded projector does not slow
+the kernels. Whether the fill gap comes from the server's handling of a cached
+prompt with a projector, or from the deeper context, is not established.
 
 Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
 131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
@@ -1950,3 +1956,13 @@ The largest remaining decode node groups are the `mix()` CONCAT chains, the
 conv-state CONCAT and CPY, and the NVFP4 scale REPEAT and GET_ROWS. In window
 15's prefill profile of 0001–0010, flash attention took 32% and the NVFP4
 grouped GEMM 29%; 0011–0013 do not change either.
+
+Prefill still has headroom in both. Window 20 profiled a warm 19,644-token
+prompt on 0001–0013. Flash attention took 45% of the time, at 11.8 ms per
+call, and the NVFP4 GEMMs 27%. The indexed bias keeps Inkling's attention
+off every XMX path (oneDNN SDPA, the MKL GEMM path and the DPAS kernel), so
+it runs on the SIMD tile kernel. The NVFP4 grouped GEMM takes 5.1 ms per
+`gate_up` call against 2.2 ms for the q8_0 layers of the same shape. q8_0
+has an ESIMD grouped GEMM and NVFP4 does not. At 512 tokens per ubatch the
+NVFP4 call runs at about 8 TFLOPS, far below both the card's XMX peak and
+its memory bound (0.84 ms to read all 128 experts).
