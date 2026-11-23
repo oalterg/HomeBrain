@@ -1729,6 +1729,33 @@ prefill and 15.23 t/s decode (217 s wall time). The short prompt ran at
 519.7 t/s prefill and 33.61 t/s decode, greedy decode at 37.15 t/s, and the
 tool call parsed.
 
+**Vision, windows 18 and 19 (0001–0013).** The profile now loads the F16
+projector (`inkling2v`, 639,348,160 bytes) on the GPU at ctx 196608. The
+encoder caps an image at 4,096 tokens and resizes larger ones, so a
+4000x3000 photo (4,057 tokens) is near the worst case. The test images are
+synthetic: a printed invoice number and a red circle, a blue square and a
+green triangle. Every run read the number and named the shapes in order.
+Times are the whole request with about 90–110 generated tokens. "Peak" is
+after the largest image and a 58,723-token fill:
+
+| configuration | after load | peak | 1024x1024 (718 tok) | 2048x1536 (2,070 tok) | 4000x3000 (4,057 tok) |
+|---|---:|---:|---|---|---|
+| 262144, text only | 22.55 GiB | 22.60 GiB | — | — | — |
+| 262144, projector on the GPU | 23.24 GiB | 23.72 GiB | 7.4 s | 8.1 s | 14.0 s |
+| 262144, projector on the CPU | 22.55 GiB | 22.62 GiB | 9.3 s | 32.3 s | 91.5 s |
+| 262144, CPU, `--image-max-tokens 1024` | 22.55 GiB | 22.62 GiB | 8.8 s | 13.8 s (1,014 tok) | 13.9 s (1,014 tok) |
+| **196608, projector on the GPU (shipped)** | 21.74 GiB | 22.21 GiB | 5.7 s | — | 16.2 s |
+
+On the GPU, the encoder's buffer grows with the image and then stays: the
+fill after the 4000x3000 image added nothing. At 262144 that leaves 0.2 GiB
+of the 23.9 GiB card. The shipped 196608 keeps 1.7 GiB and full image
+detail, more margin than the text-only 262144 profile had. Text speed does
+not change with a projector (short prompt 516–518 t/s prefill, 33.7 t/s
+decode, also right after an image). The deep fill does: in window 19 the
+text-only 262144 server filled 58,723 tokens at 279.2 t/s prefill and
+15.23 t/s decode, and with the projector loaded the same fill ran at
+261.7 / 15.01 t/s, on the GPU and on the CPU alike. Both found both needles.
+
 Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
 131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
 needles at 141 t/s. Tool calls returned parsed `tool_calls`; a cold OpenClaw
