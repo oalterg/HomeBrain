@@ -27,6 +27,7 @@ replace. See scripts/tests/test_mesh.py.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -179,6 +180,92 @@ def status():
     out["public"] = any(published.get(port) for port, _ in APPS.values())
     out["urls"] = urls(dns_name)
     return out
+
+
+def household_rule():
+    """The access rule the owner pastes into their network's policy, once.
+
+    The owner's devices reach everything, as with Tailscale's default. Anyone
+    the box is shared with reaches the three apps: not the dashboard, not SSH.
+    A share only ever reaches the shared machine, so "*" means this box, and
+    there is no address in the rule to go stale. The ssh block is Tailscale's
+    default, kept so that pasting changes nothing else.
+    """
+    return json.dumps({
+        "grants": [
+            {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+            {"src": ["autogroup:shared"], "dst": ["*"],
+             "ip": [f"tcp:{port}" for port, _t in APPS.values()]},
+        ],
+        "ssh": [{"action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"],
+                 "users": ["autogroup:nonroot", "root"]}],
+    }, indent=2)
+
+
+def household():
+    """Who else reaches this box, and whether the rules keep them to the apps.
+
+    Read from the box's own view of the network. HomeBrain holds no key for
+    the owner's account, so it can check the rules but not write them, and it
+    cannot see a share link until someone has accepted it.
+
+    limited: True when nothing but the three app ports is open to a device
+    that is not the owner's; None when the rules could not be read.
+    """
+    st = _json(["status", "--json"]) or {}
+    if st.get("BackendState") != "Running":
+        return {"error": "The private network is not connected."}
+    # The rules the network sends this box: who may reach which of its ports.
+    netmap = _json(["debug", "netmap"], timeout=30)
+    # The netmap's profiles, because status leaves out the users of shared-in
+    # devices (seen on the Pi, 1.104.7).
+    users = (netmap or {}).get("UserProfiles") or st.get("User") or {}
+    me = st.get("Self") or {}
+    mine = set(me.get("TailscaleIPs") or [])
+    people = {}
+    for peer in (st.get("Peer") or {}).values():
+        uid = peer.get("UserID")
+        if uid == me.get("UserID") and not peer.get("ShareeNode"):
+            mine.update(peer.get("TailscaleIPs") or [])
+            continue
+        user = users.get(str(uid)) or {}
+        person = people.setdefault(uid, {
+            "name": user.get("DisplayName") or user.get("LoginName") or "",
+            # A share sees this box only. Anyone else is a member of the
+            # owner's network and sees every device on it.
+            "shared": bool(peer.get("ShareeNode")),
+            "devices": [],
+        })
+        person["devices"].append({
+            # Tailscale hides a shared-in device's name from the sharer.
+            "name": "" if peer.get("ShareeNode") else peer.get("HostName") or "",
+            "online": bool(peer.get("Online"))})
+    return {
+        "people": sorted(people.values(), key=lambda p: p["name"].lower()),
+        "limited": _only_mine(netmap.get("PacketFilterRules") or [], mine) if netmap else None,
+        "rule": household_rule(),
+    }
+
+
+def _only_mine(rules, mine):
+    """True when every source allowed past the app ports is one of mine.
+
+    Fails closed: a source that is a range or "*" counts as someone else.
+    """
+    apps = {port for port, _t in APPS.values()}
+    mine = {ipaddress.ip_address(ip) for ip in mine}
+    for rule in rules:
+        ports = [p.get("Ports") or {} for p in rule.get("DstPorts") or []]
+        if all(p.get("First") == p.get("Last") and p.get("First") in apps for p in ports):
+            continue
+        for src in rule.get("SrcIPs") or []:
+            try:
+                net = ipaddress.ip_network(src, strict=False)
+            except ValueError:
+                return False
+            if net.num_addresses != 1 or net.network_address not in mine:
+                return False
+    return True
 
 
 def connect():

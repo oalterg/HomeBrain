@@ -388,3 +388,44 @@ as not shipped.
 
 These paths are checked locally; the signed-in hardware checklist remains in
 `docs/TESTING.md`. No real-tailnet or phone validation is implied by local checks.
+
+### Household members: share the box, do not invite (2026-11-20)
+
+Members used to be invited as users of the owner's network (Users, Invite).
+On the first real household that meant an email per person, a second trip to
+approve each one, and then a member who reached every device on the owner's
+network: Tailscale's default rule lets every device reach every port on every
+other one, so a member could reach the owner's laptop and the box's SSH.
+
+Now the owner **shares the box** with each person (Machines, `homebrain`,
+Share, a single-use invite link). The person signs in with their own account
+and accepts. A share reaches the shared machine only, needs no approval, and
+is revoked per person. One rule, pasted once, keeps shared users to the three
+app ports and leaves the owner's devices as they were; `mesh.household_rule()`
+builds it from `APPS`.
+
+The **Household** section of the Remote access card runs this. It lists who
+has accepted a share (and flags anyone who is still a member), offers the
+rule with Copy and a link to the policy editor, and says **Limited** only
+when the rules the network sends the box (`tailscale debug netmap`,
+`PacketFilterRules`) let nothing but the owner's own devices past the three
+app ports. A source it cannot read as one of the owner's addresses counts as
+someone else.
+
+Still no key on the box. Creating share links and writing the policy need the
+Tailscale API and a long-lived credential that can rewrite the owner's rules
+and share any of their devices. The owner chose the two console steps over
+that. Costs: the card cannot see a link nobody has accepted yet, and
+`debug netmap` is a debug command whose output Tailscale does not promise to
+keep. If it changes, the card says it could not read the rules; it never
+says Limited.
+
+Seen on the Pi (2026-11-20, 1.104.7), one share accepted: the box's rules
+give the owner's four devices every port and the shared device 9443, 8443
+and 10000 only, each address listed singly; the check reads Limited. Status
+names neither the shared device (`device-of-shared-to-user`) nor its user,
+so names come from the netmap's profiles. Not yet walked: the apps from that
+person's phone on mobile data.
+
+Not in scope: Tailscale's declarative sharing (alpha, three networks at most,
+both sides edit their policy).

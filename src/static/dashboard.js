@@ -1497,9 +1497,6 @@ async function loadMesh() {
         meshRow('Vault', meshLink(u.vault || '')) +
         meshRow('Home Assistant', meshLink(u.homeassistant || '')) +
         meshRow('Dashboard <span class="muted">— private network only</span>', meshLink(u.dashboard || '')) +
-        meshRow('Phone apps', st.public
-            ? 'Public address — switched on outside this dashboard'
-            : 'Each phone needs the Tailscale app, switched on') +
         meshRow('Lock', lock.enabled
             ? (lock.signed ? '<span class="status-badge status-running">On</span>'
                            : '<span class="status-badge status-stopped">This box is locked out</span>')
@@ -1522,11 +1519,73 @@ async function loadMesh() {
         html += `<div class="stat-item"><span>Waiting: <code>${escapeHtml(p.name || 'new device')}</code></span>` +
             `<span><button onclick="meshSign('${escapeHtml(p.nodekey)}')">Approve</button></span></div>`;
     });
-    html += `<div class="inline-row mt">` +
+    html += `<div id="mesh-household" class="mt"></div>` +
+        `<div class="inline-row mt">` +
         (st.public ? `<button onclick="meshPublish(false)">Make the apps private</button>` : '') +
         `<button onclick="savePhoneSheet()">Save phone setup sheet</button>` +
         `<button class="btn-danger" onclick="meshDisconnect()">Turn off remote access</button></div>`;
     body.innerHTML = html;
+    loadMeshHousehold();
+}
+
+/* Household: who else reaches this box, and whether the network's rules keep
+ * them to the three apps (mesh.household). The box holds no key for the
+ * owner's account, so the two steps that change anything happen in the
+ * Tailscale console; this section says which, and checks that they took. */
+const TS_CONSOLE = 'https://login.tailscale.com/admin';
+let _meshRule = '';
+
+async function loadMeshHousehold() {
+    const box = document.getElementById('mesh-household');
+    if (!box) return;
+    let h;
+    try {
+        h = await (await fetch('/api/mesh/household', { credentials: 'include' })).json();
+    } catch (e) {
+        box.textContent = 'Household status unavailable.';
+        return;
+    }
+    if (h.error) { box.textContent = h.error; return; }
+    _meshRule = h.rule || '';
+    let html = '<h4>Household</h4>' + meshRow('Access rule', h.limited
+        ? '<span class="status-badge status-running">Limited</span>'
+        : h.limited === false ? '<span class="status-badge status-stopped">Not limited</span>'
+            : '<span class="status-badge status-unknown">Unknown</span>');
+    (h.people || []).forEach((p) => {
+        const devices = p.devices.map(d => (d.name ? escapeHtml(d.name) + ' ' : '') +
+            (d.online ? 'online' : 'offline')).join(', ');
+        html += meshRow(`${escapeHtml(p.name)} <span class="muted">· ${devices}</span>`,
+            p.shared ? 'Shared: this box only' : 'Member: all your devices');
+    });
+    if (!(h.people || []).length) html += meshRow('People', 'Nobody yet');
+    html += `<div class="inline-row mt">` +
+        (h.limited ? '' :
+            `<button class="btn-primary" onclick="meshCopyRule()">Copy rule</button>` +
+            `<button onclick="window.open('${TS_CONSOLE}/acls/file', '_blank', 'noopener')">Open policy editor</button>`) +
+        `<button onclick="window.open('${TS_CONSOLE}/machines', '_blank', 'noopener')">Open Machines</button>` +
+        `<button onclick="loadMeshHousehold()">Check access</button></div>` +
+        `<details class="mt"><summary class="small">How this works</summary><div class="small">` +
+        `<p><strong>Limited</strong> means only your own devices reach the dashboard and SSH. Anyone you ` +
+        `share this box with gets Nextcloud, Vault and Home Assistant, and nothing else of yours.</p>` +
+        `<p><strong>To limit:</strong> Copy rule, Open policy editor, replace everything in it with the ` +
+        `rule, save, then Check access.</p>` +
+        `<p><strong>To add someone:</strong> Open Machines, find <code>homebrain</code>, choose ⋯ then ` +
+        `Share, then Copy invite link with Reusable off. Send it to one person. They sign in to Tailscale ` +
+        `with their own account and open it, and appear here once they have accepted. To remove someone: ` +
+        `the same Share dialog, Revoke.</p>` +
+        `<p><strong>Member</strong> means someone is on your Tailscale network itself and reaches all your ` +
+        `devices. Remove them under Users, then share the box with them instead.</p>` +
+        `<pre class="mono">${escapeHtml(_meshRule)}</pre></div></details>`;
+    box.innerHTML = html;
+}
+
+async function meshCopyRule() {
+    try {
+        await navigator.clipboard.writeText(_meshRule);
+        hbToast('Rule copied. Paste it into the policy editor.');
+    } catch (e) {
+        hbToast('Copy failed. Open "How this works" and copy it by hand.');
+    }
 }
 
 async function meshConnect() {
@@ -2588,7 +2647,8 @@ function showMemberPairing(d) {
     const meshNote = document.getElementById('member-mesh');
     if (meshNote) {
         meshNote.textContent = d.needs_mesh_app
-            ? 'First: install the Tailscale app on their phone, join it to your network and switch it '
+            ? 'First: install the Tailscale app on their phone, sign in with their own account, open '
+              + 'a share link from you (Connectivity, Remote access, Household says how) and switch it '
               + 'on. The code and these addresses do not work without it.' : '';
     }
     const vaultOk = d.services && d.services.vault === 'ok';
