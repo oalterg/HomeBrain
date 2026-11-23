@@ -21,7 +21,10 @@
           "config/llama-patches/0007-sycl-row-norm-clip-fusion.patch",
           "config/llama-patches/0008-sycl-depth-mix-fusion.patch",
           "config/llama-patches/0009-sycl-nvfp4-decode.patch",
-          "config/llama-patches/0010-sycl-tanh-mul-fusion.patch"
+          "config/llama-patches/0010-sycl-tanh-mul-fusion.patch",
+          "config/llama-patches/0011-sycl-f32-gemv.patch",
+          "config/llama-patches/0012-sycl-conv-residual-scale.patch",
+          "config/llama-patches/0013-sycl-topk-moe-bias.patch"
         ],
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {

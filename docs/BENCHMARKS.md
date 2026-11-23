@@ -1596,7 +1596,7 @@ The 17,629,760,736-byte model was SHA-256 verified before these runs.
 
 The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
 upstream commits, including the loop architecture and the NVFP4 scale
-fix for passes two and three. Ten patches are applied in order:
+fix for passes two and three. Thirteen patches are applied in order:
 
 | patch | purpose |
 |---|---|
@@ -1610,13 +1610,16 @@ fix for passes two and three. Ten patches are applied in order:
 | 0008 | SYCL fusion of `mix()`: the 7-node depth attention runs as one kernel per token. |
 | 0009 | NVFP4 decode without `pow()` or table lookups, in the MoE mat-vec and the grouped GEMM. |
 | 0010 | TANH in the fused unary + mul kernel, for the two `control()` gates. |
+| 0011 | Decode-size f32 mat-vec products take the small-matmul kernel instead of the generic path. |
+| 0012 | SYCL fusion of a short conv with its residual ADD and SCALE (`convolve()`). |
+| 0013 | Routing bias and an additive norm guard in the fused top-k MoE router. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`afc7c3c8565ce7ed34efd3b90dde5c18d9209907`. The diagnostic op profiler and
-the `test-backend-ops` cases for 0006–0010 are excluded from the patches.
+`1f7f8d26e01b914dc516a10d9f9c4b43e46e374e`. The diagnostic op profiler and
+the `test-backend-ops` cases for 0006–0013 are excluded from the patches.
 
 ### Incremental speed measurements
 
@@ -1635,6 +1638,7 @@ model's default reasoning effort of 0.9.
 | + 0005, ub2048, MMID_SCHED=3 | 422 t/s | 433 t/s | 20.9 t/s | 21.5 GiB VRAM |
 | + 0006–0008 | 428 t/s | 454 t/s | 22.0 t/s | 19.6 GiB VRAM |
 | + 0009–0010 | 472 t/s | 514 t/s | 32.0 t/s | 19.6 GiB VRAM |
+| + 0011–0013 | 475 t/s | 517 t/s | 37.2 t/s | VRAM unchanged at 262144 |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -1719,6 +1723,12 @@ and 14.66 t/s decode (218 s wall time). The short prompt ran at 515.7 t/s
 prefill and 30.96 t/s decode, and 517.5 t/s and 30.93 t/s after the fill.
 Greedy decode ran at 31.67 t/s, and the tool call parsed.
 
+With 0011–0013 (window 17) memory is again unchanged: 22.55 GiB after loading
+and 22.60 GiB after the fill. The fill retrieved both needles at 279.0 t/s
+prefill and 15.23 t/s decode (217 s wall time). The short prompt ran at
+519.7 t/s prefill and 33.61 t/s decode, greedy decode at 37.15 t/s, and the
+tool call parsed.
+
 Earlier, with only patches 0001–0002, 262144 text-only loaded at 22.6 GiB,
 131072 with the projector at 20.3 GiB, and a 31.5K-token fill retrieved both
 needles at 141 t/s. Tool calls returned parsed `tool_calls`; a cold OpenClaw
@@ -1737,8 +1747,10 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 | scratch pin + 0001–0008, same window | 959 t/s | 21.7 t/s | identical |
 | scratch pin + 0001–0009 mat-vec, window 12 | 961 t/s | 21.7 t/s | same opening |
 | scratch pin + 0001–0010, window 13 | 973 t/s | 21.7 t/s | same opening |
+| scratch pin + 0001–0012, window 16 | 974 t/s | 21.8 t/s | same opening |
+| scratch pin + 0001–0013, window 17 | 974 t/s | 21.8 t/s | same opening |
 
-For the last two rows only the first 70 characters of the 200-token answer
+For the last four rows only the first 70 characters of the 200-token answer
 were compared; they match production.
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
@@ -1748,6 +1760,12 @@ failed to allocate 1.1 GiB while Glimmer was resident, rather than failing
 numerically. The dedicated indexed-bias kernel test passed.
 On 0001–0010, NVFP4 passed MUL_MAT 42/42 and MUL_MAT_ID 73/73 again, and the
 fused TANH cases passed 39/39 (unary + mul) and 10/10 (add + unary + mul).
+On 0001–0012, MUL_MAT f32 passed 277/277, including scratch cases for every
+branch of the new mat-vec kernel. MUL_MAT_HADAMARD passed 32/32, SSM_CONV
+75/75, the existing conv + bias + SiLU fusion 120/120, and the new conv +
+residual + scale fusion 42/42. On 0001–0013, TOPK_MOE passed 698/698,
+including Inkling's router at 1, 5 and 512 tokens. `GGML_SYCL_DEBUG` traces
+confirmed that both new fusions ran instead of their unfused ops.
 FLASH_ATTN_EXT passed every case it ran, with no numeric failures:
 
 | run | result |
@@ -1795,6 +1813,9 @@ So host launch overhead is not what bounds decode. Inkling runs about 12,400
 graph nodes per token, and the likelier bound is their GPU-side cost. Fusing the element-wise
 chains (SITU, the depth mixing, clip and control) reduces that count, and is
 the lever for both prefill and decode.
+
+This held for 0001–0005 only. After 0009 made the NVFP4 mat-vec 3.7x faster,
+decode became bound by host dispatch; see 0011–0013 below.
 
 The reported 14,100 t/s on an RTX 5090 used a custom engine with native FP4
 tensor-core execution. This B60 path dequantizes NVFP4 into XMX GEMM and
@@ -1860,3 +1881,45 @@ raised the 35-token greedy decode from 31.46 / 30.91 to 34.23 / 34.24 t/s, but
 the short-prompt decode only from 30.25 to 30.76 t/s. With oneDNN off the
 greedy text also changes: it stops at 359 tokens instead of running to 400. It
 is not enabled.
+
+### Host-bound decode, 0011–0013
+
+After 0009–0010 the main llama-server thread ran at 99.7% CPU during decode
+(window 15, `top -H`), so decode was bound by host dispatch. The profiler,
+extended to record host time per op, put the generic MUL_MAT path at 15–19 µs
+of host time for each f32 product of the loop control, the router and the bias
+table. That is 384 calls per token. A plain kernel launch costs about 5 µs.
+
+0011 sends a 2-D f32 product with at most 32 columns and at most 2^20 MACs to
+0004's small-matmul kernel. When K ≥ 64 a work-group per output splits K across
+float4 loads. A sub-group per output would leave `ctrl_down`, which has 64 rows
+of 4608, latency-bound. In `test-backend-ops` perf these products take
+3.6–5.7 µs per call, against 9.54 µs for the one shape the 0001–0010 test build
+also has (24 × 2304). 0012 runs the 176 non-dynamic `convolve()` chains
+(SSM_CONV, RESHAPE, ADD, SCALE) as one kernel, cutting ADD launches from 496 to
+320 per decode token. 0013 runs Inkling's router as one kernel: sigmoid, the
+selection bias, top-8, then the weight norm guarded by `sum + eps`.
+
+Windows 16 and 17 ran on 2026-11-22, as before: ctx 131072, q8_0 KV, ub512, one
+warm-up per build, two rounds:
+
+| build, same window | decode, greedy | prefill, short | decode, short | prefill, ~6K | decode after 6K |
+|---|---:|---:|---:|---:|---:|
+| window 16: 0001–0010 | 31.71 / 31.78 t/s | 513.6 / 513.9 t/s | 30.70 / 30.87 t/s | 472.2 / 472.2 t/s | 26.91 / 26.92 t/s |
+| window 16: 0001–0012 | 36.34 / 36.33 t/s | 517.6 / 515.1 t/s | 32.72 / 32.78 t/s | 473.3 / 473.6 t/s | 28.32 / 28.43 t/s |
+| window 17: 0001–0012 | 35.79 / 36.21 t/s | 515.1 / 514.1 t/s | 32.75 / 32.81 t/s | 473.7 / 473.4 t/s | 28.40 / 27.95 t/s |
+| window 17: 0001–0013 | 37.15 / 37.16 t/s | 516.9 / 517.6 t/s | 33.46 / 33.49 t/s | 475.1 / 474.5 t/s | 28.86 / 28.91 t/s |
+
+From 0001–0010 to 0001–0013, greedy decode rises about 17%, short-prompt decode
+9% and decode after the 6K prompt 7%. Prefill is unchanged. Under the profiler,
+host dispatch fell from 34.3 ms per decode token (0001–0010) to 27.5 ms
+(0001–0012) and 25.7 ms (0001–0013). 0011 changes the f32 summation order, so
+the greedy answer differs from 0001–0010's from its first sentence, and the
+reasoning diverges after about 200 characters. 0013 changes the answer again.
+All three answers are correct. The printed 300-character openings of each
+build's two rounds match.
+
+The largest remaining decode node groups are the `mix()` CONCAT chains, the
+conv-state CONCAT and CPY, and the NVFP4 scale REPEAT and GET_ROWS. In window
+15's prefill profile of 0001–0010, flash attention took 32% and the NVFP4
+grouped GEMM 29%; 0011–0013 do not change either.
