@@ -1449,6 +1449,48 @@ refresh_vault_lan_ip() {
     return 0
 }
 
+# Vaultwarden writes data/config.json whenever someone clicks Save in its admin
+# panel, and that file beats the container's environment. It then pins the
+# admin token and domain of the day it was saved: after a restore onto a new
+# install, or a master password rotation, the dashboard's derived token gets
+# 401 ("Vault admin rejected login") and links name the old domain.
+# Drop the keys .env sets (the domain only when VAULT_DOMAIN is set, so an
+# empty one does not fall back to localhost). Other keys stay.
+# Restarts a running vaultwarden, which reads the file only at start.
+strip_vault_config_overrides() {
+    local cfg="${VAULT_DATA_DIR:-${HOMEBRAIN_HOME}/vault-data}/config.json"
+    [[ -f "$cfg" ]] || return 0
+    local keys=(admin_token)
+    [[ -n "${VAULT_DOMAIN:-}" ]] && keys+=(domain)
+    local changed
+    changed="$(python3 -I - "$cfg" "${keys[@]}" <<'PY'
+import json, os, sys
+path, keys = sys.argv[1], sys.argv[2:]
+with open(path) as f:
+    cfg = json.load(f)
+if not any(k in cfg for k in keys):
+    sys.exit()
+for k in keys:
+    cfg.pop(k, None)
+st = os.stat(path)
+with open(path + ".tmp", "w") as f:
+    json.dump(cfg, f, indent=2)
+os.chown(path + ".tmp", st.st_uid, st.st_gid)
+os.chmod(path + ".tmp", st.st_mode & 0o777)
+os.replace(path + ".tmp", path)
+print("yes")
+PY
+)" || { log_warn "Could not clean Vaultwarden config.json; the admin panel may reject the dashboard's token."; return 0; }
+    [[ "$changed" == "yes" ]] || return 0
+    log_info "Removed ${keys[*]} from Vaultwarden config.json (.env sets them)."
+    local cid
+    cid="$(get_vault_cid)"
+    if [[ -n "$cid" ]] && [[ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null)" == "true" ]]; then
+        docker restart "$cid" >/dev/null || log_warn "Vaultwarden restart failed; it still uses the old config.json values."
+    fi
+    return 0
+}
+
 # Remove the drop-in that delayed dockerd until an IPv4 default route existed.
 # It was the wrong fix for the tunnel-down-after-reboot bug: a route can exist
 # while /etc/resolv.conf still names a nameserver from a previous LAN, and the
