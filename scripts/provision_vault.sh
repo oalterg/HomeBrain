@@ -76,6 +76,7 @@ if [[ -z "${VAULT_ADMIN_TOKEN:-}" ]] || ! [[ "${VAULT_ADMIN_TOKEN}" =~ ^\$argon2
         log_info "Generated Argon2id-hashed VAULT_ADMIN_TOKEN."
     fi
 fi
+strip_vault_config_overrides
 
 # --- 5. Database + user (only when db container is up) ---
 DB_CID="$(get_nc_db_cid 2>/dev/null || true)"

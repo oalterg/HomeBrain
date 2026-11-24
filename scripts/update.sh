@@ -525,6 +525,7 @@ log_info "Updating Docker Stack..."
 # VAULT_LAN_IP in .env, so Caddy's cert names an address it no longer answers
 # on. Re-derive before `up`, which then recreates caddy with the right SAN.
 refresh_vault_lan_ip
+strip_vault_config_overrides
 cd "${INSTALL_DIR}" || die "Failed to cd to ${INSTALL_DIR}"
 # Runtime profiles so a running proton-bridge is rebuilt when its tag moves and
 # is not treated as an orphan by `up --remove-orphans`.

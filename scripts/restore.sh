@@ -517,6 +517,7 @@ if [[ "$HAS_VAULT_DATA" == "true" ]]; then
     mkdir -p "$VAULT_DATA"
     rsync -a --delete "${TMP_DIR}/vault_data/" "$VAULT_DATA/" || die "Vault data restore failed."
     chown -R 65534:65534 "$VAULT_DATA" 2>/dev/null || true
+    strip_vault_config_overrides
 fi
 
 if [[ "$HAS_VAULT_DB" == "true" ]]; then
