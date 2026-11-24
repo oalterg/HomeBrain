@@ -1596,7 +1596,7 @@ The 17,629,760,736-byte model was SHA-256 verified before these runs.
 
 The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
 upstream commits, including the loop architecture and the NVFP4 scale
-fix for passes two and three. Thirteen patches are applied in order:
+fix for passes two and three. Fifteen patches are applied in order:
 
 | patch | purpose |
 |---|---|
@@ -1613,13 +1613,15 @@ fix for passes two and three. Thirteen patches are applied in order:
 | 0011 | Decode-size f32 mat-vec products take the small-matmul kernel instead of the generic path. |
 | 0012 | SYCL fusion of a short conv with its residual ADD and SCALE (`convolve()`). |
 | 0013 | Routing bias and an additive norm guard in the fused top-k MoE router. |
+| 0014 | NVFP4 in the ESIMD grouped MoE GEMM, which decodes into the XMX operand without SLM staging. |
+| 0015 | Indexed bias and sinks in the MKL flash-attention path (XMX GEMMs), so prefill attention leaves the tile kernel. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`1f7f8d26e01b914dc516a10d9f9c4b43e46e374e`. The diagnostic op profiler and
-the `test-backend-ops` cases for 0006–0013 are excluded from the patches.
+`0018d33b1ed07f16c1d7f51bfa6546e7f4e62472`. The diagnostic op profiler and
+the `test-backend-ops` cases for 0006–0015 are excluded from the patches.
 
 ### Incremental speed measurements
 
@@ -1639,6 +1641,7 @@ model's default reasoning effort of 0.9.
 | + 0006–0008 | 428 t/s | 454 t/s | 22.0 t/s | 19.6 GiB VRAM |
 | + 0009–0010 | 472 t/s | 514 t/s | 32.0 t/s | 19.6 GiB VRAM |
 | + 0011–0013 | 475 t/s | 517 t/s | 37.2 t/s | VRAM unchanged at 262144 |
+| + 0014–0015 | 648 t/s | 655 t/s | 37.0 t/s | ctx 196608; 476 / 518 / 37.1 t/s for 0001–0013 in the same window |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -1782,8 +1785,10 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 | scratch pin + 0001–0010, window 13 | 973 t/s | 21.7 t/s | same opening |
 | scratch pin + 0001–0012, window 16 | 974 t/s | 21.8 t/s | same opening |
 | scratch pin + 0001–0013, window 17 | 974 t/s | 21.8 t/s | same opening |
+| scratch pin + 0001–0015, window 22 | 975 / 977 t/s | 21.8 t/s | same opening |
 
-For the last four rows only the first 70 characters of the 200-token answer
+In window 22, 0001–0013 ran at 973 t/s and 21.8 t/s between the two
+0001–0015 rounds. For the last five rows only the first 70 characters of the 200-token answer
 were compared; they match production.
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
@@ -1798,7 +1803,9 @@ branch of the new mat-vec kernel. MUL_MAT_HADAMARD passed 32/32, SSM_CONV
 75/75, the existing conv + bias + SiLU fusion 120/120, and the new conv +
 residual + scale fusion 42/42. On 0001–0013, TOPK_MOE passed 698/698,
 including Inkling's router at 1, 5 and 512 tokens. `GGML_SYCL_DEBUG` traces
-confirmed that both new fusions ran instead of their unfused ops.
+confirmed that both new fusions ran instead of their unfused ops. On
+0001–0014, NVFP4 passed MUL_MAT_ID 73/73 and MUL_MAT 42/42 again. The CPU has
+no indexed bias, so 0015 is checked on the model instead; see 0014–0015 below.
 FLASH_ATTN_EXT passed every case it ran, with no numeric failures:
 
 | run | result |
@@ -1965,4 +1972,76 @@ it runs on the SIMD tile kernel. The NVFP4 grouped GEMM takes 5.1 ms per
 `gate_up` call against 2.2 ms for the q8_0 layers of the same shape. q8_0
 has an ESIMD grouped GEMM and NVFP4 does not. At 512 tokens per ubatch the
 NVFP4 call runs at about 8 TFLOPS, far below both the card's XMX peak and
-its memory bound (0.84 ms to read all 128 experts).
+its memory bound (0.84 ms to read all 128 experts). 0014 and 0015 below take
+both levers.
+
+### Prefill, 0014–0015
+
+0014 adds NVFP4 to the ESIMD grouped GEMM. A 32-value k step is two 16-value
+sub-blocks, one per dpas k half, each with one UE4M3 scale. Every code times
+a scale is exact in half. In `test-backend-ops` perf (128 experts, top-8),
+with `GGML_SYCL_MMID_ESIMD` switching the kernel:
+
+| MUL_MAT_ID | joint_matrix | ESIMD |
+|---|---:|---:|
+| NVFP4 `gate_up` [2304 × 2304], 512 tokens | 5,537 µs | 3,421 µs |
+| NVFP4 `down` [1152 → 2304], 512 tokens | 2,938 µs | 1,704 µs |
+| NVFP4 `gate_up`, 8 tokens | 1,494 µs | 983 µs |
+| q8_0 `gate_up` / `down`, 512 tokens, for reference | — | 2,671 / 1,383 µs |
+
+NVFP4 is still slower than q8_0 here: its weight stays in the canonical
+block layout, read with gathers, where q8_0 is reordered for 2D block loads.
+
+0015 lets the MKL flash-attention path take the indexed bias and sinks. That
+path runs QK and PV as XMX GEMMs per KV head with an online softmax over
+8,192-key chunks. The softmax adds the bias exactly as the tile kernel does.
+Inkling's 24 layers are 20 sliding-window layers, each with its own
+1,024-key cache, and 4 full ones. With the loop, 40 of the 48 attention
+passes per token see about 1,500 keys in prefill. A scratch perf case with
+512 queries, 24 heads over 8 KV heads, q8_0 K/V and 1,025 bins:
+
+| keys | tile kernel | MKL path |
+|---:|---:|---:|
+| 1,536 | 5.87 ms | 5.53 ms |
+| 2,048 | 7.36 ms | 5.97 ms |
+| 3,072 | 12.89 ms | 7.15 ms |
+| 4,096 | 15.90 ms | 8.02 ms |
+| 6,144 | 23.99 ms | 10.47 ms |
+| 10,240 | 38.51 ms | 12.11 ms |
+| 20,480 | 74.65 ms | 20.26 ms |
+
+Window 21 ran on 2026-11-24 at the catalog's ctx 196608, q8_0 KV, ub512, one
+warm-up per build and two rounds. "+ 0014" is the 0001–0015 build with
+`GGML_SYCL_ENABLE_MKL_FA=0`:
+
+| build, same window | prefill, 847 tokens | prefill, 5,904 | prefill, 19,644 | decode, short |
+|---|---:|---:|---:|---:|
+| 0001–0013 | 516.9 / 518.5 t/s | 475.9 / 475.4 t/s | 403.0 / 403.0 t/s | 33.60 / 33.59 t/s |
+| + 0014 | 638.3 / 638.6 t/s | 556.3 / 556.0 t/s | 457.7 / 457.8 t/s | 33.57 / 33.58 t/s |
+| + 0014–0015 | 656.6 / 653.4 t/s | 649.1 / 647.2 t/s | 624.8 / 623.8 t/s | 33.48 / 33.58 t/s |
+
+Prefill rises 26% on the short prompt, 36% at 5.9K tokens and 55% at 19.6K.
+Decode is unchanged; greedy decode ran at 37.04 t/s against 37.14. Under the
+profiler, a warm 19,644-token prompt took 34.3 s of op time against 51.5 s on
+0001–0013. Flash attention fell from 23.3 s to 11.9 s (11.8 to 6.0 ms per
+call) and the NVFP4 GEMMs from 13.7 s to 7.9 s. They still hold 35% and 23%,
+then the permuted CONT at 5%. The MKL path spends about 570 µs of host time
+per call. That launch work runs ahead of the GPU in prefill.
+
+The checks:
+
+- Attention path. On the same 0001–0015 build, the MKL path off and on were
+  given one 24,558-token prompt of llama.cpp documentation, then 32 greedy
+  tokens were drawn with their top-5 probabilities. The text was identical,
+  with the same argmax at all 32 positions. Most top-5 probabilities moved by
+  0.02 or less. The largest move, 0.12, came at a near tie ("on Android,
+  Windows" against "on Android and Windows"). 0014 alone against 0001–0013
+  changed the greedy text after 11 tokens, through the f32 summation order,
+  with at most 0.04 before the split.
+- Shipped vision profile, ctx 196608 with the GPU projector, on 0001–0015.
+  The 58,723-token fill found both needles at 546.8 t/s prefill and
+  15.23 t/s decode; window 19 measured 261.7 and 15.01 on 0001–0013. The
+  4000x3000 test image was read correctly in 14.4 s (16.2 s before). VRAM
+  was 21.74 GiB after loading, 21.83 GiB after the fill and 22.26 GiB after
+  the image, against a 22.21 GiB peak on 0001–0013.
+- Glimmer is unchanged (window 22, in the regression table above).
