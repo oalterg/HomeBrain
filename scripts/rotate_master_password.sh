@@ -28,6 +28,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 
 # Minimal copy of utilities.sh:run_as_admin — avoids sourcing utilities.sh just
 # for one helper (and its top-level side effects). Runs a command as the

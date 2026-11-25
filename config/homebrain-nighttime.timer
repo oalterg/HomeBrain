@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the HomeBrain nighttime schedule
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+OnBootSec=90s
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=false
+WakeSystem=false
+
+[Install]
+WantedBy=timers.target

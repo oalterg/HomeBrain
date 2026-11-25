@@ -32,6 +32,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 
 # Load .env to get correct data paths (NEXTCLOUD_DATA_DIR, VAULT_DATA_DIR, etc.)
 # On re-run after power loss .env may already be deleted — that's fine, defaults apply.
@@ -199,6 +200,9 @@ fi
 write_status "running" "Nuclear reset in progress — erasing configuration..."
 
 log "Removing .env, .secret_key, and all setup state..."
+if [[ -f "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/nighttime.json" ]]; then
+    python3 "$INSTALL_DIR/src/nighttime.py" reset || die "Could not clear nighttime wake settings."
+fi
 rm -f "$ENV_FILE" 2>/dev/null || true
 rm -f "$INSTALL_DIR/.secret_key" 2>/dev/null || true
 rm -f "$INSTALL_DIR/.setup_complete" 2>/dev/null || true

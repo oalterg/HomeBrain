@@ -38,6 +38,10 @@
     <!-- Health banner — fed by /api/health (homebrain-health.timer). Visible on
          every tab so problems surface no matter where the user lands. -->
     <div id="health-banner" class="notice mt" style="display:none;"></div>
+    <div id="nighttime-banner" class="notice mt" hidden>
+        <span id="nighttime-countdown"></span>
+        <button onclick="nighttimeAction('skip')">Keep awake tonight</button>
+    </div>
 
     <!-- ============================ STATUS ============================ -->
     <div id="status" class="tab-content active">
@@ -968,6 +972,37 @@
                 <small id="owner-email-msg" class="hint"></small>
             </section>
             {% endif %}
+
+            <section class="section" id="nighttime-card">
+                <h3>Nighttime</h3>
+                <p class="lede">Turn the box off each night and start it again in the morning.
+                    Files, vault sync, home automations and the agent are unavailable while it is off.</p>
+                <form id="nighttime-form" onsubmit="saveNighttime(event)" oninput="nighttimeDirty = true">
+                    <label><input type="checkbox" id="nighttime-enabled"> Enable daily nighttime</label>
+                    <div class="split mt">
+                        <div><label for="nighttime-start">Shut down at</label>
+                            <input type="time" id="nighttime-start" required value="23:00"></div>
+                        <div><label for="nighttime-end">Start again at</label>
+                            <input type="time" id="nighttime-end" required value="07:00"></div>
+                    </div>
+                    <label for="nighttime-timezone" class="mt">Timezone</label>
+                    <input type="text" id="nighttime-timezone" required value="Europe/Berlin" placeholder="Europe/Berlin">
+                    <p class="hint">Shutdown takes a little time. Applications become available after startup.
+                        Busy backups, restores and updates keep the box awake. Changes apply to the next future interval.</p>
+                    <button type="submit" class="btn-primary">Save nighttime</button>
+                </form>
+                <p id="nighttime-status" role="status" class="small mt">Loading nighttime settings…</p>
+                <p id="nighttime-next" class="small"></p>
+                <p id="nighttime-backup" class="hint"></p>
+                <p id="nighttime-result" class="small"></p>
+                <div class="inline-row mt" style="flex-wrap:wrap;">
+                    <button id="nighttime-test" onclick="nighttimeAction('test')">Test automatic wake</button>
+                    <button id="nighttime-confirm" onclick="nighttimeAction('confirm-test')" hidden>Confirm automatic wake</button>
+                    <button id="nighttime-skip" onclick="nighttimeAction('skip')" disabled>Skip tonight</button>
+                </div>
+                <p class="hint">A wake test shuts down in two minutes and starts the box five minutes later.
+                    Stay nearby with access to its power button. The dashboard is unreachable while the box is off.</p>
+            </section>
 
             <section class="section" id="vault-config-card">
                 <h3>Vault</h3>

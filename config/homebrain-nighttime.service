@@ -1,0 +1,12 @@
+[Unit]
+Description=HomeBrain nighttime shutdown and recovery
+After=network.target docker.service homebrain-manager.service
+ConditionPathExists=/var/lib/homebrain/nighttime.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/homebrain/src/nighttime.py tick
+TimeoutStartSec=300
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal

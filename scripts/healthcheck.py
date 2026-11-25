@@ -806,6 +806,21 @@ def has_gpu(env):
         return False
 
 
+def check_nighttime():
+    path = os.path.join(STATE_DIR, "nighttime.json")
+    try:
+        with open(path) as f:
+            state = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"id": "nighttime", "level": "warn", "summary": "Nighttime settings could not be read; automatic shutdown is unavailable"}
+    last = state.get("last_result", {})
+    if last.get("result") == "failed":
+        return {"id": "nighttime", "level": "warn", "summary": last.get("message", "Nighttime needs attention")}
+    return {"id": "nighttime", "level": "ok", "summary": "Nighttime schedule enabled" if state.get("config", {}).get("enabled") else "Nighttime is disabled"}
+
+
 def main():
     global BACKUP_DIR
     now = time.time()
@@ -831,6 +846,7 @@ def main():
     state.setdefault("checks", {})
 
     checks = [c for c in [
+        check_nighttime(),
         check_backup(env, now),
         check_offsite(env, now),
         check_disk("/", "System disk", "disk_root"),

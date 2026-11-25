@@ -282,7 +282,7 @@ async function init() {
         // opens the Settings tab.
         await Promise.all([fetchStatus(), loadSystemConfig(), pollTask(), refreshMedia(), fetchVaultStatus(),
             vaultDocsRefresh(), vaultMcpRefresh(), connRefresh(), channelRefresh(),
-            loadRecoveryStatus(), loadActivation()]);
+            loadRecoveryStatus(), loadActivation(), loadNighttime()]);
     } catch (err) {
         console.error('Initial fetch failed:', err);
     }
@@ -306,6 +306,7 @@ const POLLERS = [
     [connRefresh, 15000],
     [channelRefresh, 15000],
     [loadActivation, 60000],
+    [loadNighttime, 30000],
     [pollLogsIfVisible, 3000],
     [pollOffsiteStatusIfVisible, 15000],
 ];
@@ -369,6 +370,7 @@ function openTab(id) {
     }
     if (id === 'settings') {
         loadSystemConfig();
+        loadNighttime();
         loadSerialDevices();
     }
 }
@@ -1770,6 +1772,83 @@ async function revertToFactory() {
 /* =====================================================================
    System configuration
    ===================================================================== */
+
+let nighttimeDirty = false;
+let nighttimeState = null;
+
+async function loadNighttime() {
+    const status = document.getElementById('nighttime-status');
+    if (!status) return;
+    try {
+        const response = await fetch('/api/system/nighttime', { credentials: 'include' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load nighttime settings.');
+        nighttimeState = data;
+        if (!nighttimeDirty) {
+            document.getElementById('nighttime-enabled').checked = data.config.enabled;
+            for (const key of ['start', 'end', 'timezone']) {
+                document.getElementById('nighttime-' + key).value = data.config[key];
+            }
+        }
+        document.getElementById('nighttime-enabled').disabled = !data.verified && !data.config.enabled;
+        document.getElementById('nighttime-test').disabled = !data.capability.available || !!data.pending;
+        document.getElementById('nighttime-confirm').hidden = !data.test_candidate;
+        const skip = document.getElementById('nighttime-skip');
+        skip.disabled = !data.pending && (!data.config.enabled || !!data.skip_start);
+        skip.textContent = data.pending ? 'Cancel wake test' : 'Skip tonight';
+        status.textContent = !data.capability.available ? data.capability.hint
+            : data.verified ? 'Automatic wake verified on this box.' : data.capability.hint;
+        const when = ts => new Date(ts * 1000).toLocaleString([], { timeZone: data.config.timezone, dateStyle: 'medium', timeStyle: 'short' });
+        document.getElementById('nighttime-next').textContent = data.pending
+            ? `Wake test: shuts down ${when(data.pending.start)}; starts again ${when(data.pending.wake)} (${data.config.timezone}).`
+            : data.config.enabled && data.next
+                ? `${data.skip_start ? 'Skipping this interval: ' : 'Next: '}${when(data.next.start)} → ${when(data.next.wake)} (${data.config.timezone}).`
+                : 'Nighttime is disabled.';
+        document.getElementById('nighttime-result').textContent = data.last_result ? data.last_result.message : '';
+        document.getElementById('nighttime-backup').textContent = `Backup time: ${data.backup_time} (${data.backup_timezone}). Missed backups run after startup; choose an awake time in Backup & Storage.`;
+        const cycle = data.pending || (data.config.enabled && !data.skip_start ? data.next : null);
+        const seconds = cycle ? cycle.start - Date.now() / 1000 : Infinity;
+        document.getElementById('nighttime-banner').hidden = seconds > 300 || seconds < -900;
+        document.getElementById('nighttime-countdown').textContent = seconds > 0
+            ? `Nighttime shutdown in about ${Math.ceil(seconds / 60)} minute(s). All services will disconnect.`
+            : 'Nighttime shutdown is starting. The dashboard will disconnect.';
+    } catch (e) {
+        status.textContent = 'Nighttime status unavailable: ' + e.message;
+    }
+}
+
+async function writeNighttime(path, body) {
+    try {
+        const response = await fetch('/api/system/nighttime' + path, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Nighttime change failed.');
+        nighttimeDirty = false;
+        await loadNighttime();
+        hbToast(path === '/test' ? 'Wake test scheduled. You can cancel it before shutdown.' : 'Nighttime updated.');
+    } catch (e) { hbToast(e.message, 'error'); }
+}
+
+async function saveNighttime(event) {
+    event.preventDefault();
+    const config = { enabled: document.getElementById('nighttime-enabled').checked };
+    for (const key of ['start', 'end', 'timezone']) config[key] = document.getElementById('nighttime-' + key).value;
+    if (config.enabled && !await hbConfirm({ title: 'Enable daily nighttime?',
+        body: `Shut down at ${config.start} and start again at ${config.end} (${config.timezone}).`,
+        detail: 'Files, vault sync, home automations and the agent will be unavailable. Schedule backups during awake hours.', confirm: 'Save schedule' })) return;
+    await writeNighttime('', config);
+}
+
+async function nighttimeAction(action) {
+    if (action === 'test' && !await hbConfirm({ title: 'Test automatic wake?',
+        body: 'The box will shut down in two minutes and attempt to start five minutes later.',
+        detail: 'All HomeBrain services will disconnect. Stay nearby to turn it on manually if the wake alarm fails.', confirm: 'Start wake test' })) return;
+    if (action === 'confirm-test' && !await hbConfirm({ title: 'Did the wake test succeed?',
+        body: 'Confirm only if the fans stopped and the box started again by itself, without pressing its power button.', confirm: 'Yes, it woke automatically' })) return;
+    await writeNighttime('/' + action, action === 'confirm-test' ? { id: nighttimeState?.test_candidate?.id } : {});
+}
 
 async function loadSystemConfig() {
     try {

@@ -137,6 +137,17 @@ jobs:
       - name: retired WhatsApp plugins are actually uninstalled
         run: bash scripts/tests/test_whatsapp_removal.sh
 
+  nighttime-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install dashboard and browser dependencies
+        run: |
+          pip install -q -r requirements.txt playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Nighttime browser, HTTP, MCP and controller E2E (simulated hardware)
+        run: python3 scripts/e2e/nighttime.py
+
   compose:
     runs-on: ubuntu-latest
     steps:

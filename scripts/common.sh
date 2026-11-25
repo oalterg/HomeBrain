@@ -41,6 +41,15 @@ log_warn() { echo "[WARN] $1" >&2; }
 log_error() { echo "[ERROR] $1" >&2; }
 die() { log_error "$1" >&2; exit 1; }
 
+# Stable inode, shared for the entire operation; nighttime takes it exclusively.
+# Never unlink this lock. Child scripts may take another shared descriptor.
+hold_power_lock() {
+    local state_dir="${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}"
+    [[ -f "$state_dir/nighttime.json" ]] || return 0
+    exec 197>"$state_dir/power.lock"
+    flock -sn 197 || die "Nighttime shutdown is starting; retry after the box wakes."
+}
+
 # --- Downgrade Protection ---
 # HomeBrain's update path is one-way. Two things make a downgrade unsafe:
 #   1. Nextcloud migrates its data + config version forward the first time a

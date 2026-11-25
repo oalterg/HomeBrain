@@ -14,6 +14,7 @@ fi
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 
 # --- Configuration ---
 REPO_OWNER="oalterg"
@@ -381,6 +382,7 @@ install_python_venv_deps
 # It ensures the active systemd units match the repository versions exactly.
 UNITS_CHANGED=false
 for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.timer \
+            homebrain-nighttime.service homebrain-nighttime.timer \
             homebrain-offsite.service homebrain-offsite.timer \
             homebrain-ha-watch.service homebrain-email-watch.service \
             homebrain-media.service homebrain-picture.service homebrain-video.service \

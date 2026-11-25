@@ -16,6 +16,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 import media_jobs as jobs
 import picture
+import nighttime
 
 MAX_SEND_BYTES = 49 * 1024 * 1024
 _idle_job = None
@@ -219,7 +220,10 @@ def main():
         jobs.recover_sends()
         while True:
             try:
-                tick()
+                with nighttime.operation():
+                    tick()
+            except nighttime.NighttimeError:
+                pass
             except Exception:
                 logging.exception("Media worker iteration failed")
             time.sleep(5)
