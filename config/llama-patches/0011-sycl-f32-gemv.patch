@@ -1,0 +1,75 @@
+sycl: decode-size f32 GEMVs take the small-matmul kernel
+
+HomeBrain patch on ggml-sycl. Applies on top of 0010.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+At decode, Inkling multiplies f32 weights by a single token 384 times per token:
+loop control (ctrl_down, ctrl_gain and ctrl_forget for q, k, v and ffn), the MoE
+router and the relative-bias table. The generic MUL_MAT path spent 15-19 us of
+host time on each, where a plain parallel_for costs about 5 us. Decode on the B60
+is bound by host dispatch: the main thread runs at 100% while the GPU waits.
+A 2-D f32 product with at most 32 columns and at most 2^20 MACs now takes 0004's
+small-matmul kernel. With K >= 64 and 16-byte aligned rows, a work-group per
+output splits K across float4 loads. Hadamard-hinted products keep their
+transform.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 523d3aa1c..5cbaf7563 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -5191,7 +5191,9 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
+ 
+ // Many independent tiny products dst[:, :, b] = src0[:, :, b]^T src1[:, :, b] (f32), e.g. Inkling 2's
+ // per-token attention over earlier block outputs. The generic path issues one GEMM per batch, which
+-// for thousands of batches of a few thousand MACs each is all launch overhead.
++// for thousands of batches of a few thousand MACs each is all launch overhead. A single small product
++// with few columns (a decode-time f32 GEMV, e.g. Inkling 2's loop-control and router weights) takes
++// the same kernel: there the generic path's host cost exceeds the product's.
+ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+                                                 const ggml_tensor * src1, ggml_tensor * dst) {
+     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+@@ -5199,7 +5201,11 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
+     }
+     const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1];
+     const int64_t B2 = src1->ne[2], B3 = src1->ne[3];
+-    if (src0->ne[2] * src0->ne[3] == 1 || B2 * B3 < 32 || M * N * K > 65536) {
++    const bool batched = src0->ne[2] * src0->ne[3] > 1 && B2 * B3 >= 32 && M * N * K <= 65536;
++    // a Hadamard-hinted src0 keeps its fast transform below
++    const bool gemv    = src0->ne[2] * src0->ne[3] == 1 && B2 * B3 == 1 && N <= 32 && M * N * K <= (1 << 20) &&
++                         ggml_get_op_params_i32(dst, 1) != GGML_HINT_SRC0_IS_HADAMARD;
++    if (!batched && !gemv) {
+         return false;
+     }
+     if (B2 % src0->ne[2] != 0 || B3 % src0->ne[3] != 0) {
+@@ -5215,6 +5221,31 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
+     const int64_t n_out = M * N * B2 * B3;
+     queue_ptr stream = ctx.stream();
+ 
++    if (gemv && K >= 64 && K % 4 == 0 && a0 == sizeof(float) && b0 == sizeof(float) && a1 % 16 == 0 &&
++            b1 % 16 == 0 && (uintptr_t) a % 16 == 0 && (uintptr_t) b % 16 == 0) {
++        // one work-group per output, float4 loads split over K (few rows of a long K would leave
++        // a sub-group per output latency-bound), then a group reduction
++        const int L = K >= 1024 ? 256 : K >= 256 ? 64 : WARP_SIZE;
++        stream->parallel_for(sycl::nd_range<1>(sycl::range<1>(n_out * L), sycl::range<1>(L)),
++            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                const int64_t i = it.get_group(0) % M;
++                const int64_t j = it.get_group(0) / M;
++                const sycl::float4 * pa = (const sycl::float4 *) (a + i*a1);
++                const sycl::float4 * pb = (const sycl::float4 *) (b + j*b1);
++                float sum = 0.0f;
++                for (int64_t k = it.get_local_id(0); k < K/4; k += L) {
++                    const sycl::float4 x = pa[k];
++                    const sycl::float4 y = pb[k];
++                    sum += x.x()*y.x() + x.y()*y.y() + x.z()*y.z() + x.w()*y.w();
++                }
++                sum = sycl::reduce_over_group(it.get_group(), sum, sycl::plus<float>());
++                if (it.get_local_id(0) == 0) {
++                    *(float *) (d + i*d0 + j*d1) = sum;
++                }
++            });
++        return true;
++    }
++
+     if (K >= 128) {
+         // one sub-group per output element, reduce over K
+         stream->parallel_for(sycl::nd_range<1>(sycl::range<1>(n_out * WARP_SIZE), sycl::range<1>(WARP_SIZE)),

@@ -1,0 +1,229 @@
+sycl: fuse Inkling's depth-attention mix into one kernel per token
+
+HomeBrain patch on ggml-sycl. Applies on top of 0007.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+mix() attends over up to five stacked block outputs with learned queries:
+RMS_NORM, a transposed copy, a REPEAT of the queries, two batched matmuls and
+a softmax, two or three times per layer pass. The backend matches that
+subgraph and runs one work-group per token, which reads the states twice and
+stores nothing in between. More than 5 states or 4 queries run the ops as
+before.
+
+0006-0008 together, on an Arc Pro B60 with Inkling-2-Mini Q4_K_XL (ctx 131072,
+q8_0 KV, -ub 512, warmed, against 0001-0005 in the same window, two rounds):
+decode 19.9 -> 22.0 t/s, prefill 406 -> 454 t/s on an 847-token prompt and
+389 -> 428 t/s on a 5.9K-token prompt.
+
+diff --git a/ggml/src/ggml-sycl/fusion.cpp b/ggml/src/ggml-sycl/fusion.cpp
+index f5a5850c3..c56ef198c 100644
+--- a/ggml/src/ggml-sycl/fusion.cpp
++++ b/ggml/src/ggml-sycl/fusion.cpp
+@@ -1,5 +1,6 @@
+ #include "fusion.hpp"
+ #include "binbcast.hpp"
++#include "norm.hpp"
+ 
+ #include <algorithm>
+ 
+@@ -167,6 +168,34 @@ bool ggml_sycl_can_fuse(const ggml_cgraph * cgraph, int node_idx, std::initializ
+                ggml_are_same_shape(x, n[7]);
+     }
+ 
++    // Inkling's depth attention mix(): rms-normed states [n_embd, S, T] scored against learned queries
++    // [n_embd, nq], a softmax over S, and the weighted sum of the normed states; the last MUL_MAT is the output
++    if (ops.size() == 7 && ops.begin()[0] == GGML_OP_RMS_NORM && ops.begin()[1] == GGML_OP_TRANSPOSE) {
++        if (!ggml_can_fuse_subgraph(cgraph, node_idx, ops, { node_idx + 6 })) {
++            return false;
++        }
++
++        ggml_tensor * const * n   = cgraph->nodes + node_idx;
++        const ggml_tensor *   x   = n[0]->src[0];
++        const ggml_tensor *   rep = n[3];
++        const ggml_tensor *   q   = rep->src[0];
++        const ggml_tensor *   sm  = n[5];
++        const ggml_tensor *   out = n[6];
++        if (n[1]->src[0] != n[0] || n[2]->src[0] != n[1] || n[4]->src[0] != n[0] || n[4]->src[1] != rep ||
++            sm->src[0] != n[4] || sm->src[1] || sm->src[2] || out->src[0] != n[2] || out->src[1] != sm) {
++            return false;
++        }
++        if (ggml_get_op_params_f32(sm, 1) != 0.0f) {
++            return false;  // max_bias
++        }
++
++        return x->type == GGML_TYPE_F32 && q->type == GGML_TYPE_F32 && out->type == GGML_TYPE_F32 &&
++               ggml_is_contiguous(x) && ggml_is_contiguous(q) && ggml_is_contiguous(out) &&
++               x->ne[3] == 1 && q->ne[0] == x->ne[0] && q->ne[2] == 1 && q->ne[3] == 1 &&
++               rep->ne[2] == x->ne[2] && rep->ne[3] == 1 &&
++               x->ne[1] <= GGML_SYCL_DEPTH_MIX_MAX_STATES && q->ne[1] <= GGML_SYCL_DEPTH_MIX_MAX_QUERIES;
++    }
++
+     if (!ggml_can_fuse(cgraph, node_idx, ops)) {
+         return false;
+     }
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 1ec25d0a0..523d3aa1c 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -6877,6 +6877,13 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+             i++;
+             continue;
+         }
++        if (node->op == GGML_OP_RMS_NORM &&
++            ggml_sycl_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_TRANSPOSE, GGML_OP_CONT, GGML_OP_REPEAT,
++                                            GGML_OP_MUL_MAT, GGML_OP_SOFT_MAX, GGML_OP_MUL_MAT }, {})) {
++            ggml_sycl_op_depth_mix_fused(*sycl_ctx, cgraph->nodes + i);
++            i += 6;
++            continue;
++        }
+         if (node->op == GGML_OP_SQR &&
+             ggml_sycl_can_fuse(cgraph, i, { GGML_OP_SQR, GGML_OP_SUM_ROWS, GGML_OP_SQRT, GGML_OP_SCALE, GGML_OP_FILL,
+                                             GGML_OP_DIV, GGML_OP_CLAMP, GGML_OP_MUL }, {})) {
+diff --git a/ggml/src/ggml-sycl/norm.cpp b/ggml/src/ggml-sycl/norm.cpp
+index a661d38fb..c8dae1f9d 100644
+--- a/ggml/src/ggml-sycl/norm.cpp
++++ b/ggml/src/ggml-sycl/norm.cpp
+@@ -815,6 +815,125 @@ void ggml_sycl_op_row_norm_clip_fused(ggml_backend_sycl_context & ctx, ggml_tens
+         });
+ }
+ 
++// Inkling's mix() per token: a softmax over the S rms-normed states of their dot with each learned query,
++// then the weighted sum of the normed states. The states are read twice and nothing in between is stored.
++void ggml_sycl_op_depth_mix_fused(ggml_backend_sycl_context & ctx, ggml_tensor ** nodes) {
++    constexpr int NS = GGML_SYCL_DEPTH_MIX_MAX_STATES;
++    constexpr int NQ = GGML_SYCL_DEPTH_MIX_MAX_QUERIES;
++    constexpr int NV = NS * (NQ + 1);  // per state: the sum of squares, then one dot per query
++    constexpr int WG = 256;
++
++    const ggml_tensor * x   = nodes[0]->src[0];  // [n_embd, S, T]
++    const ggml_tensor * q   = nodes[3]->src[0];  // [n_embd, nq]
++    ggml_tensor *       dst = nodes[6];          // [n_embd, nq, T]
++
++    const float eps   = ggml_get_op_params_f32(nodes[0], 0);
++    const float scale = ggml_get_op_params_f32(nodes[5], 0);
++
++    const int     n_embd = x->ne[0];
++    const int     S      = x->ne[1];
++    const int     nq     = q->ne[1];
++    const int64_t T      = x->ne[2];
++    const float * xd     = static_cast<const float *>(x->data);
++    const float * qd     = static_cast<const float *>(q->data);
++    float *       dd     = static_cast<float *>(dst->data);
++
++    dpct::queue_ptr stream = ctx.stream();
++    SYCL_CHECK(ggml_sycl_set_device(ctx.device));
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> part(sycl::range<1>((WG / WARP_SIZE) * NV), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(T * WG), sycl::range<1>(WG)),
++            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                const auto    sg  = it.get_sub_group();
++                const int     tid = it.get_local_id(0);
++                const float * xt  = xd + it.get_group(0) * S * n_embd;
++                float *       dt  = dd + it.get_group(0) * nq * n_embd;
++
++                float acc[NV] = {};
++                for (int e = tid; e < n_embd; e += WG) {
++                    float qe[NQ];
++#pragma unroll
++                    for (int j = 0; j < NQ; ++j) {
++                        qe[j] = j < nq ? qd[j * n_embd + e] : 0.0f;
++                    }
++#pragma unroll
++                    for (int s = 0; s < NS; ++s) {
++                        if (s < S) {
++                            const float v = xt[s * n_embd + e];
++                            acc[s * (NQ + 1)] += v * v;
++#pragma unroll
++                            for (int j = 0; j < NQ; ++j) {
++                                acc[s * (NQ + 1) + 1 + j] += v * qe[j];
++                            }
++                        }
++                    }
++                }
++
++#pragma unroll
++                for (int k = 0; k < NV; ++k) {
++                    const float r = sycl::reduce_over_group(sg, acc[k], sycl::plus<float>());
++                    if (sg.get_local_linear_id() == 0) {
++                        part[sg.get_group_linear_id() * NV + k] = r;
++                    }
++                }
++                sycl::group_barrier(it.get_group());
++
++#pragma unroll
++                for (int k = 0; k < NV; ++k) {
++                    float r = 0.0f;
++                    for (int g = 0; g < WG / WARP_SIZE; ++g) {
++                        r += part[g * NV + k];
++                    }
++                    acc[k] = r;
++                }
++
++                // the softmax weights, with each state's 1/rms folded in
++                float w[NS * NQ];
++#pragma unroll
++                for (int j = 0; j < NQ; ++j) {
++                    float m = -INFINITY;
++#pragma unroll
++                    for (int s = 0; s < NS; ++s) {
++                        const float inv = sycl::rsqrt(acc[s * (NQ + 1)] / n_embd + eps);
++                        w[s * NQ + j] = s < S ? acc[s * (NQ + 1) + 1 + j] * inv * scale : -INFINITY;
++                        m = sycl::fmax(m, w[s * NQ + j]);
++                    }
++                    float sum = 0.0f;
++#pragma unroll
++                    for (int s = 0; s < NS; ++s) {
++                        w[s * NQ + j] = s < S ? sycl::exp(w[s * NQ + j] - m) : 0.0f;
++                        sum += w[s * NQ + j];
++                    }
++#pragma unroll
++                    for (int s = 0; s < NS; ++s) {
++                        w[s * NQ + j] *= sycl::rsqrt(acc[s * (NQ + 1)] / n_embd + eps) / sum;
++                    }
++                }
++
++                for (int e = tid; e < n_embd; e += WG) {
++                    float o[NQ] = {};
++#pragma unroll
++                    for (int s = 0; s < NS; ++s) {
++                        if (s < S) {
++                            const float v = xt[s * n_embd + e];
++#pragma unroll
++                            for (int j = 0; j < NQ; ++j) {
++                                o[j] += w[s * NQ + j] * v;
++                            }
++                        }
++                    }
++#pragma unroll
++                    for (int j = 0; j < NQ; ++j) {
++                        if (j < nq) {
++                            dt[j * n_embd + e] = o[j];
++                        }
++                    }
++                }
++            });
++    });
++}
++
+ void ggml_sycl_op_rms_norm_scale_fused(ggml_backend_sycl_context & ctx, ggml_tensor * dst,
+                                        ggml_tensor * scale_tensor) {
+     const ggml_tensor * src0 = dst->src[0];
+diff --git a/ggml/src/ggml-sycl/norm.hpp b/ggml/src/ggml-sycl/norm.hpp
+index 95e435b58..3116d54df 100644
+--- a/ggml/src/ggml-sycl/norm.hpp
++++ b/ggml/src/ggml-sycl/norm.hpp
+@@ -26,6 +26,13 @@ void ggml_sycl_op_rms_norm_scale_fused(ggml_backend_sycl_context& ctx, ggml_tens
+ // nodes = SQR, SUM_ROWS, SQRT, SCALE, FILL, DIV, CLAMP, MUL, as ggml_sycl_can_fuse() matched them
+ void ggml_sycl_op_row_norm_clip_fused(ggml_backend_sycl_context& ctx, ggml_tensor ** nodes);
+ 
++// the register arrays of the fused depth mix
++#define GGML_SYCL_DEPTH_MIX_MAX_STATES  5
++#define GGML_SYCL_DEPTH_MIX_MAX_QUERIES 4
++
++// nodes = RMS_NORM, TRANSPOSE, CONT, REPEAT, MUL_MAT, SOFT_MAX, MUL_MAT, as ggml_sycl_can_fuse() matched them
++void ggml_sycl_op_depth_mix_fused(ggml_backend_sycl_context& ctx, ggml_tensor ** nodes);
++
+ void ggml_sycl_op_rms_norm_fused_add(ggml_backend_sycl_context& ctx, ggml_tensor* dst, ggml_tensor* mul_tensor, ggml_tensor* add_tensor);
+ 
+ bool ggml_sycl_op_add_rms_norm_fused(ggml_backend_sycl_context & ctx,

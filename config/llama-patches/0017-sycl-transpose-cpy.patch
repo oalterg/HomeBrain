@@ -1,0 +1,71 @@
+sycl: tiled copy of transposed f32 matrices
+
+HomeBrain patch on ggml-sycl. Applies on top of 0016.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+ggml_cont of a transposed f32 view (nb01 == 4, each matrix contiguous) took
+the element-wise copy, whose reads stride by a row. As CUDA's
+cpy_scalar_transpose does, a 32 x 32 tile now goes through SLM so both the
+reads and the writes coalesce. Inkling's relative-bias table, permuted from
+[1025, 24, 512] to heads-first once per layer pass, copies in 363 us instead
+of 893 us on the Arc Pro B60 (test-backend-ops perf), and a [768, 1024, 64]
+transpose in 1068 us instead of 3676 us.
+
+diff --git a/ggml/src/ggml-sycl/cpy.cpp b/ggml/src/ggml-sycl/cpy.cpp
+index 8e1f1d50a..7dbab4a05 100644
+--- a/ggml/src/ggml-sycl/cpy.cpp
++++ b/ggml/src/ggml-sycl/cpy.cpp
+@@ -294,6 +294,41 @@ static void ggml_cpy_f32_f32_sycl(const char * cx, char * cdst, const int ne, co
+     }
+ }
+ 
++// f32 copy of transposed matrices to a contiguous dst: src row r of matrix m is s[m*ne00*ne01 + r*ne01 + c] for
++// c < ne01, dst is d[m*ne00*ne01 + c*ne00 + r]. Each 32 x 32 tile goes through SLM, so reads and writes coalesce.
++static void ggml_cpy_f32_f32_transpose_sycl(const char * cx, char * cdst, const int64_t ne00, const int64_t ne01,
++                                            const int64_t nmat, queue_ptr stream) {
++    constexpr int TILE = 32;
++    constexpr int ROWS = 8;
++    const float * src = (const float *) cx;
++    float *       dst = (float *) cdst;
++    const int64_t n   = ne00 * ne01;
++    const sycl::range<3> grid(nmat, (ne00 + TILE - 1) / TILE * ROWS, (ne01 + TILE - 1) / TILE * TILE);
++
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 2> tile(sycl::range<2>(TILE, TILE + 1), cgh);
++        cgh.parallel_for(sycl::nd_range<3>(grid, sycl::range<3>(1, ROWS, TILE)), [=](sycl::nd_item<3> it) {
++            const int     lx = it.get_local_id(2);
++            const int     ly = it.get_local_id(1);
++            const int64_t r0 = it.get_group(1) * TILE;
++            const int64_t c0 = it.get_group(2) * TILE;
++            const float * s  = src + it.get_group(0) * n;
++            float *       d  = dst + it.get_group(0) * n;
++            for (int j = 0; j < TILE; j += ROWS) {
++                if (r0 + ly + j < ne00 && c0 + lx < ne01) {
++                    tile[ly + j][lx] = s[(r0 + ly + j) * ne01 + c0 + lx];
++                }
++            }
++            sycl::group_barrier(it.get_group());
++            for (int j = 0; j < TILE; j += ROWS) {
++                if (c0 + ly + j < ne01 && r0 + lx < ne00) {
++                    d[(c0 + ly + j) * ne00 + r0 + lx] = tile[lx][ly + j];
++                }
++            }
++        });
++    });
++}
++
+ static void ggml_cpy_f32_f16_sycl(const char * cx, char * cdst, const int ne, const int ne00, const int ne01,
+                                   const int ne02, const int nb00, const int nb01, const int nb02, const int nb03,
+                                   const int ne10, const int ne11, const int ne12, const int nb10, const int nb11,
+@@ -1284,6 +1319,11 @@ void ggml_sycl_cpy(ggml_backend_sycl_context & ctx, const ggml_tensor * src0, co
+                                                   nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11,
+                                                   nb12, nb13, main_stream);
+ #endif
++    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) &&
++               nb01 == sizeof(float) && nb00 == (size_t) ne01 * sizeof(float) &&
++               nb02 == (size_t) (ne00 * ne01) * sizeof(float) && (ne03 == 1 || nb03 == (size_t) ne02 * nb02)) {
++        // transposed matrices, e.g. ggml_cont(ggml_transpose(x)) or a permute that swaps dims 0 and 1
++        ggml_cpy_f32_f32_transpose_sycl(src0_ddc, src1_ddc, ne00, ne01, ne02 * ne03, main_stream);
+     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
+         ggml_cpy_f32_f32_sycl(src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10,
+                               nb11, nb12, nb13, main_stream);
