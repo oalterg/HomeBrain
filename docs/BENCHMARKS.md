@@ -1616,12 +1616,13 @@ fix for passes two and three. Fifteen patches are applied in order:
 | 0014 | NVFP4 in the ESIMD grouped MoE GEMM, which decodes into the XMX operand without SLM staging. |
 | 0015 | Indexed bias and sinks in the MKL flash-attention path (XMX GEMMs), so prefill attention leaves the tile kernel. |
 | 0016 | One pass over the scores in the MKL path's softmax, and all KV heads in one pass of batched GEMMs when their scores fit. |
+| 0017 | A tiled (SLM) copy for `ggml_cont` of transposed f32 matrices, such as the permuted relative-bias table. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`802ee9b102b1f9f2bb0692c28cbbbaee1cf56c29`. The diagnostic op profiler and
+`b1cb6b761a7b916ca7f3e42eaf80711493b8822b`. The diagnostic op profiler and
 the `test-backend-ops` cases for 0006–0015 are excluded from the patches.
 
 ### Incremental speed measurements
@@ -1644,6 +1645,7 @@ zero and minimal reasoning for repeatability; the catalog ships at low
 | + 0011–0013 | 475 t/s | 517 t/s | 37.2 t/s | VRAM unchanged at 262144 |
 | + 0014–0015 | 648 t/s | 655 t/s | 37.0 t/s | ctx 196608; 476 / 518 / 37.1 t/s for 0001–0013 in the same window |
 | + 0016 | 820 t/s | 709 t/s | 37.0 t/s | ctx 196608; 647 / 652 / 37.0 t/s for 0001–0015 in the same window |
+| + 0017 | 852 t/s | 733 t/s | — | ctx 196608; 820 / 707 t/s for 0001–0016 in the same window; short-prompt decode unchanged at 33.6 t/s |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -1789,9 +1791,10 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 | scratch pin + 0001–0013, window 17 | 974 t/s | 21.8 t/s | same opening |
 | scratch pin + 0001–0015, window 22 | 975 / 977 t/s | 21.8 t/s | same opening |
 | scratch pin + 0001–0016, window 26 | 973 / 976 t/s | 21.7 / 21.8 t/s | same opening |
+| scratch pin + 0001–0017, window 27 | 972 / 973 t/s | 21.8 t/s | same opening |
 
 In window 22, 0001–0013 ran at 973 t/s and 21.8 t/s between the two
-0001–0015 rounds; in window 26, 0001–0015 ran at 975 t/s between the two 0001–0016 rounds. For the last six rows only the first 70 characters of the 200-token answer
+0001–0015 rounds; in window 26, 0001–0015 ran at 975 t/s between the two 0001–0016 rounds; in window 27, 0001–0016 ran at 973 t/s between the two 0001–0017 rounds. For the last seven rows only the first 70 characters of the 200-token answer
 were compared; they match production.
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
@@ -2110,3 +2113,35 @@ The checks:
   after the fill and 22.34 GiB after the image. That is 0.09 GiB above
   0001–0015, from the up to 167 MB of scores a batched pass holds.
 - Glimmer is unchanged (window 26, in the regression table above).
+
+### Prefill, 0017
+
+After 0016, the permuted CONT of the relative-bias table was 6% of a warm
+19.6K-token prompt. The table is [1,025 bins × 24 heads] per token,
+permuted to heads-first once per layer pass. SYCL copied it element by
+element, so every read strode by a row. 0017 ports CUDA's tiled transposed
+copy: each 32 × 32 tile goes through SLM, so reads and writes coalesce. It
+applies to any `ggml_cont` of transposed f32 matrices. In
+`test-backend-ops` perf:
+
+| copy | element-wise | tiled |
+|---|---:|---:|
+| bias table [1025, 24, 512], permute 1,0,2,3 | 893 µs | 363 µs |
+| [2304, 5, 512] transposed (`mix()` states) | 394 µs | 366 µs |
+| [768, 1024, 64] transposed | 3,676 µs | 1,068 µs |
+
+CPY passed 397/397 against the CPU and CONT 91/91, including five scratch
+cases of these shapes and tile edges. The f8_e4m3 copies were excluded:
+SYCL has no non-contiguous f8_e4m3 copy, and they abort before 0017 too.
+
+Window 27 ran on 2026-11-25 with the settings of window 21:
+
+| build, same window | prefill, 847 tokens | prefill, 5,904 | prefill, 19,644 | decode, short |
+|---|---:|---:|---:|---:|
+| 0001–0016 | 705.8 / 707.5 t/s | 819.1 / 819.8 t/s | 799.1 / 798.6 t/s | 33.53 / 33.47 t/s |
+| + 0017 | 733.5 / 732.9 t/s | 852.0 / 851.6 t/s | 829.3 / 829.0 t/s | 33.61 / 33.62 t/s |
+
+Prefill rises 3.7–3.9% across the three lengths. In the server the CONT
+fell from 571 to 256 µs per call, and the warm 19,644-token prompt from
+27.5 s to 26.6 s of op time. The copy does no arithmetic, so outputs are
+unchanged. Glimmer is unchanged (window 27, in the regression table above).
