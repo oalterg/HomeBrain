@@ -333,6 +333,15 @@ else
     bad "commands.restart is off" "commands.restart=$got"
 fi
 
+echo "== no background skill review =="
+# A review re-reads the whole chat on the one llama slot; the owner waits.
+got=$(jq -r '.skills.workshop.autonomous.mode' "$cfg")
+if [[ "$got" == "off" ]]; then
+    ok "skill workshop review is off"
+else
+    bad "skill workshop review is off" "skills.workshop.autonomous.mode=$got"
+fi
+
 echo "== tools a HomeBrain box cannot use are denied =="
 # Paired-node and web-UI-only tools cost ~8.5k prompt tokens per request.
 for t in computer nodes mobile_ui file_write file_fetch dir_list dir_fetch \
