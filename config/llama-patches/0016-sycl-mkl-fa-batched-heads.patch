@@ -1,0 +1,422 @@
+sycl: one pass over the scores and batched KV heads in the MKL flash-attention path
+
+HomeBrain patch on ggml-sycl. Applies on top of 0015.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+The online softmax computed every score twice, for the row maximum and for
+the numerators; with an indexed bias that is two gathers per score. Pass 1
+now stores the final score in place and pass 2 reads it. The work-groups of
+one query in different heads run next to each other, so they share the mask,
+bias index and bias table lines in cache. Q packing and normalization are one
+launch per pass instead of one per Q head, and when one chunk of the scores of
+all KV heads fits 24M elements (the sliding-window layers of a prefill), the
+KV heads run in one pass with batched GEMMs (GGML_SYCL_MKL_FA_BATCH_HEADS=0
+turns that off). Inkling's attention at a 512-token ubatch, q8_0 K/V, GQA 3
+on the Arc Pro B60: 5.60 -> 1.53 ms at 1536 keys (its sliding-window layers),
+7.96 -> 4.21 ms at 4096, 12.17 -> 8.66 ms at 10240 and 20.3 -> 15.8 ms at
+20480.
+
+diff --git a/ggml/src/ggml-sycl/fattn-mkl.cpp b/ggml/src/ggml-sycl/fattn-mkl.cpp
+index deea7be97..982291e5f 100644
+--- a/ggml/src/ggml-sycl/fattn-mkl.cpp
++++ b/ggml/src/ggml-sycl/fattn-mkl.cpp
+@@ -4,6 +4,8 @@
+ //
+ // All GQA query heads sharing a KV head are batched into single
+ // GEMM calls, amortizing MKL launch overhead across K and V reuse.
++// When the scores of all KV heads for one chunk fit MKL_FA_BATCH_SCORES,
++// the KV heads run in one pass of batched GEMMs as well.
+ //
+ 
+ #include "common.hpp"
+@@ -28,17 +30,19 @@
+ 
+ #define MKL_FA_WG_SIZE 256
+ 
++// Score elements (KQ_f32 + S_f16, 6 bytes each) one pass over all KV heads may hold
++#define MKL_FA_BATCH_SCORES (24 * 1024 * 1024)
++
+ using oneapi::mkl::transpose;
+ using oneapi::mkl::blas::column_major::gemm;
++using oneapi::mkl::blas::column_major::gemm_batch;
+ 
+ // ---------------------------------------------------------------------------
+ // Helpers
+ // ---------------------------------------------------------------------------
+ 
+-// Pack all GQA Q heads for one KV head into fp16, applying q_scale.
+-// Launches one kernel per GQA group — each kernel copies exactly
+-// n_queries * DKQ elements using the per-group dst offset and
+-// per-head source stride.
++// Pack Q heads [kvh_base_head, kvh_base_head + gqa_ratio) into fp16 in one kernel,
++// applying q_scale: head iqg goes to dst + iqg * n_queries * DKQ.
+ static void mkl_fa_pack_q_fp16(
+     dpct::queue_ptr stream,
+     sycl::half * __restrict dst,
+@@ -48,33 +52,31 @@ static void mkl_fa_pack_q_fp16(
+     float q_scale, int64_t q_row_stride, int64_t q_head_stride,
+     int64_t wg_size) {
+ 
+-    for (int iqg = 0; iqg < gqa_ratio; iqg++) {
+-        int     iqh       = kvh_base_head + iqg;
+-        sycl::half * dst_g = dst + (int64_t)iqg * n_queries * DKQ;
+-
+-        const int64_t n_elem = (int64_t)n_queries * DKQ;
+-        const int64_t wg = ((n_elem + wg_size - 1) / wg_size) * wg_size;
+-
+-        stream->submit([&](sycl::handler & cgh) {
+-            cgh.parallel_for(sycl::nd_range<1>(wg, wg_size),
+-                [=](sycl::nd_item<1> item) {
+-                    int64_t e = item.get_global_id(0);
+-                    if (e >= n_elem) return;
++    const int64_t n_head_elem = (int64_t)n_queries * DKQ;
++    const int64_t n_elem = n_head_elem * gqa_ratio;
++    const int64_t wg = ((n_elem + wg_size - 1) / wg_size) * wg_size;
+ 
+-                    int64_t q = e / DKQ;
+-                    int64_t d = e - q * DKQ;
+-
+-                    // Stride-aware source offset: handles permuted,
+-                    // sliced, or contiguous Q tensor layouts.
+-                    int64_t src_off = d
+-                        + q * q_row_stride
+-                        + (int64_t)iqh * q_head_stride;
+-
+-                    dst_g[e] = sycl::half(
+-                        q_src[src_off] * q_scale);
+-                });
+-        });
+-    }
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(sycl::nd_range<1>(wg, wg_size),
++            [=](sycl::nd_item<1> item) {
++                int64_t e = item.get_global_id(0);
++                if (e >= n_elem) return;
++
++                int64_t iqg = e / n_head_elem;
++                int64_t r   = e - iqg * n_head_elem;
++                int64_t q   = r / DKQ;
++                int64_t d   = r - q * DKQ;
++
++                // Stride-aware source offset: handles permuted,
++                // sliced, or contiguous Q tensor layouts.
++                int64_t src_off = d
++                    + q * q_row_stride
++                    + (kvh_base_head + iqg) * q_head_stride;
++
++                dst[e] = sycl::half(
++                    q_src[src_off] * q_scale);
++            });
++    });
+ }
+ 
+ // Zero-initialize the online softmax state arrays.
+@@ -140,17 +142,21 @@ static void mkl_fa_online_softmax_chunk(
+     // the one-item-per-row kernels there is no round-up / tail guard.
+     const int64_t wg         = q_rows * wg_size;
+     const int     local_size = (int) wg_size;  // stride in the loops below
++    // Groups of one query in the tile's heads run next to each other, so the mask, bias indices and
++    // bias table lines they share are still cached. Only when the tile holds whole heads.
++    const int     tile_heads = (q0 % n_queries == 0 && q_rows % n_queries == 0) ? q_rows / n_queries : 1;
+     stream->submit([&](sycl::handler & cgh) {
+         cgh.depends_on(dep_event);
+         cgh.parallel_for(sycl::nd_range<1>(wg, wg_size),
+             [=](sycl::nd_item<1> item) {
+                 const int local_id = (int)item.get_local_id(0);
+-                const int row = (int)item.get_group(0); // tile-relative
++                const int g   = (int)item.get_group(0);
++                const int row = g % tile_heads * n_queries + g / tile_heads; // tile-relative
+                 const int jc_abs    = q0 + row;
+                 const int gqa_group = jc_abs / n_queries;
+                 const int q_row     = jc_abs % n_queries;
+                 // Score buffers are tile-local (relative index).
+-                const float * __restrict KQ_row = KQ_f32
++                float * __restrict KQ_row = KQ_f32
+                     + row * (int64_t)chunk_size;
+                 sycl::half * __restrict S_row = S_f16
+                     + row * (int64_t)chunk_size;
+@@ -192,6 +198,7 @@ static void mkl_fa_online_softmax_chunk(
+                 float local_max = -1e30f;
+                 for (int i = local_id; i < chunk_size; i += local_size) {
+                     float s = score(i);
++                    KQ_row[i] = s;  // pass 2 reads the final score; this item owns index i in both passes
+                     if (s > local_max) local_max = s;
+                 }
+                 const float final_local_max = sycl::reduce_over_group(
+@@ -207,8 +214,7 @@ static void mkl_fa_online_softmax_chunk(
+                 // Pass 2: softmax numerators, strided; S row written once.
+                 float local_sum = 0.0f;
+                 for (int i = local_id; i < chunk_size; i += local_size) {
+-                    float s = score(i);
+-                    float val = sycl::native::exp(s - new_max);
++                    float val = sycl::native::exp(KQ_row[i] - new_max);
+                     S_row[i] = sycl::half(val);
+                     local_sum += val;
+                 }
+@@ -222,25 +228,29 @@ static void mkl_fa_online_softmax_chunk(
+     });
+ }
+ 
+-// Write one GQA group's normalized output to its destination head.
+-static void mkl_fa_normalize_head(
++// Write the normalized output of Q heads [iqh0, iqh0 + n_heads) to their destination heads;
++// their rows are consecutive in VKQ_accum, n_queries a head.
++static void mkl_fa_normalize_heads(
+     dpct::queue_ptr stream,
+     float * __restrict dst_batch,
+     const float * __restrict VKQ_accum,
+     const float * __restrict KQ_sum,
+-    int iqh, int n_queries, int DV, int n_q_heads,
+-    int64_t src_offset, int64_t wg_size,
++    int iqh0, int n_heads, int n_queries, int DV, int n_q_heads,
++    int64_t wg_size,
+     const float * KQ_max = nullptr, const float * sinks = nullptr) {
+ 
+-    const int64_t wg = ((n_queries + wg_size - 1) / wg_size) * wg_size;
++    const int64_t n_rows = (int64_t)n_heads * n_queries;
++    const int64_t wg = ((n_rows + wg_size - 1) / wg_size) * wg_size;
+ 
+     stream->submit([&](sycl::handler & cgh) {
+         cgh.parallel_for(sycl::nd_range<1>(wg, wg_size),
+             [=](sycl::nd_item<1> item) {
+-                int jc = item.get_global_id(0);
+-                if (jc >= n_queries) return;
++                int64_t row = item.get_global_id(0);
++                if (row >= n_rows) return;
+ 
+-                int     ksum_idx = (int)(src_offset / DV) + jc;
++                int     iqh      = iqh0 + (int)(row / n_queries);
++                int     jc       = (int)(row % n_queries);
++                int64_t ksum_idx = row;
+                 float   inv_sum  = 1.0f / KQ_sum[ksum_idx];
+                 if (sinks) {
+                     // the sink joins the softmax denominator, as in the tile kernel's final scale
+@@ -250,7 +260,7 @@ static void mkl_fa_normalize_head(
+                     inv_sum = scale / (KQ_sum[ksum_idx] * scale + sycl::native::exp(sink - m));
+                 }
+                 const float * __restrict src = VKQ_accum
+-                    + src_offset + jc * (int64_t)DV;
++                    + row * (int64_t)DV;
+                 // Interleaved dst layout (matching TILE):
+                 // rows alternate between heads, then increment query.
+                 // offset = (query * n_q_heads + head) * DV
+@@ -321,12 +331,18 @@ static mkl_fa_kv_desc mkl_fa_make_desc(const ggml_tensor * T, bool interleaved)
+     return d;
+ }
+ 
+-// Dequant one KV-head chunk into a dense [this_chunk x D] fp16 buffer.
++// Dequant one chunk of KV heads [ikvh, ikvh + n_heads) into dense [n_heads][this_chunk x D] fp16.
+ static void mkl_fa_dequant_chunk(
+     dpct::queue_ptr stream, const mkl_fa_kv_desc & d, ggml_tensor * dst_ctx,
+-    sycl::half * out, int ikvh, int ib, int chunk_start, int this_chunk) {
++    sycl::half * out, int ikvh, int ib, int chunk_start, int this_chunk, int n_heads = 1) {
+ 
+     const int64_t D = d.D;
++    if (n_heads > 1 && d.mode != MKL_FA_KV_MODE_QUANT_NC) {
++        for (int h = 0; h < n_heads; h++) {
++            mkl_fa_dequant_chunk(stream, d, dst_ctx, out + (int64_t)h * this_chunk * D, ikvh + h, ib, chunk_start, this_chunk);
++        }
++        return;
++    }
+     switch (d.mode) {
+         case MKL_FA_KV_MODE_F16_DENSE: {
+             // ib * nb3 selects this batch's KV (nb[3] != ne[1]*nb[1] for batched KV views)
+@@ -361,8 +377,8 @@ static void mkl_fa_dequant_chunk(
+             const int64_t base_blocks = (int64_t)ikvh * d.s02
+                 + (int64_t)chunk_start * d.s01 + (int64_t)ib * d.nb3 / d.ts;
+             const char * base = d.data + base_blocks * d.ts;
+-            // ne02 = ne03 = 1 → s02/s03 inert; head+chunk offset carried by base.
+-            to_fp16(base, out, D, this_chunk, 1, 1, d.s01, d.s02, d.s02, stream);
++            // head + chunk offset carried by base; ne02 = n_heads walks the heads by s02
++            to_fp16(base, out, D, this_chunk, n_heads, 1, d.s01, d.s02, d.s02, stream);
+             break;
+         }
+     }
+@@ -427,6 +443,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+     static int q_tile_env = ggml_sycl_get_env("GGML_SYCL_MKL_FA_Q_TILE", MKL_FA_Q_TILE);
+     const int q_tile_rows = std::max(1, std::min(q_tile_env, n_query_rows));
+ 
++    // hp KV heads a pass: all of them when one chunk of their scores fits the budget (the
++    // sliding-window layers of a prefill), so every step is one launch instead of one per head.
++    static int batch_heads_env = ggml_sycl_get_env("GGML_SYCL_MKL_FA_BATCH_HEADS", 1);
++    const bool batch_heads = batch_heads_env != 0 && n_kv_heads > 1 && n_query_rows <= q_tile_rows &&
++        (int64_t)n_kv_heads * n_query_rows * chunk_size <= MKL_FA_BATCH_SCORES;
++    const int hp         = batch_heads ? n_kv_heads : 1;
++    const int pass_rows  = hp * n_query_rows;
++    const int score_rows = batch_heads ? pass_rows : q_tile_rows;
++
+     const int64_t wg_size = MKL_FA_WG_SIZE;
+ 
+     // --- Debug output (gated by GGML_SYCL_MKL_FA_DEBUG=1) ---
+@@ -520,30 +545,30 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+     // --- Allocate intermediates from pool ---
+     ggml_sycl_pool & pool = ctx.pool();
+ 
+-    ggml_sycl_pool_alloc<float>      KQ_f32(pool);      // [q_tile_rows x chunk]
+-    ggml_sycl_pool_alloc<sycl::half> S_f16(pool);       // [q_tile_rows x chunk]
+-    ggml_sycl_pool_alloc<float>      VKQ_chunk(pool);   // [q_tile_rows x DV]
+-    ggml_sycl_pool_alloc<float>      VKQ_accum(pool);   // [n_query_rows x DV] (full)
++    ggml_sycl_pool_alloc<float>      KQ_f32(pool);      // [score_rows x chunk]
++    ggml_sycl_pool_alloc<sycl::half> S_f16(pool);       // [score_rows x chunk]
++    ggml_sycl_pool_alloc<float>      VKQ_chunk(pool);   // [score_rows x DV]
++    ggml_sycl_pool_alloc<float>      VKQ_accum(pool);   // [pass_rows x DV]
+     ggml_sycl_pool_alloc<float>      KQ_max(pool);      // [n_query_rows] (full)
+     ggml_sycl_pool_alloc<float>      KQ_sum(pool);      // [n_query_rows] (full)
+     ggml_sycl_pool_alloc<sycl::half> Q_head_f16(pool);  // [n_query_rows x DKQ] (full)
+     ggml_sycl_pool_alloc<sycl::half> K_chunk_f16(pool); // [chunk x DKQ] (per-chunk dequant)
+     ggml_sycl_pool_alloc<sycl::half> V_chunk_f16(pool); // [chunk x DV] (per-chunk dequant)
+ 
+-    KQ_f32.alloc((size_t)q_tile_rows * chunk_size);
+-    S_f16.alloc((size_t)q_tile_rows * chunk_size);
+-    VKQ_chunk.alloc((size_t)q_tile_rows * DV);
+-    VKQ_accum.alloc((size_t)n_query_rows * DV);
+-    KQ_max.alloc(n_query_rows);
+-    KQ_sum.alloc(n_query_rows);
+-    Q_head_f16.alloc((size_t)n_query_rows * DKQ);
+-    K_chunk_f16.alloc((size_t)chunk_size * DKQ);
++    KQ_f32.alloc((size_t)score_rows * chunk_size);
++    S_f16.alloc((size_t)score_rows * chunk_size);
++    VKQ_chunk.alloc((size_t)score_rows * DV);
++    VKQ_accum.alloc((size_t)pass_rows * DV);
++    KQ_max.alloc(pass_rows);
++    KQ_sum.alloc(pass_rows);
++    Q_head_f16.alloc((size_t)pass_rows * DKQ);
++    K_chunk_f16.alloc((size_t)hp * chunk_size * DKQ);
+ 
+     sycl::half * V_chunk_f16_ptr;
+     if (V_is_K_view) {
+         V_chunk_f16_ptr = K_chunk_f16.ptr;   // V aliases K (DV == DKQ)
+     } else {
+-        V_chunk_f16.alloc((size_t)chunk_size * DV);
++        V_chunk_f16.alloc((size_t)hp * chunk_size * DV);
+         V_chunk_f16_ptr = V_chunk_f16.ptr;
+     }
+ 
+@@ -572,20 +597,20 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+                 + m_batch * (mask->nb[3] / 2);  // 2 = actual fp16 device size
+         }
+ 
+-        for (int ikvh = 0; ikvh < n_kv_heads; ikvh++) {
++        for (int ikvh = 0; ikvh < n_kv_heads; ikvh += hp) {
+             int kvh_base_head = ikvh * gqa_ratio;
+ 
+-            // 1. Pack all GQA Q heads into fp16 (full n_query_rows)
++            // 1. Pack the GQA Q heads of this pass's KV heads into fp16 (pass_rows)
+             mkl_fa_pack_q_fp16(stream,
+                 Q_head_f16_ptr, Q_batch,
+                 n_queries, DKQ,
+-                gqa_ratio, kvh_base_head,
++                hp * gqa_ratio, kvh_base_head,
+                 q_scale, q_row_stride, q_head_stride, wg_size);
+ 
+-            // 2. Initialize softmax state (full n_query_rows)
++            // 2. Initialize softmax state (pass_rows)
+             mkl_fa_init_softmax_state(stream,
+                 KQ_max_ptr, KQ_sum_ptr, VKQ_accum_ptr,
+-                n_query_rows, DV, wg_size);
++                pass_rows, DV, wg_size);
+ 
+             // 3. KV chunk loop (OUTER): dequant each chunk once, then tile queries.
+             for (int chunk_start = 0; chunk_start < n_kv; chunk_start += chunk_size) {
+@@ -595,23 +620,31 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+                 {
+                     MKL_TAKE_TIME(t0);
+                     mkl_fa_dequant_chunk(stream, K_desc, KQV,
+-                        K_chunk_f16_ptr, ikvh, ib, chunk_start, this_chunk);
++                        K_chunk_f16_ptr, ikvh, ib, chunk_start, this_chunk, hp);
+                     if (!V_is_K_view) {
+                         mkl_fa_dequant_chunk(stream, V_desc, KQV,
+-                            V_chunk_f16_ptr, ikvh, ib, chunk_start, this_chunk);
++                            V_chunk_f16_ptr, ikvh, ib, chunk_start, this_chunk, hp);
+                     }
+                     MKL_ACCUM(dequant_time_us, t0);
+                 }
+ 
+                 // 3b. Query tile loop (INNER) — bounds KQ_f32/S_f16 footprint.
+-                for (int q0 = 0; q0 < n_query_rows; q0 += q_tile_rows) {
+-                    int q_rows = std::min(q_tile_rows, n_query_rows - q0);
++                for (int q0 = 0; q0 < pass_rows; q0 += score_rows) {
++                    int q_rows = std::min(score_rows, pass_rows - q0);
+                     sycl::event kq_done, vkq_done;
+ 
+-                    // GEMM: KQ = Q_tile × K_chunk^T
++                    // GEMM: KQ = Q_tile × K_chunk^T, one per KV head of the pass
+                     {
+                         MKL_TAKE_TIME(t0);
+-                        kq_done = gemm(*stream,
++                        kq_done = hp > 1 ? gemm_batch(*stream,
++                            transpose::trans, transpose::nontrans,
++                            this_chunk, n_query_rows, DKQ,
++                            alpha,
++                            K_chunk_f16_ptr, DKQ, (int64_t)this_chunk * DKQ,
++                            Q_head_f16_ptr, DKQ, (int64_t)n_query_rows * DKQ,
++                            beta,
++                            KQ_f32_ptr, this_chunk, (int64_t)n_query_rows * this_chunk, hp,
++                            std::vector<sycl::event>{*stream->ext_oneapi_get_last_event()}) : gemm(*stream,
+                             transpose::trans, transpose::nontrans,
+                             this_chunk, q_rows, DKQ,
+                             alpha,
+@@ -641,7 +674,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+                     // GEMM: VKQ_chunk = S × V_chunk
+                     {
+                         MKL_TAKE_TIME(t0);
+-                        vkq_done = gemm(*stream,
++                        vkq_done = hp > 1 ? gemm_batch(*stream,
++                            transpose::nontrans, transpose::nontrans,
++                            DV, n_query_rows, this_chunk,
++                            alpha,
++                            V_chunk_f16_ptr, DV, (int64_t)this_chunk * DV,
++                            S_f16_ptr, this_chunk, (int64_t)n_query_rows * this_chunk,
++                            beta,
++                            VKQ_chunk_ptr, DV, (int64_t)n_query_rows * DV, hp,
++                            std::vector<sycl::event>{*stream->ext_oneapi_get_last_event()}) : gemm(*stream,
+                             transpose::nontrans, transpose::nontrans,
+                             DV, q_rows, this_chunk,
+                             alpha,
+@@ -672,15 +713,11 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+                 }
+             }
+ 
+-            // 4. Normalize and scatter each GQA head to dst
+-            for (int iqg = 0; iqg < gqa_ratio; iqg++) {
+-                int     iqh        = kvh_base_head + iqg;
+-                int64_t src_offset = (int64_t)iqg * n_queries * DV;
+-                mkl_fa_normalize_head(stream,
+-                    dst_batch, VKQ_accum_ptr, KQ_sum_ptr,
+-                    iqh, n_queries, DV, n_q_heads,
+-                    src_offset, wg_size, KQ_max_ptr, sinks);
+-            }
++            // 4. Normalize and scatter the pass's Q heads to dst
++            mkl_fa_normalize_heads(stream,
++                dst_batch, VKQ_accum_ptr, KQ_sum_ptr,
++                kvh_base_head, hp * gqa_ratio, n_queries, DV, n_q_heads,
++                wg_size, KQ_max_ptr, sinks);
+         }
+     }
+ 
+@@ -688,16 +725,16 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+ #undef MKL_ACCUM
+ 
+     if (do_print) {
+-        const int64_t v_chunk_elems = V_is_K_view ? 0 : (int64_t)chunk_size * DV;
++        const int64_t v_chunk_elems = V_is_K_view ? 0 : (int64_t)hp * chunk_size * DV;
+         double total_mb = (double)(
+-            (int64_t)q_tile_rows * chunk_size * sizeof(float)      // KQ_f32
+-          + (int64_t)q_tile_rows * chunk_size * sizeof(sycl::half) // S_f16
+-          + (int64_t)q_tile_rows * DV * sizeof(float)              // VKQ_chunk
+-          + (int64_t)n_query_rows * DV * sizeof(float)             // VKQ_accum
+-          + (int64_t)n_query_rows * sizeof(float)                  // KQ_max
+-          + (int64_t)n_query_rows * sizeof(float)                  // KQ_sum
+-          + (int64_t)n_query_rows * DKQ * sizeof(sycl::half)       // Q_head_f16
+-          + (int64_t)chunk_size * DKQ * sizeof(sycl::half)         // K_chunk_f16
++            (int64_t)score_rows * chunk_size * sizeof(float)       // KQ_f32
++          + (int64_t)score_rows * chunk_size * sizeof(sycl::half)  // S_f16
++          + (int64_t)score_rows * DV * sizeof(float)               // VKQ_chunk
++          + (int64_t)pass_rows * DV * sizeof(float)                // VKQ_accum
++          + (int64_t)pass_rows * sizeof(float)                     // KQ_max
++          + (int64_t)pass_rows * sizeof(float)                     // KQ_sum
++          + (int64_t)pass_rows * DKQ * sizeof(sycl::half)          // Q_head_f16
++          + (int64_t)hp * chunk_size * DKQ * sizeof(sycl::half)    // K_chunk_f16
+           + v_chunk_elems * (int64_t)sizeof(sycl::half)            // V_chunk_f16
+         ) / (1024.0 * 1024.0);
+         GGML_LOG_INFO("[MKL-FA] #%d n_kv=%d n_q=%d q_tile=%d time_us: "

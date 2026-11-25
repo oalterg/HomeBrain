@@ -1615,12 +1615,13 @@ fix for passes two and three. Fifteen patches are applied in order:
 | 0013 | Routing bias and an additive norm guard in the fused top-k MoE router. |
 | 0014 | NVFP4 in the ESIMD grouped MoE GEMM, which decodes into the XMX operand without SLM staging. |
 | 0015 | Indexed bias and sinks in the MKL flash-attention path (XMX GEMMs), so prefill attention leaves the tile kernel. |
+| 0016 | One pass over the scores in the MKL path's softmax, and all KV heads in one pass of batched GEMMs when their scores fit. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`0018d33b1ed07f16c1d7f51bfa6546e7f4e62472`. The diagnostic op profiler and
+`802ee9b102b1f9f2bb0692c28cbbbaee1cf56c29`. The diagnostic op profiler and
 the `test-backend-ops` cases for 0006–0015 are excluded from the patches.
 
 ### Incremental speed measurements
@@ -1628,8 +1629,8 @@ the `test-backend-ops` cases for 0006–0015 are excluded from the patches.
 Level Zero 26.35, oneAPI 2025.3, flash attention on, q8_0 KV, ctx 131072,
 `-b 2048 -ub 512`, six CPU threads unless noted. The short prompt has 847
 tokens; the larger prefill probe targets 6K tokens. Probes use temperature
-zero and minimal reasoning for repeatability; the catalog retains the
-model's default reasoning effort of 0.9.
+zero and minimal reasoning for repeatability; the catalog ships at low
+(0.2) since 2026-11-24.
 
 | build | prefill, ~6K | prefill, short | decode | note |
 |---|---:|---:|---:|---|
@@ -1642,6 +1643,7 @@ model's default reasoning effort of 0.9.
 | + 0009–0010 | 472 t/s | 514 t/s | 32.0 t/s | 19.6 GiB VRAM |
 | + 0011–0013 | 475 t/s | 517 t/s | 37.2 t/s | VRAM unchanged at 262144 |
 | + 0014–0015 | 648 t/s | 655 t/s | 37.0 t/s | ctx 196608; 476 / 518 / 37.1 t/s for 0001–0013 in the same window |
+| + 0016 | 820 t/s | 709 t/s | 37.0 t/s | ctx 196608; 647 / 652 / 37.0 t/s for 0001–0015 in the same window |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -1786,9 +1788,10 @@ Glimmer UD-Q5_K_M, production settings and the same 7.6K-token prompt:
 | scratch pin + 0001–0012, window 16 | 974 t/s | 21.8 t/s | same opening |
 | scratch pin + 0001–0013, window 17 | 974 t/s | 21.8 t/s | same opening |
 | scratch pin + 0001–0015, window 22 | 975 / 977 t/s | 21.8 t/s | same opening |
+| scratch pin + 0001–0016, window 26 | 973 / 976 t/s | 21.7 / 21.8 t/s | same opening |
 
 In window 22, 0001–0013 ran at 973 t/s and 21.8 t/s between the two
-0001–0015 rounds. For the last five rows only the first 70 characters of the 200-token answer
+0001–0015 rounds; in window 26, 0001–0015 ran at 975 t/s between the two 0001–0016 rounds. For the last six rows only the first 70 characters of the 200-token answer
 were compared; they match production.
 
 `test-backend-ops` against the CPU passed SCALE 7/7; MUL_MAT f32 318/318,
@@ -2045,3 +2048,65 @@ The checks:
   was 21.74 GiB after loading, 21.83 GiB after the fill and 22.26 GiB after
   the image, against a 22.21 GiB peak on 0001–0013.
 - Glimmer is unchanged (window 22, in the regression table above).
+
+### Prefill, 0016
+
+After 0015, the MKL path's softmax still computed every score twice: once
+for the row maximum and once for the numerators, each time gathering the
+bias index and the table entry. 0016 stores the final score in the first
+pass and reads it in the second. The work-groups of one query in a pass's
+heads run next to each other, so they share the mask, bias-index and table
+lines in cache. Q packing and the final normalization take one launch per
+pass instead of one per Q head. When the scores of all 8 KV heads for one
+chunk fit 24M elements, the heads run as one pass of batched GEMMs. That
+covers the sliding-window layers: about 1,500 keys × 1,536 query rows × 8.
+`GGML_SYCL_MKL_FA_BATCH_HEADS=0` turns the batching off. The scratch perf
+case from 0015, both builds in one run:
+
+| keys | 0015 | 0016 |
+|---:|---:|---:|
+| 1,536 | 5.60 ms | 1.53 ms |
+| 2,048 | 6.01 ms | 1.76 ms |
+| 3,072 | 7.21 ms | 3.83 ms |
+| 4,096 | 7.96 ms | 4.21 ms |
+| 6,144 | 10.45 ms | 6.14 ms |
+| 10,240 | 12.17 ms | 8.66 ms |
+| 20,480 | 20.33 ms | 15.85 ms |
+
+From 3,072 keys the scores exceed the budget and the KV heads run one at a
+time. With the batching off, 1,536 keys take 2.54 ms. `test-backend-ops`
+against the CPU passed 20 scratch cases of Inkling's shape without the bias
+(f16 and q8_0 K/V, 1,024 to 9,000 keys, 32 and 512 queries) with the
+batching on and off, and the FLASH_ATTN_EXT kv=1024 slice (232/232). The CPU
+has no indexed bias, so the model probe below checks it.
+
+Window 26 ran on 2026-11-25 with the same settings as window 21:
+
+| build, same window | prefill, 847 tokens | prefill, 5,904 | prefill, 19,644 | decode, short |
+|---|---:|---:|---:|---:|
+| 0001–0015 | 651.6 / 652.1 t/s | 647.5 / 646.9 t/s | 623.5 / 623.4 t/s | 33.60 / 33.60 t/s |
+| + 0016, batching off | 694.8 / 692.5 t/s | 772.1 / 771.8 t/s | 752.9 / 752.7 t/s | 33.58 / 33.58 t/s |
+| + 0016 | 711.0 / 706.8 t/s | 819.9 / 820.4 t/s | 799.5 / 799.2 t/s | 33.58 / 33.59 t/s |
+
+Prefill rises 9% on the short prompt, 27% at 5.9K tokens and 28% at 19.6K.
+About a quarter of the gain is the batching. Decode is unchanged; greedy
+decode ran at 37.05 t/s on both builds. Under the profiler, a warm
+19,644-token prompt took 27.5 s of op time against 34.3 s for 0001–0015 in
+window 21. Flash attention fell from 11.9 s to 5.0 s (6.0 to 2.6 ms per
+call), and its host time per call from 571 µs to 171 µs. The NVFP4 GEMMs
+now lead at 7.9 s (29%), then attention at 18% and the permuted CONT at 6%.
+
+The checks:
+
+- Attention path. The window-21 probe was rerun: 24,558 tokens of
+  documentation, then 32 greedy tokens with their top-5 probabilities.
+  0001–0016, with the batching on and off, against 0001–0015: identical
+  text and the same argmax at all 32 positions. The largest top-5 move was
+  0.13, while 0001–0015 against its own window-21 run moved up to 0.16.
+- Shipped vision profile, ctx 196608 with the GPU projector, on 0001–0016.
+  The 58,723-token fill found both needles at 684.8 t/s prefill (546.8 on
+  0001–0015) and 15.24 t/s decode. The 4000x3000 test image was read
+  correctly in 13.1 s (14.4 s). VRAM was 21.74 GiB after loading, 21.92 GiB
+  after the fill and 22.34 GiB after the image. That is 0.09 GiB above
+  0001–0015, from the up to 167 MB of scores a batched pass holds.
+- Glimmer is unchanged (window 26, in the regression table above).
