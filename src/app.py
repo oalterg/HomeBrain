@@ -23,7 +23,7 @@ import requests
 import fcntl
 from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, render_template, jsonify, request, Response, session, abort, send_file, stream_with_context
+from flask import Flask, render_template, jsonify, request, Response, session, abort, send_file, stream_with_context, g
 import migration
 import selftest
 import integrations
@@ -37,11 +37,31 @@ import vault_admin
 import owner_vault
 import member_escrow
 import mesh
+import nighttime
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_sock import Sock
 
 app = Flask(__name__)
+
+
+@app.before_request
+def protect_power_transition():
+    if request.method in ("GET", "HEAD", "OPTIONS") or "/nighttime" in request.path:
+        return
+    guard = nighttime.operation()
+    try:
+        guard.__enter__()
+    except nighttime.NighttimeError as e:
+        return jsonify({"error": str(e)}), 409
+    g.power_guard = guard
+
+
+@app.teardown_request
+def release_power_transition(_error):
+    guard = g.pop("power_guard", None)
+    if guard:
+        guard.__exit__(None, None, None)
 
 # --- Platform Record ---
 # Which hardware this is gets decided in exactly one place: detect_platform() in
@@ -1194,10 +1214,11 @@ def run_background_task(task_name, command, log_type):
          }
 
     try:
-        result = subprocess.run(
-            command, shell=True, check=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
+        with nighttime.operation():
+            result = subprocess.run(
+                command, shell=True, check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
         if result.stdout:
             app.logger.info(f"[{task_name}] {result.stdout}")
         status["status"] = "success"
@@ -3529,6 +3550,47 @@ def trigger_upgrade():
     if not start_background_task("OS Upgrade", cmd, "setup"):
         return jsonify({"error": "Task running"}), 409
     return jsonify({"status": "started"})
+
+
+@app.route("/api/system/nighttime", methods=["GET", "POST"])
+@limiter.limit("30 per minute")
+def nighttime_config():
+    return nighttime_response("status" if request.method == "GET" else "configure")
+
+
+def nighttime_response(action):
+    try:
+        if action != "status" and not request.is_json:
+            return jsonify({"error": "Send application/json."}), 415
+        if action in ("configure", "confirm_test"):
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify({"error": "A JSON object is required."}), 400
+            result = getattr(nighttime, action)(body)
+        else:
+            result = getattr(nighttime, action)()
+        return jsonify(result)
+    except nighttime.NighttimeError as e:
+        return jsonify({"error": str(e)}), 409
+    except (OSError, ValueError, subprocess.SubprocessError):
+        logging.exception("Nighttime operation failed")
+        return jsonify({"error": "Nighttime could not be applied; the box will stay awake."}), 503
+
+
+@app.route("/api/system/nighttime/skip", methods=["POST"])
+def nighttime_skip():
+    return nighttime_response("skip")
+
+
+@app.route("/api/system/nighttime/test", methods=["POST"])
+@limiter.limit("2 per minute")
+def nighttime_test():
+    return nighttime_response("test")
+
+
+@app.route("/api/system/nighttime/confirm-test", methods=["POST"])
+def nighttime_confirm_test():
+    return nighttime_response("confirm_test")
 
 
 @app.route("/api/system/reboot", methods=["POST"])

@@ -1869,6 +1869,18 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
         from app import get_env_config
         return jsonify({"ok": True, **act.backup_snapshot(get_env_config())})
 
+    def self_nighttime():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import nighttime_response
+        return nighttime_response("status" if request.method == "GET" else "configure")
+
+    def self_nighttime_skip():
+        if not _check_bearer():
+            return jsonify({"error": "unauthorised"}), 401
+        from app import nighttime_response
+        return nighttime_response("skip")
+
     def self_backup_schedule():
         if not _check_bearer():
             return jsonify({"error": "unauthorised"}), 401
@@ -2096,6 +2108,11 @@ def register_integrations(app, limiter) -> None:  # noqa: C901
                      "self_activation", self_activation, methods=["GET"])
     app.add_url_rule("/api/integrations/self/backup-config",
                      "self_backup_config", self_backup_config, methods=["GET"])
+    app.add_url_rule("/api/integrations/self/nighttime",
+                     "self_nighttime", limiter.limit("30 per minute")(self_nighttime),
+                     methods=["GET", "POST"])
+    app.add_url_rule("/api/integrations/self/nighttime/skip",
+                     "self_nighttime_skip", self_nighttime_skip, methods=["POST"])
     app.add_url_rule("/api/integrations/self/backup-schedule",
                      "self_backup_schedule",
                      limiter.limit("10 per minute")(self_backup_schedule),

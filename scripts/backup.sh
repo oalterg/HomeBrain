@@ -4,6 +4,10 @@ set -euo pipefail
 # Load Common Library
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+if [[ -f "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/nighttime.json" ]]; then
+    python3 "$INSTALL_DIR/src/nighttime.py" wait-recovery || die "Nighttime recovery is still pending."
+fi
+hold_power_lock
 
 # --- Configuration ---
 LOCK_FILE="${HOMEBRAIN_BACKUP_LOCK:-/var/run/homebrain-backup.lock}"

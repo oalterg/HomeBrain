@@ -3588,6 +3588,7 @@ replica_target_disable() {
 
 # --- Main Dispatch (only when executed directly, not sourced) ---
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+hold_power_lock
 case "${1:-}" in
     system_status)
         get_system_config_status

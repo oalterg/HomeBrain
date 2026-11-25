@@ -343,6 +343,46 @@ def t_ca_info(_args: dict) -> dict:
     return _body(code, body, fail="CA unavailable")
 
 
+def t_nighttime_get(_args: dict) -> dict:
+    code, body = _http("GET", "/api/integrations/self/nighttime")
+    return _body(code, body, fail="nighttime status unavailable")
+
+
+def _nighttime_write(args: dict, action: str) -> dict:
+    payload = {k: v for k, v in args.items() if k not in ("confirmation_token", "_chat_id")}
+    allowed = {"enabled", "start", "end", "timezone"} if action == "set" else set()
+    if set(payload) - allowed:
+        return err("Unexpected nighttime fields.")
+    if action == "set":
+        if set(payload) != allowed or type(payload.get("enabled")) is not bool:
+            return err("Supply enabled, start, end and timezone; use nighttime_get first.")
+        summary = (f"HomeBrain: {'enable' if payload['enabled'] else 'disable'} nightly shutdown "
+                   f"{payload['start']}–{payload['end']} ({payload['timezone']}). "
+                   "Files, vault sync, home automations and the agent are unavailable while off.")
+    else:
+        summary = "HomeBrain: skip the next nighttime shutdown (or cancel the pending wake test)."
+    # Action is part of the sealed payload: a backup/household token must never
+    # be usable to change power settings, even though they share this server.
+    gate, redeemed = _config_gate(args, summary, {"action": "nighttime_" + action, "config": payload})
+    if gate is not None:
+        return gate
+    if redeemed.get("action") != "nighttime_" + action or not isinstance(redeemed.get("config"), dict):
+        return err("confirmation_token belongs to a different action")
+    path = "/api/integrations/self/nighttime" + ("/skip" if action == "skip" else "")
+    code, body = _http("POST", path, redeemed["config"], timeout=30)
+    if code == 200:
+        audit("homebrain", "nighttime_" + action, **redeemed["config"])
+    return _body(code, body, fail="nighttime change rejected")
+
+
+def t_nighttime_set(args: dict) -> dict:
+    return _nighttime_write(args, "set")
+
+
+def t_nighttime_skip(args: dict) -> dict:
+    return _nighttime_write(args, "skip")
+
+
 def t_household_list(_args: dict) -> dict:
     code, body = _http("GET", "/api/integrations/self/household")
     if code == 503:
@@ -523,6 +563,9 @@ TOOLS = [
 
 
 DISPATCH = {
+    "homebrain.nighttime_get": t_nighttime_get,
+    "homebrain.nighttime_set": t_nighttime_set,
+    "homebrain.nighttime_skip": t_nighttime_skip,
     "homebrain.media_capabilities": t_media_capabilities,
     "homebrain.media_generate": t_media_generate,
     "homebrain.media_job_status": t_media_job_status,
@@ -546,6 +589,21 @@ DISPATCH = {
 }
 
 TOOLS.extend([
+    {"name": "homebrain.nighttime_get",
+     "description": "Read daily shutdown/wake times, timezone, hardware verification, next interval and last recovery. All box services are offline during nighttime.",
+     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "homebrain.nighttime_set",
+     "description": "Set daily shutdown/wake times. Read nighttime_get first. Needs owner confirmation and a dashboard wake test. Never bypass verification through exec.",
+     "inputSchema": {"type": "object", "additionalProperties": False,
+                     "properties": {"enabled": {"type": "boolean"},
+                                    "start": {"type": "string", "description": "Local HH:MM shutdown time"},
+                                    "end": {"type": "string", "description": "Local HH:MM power-on time; services start afterward"},
+                                    "timezone": {"type": "string", "description": "IANA timezone, e.g. Europe/Berlin"},
+                                    "confirmation_token": {"type": "string"}},
+                     "required": ["enabled", "start", "end", "timezone"]}},
+    {"name": "homebrain.nighttime_skip",
+     "description": "Skip the next nighttime interval or cancel a pending wake test. Requires owner confirmation. Does not disable the recurring schedule.",
+     "inputSchema": {"type": "object", "properties": {"confirmation_token": {"type": "string"}}, "additionalProperties": False}},
     {"name": "homebrain.media_capabilities",
      "description": "Available local image/video models and automatic Telegram delivery readiness. Chat pauses during generation.",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},

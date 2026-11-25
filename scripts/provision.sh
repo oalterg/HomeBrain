@@ -8,6 +8,7 @@ SERVICE_DIR="$INSTALL_DIR/src"
 LOG_DIR="/var/log/homebrain"
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 
 # Boot config path detection (filesystem-based, not platform-based)
 if [[ -d "/boot/firmware" ]]; then
@@ -246,6 +247,11 @@ else
     echo "ERROR: Service file not found at $SERVICE_FILE"
     exit 1
 fi
+
+# Installed, not enabled: the wake test enables the timer. Enabled everywhere,
+# it would log a skipped condition every minute on boxes that never use it.
+cp "${SCRIPT_DIR}/../config/homebrain-nighttime.service" /etc/systemd/system/
+cp "${SCRIPT_DIR}/../config/homebrain-nighttime.timer" /etc/systemd/system/
 
 # Deploy and enable sleep inhibitor service
 cp "${SCRIPT_DIR}/../config/inhibit-sleep.service" /etc/systemd/system/

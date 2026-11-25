@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 SETUP_LOG_FILE="$LOG_DIR/main_setup.log"
 
 # Start every deploy with a fresh log, keeping exactly one predecessor.

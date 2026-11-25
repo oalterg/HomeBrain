@@ -29,6 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
 
 LIVE="/mnt/nextcloud-data"        # where a files drive is always mounted
 STAGING="/mnt/nextcloud-data.new" # where it is filled before it becomes LIVE

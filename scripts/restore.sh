@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 source "$SCRIPT_DIR/common.sh"
+hold_power_lock
+# Restoring data never enables a hardware-specific power schedule.
+if [[ -f "${HOMEBRAIN_STATE_DIR:-/var/lib/homebrain}/nighttime.json" ]]; then
+    python3 "$INSTALL_DIR/src/nighttime.py" reset || die "Could not disable nighttime before restore."
+fi
 # Overridable so a caller that is already streaming a log to the user can keep
 # this half of the work visible. The setup wizard chains deploy.sh and this
 # script into one install and shows the setup log; without the override, this
