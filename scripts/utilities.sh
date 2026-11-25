@@ -2475,6 +2475,13 @@ patch_openclaw_config() {
                 "node-inspect-debugger", "python-debugpy", "tmux", "spike",
                 "clawhub", "visualize") as $s
             (.; .skills.entries[$s].enabled = false) |
+        # No background skill review. Skill Workshop re-reads the whole chat
+        # after every 10 model calls, once the box has been idle for 30 s, on
+        # the one llama slot. The next message from the owner waits behind it
+        # and finds the chat pushed out of the KV cache (.69, 2026-11-25: a 56k-
+        # token review ran 45 s, was cancelled by a new message, and retried
+        # for another 44 s). /learn still saves a skill when asked.
+        .skills.workshop.autonomous.mode = "off" |
         # No /update or /restart from chat. HomeBrain pins OpenClaw, and the
         # owner’s /update would move it off the pin whatever the tool deny
         # says. Unset, OpenClaw’s system prompt even tells the model to send
