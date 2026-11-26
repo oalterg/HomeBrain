@@ -444,9 +444,8 @@ systemctl enable --now avahi-daemon.service 2>/dev/null || true
 systemctl enable homebrain-mdns.service 2>/dev/null || true
 systemctl restart homebrain-mdns.service || log_warn "LAN name publisher failed to restart."
 # Drop the short-lived drop-in that delayed dockerd until a default route
-# existed. Superseded by the `dns:` upstreams on the newt container, which fix
-# the tunnel-after-reboot bug without delaying boot. Idempotent, no-op on a box
-# that never had it.
+# existed. It delayed every boot, and the tunnel it was for is gone.
+# Idempotent, no-op on a box that never had it.
 remove_docker_wait_dropin || log_warn "Could not remove the docker wait-for-route drop-in."
 # Passwordless sudo for the agent. Only ensure_homebrain_user installs this,
 # and update.sh never calls it — it runs `docker compose up` directly rather
@@ -523,6 +522,10 @@ fi
 
 # 6. Docker Stack Update
 log_info "Updating Docker Stack..."
+# Before refresh_vault_lan_ip and `up`: a tunnel box returns to local here, and
+# both of those then act on the local values. `up --remove-orphans` removes
+# the tunnel containers, which the compose file no longer names.
+retire_tunnel
 # A box that changed subnet since it was provisioned still carries the old
 # VAULT_LAN_IP in .env, so Caddy's cert names an address it no longer answers
 # on. Re-derive before `up`, which then recreates caddy with the right SAN.

@@ -35,13 +35,7 @@ With a GPU, Telegram is the daily interface: no VPN, no extra app. Pair it after
 
 Away from home, the apps travel over a private network on your own Tailscale account: **Connectivity → Remote access**, connect, sign in, then turn remote access on. HomeBrain runs no server for it. Encryption ends on your phone and on the box. Turn on the network lock to control which new devices are admitted. Each phone that should reach the apps away from home runs the Tailscale app; nothing on the box is given a public address. Save the phone setup sheet from the same card for the app addresses and joining steps. Encrypted backups carry the device identity; after a restore you choose whether to resume it. Design and limits: [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md).
 
-A tunnel you run yourself ([Pangolin](docs/PANGOLIN.md) or Cloudflare) still works. Either one decrypts your traffic on a machine that is not the box.
-
-<p align="center">
-  <img src="res/tunnel.png" alt="Tunnel settings: endpoint, device ID and main domain, with a preview of the manager, Nextcloud and Home Assistant subdomains" width="860">
-</p>
-
-<p align="center"><sub>One domain in, three subdomains out — no port forwarding and no inbound firewall rule. The same screen moves the box to a Cloudflare Tunnel, or reverts every field to what the device shipped with.</sub></p>
+Pangolin and Cloudflare tunnels are no longer supported: both decrypt your traffic on a machine that is not the box. A box that used one returns to the local network on its next update; turn on Remote access to reach it from outside again.
 
 ---
 
@@ -85,7 +79,6 @@ Home Assistant     Docker     Smart-home automation
 Vaultwarden        Docker     Password manager (Bitwarden-compatible)
 MariaDB            Docker     Nextcloud + Vault database
 Tailscale          systemd    Private network             optional
-Pangolin Newt      Docker     Self-run tunnel             optional
 llama-server       systemd    Local LLM inference         GPU only
 whisper-server     systemd    Speech-to-text              GPU only
 OpenClaw           systemd    AI agent on Telegram        GPU only
@@ -121,8 +114,6 @@ Open `http://<server-ip>`, log in, and initialize. Local network is the default.
 
 `provision.sh` prepares the host and starts the manager. It prints a factory password once if you did not pass `--factory-pass`; that password opens the wizard and is stored in `factory_config.txt` (mode 600). On AMD GPU hardware a reboot is recommended so kernel parameters take effect; it is not required to open the wizard.
 
-Tunnel credentials at provision time are stored on the box and selected in the wizard — they do not skip it. On an already-set-up box the same command repoints the live tunnel without wiping data. Flags and the Pangolin resource map: [PANGOLIN.md](docs/PANGOLIN.md).
-
 ---
 
 ## Documentation
@@ -132,7 +123,6 @@ Tunnel credentials at provision time are stored on the box and selected in the w
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Inference throughput, quantization comparisons, tuning notes |
 | [DISASTER_RECOVERY.md](docs/DISASTER_RECOVERY.md) | Getting your data back onto new hardware after the box is gone |
 | [REMOTE_ACCESS.md](docs/plans/REMOTE_ACCESS.md) | Reaching the box from outside with no HomeBrain server and nothing a third party can read |
-| [PANGOLIN.md](docs/PANGOLIN.md) | A tunnel you run yourself, as the alternative |
 | [ROADMAP.md](docs/ROADMAP.md) | Shipped features and what's next |
 | [PRODUCT_REVIEW_2026-08.md](docs/plans/PRODUCT_REVIEW_2026-08.md) | Why the glue is the product, and the findings we will act on |
 

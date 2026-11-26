@@ -77,7 +77,7 @@ def test_household_card_lives_in_the_household_panel():
 
 
 def test_connectivity_carries_no_member_markup():
-    """Connectivity keeps Tunnel/Network/FTP. Anything member-shaped is residue."""
+    """Connectivity keeps Remote access/Network/FTP. Anything member-shaped is residue."""
     html = _dashboard_html()
     start = html.index('<div id="connectivity" class="tab-content')
     end = html.index('<div id="settings" class="tab-content')

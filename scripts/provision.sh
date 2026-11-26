@@ -20,57 +20,38 @@ fi
 # --- Input Validation & Argument Parsing ---
 if [[ $EUID -ne 0 ]]; then echo "Run as root."; exit 1; fi
 
-# Two invocation styles, both supported:
+# Usage: provision.sh [FACTORY_PASS]
+#        provision.sh --factory-pass PASS
 #
-#   Positional (back-compat):
-#     local:  provision.sh [FACTORY_PASS]
-#     remote: provision.sh <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS>
-#
-#   Named flags (idempotent re-provision / tunnel repoint). Any value not given
-#   is inherited from the existing factory_config, so repointing a live box to a
-#   new tunnel is a one-liner:
-#     provision.sh --newt-id ID --newt-secret SECRET --domain DOMAIN \
-#                  [--endpoint URL] [--factory-pass PASS] [--local] [--no-apply]
-#
-# --registrar-url / --registrar-secret and positional arguments 6 and 7 are
-# accepted and ignored: the account service they named is retired, and factory
-# scripts that still pass them must not fail.
-#
-# Remote vs local is decided in section 2, AFTER merging with the existing
-# factory_config: remote iff NEWT_ID, NEWT_SECRET and PANGOLIN_DOMAIN are all
-# present (and --local was not passed).
-PROV_NEWT_ID="" ; PROV_NEWT_SECRET="" ; PROV_PANGOLIN_DOMAIN=""
-PROV_PANGOLIN_ENDPOINT="" ; PROV_FACTORY_PASS=""
-FORCE_LOCAL=false
-APPLY_REDEPLOY=true   # on an already-set-up box, redeploy so the repoint goes live
+# Pangolin and Cloudflare tunnels were removed. Remote access is the owner's
+# private network, turned on from the dashboard after setup
+# (docs/plans/REMOTE_ACCESS.md). The old tunnel arguments are refused, not
+# ignored: a factory script that still passes them expects a tunnel it would
+# not get. --registrar-url / --registrar-secret, --local and --no-apply are
+# accepted and ignored; they ask for nothing this script does any more.
+PROV_FACTORY_PASS=""
+
+tunnel_args_removed() {
+    echo "Tunnel arguments were removed. Remote access is the owner's private network,"
+    echo "turned on from the dashboard after setup (Connectivity -> Remote access)."
+    echo "Usage: $0 [FACTORY_PASS]   or   $0 --factory-pass PASS"
+    exit 1
+}
 
 if [[ "${1:-}" == --* ]]; then
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --newt-id)          PROV_NEWT_ID="${2:?--newt-id needs a value}"; shift 2;;
-            --newt-secret)      PROV_NEWT_SECRET="${2:?--newt-secret needs a value}"; shift 2;;
-            --domain)           PROV_PANGOLIN_DOMAIN="${2:?--domain needs a value}"; shift 2;;
-            --endpoint)         PROV_PANGOLIN_ENDPOINT="${2:?--endpoint needs a value}"; shift 2;;
             --factory-pass)     PROV_FACTORY_PASS="${2:?--factory-pass needs a value}"; shift 2;;
             --registrar-url|--registrar-secret) shift; [[ $# -gt 0 ]] && shift;;
-            --local)            FORCE_LOCAL=true; shift;;
-            --no-apply)         APPLY_REDEPLOY=false; shift;;
+            --local|--no-apply) shift;;
+            --newt-id|--newt-secret|--domain|--endpoint) tunnel_args_removed;;
             *) echo "Unknown flag: $1"; exit 1;;
         esac
     done
-elif [[ $# -ge 5 ]]; then
-    PROV_NEWT_ID="${1}"
-    PROV_NEWT_SECRET="${2}"
-    PROV_PANGOLIN_DOMAIN="${3}"
-    PROV_PANGOLIN_ENDPOINT="${4}"
-    PROV_FACTORY_PASS="${5}"
 elif [[ $# -le 1 ]]; then
     PROV_FACTORY_PASS="${1:-}"
 else
-    echo "Usage (local):  $0 [FACTORY_PASS]"
-    echo "Usage (remote): $0 <NEWT_ID> <NEWT_SECRET> <PANGOLIN_DOMAIN> <PANGOLIN_ENDPOINT> <FACTORY_PASS>"
-    echo "Usage (flags):  $0 --newt-id ID --newt-secret SECRET --domain DOMAIN [--endpoint URL] [--factory-pass PASS] [--local] [--no-apply]"
-    exit 1
+    tunnel_args_removed
 fi
 
 # Resilience: Ensure time is correct
@@ -99,7 +80,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "active"; 
     log_info "Opening firewall ports for HomeBrain services..."
     ufw allow 80/tcp    # Caddy HTTP → HTTPS
     ufw allow 443/tcp   # Caddy HTTPS (the LAN face)
-    # Caddy and Pangolin reach the manager via the Docker bridge, not the LAN.
+    # Caddy reaches the manager via the Docker bridge, not the LAN.
     ufw delete allow from 172.16.0.0/12 to any port 8000 proto tcp >/dev/null 2>&1 || true
     ufw delete allow 8080/tcp >/dev/null 2>&1 || true
     ufw delete allow 8123/tcp >/dev/null 2>&1 || true
@@ -110,51 +91,25 @@ fi
 harden_gpu
 
 # --- 2. Write Factory Config ---
-# Preserve any pre-existing values from a properly-imaged device. CLI args
-# (when provided) take precedence; missing fields fall back to existing file
-# contents. This makes re-running provision.sh idempotent — it never wipes
-# the factory password baked into the OS image, and an operator can repoint the
-# tunnel by supplying only the changed fields.
-declare -A _FC=( [NEWT_ID]="" [NEWT_SECRET]="" [PANGOLIN_DOMAIN]="" \
-                 [PANGOLIN_ENDPOINT]="" [FACTORY_PASSWORD]="" )
+# Preserve the factory password from a properly-imaged device. A CLI value
+# takes precedence; otherwise the existing file's is kept. This makes
+# re-running provision.sh idempotent — it never wipes the factory password
+# baked into the OS image. Tunnel credentials an older provision wrote here
+# are dropped: nothing reads them any more.
+declare -A _FC=( [FACTORY_PASSWORD]="" )
 if [[ -f "$BOOT_CONFIG" ]]; then
-    # Split on the first '=' only — NEWT_SECRET and FACTORY_PASSWORD are
-    # generated values that can legitimately end in '=',
-    # which `IFS='=' read` would eat as a delimiter. See restore.sh for the
-    # same bug caught in the act on HOMEBRAIN_EMAIL_KEY.
+    # Split on the first '=' only — FACTORY_PASSWORD is a generated value
+    # that can legitimately end in '=', which `IFS='=' read` would eat as a
+    # delimiter. See restore.sh for the same bug caught in the act on
+    # HOMEBRAIN_EMAIL_KEY.
     while read -r _line || [[ -n "$_line" ]]; do
         [[ -z "$_line" || "$_line" == \#* || "$_line" != *=* ]] && continue
         _k="${_line%%=*}"
         [[ -n "$_k" ]] && _FC[$_k]="${_line#*=}"
     done < "$BOOT_CONFIG"
 fi
-[[ -n "$PROV_NEWT_ID"           ]] && _FC[NEWT_ID]="$PROV_NEWT_ID"
-[[ -n "$PROV_NEWT_SECRET"       ]] && _FC[NEWT_SECRET]="$PROV_NEWT_SECRET"
-[[ -n "$PROV_PANGOLIN_DOMAIN"   ]] && _FC[PANGOLIN_DOMAIN]="$PROV_PANGOLIN_DOMAIN"
-[[ -n "$PROV_PANGOLIN_ENDPOINT" ]] && _FC[PANGOLIN_ENDPOINT]="$PROV_PANGOLIN_ENDPOINT"
-[[ -n "$PROV_FACTORY_PASS"      ]] && _FC[FACTORY_PASSWORD]="$PROV_FACTORY_PASS"
-
-# Operators paste the tunnel domain as a URL ("https://home.example.com/").
-# Every public hostname is derived by prefixing labels onto this value
-# (nc.<domain>), so a scheme or path here poisons every trusted domain and
-# Vaultwarden's DOMAIN. Reduce to the bare hostname; mirrors app.py's
-# sanitize_domain. Applied after the merge so it also cleans a poisoned
-# value inherited from an existing factory_config.
-_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]#*://}"
-_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]%%[/?#]*}"
-_FC[PANGOLIN_DOMAIN]="${_FC[PANGOLIN_DOMAIN]%%:*}"
-
-# Decide deployment mode from the EFFECTIVE (merged) config, not raw argc — this
-# lets `--domain ...` alone (endpoint/creds inherited from factory_config) still
-# resolve to remote.
-if [[ "$FORCE_LOCAL" == "true" ]]; then
-    PROVISION_MODE="local"
-elif [[ -n "${_FC[NEWT_ID]}" && -n "${_FC[NEWT_SECRET]}" && -n "${_FC[PANGOLIN_DOMAIN]}" ]]; then
-    PROVISION_MODE="remote"
-else
-    PROVISION_MODE="local"
-fi
-echo "Writing factory configuration (mode: ${PROVISION_MODE})..."
+[[ -n "$PROV_FACTORY_PASS" ]] && _FC[FACTORY_PASSWORD]="$PROV_FACTORY_PASS"
+echo "Writing factory configuration..."
 
 # Without a factory password the device is unreachable. Generate one if missing
 # and surface it prominently so the operator can record it on the device label.
@@ -169,10 +124,6 @@ if [[ -z "${_FC[FACTORY_PASSWORD]}" ]]; then
 fi
 
 cat > "$BOOT_CONFIG" <<EOF
-NEWT_ID=${_FC[NEWT_ID]}
-NEWT_SECRET=${_FC[NEWT_SECRET]}
-PANGOLIN_DOMAIN=${_FC[PANGOLIN_DOMAIN]}
-PANGOLIN_ENDPOINT=${_FC[PANGOLIN_ENDPOINT]}
 FACTORY_PASSWORD=${_FC[FACTORY_PASSWORD]}
 EOF
 chmod 600 "$BOOT_CONFIG"
@@ -214,18 +165,11 @@ if [[ ! -f "$INSTALL_DIR/.env" ]]; then
 # Temp Factory Env
 NEXTCLOUD_DATA_DIR=/var/www/html
 MASTER_PASSWORD=placeholder
-PANGOLIN_DOMAIN=example.com
 EOF
     _TEMP_ENV_CREATED=true
 fi
 
-# Pull images — include Pangolin profile only in remote mode
-if [[ "$PROVISION_MODE" == "remote" ]]; then
-    COMPOSE_PROFILES="pangolin" \
-    docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
-else
-    docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
-fi
+docker compose -f "$INSTALL_DIR/docker-compose.yml" pull
 
 # Cleanup temp env only if we created it; preserve a real one across re-runs
 if [[ "$_TEMP_ENV_CREATED" == "true" ]]; then
@@ -360,62 +304,6 @@ chmod 700 "${HOMEBRAIN_HOME:-/home/homebrain}/.openclaw" 2>/dev/null || true
 mkdir -p /var/log/homebrain
 chgrp homebrain /var/log/homebrain 2>/dev/null || true
 chmod 2775 /var/log/homebrain 2>/dev/null || true
-
-# --- 7. Idempotent tunnel repoint (already-provisioned boxes only) ---
-# Everything above only writes the *factory* record (factory_config.txt). The
-# live stack reads tunnel creds + trusted domains from .env, applied to the
-# containers by redeploy_tunnels.sh. On a box that has already completed setup
-# (.setup_complete present) we propagate the new tunnel identity into .env and
-# redeploy, so a SINGLE provision.sh run fully repoints the box to the new
-# domain while keeping all data.
-#
-# Data-safety contract: this path never touches the nextcloud/vault data
-# bind-mounts and uses redeploy_tunnels.sh, which has no wipe logic. deploy.sh's
-# fresh-install wipe branch is gated on the ABSENCE of .setup_complete and is
-# never invoked here. On a fresh box (no .setup_complete) we skip this entirely
-# — the setup wizard drives the first deploy.
-if [[ "$PROVISION_MODE" == "remote" && -f "$INSTALL_DIR/.setup_complete" && -f "$ENV_FILE" ]]; then
-    _dom="${_FC[PANGOLIN_DOMAIN]}"
-    log_info "Already-provisioned box — propagating new tunnel identity into .env (domain: ${_dom})."
-    update_env_var "DEPLOYMENT_MODE"           "remote"
-    update_env_var "MESH_DOMAIN"               ""
-    update_env_var "NEWT_ID"                   "${_FC[NEWT_ID]}"
-    update_env_var "NEWT_SECRET"               "${_FC[NEWT_SECRET]}"
-    update_env_var "PANGOLIN_ENDPOINT"         "${_FC[PANGOLIN_ENDPOINT]}"
-    update_env_var "PANGOLIN_DOMAIN"           "$_dom"
-    update_env_var "MANAGER_DOMAIN"            "$_dom"
-    update_env_var "NEXTCLOUD_TRUSTED_DOMAINS" "nc.$_dom"
-    update_env_var "HA_TRUSTED_DOMAINS"        "ha.$_dom"
-    update_env_var "VAULT_TRUSTED_DOMAINS"     "vault.$_dom"
-    update_env_var "VAULT_DOMAIN"              "https://vault.$_dom"
-
-    if [[ "$APPLY_REDEPLOY" == "true" ]]; then
-        log_info "Redeploying tunnel to bring the new domain live (data-safe)..."
-        if bash "$INSTALL_DIR/scripts/redeploy_tunnels.sh"; then
-            if handover_pending; then
-                log_info "Tunnel configuration updated under ${_dom}; not published until credentials are claimed."
-            else
-                log_info "Tunnel redeploy complete — services now published under ${_dom}."
-            fi
-        else
-            log_warn "redeploy_tunnels.sh reported issues; inspect $LOG_DIR/main_setup.log."
-        fi
-        # Confirm the new tunnel actually came up, then remind the operator of the
-        # Pangolin org-side resources only they can configure (with correct targets).
-        # An unclaimed box is the exception: redeploy_tunnels.sh deliberately
-        # holds the tunnel there, so verify_newt_connected would report a
-        # failure for a box that is behaving exactly as designed.
-        if handover_pending; then
-            log_info "The tunnel comes up under ${_dom} when the owner finishes the setup wizard."
-        else
-            log_warn "Remote access now flips to the new tunnel."
-            verify_newt_connected || true
-        fi
-        print_pangolin_resource_guide "${_dom}"
-    else
-        log_info "--no-apply: .env updated but tunnel not redeployed. Run scripts/redeploy_tunnels.sh to apply."
-    fi
-fi
 
 echo "HomeBrain Provisioning Complete."
 echo "======================================================="

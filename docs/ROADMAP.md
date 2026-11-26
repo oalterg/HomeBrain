@@ -42,9 +42,10 @@ Track planned features and shipped releases against that. For questions or contr
 
 Remote access with no HomeBrain server and nothing a third party can read:
 [`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md). The private-network join is in
-tree, with phone setup and encrypted identity recovery. The registrar and
-Cloud Account flow are removed. The signed-in hardware walk and migration off
-the existing factory tunnel infrastructure remain. Why it is the missing element:
+tree, with phone setup and encrypted identity recovery. The registrar, the
+Cloud Account flow and the Pangolin/Cloudflare tunnels are removed; a box that
+used a tunnel returns to the local network on update. The signed-in hardware
+walk and moving the factory-provisioned boxes onto the private network remain. Why it is the missing element:
 [`PRODUCT_REVIEW_2026-11.md`](plans/PRODUCT_REVIEW_2026-11.md).
 
 Current action list: [`PRODUCT_REVIEW_2026-08.md`](plans/PRODUCT_REVIEW_2026-08.md) —
@@ -54,7 +55,7 @@ inbound agent content, container hardening). Inbound content threat model:
 email (identity + optional prompts): [`AGENT_EMAIL.md`](plans/AGENT_EMAIL.md).
 App update vs OS upgrade vs health checker:
 [`UPDATE_AND_HEALTH.md`](plans/UPDATE_AND_HEALTH.md). LAN HTTPS as names
-on 443, mirroring Pangolin with `.local`: [`LAN_HTTPS.md`](plans/LAN_HTTPS.md).
+on 443 with `.local`: [`LAN_HTTPS.md`](plans/LAN_HTTPS.md).
 Bare-metal
 no-drive restore walked 2026-08-12. A cloud dead-man's switch is a non-goal:
 it would phone home. ARGB lighting is not on that list.

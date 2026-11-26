@@ -560,27 +560,7 @@ fi
 refresh_vault_lan_ip
 
 log_info "Restarting Docker Stack..."
-profiles=$(get_tunnel_profiles)
-# Same handover guard as deploy.sh, and it has to be here too: this restart is
-# the second place a wizard restore can publish the box, and it happens BEFORE
-# the trusted domains below are re-applied. Nextcloud is running on the
-# archive's config.php at this point, so a tunnel opened here answers the new
-# public URL from a Nextcloud that only trusts the domains of the machine the
-# backup came from — "access through untrusted domain", for as long as it takes
-# to reach configure_nc_ha_proxy_settings.
-#
-# Caught by the hardware E2E: fixing deploy.sh alone just moved the exposure
-# later into the same restore (newt up at 17:23:07, domains applied after).
-#
-# Only for a restore the setup wizard is driving — credentials still unclaimed
-# (staging or install_creds.json). A dashboard restore on a live box has
-# neither file and must keep its tunnel, which is how the owner is watching it.
-# stop_tunnel_services: `up` without profiles leaves an already-running newt up.
-if handover_pending; then
-    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
-    profiles=""
-    stop_tunnel_services
-fi
+profiles=$(get_runtime_profiles)
 # A restored .env from before the agent's browser has no key for it.
 if camofox_installed; then ensure_camofox_key; fi
 docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} up -d --remove-orphans || log_error "Failure restarting docker stack."
@@ -590,10 +570,10 @@ if [ "$HAS_HA_CONFIG" = true ]; then
 wait_for_healthy "homeassistant" 120 || log_warn "HomeAssistant taking longer to start."
 fi
 
-# Re-apply Proxy/Tunnel Configuration ---
+# Re-apply Proxy Configuration ---
 # The restored config.php contains OLD trusted_domains/proxies from the backup time.
 # We must overwrite them with the CURRENT environment settings immediately.
-log_info "Updating restored config with current Tunnel and Proxy settings..."
+log_info "Updating restored config with current address and proxy settings..."
 
 # Safety: Ensure defaults exist if missing in .env to prevent 'set -u' crash
 export TRUSTED_PROXIES_0="${TRUSTED_PROXIES_0:-127.0.0.1}"

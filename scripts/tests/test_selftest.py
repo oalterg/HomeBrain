@@ -356,11 +356,6 @@ def test_local_only_box_skips_remote_access():
     assert selftest.check_remote_access({"DEPLOYMENT_MODE": "local"})["status"] == SKIP
 
 
-def test_remote_box_that_does_not_answer_is_a_failure():
-    env = {"DEPLOYMENT_MODE": "remote", "PANGOLIN_DOMAIN": "x.example.com"}
-    assert selftest.check_remote_access(env)["status"] == FAIL
-
-
 def test_version_behind_is_a_failure():
     assert selftest.check_version("v2026.07.29", "v2026.08.01")["status"] == FAIL
 

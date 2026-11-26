@@ -63,7 +63,7 @@ class Harness:
         self._saved = {k: getattr(hb, k) for k in (
             "ENV_FILE", "update_env_var", "is_setup_complete",
             "SETUP_STARTED_MARKER", "STAGING_CREDS_PATH", "RESTORING_MARKER",
-            "get_factory_config", "STATUS_FILE")}
+            "STATUS_FILE")}
         self._saved_thread = hb.threading.Thread
         self._saved_limiter = hb.limiter.enabled
 
@@ -76,7 +76,6 @@ class Harness:
         hb.RESTORING_MARKER = self.restoring
         hb.update_env_var = lambda k, v: self.writes.append((k, v))
         hb.is_setup_complete = lambda: False
-        hb.get_factory_config = lambda: {}
         hb.threading.Thread = lambda *a, **kw: self.threads.append((a, kw)) or _NoopThread()
         hb.limiter.enabled = False
         hb.app.config["TESTING"] = True
@@ -193,54 +192,6 @@ def test_a_legacy_box_whose_db_password_is_the_master_password_is_left_alone():
     try:
         h.start()
         assert h.written("MYSQL_PASSWORD") is None
-    finally:
-        h.close()
-
-
-FACTORY_TUNNEL = {
-    "NEWT_ID": "newt-factory",
-    "NEWT_SECRET": "factory-secret-value",
-    "PANGOLIN_ENDPOINT": "https://pan.example",
-    "PANGOLIN_DOMAIN": "box.example.com",
-}
-
-
-def test_remote_setup_uses_factory_secret_when_form_sends_empty():
-    """The wizard must not require re-typing a secret already in factory_config.
-
-    JS used to block a blank secret even though /start_setup falls back to
-    factory NEWT_SECRET. Empty string is what the fixed wizard sends.
-    """
-    h = _fresh()
-    try:
-        hb.get_factory_config = lambda: dict(FACTORY_TUNNEL)
-        r = h.start(
-            deployment_mode="remote",
-            pangolin_id="newt-factory",
-            pangolin_secret="",
-            pangolin_endpoint="https://pan.example",
-            pangolin_domain="box.example.com",
-        )
-        assert r.status_code == 200, r.get_data(as_text=True)
-        assert h.written("NEWT_SECRET") == "factory-secret-value"
-        assert h.written("NEWT_ID") == "newt-factory"
-    finally:
-        h.close()
-
-
-def test_remote_setup_form_secret_overrides_factory():
-    h = _fresh()
-    try:
-        hb.get_factory_config = lambda: dict(FACTORY_TUNNEL)
-        r = h.start(
-            deployment_mode="remote",
-            pangolin_id="newt-factory",
-            pangolin_secret="override-secret",
-            pangolin_endpoint="https://pan.example",
-            pangolin_domain="box.example.com",
-        )
-        assert r.status_code == 200, r.get_data(as_text=True)
-        assert h.written("NEWT_SECRET") == "override-secret"
     finally:
         h.close()
 

@@ -435,7 +435,7 @@ async function fetchStatus() {
         }
         const data = await res.json();
 
-        const map = { nc: 'nextcloud', ha: 'homeassistant', db: 'db', tunnel: 'tunnel', vault: 'vaultwarden' };
+        const map = { nc: 'nextcloud', ha: 'homeassistant', db: 'db', vault: 'vaultwarden' };
         Object.keys(map).forEach(k => setStatus(document.getElementById('st-' + k), data[map[k]]));
 
         const maint = document.getElementById('st-maint');
@@ -1356,43 +1356,6 @@ function vaultOpenAdmin(ev) {
     window.open('/admin/', '_blank', 'noopener');
 }
 
-/* =====================================================================
-   Tunnel
-   ===================================================================== */
-
-function showCloudflareForm() {
-    document.getElementById('cf-form-container').style.display = 'block';
-}
-
-/* LAN-only box: swap the "Tunnel inactive" state for the tunnel form. */
-function showTunnelSetup(show) {
-    document.getElementById('tunnel-empty').style.display = show ? 'none' : '';
-    document.getElementById('pangolin-form').style.display = show ? '' : 'none';
-}
-
-async function updatePangolin(e) {
-    e.preventDefault();
-    const enable = e.target.dataset.enable === '1';
-    if (!await hbConfirm(enable ? {
-        title: 'Turn on the tunnel?',
-        body: 'Nextcloud, Home Assistant and Vault restart and become reachable under your domain. '
-            + 'This takes a minute or two.',
-        detail: 'The names on your home network (nc-homebrain.local and the others) keep working.',
-        confirm: 'Turn on',
-    } : {
-        title: 'Update tunnel settings?',
-        body: 'All service URLs will be rewritten and the tunnels restarted.',
-        confirm: 'Update',
-    })) return;
-    triggerAction('/api/tunnel', enable ? 'Turn on tunnel' : 'Update Tunnel', {
-        endpoint: document.getElementById('tun-ep').value,
-        id: document.getElementById('tun-id').value,
-        secret: document.getElementById('tun-sec').value,
-        main_domain: document.getElementById('tun-main-domain').value,
-    });
-    setTimeout(() => location.reload(), 3000);
-}
-
 /* --- Remote access over the owner's private network (src/mesh.py) --- */
 let _meshTimer = null;
 let _meshQr = '';
@@ -1724,51 +1687,6 @@ async function meshDisconnect() {
     loadMesh();
 }
 
-/* `off`: this box shipped without a tunnel, so "factory" means none. */
-async function revertPangolin(off) {
-    if (!await hbConfirm(off ? {
-        title: 'Turn off the tunnel?',
-        body: 'Nextcloud, Home Assistant and Vault stop answering on your domain. '
-            + 'The names on your home network keep working.',
-        confirm: 'Turn off', danger: true,
-    } : {
-        title: 'Revert to factory defaults?',
-        body: 'Endpoint, device ID, secret and domains all return to the values this device shipped with.',
-        confirm: 'Revert', danger: true,
-    })) return;
-    triggerAction('/api/tunnel', off ? 'Turn off tunnel' : 'Revert Tunnel', { action: 'revert' });
-    setTimeout(() => location.reload(), 3000);
-}
-
-async function updateCloudflare(e, mode) {
-    e.preventDefault();
-    const prefix = mode === 'switch' ? 'cf-switch-' : 'cf-update-';
-    const token = document.getElementById(prefix + 'token').value;
-    const service = document.getElementById(prefix + 'service').value;
-    const domain = document.getElementById(prefix + 'domain').value;
-
-    if (!token) { hbToast('Tunnel token is required.', 'error'); return; }
-    if (!domain && mode === 'switch') { hbToast('Domain is required.', 'error'); return; }
-
-    if (!await hbConfirm({
-        title: 'Apply Cloudflare tunnel?',
-        body: 'Traffic for the selected service will move to Cloudflare.',
-        confirm: 'Apply',
-    })) return;
-    triggerAction('/api/tunnel/cloudflare', 'Cloudflare Update', { domain, token, service });
-    setTimeout(() => location.reload(), 3000);
-}
-
-async function revertToFactory() {
-    if (!await hbConfirm({
-        title: 'Disable Cloudflare?',
-        body: 'The box reverts to its factory Pangolin tunnel settings.',
-        confirm: 'Disable', danger: true,
-    })) return;
-    triggerAction('/api/tunnel/revert', 'Revert to Factory', {});
-    setTimeout(() => location.reload(), 3000);
-}
-
 /* =====================================================================
    System configuration
    ===================================================================== */
@@ -1894,7 +1812,7 @@ function updateAIStatus(llamaStatus, openclawStatus, currentModelId, whisperStat
     document.getElementById('sys-openclaw-status').dataset.val = openclawStatus;
 
     // OpenClaw link — same-origin reverse-proxy mounted on the manager at
-    // /openclaw/. Works identically over LAN, mDNS, and Pangolin because the
+    // /openclaw/. Works identically over LAN, mDNS, and the private network because the
     // auth gate is the master-password session already protecting this page.
     const isRunning = openclawStatus === 'running';
     const openclawOpen = document.getElementById('openclaw-open');
@@ -4365,17 +4283,5 @@ function runSelfTest() {
 }
 
 /* --- boot --- */
-
-// The subdomain preview under the tunnel form.
-const tunDomainEl = document.getElementById('tun-main-domain');
-if (tunDomainEl) {
-    tunDomainEl.addEventListener('input', e => {
-        const val = e.target.value || '…';
-        ['preview-mgr', 'preview-nc', 'preview-ha', 'preview-vault'].forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.innerText = val;
-        });
-    });
-}
 
 init();

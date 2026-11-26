@@ -543,7 +543,7 @@ VERSIONS_FILE = f"{INSTALL_DIR}/config/versions.json"
 SCRIPT_BACKUP = f"{INSTALL_DIR}/scripts/backup.sh"
 SCRIPT_RESTORE = f"{INSTALL_DIR}/scripts/restore.sh"
 SCRIPT_DEPLOY = f"{INSTALL_DIR}/scripts/deploy.sh"
-SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_tunnels.sh"
+SCRIPT_REDEPLOY = f"{INSTALL_DIR}/scripts/redeploy_remote_access.sh"
 SCRIPT_UTILITIES = f"{INSTALL_DIR}/scripts/utilities.sh"
 SCRIPT_NUCLEAR   = f"{INSTALL_DIR}/scripts/nuclear_reset.sh"
 SCRIPT_ROTATE    = f"{INSTALL_DIR}/scripts/rotate_master_password.sh"
@@ -553,8 +553,8 @@ STAGING_CREDS_PATH = f"{INSTALL_DIR}/.install_creds_staging"
 
 STATUS_FILE = os.path.join(tempfile.gettempdir(), "homebrain_task_status.json")
 
-# tunnel_state_from_logs lives with the health checker so the log strings newt
-# prints are matched in exactly one place. Import-safe: healthcheck.py is
+# The update-offer helpers live with the health checker, so the dashboard and
+# the checker share one implementation. Import-safe: healthcheck.py is
 # constants and functions with its entry point behind __main__. Resolved
 # relative to this file so a dev checkout works like the installed tree, and
 # appended so nothing in scripts/ can shadow a stdlib or site-packages module.
@@ -563,14 +563,10 @@ try:
     from healthcheck import (
         beta_ahead,
         stable_update_offer,
-        tunnel_state_from_logs,
     )
 except ImportError:
     # Degrade to today's behaviour rather than taking the whole dashboard down
-    # over the tunnel badge.
-    def tunnel_state_from_logs(_tail):
-        return "unknown"
-
+    # over the update badge.
     def stable_update_offer(installed_ref, latest_tag):
         latest_tag = (latest_tag or "").strip()
         installed_ref = (installed_ref or "").strip()
@@ -1118,8 +1114,8 @@ def login():
         # the one page that would have shown them their master password AND
         # their recovery phrase, leaving a factory reset as the only way back.
         # The window closes the moment they claim the credentials, and the box
-        # does not publish its tunnels until then (deploy.sh), so the exposure
-        # stays LAN-local and strictly shorter than pre-setup.
+        # starts with remote access off (it is turned on from this dashboard),
+        # so the exposure stays LAN-local and strictly shorter than pre-setup.
         if is_handover_pending():
             candidates.append(get_factory_password())
     else:
@@ -1174,13 +1170,6 @@ def cleanup_credentials():
     if os.path.exists(RESTORE_FAILED_MARKER):
         os.remove(RESTORE_FAILED_MARKER)
     session.pop('authenticated', None) # Force re-login with new master password
-    
-    # Now, start the remaining profile tunnel containers
-    subprocess.run(["chmod", "+x", SCRIPT_UTILITIES])
-    cmd = f"bash {SCRIPT_UTILITIES} activate_tunnels >> {LOG_FILES['setup']} 2>&1"
-    if not start_background_task("Activating Tunnels", cmd, "setup"):
-        logging.warning("Tunnel activation skipped: another task is running")
-
     return jsonify({"status": "ok"})
 
 # --- Helpers ---
@@ -1240,24 +1229,6 @@ def run_background_task(task_name, command, log_type):
     if current["status"] != "running":
         current["status"] = "idle"
         write_status(current)
-
-
-def get_factory_config():
-    config = {}
-    if os.path.exists(FACTORY_CONFIG):
-        with open(FACTORY_CONFIG, "r") as f:
-            for line in f:
-                if "=" in line:
-                    key, value = line.strip().split("=", 1)
-                    val_str = value.strip()
-                    if val_str.startswith(("'", '"')) and val_str.endswith(val_str[0]):
-                        inner = val_str[1:-1]
-                        if val_str[0] == "'":
-                            inner = inner.replace("'\\''", "'")
-                        config[key] = inner
-                    else:
-                        config[key] = val_str
-    return config
 
 
 def get_env_config():
@@ -1377,15 +1348,13 @@ def update_env_var(key, value):
 
 
 def sanitize_domain(value):
-    """Reduce a user-supplied domain field to a bare hostname.
+    """Reduce a domain to a bare hostname.
 
-    Owners paste the tunnel domain as a URL ("https://home.example.com/").
-    Every public hostname is derived by prefixing labels onto this value
-    (nc.<domain>, vault.<domain>), so a scheme or path poisons them all:
-    Nextcloud rejects the tunnel host as untrusted, and Vaultwarden mounts its
-    routes under the path it parses out of DOMAIN, so the image healthcheck's
-    /alive probe 404s and the container reports unhealthy forever. Seen on a
-    production disaster-restore.
+    Every away address is derived from this value, so a scheme, path or the
+    trailing dot of a DNS name poisons them all: Nextcloud rejects the host as
+    untrusted, and Vaultwarden mounts its routes under the path it parses out
+    of DOMAIN, so the image healthcheck's /alive probe 404s and the container
+    reports unhealthy forever. Seen on a production disaster-restore.
     """
     value = (value or "").strip()
     value = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", value)
@@ -1421,24 +1390,14 @@ def is_setup_started():
 
 
 def is_local_mode():
-    """Returns True when running in LAN-only mode.
-    Local if Pangolin credentials are absent, or if user explicitly set DEPLOYMENT_MODE=local.
-    When credentials are present, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
+    """Returns True when running in LAN-only mode: no name on the owner's
+    private network (mesh.py), or remote access explicitly turned off.
+    Same rule as common.sh:is_local_mode.
     """
     env = get_env_config()
-    # Neither a private-network name (mesh.py) nor Pangolin credentials — always local
-    if not any(env.get(k) for k in ("MESH_DOMAIN", "CF_TOKEN_NC", "CF_TOKEN_HA")) and \
-            not all(env.get(k) for k in ["NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"]):
+    if not env.get("MESH_DOMAIN"):
         return True
-    # Credentials present but user opted out
     return env.get("DEPLOYMENT_MODE", "remote") == "local"
-
-
-def present_tunnel_status(status: str, local: bool) -> str:
-    """A LAN-only box has no tunnel process. Calling that 'stopped' paints it red."""
-    if local and status == "stopped":
-        return "deactivated"
-    return status
 
 
 def get_lan_ip():
@@ -1506,10 +1465,10 @@ def start_setup():
         update_env_var("NEXTCLOUD_ADMIN_USER", "admin")
 
 
-    # Write deployment mode chosen in the setup wizard
+    # Every box starts on the local network. Remote access is turned on from
+    # the dashboard after setup (mesh.py).
     data = request.get_json(silent=True) or {}
-    deployment_mode = data.get("deployment_mode", "local")
-    update_env_var("DEPLOYMENT_MODE", deployment_mode)
+    update_env_var("DEPLOYMENT_MODE", "local")
 
     # --- Restoring an existing HomeBrain onto bare metal ---------------------
     # The off-site copy could be written and listed but never used to bring a
@@ -1568,28 +1527,6 @@ def start_setup():
         with open(RESTORING_MARKER, "w") as f:
             f.write(restore_archive)
 
-    # Map credentials: prefer form submission, fall back to factory config
-    factory = get_factory_config()
-
-    if deployment_mode == "remote":
-        newt_id       = data.get("pangolin_id")       or factory.get("NEWT_ID", "")
-        newt_secret   = data.get("pangolin_secret")   or factory.get("NEWT_SECRET", "")
-        pan_endpoint  = data.get("pangolin_endpoint") or factory.get("PANGOLIN_ENDPOINT", "")
-        pan_domain    = sanitize_domain(data.get("pangolin_domain")
-                                        or factory.get("PANGOLIN_DOMAIN", ""))
-
-        update_env_var("NEWT_ID",           newt_id)
-        update_env_var("NEWT_SECRET",       newt_secret)
-        update_env_var("PANGOLIN_ENDPOINT", pan_endpoint)
-
-        if pan_domain:
-            update_env_var("PANGOLIN_DOMAIN",            pan_domain)
-            update_env_var("MANAGER_DOMAIN",             pan_domain)
-            update_env_var("NEXTCLOUD_TRUSTED_DOMAINS",  f"nc.{pan_domain}")
-            update_env_var("HA_TRUSTED_DOMAINS",         f"ha.{pan_domain}")
-            update_env_var("VAULT_TRUSTED_DOMAINS",      f"vault.{pan_domain}")
-            update_env_var("VAULT_DOMAIN",               f"https://vault.{pan_domain}")
-
     env_config = get_env_config()
 
     # 1. Get master password
@@ -1633,7 +1570,6 @@ def start_setup():
         "password": master_pass,
         "recovery_phrase": recovery_phrase,
         "recovery_adopted": bool(adopted_phrase),
-        "domain": env_config.get('PANGOLIN_DOMAIN'),
         # Whether THIS install was a restore. The handover screen words itself
         # from this. It cannot read .restoring for that any more: that marker
         # is now the in-flight flag and is gone by the time the screen renders.
@@ -1813,8 +1749,8 @@ def index():
     # already touched .setup_complete by the time it hands over to restore.sh.
     # Without this branch, refreshing the wizard while the archive is still
     # unpacking drops the owner onto the dashboard of a half-restored box —
-    # and, before the credentials were held back, onto the handover screen,
-    # one click away from starting the tunnels mid-restore. The marker is
+    # and, before the credentials were held back, onto the handover screen
+    # while the restore was still running. The marker is
     # cleared by finish_restore, so this cannot outlive the restore itself.
     if restoring:
         return render_template("installing.html", restore_mode=True,
@@ -1825,9 +1761,8 @@ def index():
         if is_setup_started():
             return render_template("installing.html", restore_mode=restoring,
                                    has_gpu=has_gpu())
-        return render_template("welcome.html", config=get_factory_config(), has_gpu=has_gpu())
+        return render_template("welcome.html", has_gpu=has_gpu())
 
-    factory = get_factory_config()
     env = get_env_config()
 
     # Deployment mode
@@ -1836,7 +1771,7 @@ def index():
 
     # Compute service URLs.  When the browser reached us on a LAN address
     # (IP, .local mDNS) serve local names so the links work even when
-    # the tunnel is down — regardless of the configured deployment mode.
+    # the private network is down — regardless of the configured deployment mode.
     # Names, not the request host: a raw IP is the dashboard only.
     lan_access = _is_lan_request()
     if local or lan_access:
@@ -1845,35 +1780,11 @@ def index():
     else:
         nc_url = f"https://{env.get('NEXTCLOUD_TRUSTED_DOMAINS', '')}"
         ha_url = f"https://{env.get('HA_TRUSTED_DOMAINS', '')}"
-
-    # Determine Tunnel Provider Mode
-    # If any CF token exists, we are in Cloudflare mode
-    cf_mode = bool(env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"))
-    mesh_mode = bool(env.get("MESH_DOMAIN"))
-
-    # Check if Pangolin is custom
-    is_custom_pangolin = False
-    if not cf_mode and not mesh_mode:
-        # Check if critical tunnel params differ from factory
-        is_custom_pangolin = (
-            env.get("PANGOLIN_ENDPOINT") != factory.get("PANGOLIN_ENDPOINT") or
-            env.get("PANGOLIN_DOMAIN") != factory.get("PANGOLIN_DOMAIN")
-        )
     return render_template(
         "dashboard.html",
         deployment_mode=deployment_mode,
         nc_url=nc_url,
         ha_url=ha_url,
-        main_domain=env.get("PANGOLIN_DOMAIN"),
-        nc_domain=env.get("NEXTCLOUD_TRUSTED_DOMAINS"),
-        ha_domain=env.get("HA_TRUSTED_DOMAINS"),
-        manager_domain=env.get("MANAGER_DOMAIN"),
-        tunnel={
-            "factory": factory,
-            "current": env,
-            "mode": "mesh" if mesh_mode else ("cloudflare" if cf_mode else "pangolin"),
-            "is_custom_pangolin": is_custom_pangolin,
-        },
         has_gpu=has_gpu(),
         password_rule=recovery.NEW_PASSWORD_RULE,
     )
@@ -1882,12 +1793,12 @@ def index():
 # --- Routes: Deployment Mode ---
 @app.route("/api/deployment-mode")
 def deployment_mode_api():
-    """Returns current deployment mode and tunnel domain (if any)."""
+    """Returns current deployment mode and away-from-home domain (if any)."""
     env = get_env_config()
     local = is_local_mode()
     tunnel_domain = None
     if not local:
-        tunnel_domain = env.get("PANGOLIN_DOMAIN") or env.get("NEXTCLOUD_TRUSTED_DOMAINS") or None
+        tunnel_domain = env.get("NEXTCLOUD_TRUSTED_DOMAINS") or None
     return jsonify({"mode": "local" if local else "remote", "tunnelDomain": tunnel_domain})
 
 
@@ -1924,26 +1835,17 @@ def system_status():
         "nextcloud": "stopped",
         "db": "stopped",
         "homeassistant": "stopped",
-        "tunnel": "stopped",
         "vaultwarden": "stopped",
         "caddy": "stopped",
     }
     try:
         # Docker Services Check
-        # Get profiles dynamically from common.sh for consistency
-        profiles = subprocess.check_output(
-            ["bash", "-c",
-             f"source {INSTALL_DIR}/scripts/common.sh; load_env; "
-             "echo $(get_tunnel_profiles) $(get_vault_profiles)"],
-        ).decode().strip()
-
         compose_cmd = ["docker", "compose", "-f", COMPOSE_FILE, "--env-file", ENV_FILE]
         if os.path.exists(OVERRIDE_FILE):
             compose_cmd += ["-f", OVERRIDE_FILE]
-        compose_cmd += profiles.split() + ["ps", "--format", "{{.Service}}:{{.State}}:{{.Health}}"]
+        compose_cmd += ["ps", "--format", "{{.Service}}:{{.State}}:{{.Health}}"]
 
         out = subprocess.check_output(compose_cmd).decode()
-        tunnel_status = "stopped"
 
         for line in out.splitlines():
             parts = line.split(":")
@@ -1960,32 +1862,6 @@ def system_status():
 
                 if svc in services:
                     services[svc] = status
-
-                # Consolidate Tunnel Status
-                if svc == "newt" or svc.startswith("cloudflared"):
-                    if status == "running":
-                        tunnel_status = "running"
-
-        # A running newt is not a connected tunnel. When its DNS cannot resolve
-        # the Pangolin endpoint it retries forever in a container that Docker
-        # reports as perfectly healthy, so reporting "running" here told owners
-        # remote access worked while every public URL timed out. Only newt:
-        # cloudflared is on its way out and keeps the plain up/stopped answer.
-        if tunnel_status == "running":
-            try:
-                names = subprocess.check_output(
-                    ["docker", "ps", "--filter", "name=newt", "--format", "{{.Names}}"],
-                    timeout=10,
-                ).decode().split()
-                if names:
-                    logs = subprocess.run(["docker", "logs", "--tail", "50", names[0]],
-                                          capture_output=True, text=True, timeout=10)
-                    if tunnel_state_from_logs(logs.stdout + logs.stderr) == "down":
-                        tunnel_status = "unhealthy"
-            except Exception:
-                pass
-
-        services["tunnel"] = present_tunnel_status(tunnel_status, is_local_mode())
 
         # Maintenance Mode Check
         try:
@@ -3107,152 +2983,20 @@ def update_openclaw_backup_settings():
     return jsonify({"success": True})
 
 
-# --- Routes: Tunnel Management ---
-def point_pangolin_at(endpoint, newt_id, secret, domain):
-    """Write one Pangolin tunnel into .env — or none, when a value is missing.
-
-    DEPLOYMENT_MODE follows the credentials. The wizard writes "local" on a box
-    set up without a tunnel, and is_local_mode() (here, in common.sh and in
-    healthcheck.py) lets that win over credentials — so a tunnel added later
-    came up while Nextcloud, the vault URL and this dashboard all carried on
-    as local. Nothing on the redeploy path derives the vault keys either:
-    provision_vault.sh only fills an empty VAULT_DOMAIN.
-    """
-    domain = sanitize_domain(domain)
-    on = bool(endpoint and newt_id and secret and domain)
-    dom = domain if on else ""
-    update_env_var("DEPLOYMENT_MODE", "remote" if on else "local")
-    update_env_var("MESH_DOMAIN", "")
-    update_env_var("PANGOLIN_ENDPOINT", endpoint)
-    update_env_var("NEWT_ID", newt_id)
-    update_env_var("NEWT_SECRET", secret)
-    update_env_var("PANGOLIN_DOMAIN", dom)
-    update_env_var("MANAGER_DOMAIN", dom)
-    update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", f"nc.{dom}" if dom else "")
-    update_env_var("HA_TRUSTED_DOMAINS", f"ha.{dom}" if dom else "")
-    update_env_var("VAULT_TRUSTED_DOMAINS", f"vault.{dom}" if dom else "")
-    update_env_var("VAULT_DOMAIN", f"https://vault.{dom}" if dom else "https://vault-homebrain.local")
-
-
-def point_pangolin_at_factory():
-    """The tunnel this box shipped with. A box that shipped without one goes local."""
-    factory = get_factory_config()
-    point_pangolin_at(factory.get("PANGOLIN_ENDPOINT", ""), factory.get("NEWT_ID", ""),
-                      factory.get("NEWT_SECRET", ""), factory.get("PANGOLIN_DOMAIN", ""))
-
-
-@app.route("/api/tunnel", methods=["POST"])
-@limiter.limit("5 per minute")
-def update_tunnel():
-    if task_running():
-        return jsonify({"error": "Task running"}), 409
-
-    data = request.json
-    action = data.get("action")
-
-    if action != "revert":
-        endpoint = (data.get("endpoint") or "").strip()
-        newt_id = (data.get("id") or "").strip()
-        secret = (data.get("secret") or "").strip()
-        main_dom = sanitize_domain(data.get("main_domain"))
-        if not (endpoint and newt_id and secret and main_dom):
-            return jsonify({"error": "Endpoint, device ID, secret key and main domain are all required."}), 400
-
-    # Ensure we are in Pangolin mode: Clear CF tokens
-    update_env_var("CF_TOKEN_NC", None)
-    update_env_var("CF_TOKEN_HA", None)
-
-    if action == "revert":
-        point_pangolin_at_factory()
-    else:
-        point_pangolin_at(endpoint, newt_id, secret, main_dom)
-
-    # Trigger deploy script to update stack logic
-    subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
-    cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    if not start_background_task("Update Tunnel (Pangolin)", cmd, "setup"):
-        return jsonify({"error": "Task running"}), 409
-    return jsonify({"status": "started"})
-
-
-# --- Routes: Tunnel Management (Cloudflare) ---
-@app.route("/api/tunnel/cloudflare", methods=["POST"])
-@limiter.limit("5 per minute")
-def update_tunnel_cloudflare():
-    if task_running():
-        return jsonify({"error": "Task running"}), 409
-
-    domain = sanitize_domain(request.json.get("domain"))
-    service = request.json.get("service")  # 'nc' or 'ha'
-    token = request.json.get("token")
-
-    if not token or service not in ("nc", "ha") or not domain:
-        return jsonify({"error": "Missing token or service definition"}), 400
-
-    if get_env_config().get("MESH_DOMAIN"):
-        point_mesh_at("")
-    update_env_var("DEPLOYMENT_MODE", "remote")
-
-    # Write Token to .env
-    if service == "nc":
-        update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", domain)
-        update_env_var("CF_TOKEN_NC", token)
-    elif service == "ha":
-        update_env_var("HA_TRUSTED_DOMAINS", domain)
-        update_env_var("CF_TOKEN_HA", token)
-
-    # NOTE: We do not explicitly unset PANGOLIN vars here because
-    # deploy.sh prioritizes CF tokens if present.
-    # This allows a cleaner "Revert" later.
-
-    subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
-    cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    if not start_background_task("Update Tunnel (Cloudflare)", cmd, "setup"):
-        return jsonify({"error": "Task running"}), 409
-    return jsonify({"status": "started"})
-
-
-@app.route("/api/tunnel/revert", methods=["POST"])
-@limiter.limit("3 per minute")
-def revert_tunnel_provider():
-    if task_running():
-        return jsonify({"error": "Task running"}), 409
-
-    # To revert to factory (Pangolin)
-    # 1. Clear CF tokens
-    update_env_var("CF_TOKEN_NC", None)
-    update_env_var("CF_TOKEN_HA", None)
-
-    # 2. Restore Factory Pangolin vars. Trusted domains derive from the factory
-    # PANGOLIN_DOMAIN rather than the legacy NC_DOMAIN/HA_DOMAIN keys:
-    # provision.sh (remote mode) rewrites factory_config without those keys.
-    point_pangolin_at_factory()
-
-    subprocess.run(["chmod", "+x", SCRIPT_REDEPLOY])
-    cmd = f"bash {SCRIPT_REDEPLOY} >> {LOG_FILES['setup']} 2>&1"
-    if not start_background_task("Revert to Factory Settings", cmd, "setup"):
-        return jsonify({"error": "Task running"}), 409
-    return jsonify({"status": "started"})
-
-
 # --- Routes: Remote access over the owner's private network (mesh.py) ---
 def point_mesh_at(dns_name):
     """Make the box's private-network name its away-from-home address, or
     return it to local when dns_name is empty.
 
-    A third writer of the same keys point_pangolin_at owns, on purpose: one
-    set of facts says where the apps live away from home, and everything
+    One set of facts says where the apps live away from home, and everything
     downstream (Nextcloud trusted domains, Vaultwarden's DOMAIN, pairing QR
-    codes, the replica URL) already reads them. One provider at a time.
+    codes, the replica URL) reads them. common.sh:retire_tunnel leaves a box
+    that had a tunnel in the same shape as dns_name="" does.
     """
     dns_name = sanitize_domain(dns_name)
     on = bool(dns_name)
     update_env_var("DEPLOYMENT_MODE", "remote" if on else "local")
     update_env_var("MESH_DOMAIN", dns_name)
-    for key in ("PANGOLIN_ENDPOINT", "NEWT_ID", "NEWT_SECRET", "PANGOLIN_DOMAIN"):
-        update_env_var(key, "")
-    update_env_var("CF_TOKEN_NC", None)
-    update_env_var("CF_TOKEN_HA", None)
     update_env_var("MANAGER_DOMAIN", f"{dns_name}:{mesh.DASHBOARD[0]}" if on else "")
     update_env_var("NEXTCLOUD_TRUSTED_DOMAINS", mesh.host_port(dns_name, "nextcloud") if on else "")
     update_env_var("HA_TRUSTED_DOMAINS", mesh.host_port(dns_name, "homeassistant") if on else "")
@@ -4245,7 +3989,7 @@ def _openclaw_forward(target_path, identity=True):
                and k.lower() not in _OPENCLAW_SPOOFABLE_HEADERS}
     # Forward the browser's Origin to the gateway. patch_openclaw_config
     # writes every origin the dashboard can be reached at (loopback, LAN IP,
-    # mDNS, Pangolin domain) into gateway.controlUi.allowedOrigins; the
+    # mDNS, private-network name) into gateway.controlUi.allowedOrigins; the
     # gateway accepts or rejects based on this header. Overriding Origin to
     # the proxy's own loopback URL — as we did before — leaves a port-mismatch
     # against the allowlist entries and gets us rejected.
@@ -4370,7 +4114,7 @@ def _openclaw_ws_handle(ws, subpath):
 
     # Forward the browser's Origin verbatim. The gateway's
     # controlUi.allowedOrigins is populated by patch_openclaw_config with
-    # every dashboard origin (loopback, LAN IP, mDNS, Pangolin domain);
+    # every dashboard origin (loopback, LAN IP, mDNS, private-network name);
     # the gateway only accepts the connection when this header matches.
     # Pass via the explicit `origin=` kwarg — including it in header= as
     # well makes websocket-client send TWO Origin headers which get merged
@@ -4486,15 +4230,11 @@ def _vault_public_url():
 
     On the LAN this is always https://vault-homebrain.local — names, not
     ports, not the request IP (a raw IP on 443 is the dashboard). Away from
-    home it is the tunnel URL.
+    home it is the private-network URL.
     """
     env = get_env_config()
     if not is_local_mode() and not _is_lan_request():
-        domain = env.get("VAULT_DOMAIN")
-        if domain:
-            return domain
-        pd = env.get("PANGOLIN_DOMAIN")
-        return f"https://vault.{pd}" if pd else ""
+        return env.get("VAULT_DOMAIN", "")
     return "https://vault-homebrain.local"
 
 
@@ -4660,8 +4400,8 @@ def _vault_bw_url():
 
     Always loopback-name to the Caddy TLS edge. Vaultwarden insists on HTTPS,
     and /etc/hosts points vault-homebrain.local at 127.0.0.1 so this never
-    leaves the box. Talking to the public VAULT_DOMAIN would route through
-    Pangolin and present the wrong cert.
+    leaves the box. Talking to the away-from-home VAULT_DOMAIN would leave
+    the box and present the wrong cert.
     """
     return "https://vault-homebrain.local"
 
@@ -5710,7 +5450,7 @@ def mesh_apps_private(env):
 def nc_client_url(env):
     """The address to hand a phone, and whether it works away from home.
 
-    Prefer the tunnel: a phone that only syncs inside the house is not a photo
+    Prefer the away address: a phone that only syncs inside the house is not a photo
     backup. The LAN fallback is https://nc-homebrain.local; the phone will ask
     about this box's certificate unless its CA has been installed."""
     domains = env.get("NEXTCLOUD_TRUSTED_DOMAINS", "").split()

@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # What it NEVER touches:
 #   - /mnt/backup and its fstab entry
-#   - Factory config (FACTORY_PASSWORD + baked tunnel secrets)
+#   - Factory config (FACTORY_PASSWORD)
 #   - The /opt/homebrain application code itself
 #   - GPU hardening (udev, modprobe, kernel params)
 #
@@ -120,12 +120,10 @@ systemctl disable llama-server whisper-server whisper-proxy 2>/dev/null || true
 
 write_status "running" "Nuclear reset in progress — destroying volumes..."
 
-# Profile-gated services (newt, cloudflared, proton-bridge) are invisible to a
-# plain `down`: Compose only acts on profiles that are currently active. A wipe
-# that leaves newt running keeps the device published to its tunnel after the
-# admin password and all data are gone — precisely the exposure deploy.sh
-# refuses to create on a fresh install. So ask Compose for every profile it
-# knows about and take the entire project down in one pass.
+# Profile-gated services (proton-bridge, camofox) are invisible to a plain
+# `down`: Compose only acts on profiles that are currently active. A factory
+# wipe has to mean nothing survives, so ask Compose for every profile it knows
+# about and take the entire project down in one pass.
 compose_args=(-f "$COMPOSE_FILE")
 [[ -f "$ENV_FILE" ]] && compose_args+=(--env-file "$ENV_FILE")
 while read -r profile; do
@@ -149,7 +147,7 @@ fi
 # The private network (src/mesh.py) is a host service, so nothing above
 # touches it. Left signed in, a wiped box would still publish whatever comes
 # up on its ports — to the owner's network, and to the internet where a public
-# address was on. Same exposure as a surviving newt; same answer.
+# address was on.
 if command -v tailscale >/dev/null 2>&1; then
     log "Signing out of the private network..."
     tailscale serve reset 2>/dev/null || true

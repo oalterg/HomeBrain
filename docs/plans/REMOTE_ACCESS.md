@@ -13,7 +13,8 @@ in the path can decipher the traffic, and HomeBrain runs none of them.
 
 Related: [`PRODUCT_REVIEW_2026-11.md`](PRODUCT_REVIEW_2026-11.md) (why this is
 the missing element), [`LAN_HTTPS.md`](LAN_HTTPS.md) (the LAN face this must
-sit beside), [`PANGOLIN.md`](../PANGOLIN.md) (what it replaces),
+sit beside), the Pangolin and Cloudflare tunnels (what it replaced; removed,
+see §9 "Tunnels removed"),
 [`HOUSEHOLD_ACCOUNTS.md`](HOUSEHOLD_ACCOUNTS.md) (members' phones).
 
 ---
@@ -195,9 +196,12 @@ fact. One owner per fact (August review §C2).
 5. **Onboarding sheet and QR** for owner and member phones.
 6. **Replica card** shows the mesh address.
 7. **Migrate `berlin` and `miami`,** then retire the factory tunnel,
-   registrar and Cloud Account card (review §5 S6).
-8. **Demote Cloudflare and owner-run Pangolin.** Both fail rule 2. Either
-   remove them or label them "the provider can read this traffic."
+   registrar and Cloud Account card (review §5 S6). Registrar and Cloud
+   Account card are removed, and so is the tunnel on the box side; the two
+   boxes still need remote access turned on, and the factory Pangolin shut
+   down.
+8. **Demote Cloudflare and owner-run Pangolin.** Both fail rule 2. Done by
+   removal (§9 "Tunnels removed").
 
 ---
 
@@ -280,8 +284,8 @@ Code: `src/mesh.py` (the only place that runs the client), routes under
   keys the tunnel writes (`DEPLOYMENT_MODE`, `NEXTCLOUD_TRUSTED_DOMAINS`,
   `HA_TRUSTED_DOMAINS`, `VAULT_DOMAIN`, …) plus `MESH_DOMAIN`. Trusted
   domains, the vault URL, pairing links and the replica URL follow with no
-  second copy of those facts (Q8). One provider at a time: turning this on
-  clears tunnel credentials from `.env`, and turning a tunnel on clears this.
+  second copy of those facts (Q8). It is now the only remote provider; the
+  tunnels are removed.
 
 ### The addresses
 
@@ -321,8 +325,9 @@ structural, and `test_mesh.py` pins it.
 ### Not built
 
 - Migrating production boxes off the factory tunnel and shutting down that
-  infrastructure (§6 step 7). Existing tunnel credentials remain supported;
-  no production service is changed by this branch.
+  infrastructure (§6 step 7). The box side is removed (see "Tunnels removed");
+  turning remote access on for each box and shutting the factory Pangolin
+  down are the owner's.
 - Any change to the setup wizard. Remote access is turned on after setup.
 
 
@@ -332,8 +337,8 @@ structural, and `test_mesh.py` pins it.
   heartbeat sender are removed. Old provisioning arguments are accepted and
   ignored. Saved notification recipients still work without contacting a
   registration service.
-- The tunnel card explains where encryption terminates. Switching providers
-  clears old Tailscale listeners, and redeploy refreshes chat's allowed origins.
+- Turning remote access off clears the Tailscale listeners, and redeploy
+  refreshes chat's allowed origins.
 - **Save phone setup sheet** explains joining the private network, approval
   when the lock is on, and all four app addresses. Household pairing also
   explains when Tailscale is required. The card shows sign-in expiry.
@@ -429,3 +434,29 @@ person's phone on mobile data.
 
 Not in scope: Tailscale's declarative sharing (alpha, three networks at most,
 both sides edit their policy).
+
+### Tunnels removed (2026-11-26)
+
+Pangolin (factory and owner-run) and Cloudflare Tunnel are gone from the
+product: the `newt` and `cloudflared-*` services, the dashboard's Tunnel card
+and Status row, the wizard's access-mode choice, the `/api/tunnel*` routes,
+`provision.sh`'s tunnel arguments and repoint, and the handover gate that held
+a tunnel down until the credentials were claimed. Both failed rule 2, and the
+private network covers what they did.
+
+- **Update migration.** `retire_tunnel` (`common.sh`, called by `update.sh`
+  before `up --remove-orphans`) drops the `PANGOLIN_*`, `NEWT_*` and `CF_*`
+  keys. A box that used one and has no private network goes back to
+  `DEPLOYMENT_MODE=local`, with its away addresses cleared and the vault on
+  its `.local` name; compose then removes the orphaned tunnel container. The
+  update log says remote access must be turned on again. A box already on the
+  private network keeps its addresses.
+- **What a tunnel box loses on update.** Its public `*.homebrain.house` (or
+  owner) hostnames, and off-site replication that targets one. Re-pair
+  replication over the private network.
+- **Provisioning.** `provision.sh [FACTORY_PASS]` or `--factory-pass`. The old
+  tunnel arguments are refused with a pointer here, rather than silently
+  ignored; the retired registrar arguments are still ignored.
+  `factory_config` lines from older provisioning are inert.
+- **Health.** The checker's remote-access row reads the private network only.
+  Its id stays `tunnel` so a box does not re-alert on the rename.

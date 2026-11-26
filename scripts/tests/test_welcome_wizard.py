@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Tests for the first-boot wizard: GPU vs HomeCloud copy, factory tunnel.
+"""Tests for the first-boot wizard: GPU vs HomeCloud copy, restore refresh.
 
-HomeBrain (GPU): local is the default; Telegram is the remote path; Pangolin
-is optional and is not auto-selected even when factory_config has Newt creds.
-
-HomeCloud (no GPU): Pangolin is the remote path; factory Newt creds auto-select
-Remote access; the secret stays on the box (not rendered) and the page tells
-the owner they can leave it blank.
+Every box starts on the local network. HomeBrain (GPU) leads with Telegram;
+both say that Remote access is turned on from the dashboard after setup. No
+tunnel is offered: Pangolin and Cloudflare were removed.
 
 Runnable two ways (needs Flask — install requirements.txt first):
     python3 scripts/tests/test_welcome_wizard.py
@@ -21,22 +18,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir,
 
 import app as hb            # noqa: E402
 
-FACTORY_TUNNEL = {
-    "NEWT_ID": "newt-factory",
-    "NEWT_SECRET": "factory-secret-value",
-    "PANGOLIN_ENDPOINT": "https://pan.example",
-    "PANGOLIN_DOMAIN": "box.example.com",
-}
-
-
 class WelcomeHarness:
-    def __init__(self, factory=None, has_gpu=False):
+    def __init__(self, has_gpu=False):
         self._saved_env = os.environ.get("HAS_GPU")
         os.environ["HAS_GPU"] = "true" if has_gpu else "false"
 
         self._saved = {k: getattr(hb, k) for k in (
             "INSTALL_CREDS_PATH", "SETUP_STARTED_MARKER", "RESTORING_MARKER",
-            "is_setup_complete", "get_factory_config")}
+            "is_setup_complete")}
         self._saved_limiter = hb.limiter.enabled
 
         # Point markers at paths that do not exist so index() renders welcome.
@@ -45,8 +34,6 @@ class WelcomeHarness:
         hb.SETUP_STARTED_MARKER = os.path.join(self._nonesuch, ".setup_started")
         hb.RESTORING_MARKER = os.path.join(self._nonesuch, ".restoring")
         hb.is_setup_complete = lambda: False
-        factory = dict(factory or {})
-        hb.get_factory_config = lambda: factory
         hb.limiter.enabled = False
         hb.app.config["TESTING"] = True
         self.client = hb.app.test_client()
@@ -77,79 +64,19 @@ def test_homebrain_leads_with_telegram_not_pangolin():
         assert r.status_code == 200
         html = r.get_data(as_text=True)
         assert "pair Telegram" in html
-        assert "Public tunnel" in html
-        assert "selectMode('remote');" not in html
-        assert "There is no agent on this box" not in html
+        assert "turn on Remote access" in html
+        assert "Pangolin" not in html and "tunnel" not in html.lower()
     finally:
         h.close()
 
 
-def test_homebrain_does_not_auto_select_factory_tunnel():
-    h = WelcomeHarness(factory=FACTORY_TUNNEL, has_gpu=True)
-    try:
-        html = h.get().get_data(as_text=True)
-        assert "The agent does not need them" in html
-        assert "selectMode('remote');" not in html
-        assert "factoryHasSecret = true" in html
-        assert "factory-secret-value" not in html
-    finally:
-        h.close()
-
-
-def test_homecloud_auto_selects_factory_tunnel():
-    h = WelcomeHarness(factory=FACTORY_TUNNEL, has_gpu=False)
-    try:
-        html = h.get().get_data(as_text=True)
-        assert "There is no agent on this box" in html
-        assert "selectMode('remote');" in html
-        assert "Leave the secret blank" in html
-        assert "factoryHasSecret = true" in html
-        assert "factory-secret-value" not in html
-        assert "Leave blank to use the factory secret" in html
-    finally:
-        h.close()
-
-
-def test_homecloud_without_factory_does_not_auto_select_remote():
+def test_homecloud_points_at_remote_access_not_a_tunnel():
     h = WelcomeHarness(has_gpu=False)
     try:
         html = h.get().get_data(as_text=True)
-        assert "selectMode('remote');" not in html
-        assert "factoryHasSecret = false" in html
-        assert "Remote access" in html
-    finally:
-        h.close()
-
-
-def test_device_id_placeholder_invents_no_prefix():
-    """Pangolin newt IDs carry no 'newt-' prefix.
-
-    The placeholder used to show one, so an owner comparing it against the ID
-    Pangolin had actually given them had to decide which of the two was wrong.
-    """
-    h = WelcomeHarness(has_gpu=False)
-    try:
-        html = h.get().get_data(as_text=True)
-        assert "newt-xxxxxxxx" not in html
-        assert "The Newt ID from your Pangolin site" in html
-    finally:
-        h.close()
-
-
-def test_main_domain_field_shows_the_derived_hostnames():
-    """The three public hostnames are this field with a label prefixed on.
-
-    Typing a service hostname here (nc.example.com) silently yields
-    nc.nc.example.com, and the failure surfaces only much later as Nextcloud
-    refusing its own tunnel as an untrusted domain.
-    """
-    h = WelcomeHarness(has_gpu=False)
-    try:
-        html = h.get().get_data(as_text=True)
-        assert "function previewDomains()" in html
-        assert 'id="domain-preview"' in html
-        assert "oninput=\"previewDomains()\"" in html
-        assert "without a prefix" in html
+        assert "turn on Remote access" in html
+        assert "pair Telegram" not in html
+        assert "Pangolin" not in html and "tunnel" not in html.lower()
     finally:
         h.close()
 
@@ -160,8 +87,8 @@ def test_refresh_during_a_restore_does_not_hand_over_credentials():
     deploy.sh is only the first half of a restore install, and it touches
     .setup_complete before restore.sh has written a single byte of the owner's
     data. Refreshing the wizard in that window used to land on the credentials
-    screen — one click from cleanup_credentials, which starts the tunnels and
-    deletes the marker, mid-restore.
+    screen — one click from cleanup_credentials, which deletes the marker,
+    mid-restore.
     """
     h = WelcomeHarness(has_gpu=False)
     try:

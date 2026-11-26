@@ -465,7 +465,7 @@ def t_household_add(args: dict) -> dict:
 
 TOOLS = [
     {"name": "homebrain.service_status",
-     "description": "HomeBrain service health (Nextcloud, HA, Vault, tunnel), plus "
+     "description": "HomeBrain service health (Nextcloud, HA, Vault), plus "
                     "the alerts HomeBrain has sent the owner (backup drive, disks, updates).",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "homebrain.gpu_stats",

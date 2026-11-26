@@ -1059,36 +1059,6 @@ tbody tr:hover td { background: var(--accent-soft); }
 .panel li { padding: 10px 0; border-bottom: 1px solid var(--hairline); }
 .panel li:last-child { border-bottom: none; }
 
-.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 4px; }
-@media (max-width: 560px) { .mode-grid { grid-template-columns: 1fr; } }
-
-.mode-option {
-  position: relative;
-  display: block;
-  padding: 18px 20px;
-  margin: 0;
-  font-size: 1em;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-input);
-  cursor: pointer;
-  transition: border-color 0.18s, background 0.18s, transform 0.18s, box-shadow 0.18s;
-}
-.mode-option:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-card); }
-.mode-option.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: var(--accent-glow); }
-.mode-option.selected::after {
-  content: "✓";
-  position: absolute;
-  top: 12px;
-  right: 14px;
-  font-weight: 700;
-  color: var(--accent-strong);
-}
-.mode-option input[type="radio"] { display: none; }
-.mode-title { margin-bottom: 5px; font-size: 1.05em; font-weight: 600; color: var(--text-strong); }
-.mode-desc { font-size: 0.88em; line-height: 1.45; color: var(--text-dim); }
-
 .btn-main {
   margin-top: 26px;
   padding: 15px 38px;

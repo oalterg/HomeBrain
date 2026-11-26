@@ -81,32 +81,11 @@ bash "$SCRIPT_DIR/provision_vault.sh" || log_warn "Vault provisioning had issues
 load_env  # Reload vault env vars set by provision_vault.sh
 
 # 1c. Start Remaining Services
-profiles=$(get_tunnel_profiles)
-
-# Do not publish newt/cloudflared until the owner claims credentials.
-# cleanup_credentials starts them via activate_tunnels after that click.
-# See handover_pending in common.sh — gating on install_creds.json alone
-# misses first deploy, when the file is still .install_creds_staging, and
-# a wizard restore keeps them staged until finish_restore.
-#
-# Dropping the profiles is not enough: `up` leaves an already-running
-# tunnel up. stop_tunnel_services takes it down. Restore.sh has the same
-# hold — otherwise this skip just delayed publish until the stack restart,
-# while Nextcloud still carried the backup's trusted domains.
-if handover_pending; then
-    log_info "Handover pending. Skipping tunnel startup until credentials are claimed."
-    profiles=""
-    # Not redundant with the empty profiles: `up` leaves services outside the
-    # active profile running, so a tunnel that is already up would sail through
-    # the whole handover window. See stop_tunnel_services in common.sh.
-    stop_tunnel_services
-fi
-
 ensure_searxng_secret
 if camofox_installed; then ensure_camofox_key; fi
 vault_profiles=$(get_vault_profiles)
-log_info "Starting Stack with Tunnel Profile: ${profiles:-None} · Vault Profile: ${vault_profiles:-None}"
-docker compose --env-file "$ENV_FILE" $(get_compose_args) ${profiles} ${vault_profiles} up -d --remove-orphans
+log_info "Starting Stack · Vault Profile: ${vault_profiles:-None}"
+docker compose --env-file "$ENV_FILE" $(get_compose_args) ${vault_profiles} up -d --remove-orphans
 
 # 1d. Verification
 wait_for_healthy "nextcloud" 400 || die "Nextcloud failed to start."
