@@ -1596,7 +1596,7 @@ The 17,629,760,736-byte model was SHA-256 verified before these runs.
 
 The SYCL source pin moves from b12359 (`b1b770d9`) to `19bc41dbb`, 263
 upstream commits, including the loop architecture and the NVFP4 scale
-fix for passes two and three. Fifteen patches are applied in order:
+fix for passes two and three. Eighteen patches are applied in order:
 
 | patch | purpose |
 |---|---|
@@ -1617,12 +1617,13 @@ fix for passes two and three. Fifteen patches are applied in order:
 | 0015 | Indexed bias and sinks in the MKL flash-attention path (XMX GEMMs), so prefill attention leaves the tile kernel. |
 | 0016 | One pass over the scores in the MKL path's softmax, and all KV heads in one pass of batched GEMMs when their scores fit. |
 | 0017 | A tiled (SLM) copy for `ggml_cont` of transposed f32 matrices, such as the permuted relative-bias table. |
+| 0018 | The indexed bias in the DPAS flash-attention decode kernel, which reads q8_0 K/V directly and keeps the GQA heads together. |
 
 Upstream tracking: [ggml-org/llama.cpp#32757](https://github.com/ggml-org/llama.cpp/issues/32757).
 The recipe records the commit plus `+p` and the first 12 hex digits of the
 SHA-256 of the concatenated patches. Changing a patch therefore triggers a
 rebuild. Applying this series to the pin reproduces tree
-`b1cb6b761a7b916ca7f3e42eaf80711493b8822b`. The diagnostic op profiler and
+`48fd9a50b79f7acfd8fa64b6225a781204107335`. The diagnostic op profiler and
 the `test-backend-ops` cases for 0006–0015 are excluded from the patches.
 
 ### Incremental speed measurements
@@ -1646,6 +1647,7 @@ zero and minimal reasoning for repeatability; the catalog ships at low
 | + 0014–0015 | 648 t/s | 655 t/s | 37.0 t/s | ctx 196608; 476 / 518 / 37.1 t/s for 0001–0013 in the same window |
 | + 0016 | 820 t/s | 709 t/s | 37.0 t/s | ctx 196608; 647 / 652 / 37.0 t/s for 0001–0015 in the same window |
 | + 0017 | 852 t/s | 733 t/s | — | ctx 196608; 820 / 707 t/s for 0001–0016 in the same window; short-prompt decode unchanged at 33.6 t/s |
+| + 0018 | 852 t/s | 736 t/s | 37.7 t/s | ctx 196608; 852 / 735 / 37.1 t/s for 0001–0017 in the same window; decode after a 59K-token prompt 15.2 → 27.3 t/s |
 
 The 0006–0008 row comes from window 9 on 2026-11-22. Each build served one
 warm-up request before the probes, and the window ran two rounds per build.
@@ -2145,3 +2147,47 @@ Prefill rises 3.7–3.9% across the three lengths. In the server the CONT
 fell from 571 to 256 µs per call, and the warm 19,644-token prompt from
 27.5 s to 26.6 s of op time. The copy does no arithmetic, so outputs are
 unchanged. Glimmer is unchanged (window 27, in the regression table above).
+
+### Decode, 0018
+
+0001 hands Inkling's attention a compact bias: a per-query table of 1,025
+bins and a bin index per key. Until 0018 only the tile kernel read it, so
+every decode step took that kernel. The tile kernel dequantizes q8_0 K/V
+through a scalar loop and runs each of the GQA heads in its own
+work-group, so the cost of a decode step grew with the KV length. SYCL
+already had a faster decode kernel for quantized caches: DPAS (s8 XMX)
+products for Q·K and P·V, all heads of a KV group in one work-group, and the
+keys split across the device with a combine pass. 0018 adds the bias to
+that kernel. Each score's mask value gets `table[bin]`, rounded to F16 as
+the dense mask it replaces is; a bin outside the table adds nothing. Up to
+31 query rows take the DPAS kernel, larger batches keep the tile or MKL
+path.
+
+`test-flash-attn-indexed-bias` compares against a double-precision host
+reference. For q8_0 and q4_0 K/V, 1, 2, 7 and 31 queries, and 16, 768 and
+5,000 cells, the largest error was 6.0e-5. With the DPAS kernel switched
+off (`GGML_SYCL_FA_DPAS=0`) the errors differ, from the tile kernel, so the
+DPAS path is what ran.
+
+Window 29 ran on 2026-11-26 with the settings of window 21, text-only:
+
+| build, same window | decode, short | decode, greedy | decode after 5,904 | after 19,644 | after 59,042 |
+|---|---:|---:|---:|---:|---:|
+| 0001–0017 | 33.62 / 33.60 t/s | 37.09 t/s | 28.91 t/s | 23.47 t/s | 15.22 t/s |
+| + 0018 | 37.32 / 37.34 t/s | 37.66 t/s | 34.56 t/s | 32.42 t/s | 27.32 t/s |
+| 0001–0017 again | 33.62 / 33.60 t/s | 37.09 t/s | | | |
+
+The short prompt has 847 tokens and the greedy one 35. The "after" columns
+are 16-token answers to the prefill probes and the two-needle fill; their
+decode now loses 27% from 35 to 59K tokens of context, against 59% before.
+Prefill is unchanged: 732.0 / 739.4 t/s short, 851.8 t/s at 5,904 tokens,
+828.7 at 19,644 and 708.1 at 59,042 (731.1 / 738.6, 852.1, 829.5 and 708.0
+on 0001–0017). Both needles were retrieved on both builds.
+
+The top-5 logprob probe on a 24.5K-token prompt agreed on the first 11 of
+32 tokens and split at the twelfth, where 0001–0017 ranks " Open" over " the" at 0.304 / 0.301 and 0018 ranks
+" the" first at 0.341 / 0.297: a near tie that the changed accumulation
+order flips. Before the split the largest top-5 probability difference was
+0.027. The DPAS split-K buffers come from the pool and are at most a few MB
+at decode sizes. Glimmer and the other models do not use the indexed bias,
+so their attention takes the same kernels as before.
