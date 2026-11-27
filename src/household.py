@@ -87,7 +87,7 @@ def merge_roster(nc_users, vault_users, ha_users, owner_uid,
     for uid, acct in (nc_users or {}).items():
         if uid in reserved or uid.lower() == owner.lower():
             continue
-        vault = vault_by_local.pop(uid, None)
+        vault = vault_by_local.pop(uid.lower(), None)
         home = ha_by_user.get(uid)
         members.append({
             "user": uid,
