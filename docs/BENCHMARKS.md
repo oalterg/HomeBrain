@@ -2244,12 +2244,14 @@ and are excluded from the patches.
 
 ### Speed
 
-Against 0001–0018, the production build, the series decodes 27% faster at a
-short context (37.3 → 47.3 t/s), 29% after 5,904 and 19,644 tokens
-(34.5 → 44.6 and 32.4 → 41.9 t/s) and 32% after 59K (27.3 → 36.1 t/s). It
-prefills 12–14% faster up to 20K tokens (852 → 971 t/s at 5,904 tokens,
-829 → 925 at 19,644) and 2% faster at 59K. 0001–0018 is from window 32 and
-the full series from window 34; each step between them was measured
+Against 0001–0018 (#306), the series decodes 27% faster at a short context
+(37.3 → 47.3 t/s), 29% after 5,904 and 19,644 tokens (34.5 → 44.6 and
+32.4 → 41.9 t/s) and 32% after 59K (27.3 → 36.1 t/s). It prefills 12–14%
+faster up to 20K tokens (852 → 971 t/s at 5,904 tokens, 829 → 925 at
+19,644) and 2% faster at 59K. Against 0001–0017, the release build before
+it (window 29), decode is 41% faster at a short context (33.6 → 47.3 t/s)
+and 2.4 times as fast after 59K (15.2 → 36.1 t/s). 0001–0018 is from window
+32 and the full series from window 34; each step between them was measured
 against its predecessor in one window, below.
 
 Text-only, ctx 196608, q8_0 KV, `-b 2048 -ub 512`, the probes of the
@@ -2292,8 +2294,7 @@ in DMMV); 0021 runs it in 7.6 µs. Each of the 88 depth mixes per token
 was one 256-item work-group on the device, 26 µs per call; 0022 gives it
 1,024 items at decode.
 
-Window 32, 2026-11-27, 0002–0022 against 0001–0018 (the production
-build):
+Window 32, 2026-11-27, 0002–0022 against 0001–0018 (#306):
 
 | build | prefill short / 5,904 / 19,644 / 59,042 | decode short / greedy | decode after 5,904 / 19,644 / 59,042 |
 |---|---:|---:|---:|
