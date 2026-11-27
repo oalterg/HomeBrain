@@ -389,7 +389,7 @@ for UNIT in homebrain-manager.service homebrain-health.service homebrain-health.
             homebrain-gpu-recover.service homebrain-gpu-recover.timer \
             homebrain-gpu-wedged.service homebrain-gpu-aspm.service \
             homebrain-gpu-keepalive.service homebrain-gpu-keepalive.timer \
-            homebrain-mdns.service; do
+            homebrain-mdns.service inhibit-sleep.service; do
     INSTALLED_SVC="/etc/systemd/system/$UNIT"
     REPO_SVC="$INSTALL_DIR/config/$UNIT"
 
@@ -411,6 +411,8 @@ done
 if [ "$UNITS_CHANGED" = true ]; then
     systemctl daemon-reload
     log_info "Service files synchronized."
+    # A running inhibitor keeps the locks it started with.
+    systemctl try-restart inhibit-sleep.service || true
     # Caddy takes host :80/:443. Release gunicorn from :80 before compose publishes Caddy.
     systemctl restart homebrain-manager || die "Manager restart failed; aborting LAN migration."
 fi
