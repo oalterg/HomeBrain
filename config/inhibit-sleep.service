@@ -7,7 +7,7 @@ ConditionVirtualization=!container
 [Service]
 Type=simple
 ExecStart=/usr/bin/systemd-inhibit \
-  --what=sleep:handle-lid-switch:handle-power-key \
+  --what=sleep:handle-lid-switch \
   --who=homebrain \
   --why="HomeBrain inference server must remain always-on" \
   --mode=block \

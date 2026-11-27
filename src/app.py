@@ -3630,6 +3630,32 @@ def trigger_reboot():
         "message": "Restarting. This page will drop; wait a minute and refresh.",
     })
 
+@app.route("/api/system/poweroff", methods=["POST"])
+@limiter.limit("1 per 5 minutes")
+def trigger_poweroff():
+    """Clean shutdown, so the owner can cut the power without losing data."""
+    if not claim_task({
+        "status": "running",
+        "message": "Shutting down this box...",
+        "log_type": "setup",
+    }):
+        return jsonify({"error": "Task running"}), 409
+
+    def _poweroff():
+        time.sleep(2)
+        if subprocess.run(["systemctl", "poweroff"], check=False).returncode:
+            write_status({
+                "status": "error",
+                "message": "Shutdown failed. The box is still up.",
+                "log_type": "setup",
+            })
+
+    threading.Thread(target=_poweroff, daemon=True).start()
+    return jsonify({
+        "status": "started",
+        "message": "Shutting down. Wait until the fans stop before you cut the power.",
+    })
+
 @app.route("/api/manager/check_update", methods=["GET"])
 def check_manager_update():
     channel = request.args.get("channel", "stable") # 'stable' or 'beta'

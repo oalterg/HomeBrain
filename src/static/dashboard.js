@@ -3753,6 +3753,16 @@ async function rebootBox() {
     await triggerAction('/api/system/reboot', 'Restart');
 }
 
+async function shutdownBox() {
+    if (!await hbConfirm({
+        title: 'Shut down this box?',
+        body: 'Files, vault sync, home automations and the agent stay offline until you start it again. Wait until the fans stop before you cut the power.',
+        confirm: 'Shut down',
+        danger: true,
+    })) return;
+    await triggerAction('/api/system/poweroff', 'Shutdown');
+}
+
 /* =====================================================================
    Logs
    ===================================================================== */
