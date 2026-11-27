@@ -227,7 +227,7 @@ else
     printf "VAULT_DOMAIN='https://homebrain.local:8443'\nVAULT_LAN_IP='192.168.1.1'\n" > "$ENV_FILE"
     VAULT_LAN_IP="192.168.1.1"
     VAULT_DOMAIN="https://homebrain.local:8443"
-    unset NEWT_ID NEWT_SECRET PANGOLIN_DOMAIN
+    unset MESH_DOMAIN
     hostname() { printf '192.168.1.1 \n'; }
     refresh_vault_lan_ip >/dev/null 2>&1
     got="$(env_value VAULT_DOMAIN)"
@@ -248,10 +248,10 @@ for script in provision.sh update.sh; do
         bad "$script installs homebrain-mdns.service"
     fi
 done
-if grep -q 'stop caddy' "$SCRIPT_DIR/../redeploy_tunnels.sh"; then
-    bad "redeploy_tunnels.sh no longer stops Caddy in remote mode"
+if grep -q 'stop caddy' "$SCRIPT_DIR/../redeploy_remote_access.sh"; then
+    bad "redeploy_remote_access.sh no longer stops Caddy in remote mode"
 else
-    ok "redeploy_tunnels.sh no longer stops Caddy in remote mode"
+    ok "redeploy_remote_access.sh no longer stops Caddy in remote mode"
 fi
 
 echo

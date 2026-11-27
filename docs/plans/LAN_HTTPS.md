@@ -9,7 +9,7 @@ URL is HTTPS on 443, no port. Caddy is the only process that faces the
 LAN. Telegram stays the away-from-home clerk (documents ≤20 MB). Pangolin
 stays optional, for the same apps from outside.
 
-Related: [`PANGOLIN.md`](../PANGOLIN.md) (the public name map this mirrors),
+Related: `PANGOLIN.md` (the public name map this mirrored; removed with the tunnels),
 [`VAULT_PLAN.md`](VAULT_PLAN.md) (LAN HTTPS + internal CA, ported),
 `config/Caddyfile`, `scripts/common.sh` `configure_nc_ha_proxy_settings`,
 `scripts/publish_mdns.sh`.
@@ -173,7 +173,7 @@ the CI HTTP backends do not claim to exercise the full applications.
 
 | What | Where |
 |---|---|
-| Public name map | [`PANGOLIN.md`](../PANGOLIN.md) |
+| Public name map | removed with the tunnels; see [`REMOTE_ACCESS.md`](REMOTE_ACCESS.md) |
 | Caddy (Host on 443) | `config/Caddyfile` |
 | NC overwrite / trusted domains | `scripts/common.sh` `configure_nc_ha_proxy_settings` |
 | Pairing URL | `src/app.py` `nc_client_url` |

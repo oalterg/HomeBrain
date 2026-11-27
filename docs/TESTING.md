@@ -26,10 +26,10 @@ before believing them.
 Before running any tests, confirm the environment is ready:
 
 - [ ] You hold `$LOCK` (or you are only reading)
-- [ ] SSH into the target device (`ssh homebrain@homebrain.local` or via Pangolin URL)
+- [ ] SSH into the target device (`ssh homebrain@homebrain.local`, or over the private network)
 - [ ] `sudo systemctl is-active homebrain-manager` → `active`
 - [ ] `docker compose ps` — all expected containers are `Up` and healthy
-- [ ] `cat /opt/homebrain/.env` — `DEPLOYMENT_MODE`, `MASTER_PASSWORD`, and tunnel vars are set correctly
+- [ ] `cat /opt/homebrain/.env` — `DEPLOYMENT_MODE`, `MASTER_PASSWORD` and (remote only) `MESH_DOMAIN` are set correctly; no `PANGOLIN_*`, `NEWT_*` or `CF_*` key is left
 - [ ] Confirm target variant: `uname -m` (aarch64 = HomeCloud/RPi5, x86_64 = HomeBrain/AMD)
 - [ ] Confirm GPU presence (HomeBrain only): `ls /dev/dri/renderD*` → device node exists
 
@@ -39,23 +39,35 @@ Before running any tests, confirm the environment is ready:
 
 Run applicable sections for the configuration under test.
 
-### A — Remote Access (Pangolin tunnel)
+### A — Remote Access (private network)
 
-External HTTPS access via a Pangolin-managed subdomain.
+Away access over the owner's Tailscale network (walkthrough: "Remote access"
+below).
 
-- [ ] `DEPLOYMENT_MODE=remote` in `.env`
-- [ ] Newt container is running and tunnel is established (`docker logs newt` shows connected)
-- [ ] Dashboard loads over the public HTTPS URL without certificate errors
-- [ ] Nextcloud accessible externally: login, upload a file, confirm it persists
-- [ ] Home Assistant accessible externally: dashboard loads, an entity state is visible
-- [ ] Reboot the box: `docker logs newt` reaches "established" on its own, with no `systemctl restart docker` (the tunnel used to stay down after every reboot because Docker had snapshotted a pre-DHCP nameserver)
+- [ ] `DEPLOYMENT_MODE=remote` and `MESH_DOMAIN` set in `.env`
+- [ ] `tailscale serve status` lists 4443, 9443, 8443 and 10000
+- [ ] From a phone on mobile data, with Tailscale on: dashboard (4443), Nextcloud (9443) and Home Assistant (10000) load without certificate errors
+- [ ] Nextcloud: log in, upload a file, confirm it persists
+- [ ] Reboot the box: the four addresses answer again with nothing restarted by hand
+
+### A2 — Former tunnel box (update migration)
+
+A box that ran Pangolin or Cloudflare before tunnels were removed.
+
+- [ ] Before the update, note `NEWT_*`/`PANGOLIN_*`/`CF_*` in `.env` and a running `newt` (or `cloudflared-*`) container
+- [ ] After the update: the update log warns that tunnels were removed; `.env` has `DEPLOYMENT_MODE=local`, no tunnel key, and `VAULT_DOMAIN=https://vault-homebrain.local`
+- [ ] `docker ps -a` shows no `newt` or `cloudflared-*` container
+- [ ] `occ config:system:get trusted_domains` lists only the local names (no old tunnel domain)
+- [ ] The dashboard header says Local Network; Connectivity shows the Remote access card; Settings still shows Home Assistant Hardware
+- [ ] Turning Remote access on afterwards brings the box to section A
+- [ ] On a box that replicates off-site to or from a tunnel address, replication fails until it is re-paired over the private network
 
 ### B — Local Network Only (mDNS)
 
-No external tunnel; access via `homebrain.local`.
+No private network; access via `homebrain.local`.
 
 - [ ] `DEPLOYMENT_MODE=local` in `.env`
-- [ ] No Pangolin/Newt container running
+- [ ] `tailscale serve status` lists nothing (or Tailscale is not installed)
 - [ ] Dashboard loads at `https://homebrain.local`
 - [ ] Nextcloud accessible at its configured local URL
 - [ ] Home Assistant accessible at its configured local URL
@@ -89,8 +101,8 @@ No external tunnel; access via `homebrain.local`.
 
 - [ ] Fresh-install: run `provision.sh` end-to-end without errors
 - [ ] Setup wizard is reachable as soon as provision finishes (reboot is not a gate)
-- [ ] HomeBrain (GPU): wizard defaults to Local network, copy names Telegram as the remote path, Pangolin is optional and not auto-selected even if `factory_config` has Newt creds
-- [ ] HomeCloud (no GPU): Local / Remote access; factory Newt creds auto-select Remote; initializing without re-typing the secret succeeds
+- [ ] Wizard has no access-mode choice; setup writes `DEPLOYMENT_MODE=local`. HomeBrain (GPU) copy names Telegram; both variants point at Remote access in the dashboard for away access
+- [ ] `provision.sh` with the old tunnel arguments (`--newt-id …`, or ID/SECRET positionals) refuses with a pointer to Remote access and changes nothing
 - [ ] Credentials page shows generated username + password exactly once, then deletes staging file
 - [ ] Re-running `deploy.sh` is idempotent (no errors, services remain healthy)
 
@@ -125,7 +137,7 @@ No external tunnel; access via `homebrain.local`.
 - [ ] DB user `vaultwarden_user` has grants ONLY on the `vaultwarden` database (`SHOW GRANTS FOR 'vaultwarden_user'@'%'`)
 - [ ] `VAULT_ADMIN_TOKEN` in `.env` is an Argon2id PHC string (`$argon2id$…`), NOT plaintext
 - [ ] Bitwarden browser extension: log in with `Self-hosted` server URL → add a credential → it persists across reload
-- [ ] Bitwarden mobile app (remote mode): log in over `vault.<tunnel>` → credential syncs from the browser session in <2s
+- [ ] Bitwarden mobile app (remote mode): log in over `https://<box>.<tailnet>.ts.net:8443` → credential syncs from the browser session in <2s
 - [ ] Add a 2 MB PDF as a credential attachment → file lands under `vault-data/attachments/` and decrypts on a second client
 - [ ] Send: create a one-time text Send → expires server-side after first view
 - [ ] Trigger a backup → archive contains `vault_db/vaultwarden.sql` and `vault_data/rsa_key.*` (live sessions survive)
@@ -143,7 +155,7 @@ No external tunnel; access via `homebrain.local`.
 - [ ] `/api/vault/local-ca` returns a PEM (`homebrain-ca.pem`) in **both** modes; installing it on a phone removes the warning
 - [ ] After CA install, Bitwarden Android app at `https://vault-homebrain.local` connects without trust errors
 - [ ] WebSocket sync works: edit a credential in browser ext → mobile updates within 2 s
-- [ ] Mode flip local → remote → `redeploy_tunnels.sh` keeps Caddy up; `VAULT_DOMAIN` updates; LAN names still work
+- [ ] Mode flip local → remote → `redeploy_remote_access.sh` keeps Caddy up; `VAULT_DOMAIN` updates; LAN names still work
 - [ ] `nc-homebrain.local` / `vault-homebrain.local` / `ha-homebrain.local` resolve (Avahi) to the box's LAN IP
 - [ ] Nextcloud pairing QR in local mode is `https://nc-homebrain.local` (no port)
 
@@ -398,7 +410,7 @@ On real hardware:
       form. A wrong phrase is rejected (with a ~2s delay); the correct phrase +
       a new password returns "Recovery accepted".
 - [ ] Log in with the **new** password. Old password no longer works.
-- [ ] Attempt recovery over the **remote tunnel** with `RECOVERY_ALLOW_REMOTE=false`
+- [ ] Attempt recovery over the **private network** with `RECOVERY_ALLOW_REMOTE=false`
       → refused (403). Set it `true` → allowed.
 - [ ] Exceed the rate limit (>5 attempts/hour) → throttled.
 
@@ -465,21 +477,6 @@ their password. Run on real hardware (it re-credentials live services).
       them out of the only page that ever shows the recovery phrase.
 - [ ] After the credentials are claimed, the factory password stops working and
       only the master password opens the box.
-- [ ] **Remote mode:** newt/cloudflared are **not** running between "Deployment
-      Complete" and *I have saved my password*. After that click,
-      `activate_tunnels` brings them up. Local mode has no tunnel profiles; this
-      check is a no-op there. Off-hardware: `bash scripts/tests/test_handover_tunnels.sh`
-- [ ] **Tunnel already up when the guard fires.** Dropping the compose profiles
-      only stops a tunnel being *started*. With the stack live and published,
-      `touch /opt/homebrain/install_creds.json` and re-run `deploy.sh`: newt must
-      go **down**, not merely stay up unmanaged. Same for `restore.sh`. (Remove
-      the file afterwards — it puts the box back on the handover page.)
-- [ ] **Operator repoint on an unclaimed box.** During the handover window
-      (`.setup_complete` exists, credentials not yet claimed), re-run
-      `provision.sh` in remote mode against a new domain. `.env` and the
-      NC/HA trusted domains must be repointed and the log must say the tunnel is
-      configured but not published — no newt. Claiming then brings it up on the
-      **new** domain. This is the one publish path nobody clicks.
 
 **Credential download (.txt)**
 
@@ -589,8 +586,7 @@ Design: [`REMOTE_ACCESS.md`](plans/REMOTE_ACCESS.md). Unit tests:
       `versions.json`), `tailscaled` is active and enabled, and the card shows
       a sign-in link. 12 s including the download.
 - [x] Publishing before sign-in is refused (HTTP 409) and writes nothing.
-- [x] The card renders with no page errors; the Tunnel card is still there on
-      a box that has not turned remote access on.
+- [x] The card renders with no page errors.
 - [x] Self-test row **Remote access** is `skip` on a local box.
 
 **Not yet walked — needs the owner's Tailscale sign-in.** Everything below is
@@ -631,8 +627,8 @@ release's source, and by nothing else. Treat each as unproven until ticked.
       offer a fresh connection, not a stale identity from another restore.
 - [ ] With remote access on, `https://homebrain.local`, `nc-`, `vault-` and
       `ha-homebrain.local` still answer on the LAN, including after a reboot.
-- [ ] Switching to Pangolin or Cloudflare removes the old Serve/Funnel listeners;
-      chat's allowed origins match the new dashboard address after redeploy.
+- [ ] Turning remote access off removes the Serve listeners (`tailscale serve
+      status` is empty) and chat's allowed origins drop the away address.
 - [ ] Household: with the default rule the card's access rule says **Not
       limited**. Paste the rule, **Check access**: **Limited**. Share the box with a second account; from that phone on
       mobile data 9443, 8443 and 10000 open, 4443 and SSH do not, the owner's
@@ -660,10 +656,9 @@ release's source, and by nothing else. Treat each as unproven until ticked.
     screen. A reset mints no credentials of its own; the wizard generates the
     master password and its recovery phrase together, exactly as on first boot.
   - `/opt/homebrain/install_creds.json` does **not** exist
-  - `docker ps -a` is **empty**. Profile-gated containers (`newt`,
-    `cloudflared`, `proton-bridge`) must be gone too — a plain `compose down`
-    ignores inactive profiles, and a surviving `newt` keeps publishing the
-    wiped, password-less box to its tunnel
+  - `docker ps -a` is **empty**. Profile-gated containers (`proton-bridge`,
+    `camofox`) must be gone too — a plain `compose down` ignores inactive
+    profiles
   - No old Nextcloud files, no old HA config, empty Vault, no `.openclaw` workspace remain
   - AI models directory is gone (on GPU devices)
   - External backup drive is still mounted and previous archives are readable

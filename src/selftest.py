@@ -473,23 +473,7 @@ def check_remote_access(env):
             return result("Remote access", FAIL, summary, "See Connectivity → Remote access.")
         return result("Remote access", OK,
                       f"{summary} Reachability from outside is not tested from here.")
-    domain = env.get("PANGOLIN_DOMAIN", "")
-    if env.get("DEPLOYMENT_MODE", "local") != "remote" or not domain:
-        return result("Remote access", SKIP, "This box is set up for the local network only.")
-    # Cloudflare publishes Nextcloud and HA only; a leftover factory
-    # PANGOLIN_DOMAIN names no route here. Same skip as healthcheck.check_tunnel.
-    if env.get("CF_TOKEN_NC") or env.get("CF_TOKEN_HA"):
-        return result("Remote access", SKIP, "Remote access runs through Cloudflare; the dashboard is not published.")
-    code, _ = http("GET", f"https://{domain}/", timeout=15)
-    if code == 0:
-        return result("Remote access", FAIL, f"https://{domain} did not answer.",
-                      "Check the tunnel under Settings.")
-    # Redirects are followed, so a 3xx here is a loop (Pangolin pointed at
-    # Caddy's :80 redirect) and a 5xx is a dead target. Neither is the dashboard.
-    if not (200 <= code < 300 or code in (401, 403)):
-        return result("Remote access", FAIL, f"https://{domain} answers HTTP {code}, not the dashboard.",
-                      "Point the Pangolin resource for this domain at the bridge gateway, port 8000 (HTTP).")
-    return result("Remote access", OK, f"https://{domain} answers (HTTP {code}).")
+    return result("Remote access", SKIP, "This box is set up for the local network only.")
 
 
 def check_version(local_version, latest_version, channel="stable"):

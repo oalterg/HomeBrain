@@ -25,7 +25,7 @@ def test_local_pairing_url_is_the_nc_name():
     assert ":" not in url.split("://", 1)[1]
 
 
-def test_pairing_url_prefers_the_tunnel_when_one_exists():
+def test_pairing_url_prefers_the_away_address_when_one_exists():
     url, remote = hb.nc_client_url({"NEXTCLOUD_TRUSTED_DOMAINS": "nc.example.house"})
     assert url == "https://nc.example.house"
     assert remote is True
@@ -45,7 +45,7 @@ def test_lan_vault_and_ha_urls_are_names(monkeypatch):
         assert hb._vault_bw_url() == "https://vault-homebrain.local"
 
 
-def test_remote_off_lan_keeps_the_tunnel_urls(monkeypatch):
+def test_remote_off_lan_keeps_the_away_urls(monkeypatch):
     monkeypatch.setattr(hb, "is_local_mode", lambda: False)
     monkeypatch.setattr(hb, "get_env_config", lambda: {
         "VAULT_DOMAIN": "https://vault.example.house",

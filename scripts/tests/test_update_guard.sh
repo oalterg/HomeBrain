@@ -118,8 +118,6 @@ clean "field absent"          "$(printf -- '  - installed: true\n  - versionstri
 needs "tab-indented true"     "$(printf -- '\t- needsDbUpgrade:   true\n')"
 
 echo "== get_runtime_profiles =="
-# Isolate tunnel detection from the developer machine's environment.
-unset PANGOLIN_ENDPOINT NEWT_ID NEWT_SECRET CF_TOKEN_NC CF_TOKEN_HA PANGOLIN_DOMAIN
 docker() {
     if [ "$1" = "ps" ]; then
         echo "homebrain-proton-bridge-1"

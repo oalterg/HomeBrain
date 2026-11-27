@@ -62,7 +62,6 @@
                     <span>Vault <a id="vault-setup-link" href="#" onclick="return goTo('settings', 'vault-config-card')" style="display:none;">· set up</a></span>
                     <span id="st-vault" class="skeleton sk-mid"></span>
                 </div>
-                <div class="stat-item"><span>Tunnel</span> <span id="st-tunnel" class="skeleton sk-mid"></span></div>
 
                 <div class="link-row">
                     <a href="{{ nc_url }}" target="_blank" class="link-out">Nextcloud<span aria-hidden="true">↗</span></a>
@@ -724,157 +723,6 @@
                 <small id="mesh-msg" class="hint" style="min-height:1em;"></small>
             </section>
 
-            {% if tunnel.mode != 'mesh' %}
-            <section class="section">
-                <h3>
-                    <span>Tunnel</span>
-                    {% if deployment_mode != 'local' %}
-                        {% if tunnel.mode == 'pangolin' %}
-                        <span class="chip chip-local">Pangolin{% if tunnel.is_custom_pangolin %} · custom{% endif %}</span>
-                        {% else %}
-                        <span class="chip chip-remote">Cloudflare</span>
-                        {% endif %}
-                    {% endif %}
-                </h3>
-
-                <p class="lede">A tunnel is the other way to reach this box from outside. Its provider
-                    decrypts your traffic on a machine you do not hold, so it can read what passes through.
-                    With Remote access above, encryption ends on this box. Turn on its lock to
-                    control which devices may join your private network.</p>
-
-                {% if deployment_mode == 'local' %}
-                <div class="empty-state" id="tunnel-empty">
-                    <span class="empty-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M9 17H7a5 5 0 0 1 0-10h2"/>
-                            <path d="M15 7h2a5 5 0 0 1 4.546 7.071"/>
-                            <path d="M3 3l18 18"/>
-                        </svg>
-                    </span>
-                    <h4>Tunnel inactive</h4>
-                    {% if has_gpu %}
-                    <p>The dashboard stays on this network. Pair Telegram to use the agent from your phone. A public tunnel is optional.</p>
-                    {% else %}
-                    <p>This device is reachable on your home network only. Use Remote access above, or set up your own tunnel to reach the apps from outside.</p>
-                    {% endif %}
-                    <button class="btn-primary" onclick="showTunnelSetup(true)">Set up your own tunnel</button>
-                </div>
-                {% endif %}
-
-                {% if deployment_mode == 'local' or tunnel.mode == 'pangolin' %}
-                <!-- On a LAN-only box this is how the owner adds their own
-                     tunnel after setup — the wizard was the only way before. -->
-                <form id="pangolin-form" onsubmit="updatePangolin(event)"
-                      {% if deployment_mode == 'local' %}data-enable="1" style="display:none;"{% endif %}>
-                    {% if deployment_mode == 'local' %}
-                    <p class="lede">Create a Newt site in your Pangolin dashboard and paste its values here.
-                        Nextcloud, Home Assistant and Vault get public addresses under your domain; the names on
-                        your home network keep working.</p>
-                    {% endif %}
-                    <div class="fields fields-2">
-                        <div><label for="tun-ep">Endpoint</label><input type="text" id="tun-ep" value="{{ tunnel.current.PANGOLIN_ENDPOINT }}" placeholder="https://pangolin.example.com" required></div>
-                        <div><label for="tun-id">Device ID</label><input type="text" id="tun-id" value="{{ tunnel.current.NEWT_ID }}" required></div>
-                    </div>
-                    <div class="mt">
-                        <label for="tun-sec">Secret key</label>
-                        <input type="password" id="tun-sec" value="{{ tunnel.current.NEWT_SECRET }}" required>
-                        <label for="tun-main-domain">Main domain</label>
-                        <input type="text" id="tun-main-domain" value="{{ main_domain or '' }}" placeholder="myserver.homebrain.com" required>
-                    </div>
-
-                    <div class="info-panel" style="margin-bottom:15px;">
-                        <strong>Subdomain preview</strong>
-                        <div class="stat-item"><span>Manager</span> <span id="preview-mgr">{{ main_domain or '…' }}</span></div>
-                        <div class="stat-item"><span>Nextcloud</span> <span>nc.<span id="preview-nc">{{ main_domain or '…' }}</span></span></div>
-                        <div class="stat-item"><span>Home Assistant</span> <span>ha.<span id="preview-ha">{{ main_domain or '…' }}</span></span></div>
-                        <div class="stat-item"><span>Vault</span> <span>vault.<span id="preview-vault">{{ main_domain or '…' }}</span></span></div>
-                    </div>
-
-                    {% if deployment_mode == 'local' %}
-                    <div class="form-actions">
-                        <button type="submit" class="btn-primary">Turn on tunnel</button>
-                        <button type="button" onclick="showTunnelSetup(false)">Cancel</button>
-                    </div>
-                    {% else %}
-                    <button type="submit" class="btn-primary">Update connection settings</button>
-                    {% endif %}
-                </form>
-                {% endif %}
-
-                {% if deployment_mode != 'local' and tunnel.mode == 'pangolin' %}
-                <hr>
-
-                <label>Switch provider</label>
-                <p class="small muted">You can move to a Cloudflare Tunnel if you have your own domain.</p>
-                <button class="btn-warning" onclick="showCloudflareForm()">Switch to Cloudflare</button>
-
-                <div id="cf-form-container" class="conn-form" style="display:none;">
-                    <p class="small">Configure public hostnames in the Cloudflare dashboard pointing to
-                        <code>http://nextcloud:80</code> and <code>http://homeassistant:8123</code>.</p>
-                    <form onsubmit="updateCloudflare(event, 'switch')">
-                        <label for="cf-switch-service">Service</label>
-                        <select id="cf-switch-service">
-                            <option value="nc">Nextcloud</option>
-                            {% if ha_domain %}<option value="ha">Home Assistant</option>{% endif %}
-                        </select>
-                        <label for="cf-switch-domain" class="mt">Domain</label>
-                        <input type="text" id="cf-switch-domain" placeholder="cloud.mydomain.com" required>
-                        <label for="cf-switch-token" class="mt">Tunnel token</label>
-                        <input type="text" id="cf-switch-token" placeholder="eyJhIjoi..." required>
-                        <div class="form-actions">
-                            <button type="submit" class="btn-warning">Activate Cloudflare</button>
-                            <button type="button" onclick="document.getElementById('cf-form-container').style.display='none'">Cancel</button>
-                        </div>
-                    </form>
-                </div>
-
-                {% if tunnel.is_custom_pangolin %}
-                <div class="inline-row mt">
-                    {% if tunnel.factory.NEWT_ID %}
-                    <button class="btn-danger" onclick="revertPangolin()">Reset to factory defaults</button>
-                    {% else %}
-                    <!-- Shipped without a tunnel: the factory default is none. -->
-                    <button class="btn-danger" onclick="revertPangolin(true)">Turn off tunnel</button>
-                    {% endif %}
-                </div>
-                {% endif %}
-
-                {% elif deployment_mode != 'local' %}
-                <div class="stat-item">
-                    <span>Nextcloud</span>
-                    {% if tunnel.current.CF_TOKEN_NC %}<span class="status-badge status-running">Configured</span>
-                    {% else %}<span class="status-badge status-unknown">Inactive</span>{% endif %}
-                </div>
-                <div class="stat-item">
-                    <span>Home Assistant</span>
-                    {% if tunnel.current.CF_TOKEN_HA %}<span class="status-badge status-running">Configured</span>
-                    {% else %}<span class="status-badge status-unknown">Inactive</span>{% endif %}
-                </div>
-
-                <hr>
-
-                <form onsubmit="updateCloudflare(event, 'update')">
-                    <label>Update configuration</label>
-                    <div class="fields fields-2">
-                        <div>
-                            <select id="cf-update-service">
-                                <option value="nc">Nextcloud</option>
-                                {% if ha_domain %}<option value="ha">Home Assistant</option>{% endif %}
-                            </select>
-                        </div>
-                        <div><input type="text" id="cf-update-domain" placeholder="Domain"></div>
-                    </div>
-                    <input type="text" id="cf-update-token" class="mt" placeholder="Tunnel token" required>
-                    <button type="submit" class="btn-primary">Save tunnel</button>
-                </form>
-
-                <div class="inline-row mt">
-                    <button class="btn-danger" onclick="revertToFactory()">Disable Cloudflare and revert to factory</button>
-                </div>
-                {% endif %}
-            </section>
-            {% endif %}
-
             <!-- Moved here from Settings: both of these answer "how do devices
                  on my network reach this box?", which is what this tab is for. -->
             <section class="section" id="network-card">
@@ -1146,7 +994,6 @@
                 </table>
             </section>
 
-            {% if ha_domain %}
             <section class="section">
                 <h3>Home Assistant Hardware</h3>
                 <p class="lede">Pass a Zigbee or Z-Wave USB dongle through to Home Assistant.</p>
@@ -1156,7 +1003,6 @@
                     <button onclick="updateZigbee()">Save</button>
                 </div>
             </section>
-            {% endif %}
 
             <section class="section" id="master-password-card">
                 <h3>Master Password</h3>
@@ -1246,9 +1092,6 @@
                         <option value="db">Database</option>
                         <option value="homeassistant">Home Assistant</option>
                         <option value="vaultwarden">Vault (Vaultwarden)</option>
-                        <option value="newt">Pangolin (Newt)</option>
-                        <option value="cloudflared-nc">Cloudflare (Nextcloud)</option>
-                        <option value="cloudflared-ha">Cloudflare (Home Assistant)</option>
                     </optgroup>
                     {% if has_gpu %}
                     <optgroup label="AI services">

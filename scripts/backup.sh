@@ -141,8 +141,7 @@ if [[ -z "$HA_CID" ]]; then log_warn "Home Assistant container not found. Skippi
 log_info "[1/6] Checking for sufficient disk space..."
 # Check DB connectivity for size estimation
 wait_for_healthy "db" 60 || die "Database is not healthy, cannot perform backup."
-# ensures valid configuration before querying Docker for database ID
-DB_CID=$(get_tunnel_profiles >/dev/null; docker compose $(get_compose_args) ps -q db)
+DB_CID=$(docker compose $(get_compose_args) ps -q db)
 
 if [[ "$STRATEGY" == "system" ]]; then
     ESTIMATED_DATA_KB=0  # system snapshots skip the NC data tree
@@ -222,7 +221,7 @@ mkdir -p "$STAGING_DIR/nc_data" "$STAGING_DIR/nc_apps" "$STAGING_DIR/nc_db" "$ST
 
 # ── Portable instance secrets ───────────────────────────────────────────────
 # These .env entries are NOT per-install identity (MASTER_PASSWORD,
-# VAULT_ADMIN_TOKEN/NONCE, NEWT_* etc. stay with the box). They are
+# VAULT_ADMIN_TOKEN/NONCE etc. stay with the box). They are
 # derivation keys whose value the user-facing data is bound to:
 #
 #   HOMEBRAIN_EMAIL_KEY    Fernet key used to encrypt every multi-account

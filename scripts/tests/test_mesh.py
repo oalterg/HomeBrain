@@ -10,7 +10,7 @@ What these pin, in the order the feature can lie:
     answers on is the failure mode docs/plans/REMOTE_ACCESS.md is written
     against;
   * the lock never hands Tailscale a way to undo it;
-  * turning it off returns the box to local, the same shape Pangolin leaves.
+  * turning it off returns the box to local.
 
 The signed-out JSON was captured from a real 1.104.7 daemon. The signed-in
 shapes (lock status, serve config, the "switched off" prompt) are read from
@@ -348,7 +348,7 @@ def test_a_locked_out_box_is_not_healthy():
 
 # --- routes -----------------------------------------------------------------
 
-def test_publish_writes_the_same_keys_a_tunnel_does():
+def test_publish_points_every_away_address_at_the_box():
     h = _fresh()
     f = Fake()
     try:
@@ -358,8 +358,6 @@ def test_publish_writes_the_same_keys_a_tunnel_does():
         want = {
             "DEPLOYMENT_MODE": "remote",
             "MESH_DOMAIN": NAME,
-            "NEWT_ID": "",
-            "PANGOLIN_DOMAIN": "",
             "MANAGER_DOMAIN": f"{NAME}:4443",
             "NEXTCLOUD_TRUSTED_DOMAINS": f"{NAME}:9443",
             "HA_TRUSTED_DOMAINS": f"{NAME}:10000",
@@ -368,7 +366,6 @@ def test_publish_writes_the_same_keys_a_tunnel_does():
         }
         for key, value in want.items():
             assert h.written(key) == value, f"{key} = {h.written(key)!r}, wanted {value!r}"
-        assert ("CF_TOKEN_NC", None) in h.writes
         assert h.threads, "the redeploy that applies the new address never started"
     finally:
         f.close()
@@ -398,17 +395,6 @@ def test_publish_before_sign_in_is_refused():
         assert h.writes == [] and not f.verbs()
     finally:
         f.close()
-        h.close()
-
-
-def test_switching_a_tunnel_on_clears_the_mesh_name():
-    h = _fresh()
-    try:
-        r = _post(h, "/api/tunnel", {"endpoint": "https://p.example.com", "id": "i",
-                                     "secret": "s", "main_domain": "home.example.com"})
-        assert r.status_code == 200
-        assert h.written("MESH_DOMAIN") == ""
-    finally:
         h.close()
 
 
@@ -466,17 +452,17 @@ def test_selftest_says_what_it_could_not_prove():
 def test_healthcheck_is_crit_when_the_private_network_is_down():
     f = Fake(status=SIGNED_OUT)
     try:
-        got = healthcheck.check_tunnel(MESH_ENV)
+        got = healthcheck.check_remote_access(MESH_ENV)
         assert got["id"] == "tunnel" and got["level"] == "crit"
     finally:
         f.close()
     f = Fake(serve=serve_config(public=False))
     try:
-        assert healthcheck.check_tunnel(MESH_ENV)["level"] == "ok"
+        assert healthcheck.check_remote_access(MESH_ENV)["level"] == "ok"
     finally:
         f.close()
-    # Opted out wins, exactly as it does for a tunnel.
-    assert healthcheck.check_tunnel(dict(MESH_ENV, DEPLOYMENT_MODE="local")) is None
+    # Opted out wins.
+    assert healthcheck.check_remote_access(dict(MESH_ENV, DEPLOYMENT_MODE="local")) is None
 
 
 # --- identity carried in a backup -------------------------------------------
@@ -639,13 +625,8 @@ def test_no_route_or_gate_depends_on_an_account_service():
     try:
         rules = {r.rule for r in hb.app.url_map.iter_rules()}
         assert "/api/cloud/register" not in rules
-        saved = hb.get_factory_config
-        hb.get_factory_config = lambda: {"REGISTRAR_URL": "https://reg.example.com"}
-        try:
-            r = _post(h, "/api/setup/cleanup_credentials")
-        finally:
-            hb.get_factory_config = saved
-        assert r.status_code == 200, "a leftover factory key still blocks the handover"
+        r = _post(h, "/api/setup/cleanup_credentials")
+        assert r.status_code == 200, "something still blocks the handover"
     finally:
         h.close()
 

@@ -100,7 +100,6 @@ for name in homebrain.local nc-homebrain.local vault-homebrain.local ha-homebrai
     location=$(curl --noproxy '*' --resolve "$name:80:127.0.0.1" -sSI "http://$name/path?x=1" | tr -d '\r')
     grep -q "Location: https://$name/path?x=1" <<< "$location"
 done
-# Pangolin uses the same bridge-to-host route without TLS at this hop.
 docker exec hb-edge-test wget -qO- http://host.docker.internal:8000/ | grep -q manager
 echo 'PASS all four TLS names, redirects, and bridge access'
 

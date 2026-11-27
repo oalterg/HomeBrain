@@ -1054,7 +1054,7 @@ get_compose_args() {
         args="$args -f $OVERRIDE_FILE"
     fi
     # The agent's browser is part of this box once its image exists. Here
-    # rather than with the tunnel profiles: every compose call goes through
+    # rather than with the runtime profiles: every compose call goes through
     # this, so no `up --remove-orphans` path can stop it.
     if camofox_installed; then
         args="$args --profile camofox"
@@ -1147,8 +1147,8 @@ clear_partial_install() {
 # The wizard treats install_creds.json as "this box is ready, and the owner may
 # now read their master password". deploy.sh used to promote it the moment IT
 # finished — but on the restore path deploy.sh is only the first half, so the
-# owner was handed credentials, a "Restore complete" screen and a button that
-# starts the tunnels while restore.sh was still writing their data.
+# owner was handed credentials and a "Restore complete" screen while restore.sh
+# was still writing their data.
 #
 # Promotion is therefore no longer deploy's to do unconditionally: on a restore
 # it belongs to the end of the whole chain. One implementation, two callers.
@@ -1187,48 +1187,6 @@ is_stack_running() {
     [[ -n "$ha_cid" ]] && [[ $(docker inspect -f '{{.State.Running}}' "$ha_cid" 2>/dev/null) == "true" ]]
 }
 
-# True while the owner has not claimed the generated credentials.
-#
-# The wizard writes .install_creds_staging, then starts deploy.sh. On a
-# first install, deploy promotes that file to install_creds.json when the
-# stack is up. On a wizard restore, credentials stay staged until
-# finish_restore (deploy.sh is only the first half). The factory password
-# still works in that window (app.py:is_handover_pending); newt/cloudflared
-# must stay down until claim, or the public hostname would publish it —
-# and on a restore, over a Nextcloud still carrying the backup's trusted
-# domains. Staging is why gating only on install_creds.json never fired.
-#
-# update.sh is the one publisher that deliberately does NOT consult this, and
-# the reason is narrow: a box that deployed under the pre-guard code is sitting
-# there right now with a live tunnel AND an unclaimed install_creds.json, and
-# gating the update would drop its remote access mid-upgrade. On a claimed box
-# neither file exists, so gating would change nothing there — the legacy state
-# is the only thing that exemption buys. update.sh cannot run unattended in the
-# handover window anyway (app.py:perform_first_boot_update returns early once
-# setup is started, and there is no update timer), so it takes a deliberate
-# owner action to reach it.
-handover_pending() {
-    [[ -f "$INSTALL_DIR/.install_creds_staging" ]] || [[ -f "$INSTALL_DIR/install_creds.json" ]]
-}
-
-# Take down every tunnel that publishes this box.
-#
-# Dropping the profiles from `compose up` only stops a tunnel being STARTED:
-# compose ignores services outside the active profile set rather than removing
-# them, so a newt that is already running survives `up` with profiles="" and
-# the handover guard becomes a no-op. Anything that holds tunnels must stop
-# them too. Shared so deploy.sh, restore.sh and redeploy_tunnels.sh cannot
-# drift on the service list — a tunnel missing from it stays published.
-stop_tunnel_services() {
-    # Profiles must be enabled: compose ignores profile-gated services
-    # otherwise, `stop newt` is "no such service", and `2>/dev/null || true`
-    # would hide it. The handover+redeploy path never follows this with
-    # `up --remove-orphans`, so a silent no-op would leave the tunnel up.
-    docker compose --env-file "$ENV_FILE" $(get_compose_args) \
-        --profile pangolin --profile cloudflare-nc --profile cloudflare-ha \
-        stop newt cloudflared-nc cloudflared-ha 2>/dev/null || true
-}
-
 # SearXNG refuses to start with its default secret. Generate one per box.
 # Exported as well: load_env already exported the old empty value, and
 # Compose prefers the shell environment over --env-file.
@@ -1240,118 +1198,62 @@ ensure_searxng_secret() {
     log_info "Generated SEARXNG_SECRET."
 }
 
-# --- Tunnel Profiles Helper ---
-get_tunnel_profiles() {
-    local profiles=""
-    # 1. Sanitize Inputs (Trim Whitespace) to prevent false positives
-    local p_endpoint="${PANGOLIN_ENDPOINT:-}"; p_endpoint="${p_endpoint//[[:space:]]/}"
-    local p_id="${NEWT_ID:-}"; p_id="${p_id//[[:space:]]/}"
-    local p_secret="${NEWT_SECRET:-}"; p_secret="${p_secret//[[:space:]]/}"
-    local cf_nc_token="${CF_TOKEN_NC:-}"; cf_nc_token="${cf_nc_token//[[:space:]]/}"
-    local cf_ha_token="${CF_TOKEN_HA:-}"; cf_ha_token="${cf_ha_token//[[:space:]]/}"
-
-    # 2. Determine Mode (custom Cloudflare prioritized over Pangolin)
-    # We enforce mutual exclusivity: If Cloudflare tokens are provided, we ignore Pangolin tokens.
-
-    if [[ -n "$cf_nc_token" ]] || [[ -n "$cf_ha_token" ]]; then
-        # --- Cloudflare Mode ---
-        if [[ -n "$cf_nc_token" ]]; then
-            profiles="${profiles} --profile cloudflare-nc"
-        fi
-        if [[ -n "$cf_ha_token" ]]; then
-            profiles="${profiles} --profile cloudflare-ha"
-        fi
-    elif [[ -n "$p_endpoint" ]] && [[ -n "$p_id" ]] && [[ -n "$p_secret" ]]; then
-        # --- Pangolin Mode ---
-        profiles="--profile pangolin"
-    else
-        log_info "No complete tunnel configuration found. Deploying local-only."
-    fi
-
-    # Trim leading space if any
-    profiles="${profiles#" "}"
-
-    echo "${profiles}"
-}
-
-# Tunnel profiles plus optional compose profiles whose containers are already
-# running. `compose up --remove-orphans` without these stops those containers
-# (proton-bridge is the one that bit: it is not a tunnel profile).
+# Optional compose profiles whose containers are already running.
+# `compose up --remove-orphans` without these stops those containers
+# (proton-bridge is the one that bit).
 get_runtime_profiles() {
-    local profiles names
-    profiles="$(get_tunnel_profiles)"
-    names="$(docker ps --format '{{.Names}}' 2>/dev/null || true)"
-    if printf '%s\n' "$names" | grep -q 'proton-bridge'; then
-        profiles="${profiles} --profile proton-bridge"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'proton-bridge'; then
+        echo "--profile proton-bridge"
     fi
-    profiles="${profiles#" "}"
-    echo "${profiles}"
 }
 
 # Caddy (LAN HTTPS edge) now always runs — no profile gate.
-# Kept as a stub so deploy.sh / redeploy_tunnels.sh don't break.
+# Kept as a stub so deploy.sh doesn't break.
 get_vault_profiles() {
     echo ""
 }
 
-# Returns 0 (true) when running in local/LAN-only mode.
-# Logic: local if Pangolin not provisioned (credentials absent), OR if user explicitly
-# set DEPLOYMENT_MODE=local to opt out despite having credentials.
-# When Pangolin IS provisioned, tunnel is on by default (DEPLOYMENT_MODE defaults to remote).
+# Returns 0 (true) when running in local/LAN-only mode: no name on the
+# owner's private network (MESH_DOMAIN, src/mesh.py), or remote access
+# explicitly turned off.
 is_local_mode() {
-    # Neither a private-network name (MESH_DOMAIN, src/mesh.py) nor Pangolin
-    # credentials — always local regardless of DEPLOYMENT_MODE
-    [[ -z "${MESH_DOMAIN:-}" && -z "${CF_TOKEN_NC:-}" && -z "${CF_TOKEN_HA:-}" ]] \
-        && [[ -z "${NEWT_ID:-}" || -z "${NEWT_SECRET:-}" || -z "${PANGOLIN_DOMAIN:-}" ]] && return 0
-    # Credentials present but user explicitly opted out
+    [[ -z "${MESH_DOMAIN:-}" ]] && return 0
     [[ "${DEPLOYMENT_MODE:-remote}" == "local" ]] && return 0
     return 1
 }
 
-# Best-effort confirmation that newt established the Pangolin tunnel after a
-# (re)deploy. A wrong NEWT_ID/SECRET/ENDPOINT leaves the box reachable on the
-# LAN but silently unreachable remotely, so we surface that loudly rather than
-# letting the operator discover it via a dead public URL. Returns non-zero (and
-# warns) if no successful connection shows up in newt's recent logs.
-verify_newt_connected() {
-    local cid
-    cid=$(docker compose $(get_compose_args) ps -q newt 2>/dev/null || true)
-    if [[ -z "$cid" ]]; then
-        log_warn "newt container not running — remote tunnel is down (LAN access unaffected)."
-        return 1
-    fi
-    local i
-    for i in 1 2 3 4 5 6; do
-        if docker logs --since 5m "$cid" 2>&1 | grep -q "Tunnel connection to server established"; then
-            log_info "newt tunnel connection to Pangolin confirmed."
-            return 0
-        fi
-        sleep 5
+# Pangolin and Cloudflare tunnels were removed: remote access is the owner's
+# private network (src/mesh.py), and both tunnels decrypted the traffic on a
+# machine the owner does not hold (docs/plans/REMOTE_ACCESS.md). A box that
+# still names a tunnel in .env goes back to local, as turning remote access
+# off would leave it. Otherwise Nextcloud, Vaultwarden and the phone pairing
+# links keep naming an address nothing serves any more. The containers go
+# with the next `up --remove-orphans`. Idempotent; update.sh runs it.
+retire_tunnel() {
+    local keys=(PANGOLIN_ENDPOINT NEWT_ID NEWT_SECRET PANGOLIN_DOMAIN CF_TUNNEL_ID CF_TOKEN_NC CF_TOKEN_HA)
+    local k had=false
+    [[ -f "$ENV_FILE" ]] || return 0
+    for k in "${keys[@]}"; do
+        [[ -n "$(env_value "$k")" ]] && had=true
     done
-    log_warn "newt did NOT report a successful tunnel connection within ~30s."
-    log_warn "Verify NEWT_ID / NEWT_SECRET / PANGOLIN_ENDPOINT — the box is still reachable on the LAN."
-    log_warn "Logs: docker logs ${cid}"
-    return 1
-}
-
-# Print the Pangolin org-side resources the operator must create for a tunnel
-# domain. provision.sh cannot configure the Pangolin server, and the targets are
-# easy to get wrong: newt runs on the homebrain_default Docker network, so it
-# reaches the service containers by NAME on their INTERNAL ports — NOT the host
-# ports (nc's 8080 and HA's 8123 are loopback-only). The manager is a host
-# process on :8000, reached via the bridge gateway. Caddy owns LAN 80/443;
-# do not target those.
-print_pangolin_resource_guide() {
-    local dom="$1"
-    local gw
-    gw=$(docker network inspect homebrain_default \
-            --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
-    gw="${gw:-172.18.0.1}"
-    log_warn "Pangolin resources to configure for https://${dom} (targets are HTTP; TLS ends at the edge):"
-    log_warn "  ${dom} (root, manager) -> ${gw}:8000      (host process — use the bridge gateway, not a name)"
-    log_warn "  nc.${dom}              -> nextcloud:80     (container internal port — NOT host 8080)"
-    log_warn "  ha.${dom}              -> homeassistant:8123"
-    log_warn "  vault.${dom}           -> vaultwarden:80   (host 8082 is loopback-only — use the name)"
+    if [[ "$had" == "true" && -z "${MESH_DOMAIN:-}" ]]; then
+        log_warn "Pangolin and Cloudflare tunnels were removed. This box is on the local network until remote access is turned on (Connectivity → Remote access)."
+        update_env_var "DEPLOYMENT_MODE" "local"
+        update_env_var "MANAGER_DOMAIN" ""
+        update_env_var "NEXTCLOUD_TRUSTED_DOMAINS" ""
+        update_env_var "HA_TRUSTED_DOMAINS" ""
+        update_env_var "VAULT_TRUSTED_DOMAINS" ""
+        update_env_var "VAULT_DOMAIN" "https://vault-homebrain.local"
+        # load_env already exported the old values, and Compose prefers the
+        # shell environment over --env-file.
+        export DEPLOYMENT_MODE=local MANAGER_DOMAIN='' NEXTCLOUD_TRUSTED_DOMAINS='' \
+            HA_TRUSTED_DOMAINS='' VAULT_TRUSTED_DOMAINS='' VAULT_DOMAIN="https://vault-homebrain.local"
+    fi
+    for k in "${keys[@]}"; do
+        sed -i "/^${k}=/d" "$ENV_FILE"
+        unset "$k"
+    done
+    harden_env_file
 }
 
 wait_for_healthy() {
@@ -1503,10 +1405,9 @@ PY
 # Remove the drop-in that delayed dockerd until an IPv4 default route existed.
 # It was the wrong fix for the tunnel-down-after-reboot bug: a route can exist
 # while /etc/resolv.conf still names a nameserver from a previous LAN, and the
-# 60s ExecStartPre delayed every boot with no cable. The tunnel container now
-# carries its own DNS upstreams (see the `dns:` block on newt in
-# docker-compose.yml), so the wait buys nothing. Dest is overridable so the
-# unit test can point at a temp dir instead of /etc.
+# 60s ExecStartPre delayed every boot with no cable. The tunnel it was for is
+# gone, so the wait buys nothing. Dest is overridable so a test can point at a
+# temp dir instead of /etc.
 remove_docker_wait_dropin() {
     local dest="${DOCKER_DROPIN_DIR:-/etc/systemd/system/docker.service.d}/homebrain-wait-default-route.conf"
     [[ -f "$dest" ]] || return 0
@@ -1846,12 +1747,12 @@ configure_nc_ha_proxy_settings() {
     # This function is the only thing that teaches Nextcloud its public
     # hostname, and every one of its occ calls sits inside `if [[ -n
     # "$nc_cid" ]]`. With no container id it therefore configured nothing,
-    # returned success, and left Nextcloud answering the tunnel with "access
-    # through untrusted domain" — with nothing in the log to say so. If we
-    # cannot find it, say which trusted domain did not get applied.
+    # returned success, and left Nextcloud answering its away address with
+    # "access through untrusted domain" — with nothing in the log to say so.
+    # If we cannot find it, say which trusted domain did not get applied.
     if [[ -z "$nc_cid" ]]; then
         log_error "Nextcloud container not found — trusted domains and proxies NOT applied."
-        log_error "Nextcloud will reject ${NEXTCLOUD_TRUSTED_DOMAINS:-the tunnel domain} as untrusted."
+        log_error "Nextcloud will reject ${NEXTCLOUD_TRUSTED_DOMAINS:-its away address} as untrusted."
         return 1
     fi
 
@@ -1894,8 +1795,8 @@ configure_nc_ha_proxy_settings() {
                 docker exec --user www-data "$nc_cid" php occ config:system:set trusted_domains 5 --value="$NEXTCLOUD_TRUSTED_DOMAINS" || true
             fi
         else
-            # Remote mode: HTTPS via tunnel. LAN names still work (Caddy + CA)
-            # but the Nextcloud app stores one URL — the tunnel.
+            # Remote mode: HTTPS on the private network. LAN names still work
+            # (Caddy + CA) but the Nextcloud app stores one URL — the away one.
             local lan_ip
             lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
             docker exec --user www-data "$nc_cid" php occ config:system:set overwriteprotocol --value=https || die "Failed to set overwriteprotocol."

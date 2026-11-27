@@ -8,8 +8,8 @@
 # credentials — and touched .setup_complete — the moment its own half finished.
 # Refreshing the wizard during the (long) restore therefore landed on the
 # handover screen, which offers "I have saved my password — log in": that calls
-# cleanup_credentials, which deletes the in-flight marker and starts the tunnels
-# while restore.sh is still writing the owner's data.
+# cleanup_credentials, which deletes the in-flight marker while restore.sh is
+# still writing the owner's data.
 #
 # Promotion now belongs to the end of the whole chain, and must still happen
 # when the restore FAILS — the master password is shown exactly once, and a box
@@ -133,33 +133,6 @@ if [[ -f "$INSTALL_DIR/.restore_failed" ]]; then
     ok "a FAILED restore is flagged, so the screen cannot claim the files are back"
 else
     bad "a FAILED restore is flagged"
-fi
-
-echo "== tunnels stay down until the credentials are claimed =="
-
-# The guard existed but had never fired: it tested the promoted path, and
-# during a first install the credentials are still at .install_creds_staging.
-# So every first boot published its tunnels while it was still installing —
-# on a restore, over a Nextcloud still carrying the BACKUP's trusted domains.
-# The check lives in handover_pending (staging OR json); a filename grep of
-# the scripts would pass on a comment and miss a deleted call.
-if grep -qE '^[[:space:]]*if handover_pending; then' "$SCRIPT_DIR/../deploy.sh"; then
-    ok "deploy.sh withholds tunnels for staged credentials, not only promoted ones"
-else
-    bad "deploy.sh withholds tunnels for staged credentials (the guard never fires otherwise)"
-fi
-if grep -q 'activate_tunnels' "$SCRIPT_DIR/../utilities.sh"; then
-    ok "activate_tunnels exists to bring them up at handover"
-else
-    bad "activate_tunnels exists to bring them up at handover"
-fi
-# restore.sh restarts the stack itself, BEFORE it re-applies trusted domains.
-# Guarding only deploy.sh moved the exposure later into the same restore
-# instead of removing it — measured on hardware.
-if grep -qE '^[[:space:]]*if handover_pending; then' "$SCRIPT_DIR/../restore.sh"; then
-    ok "restore.sh withholds tunnels too (its restart precedes the domain fix)"
-else
-    bad "restore.sh withholds tunnels too (its restart precedes the domain fix)"
 fi
 
 echo "== the factory password still works while a restore runs =="

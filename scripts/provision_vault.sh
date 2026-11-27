@@ -110,12 +110,6 @@ if [[ -z "${VAULT_DOMAIN:-}" ]]; then
         # This VAULT_DOMAIN is the canonical URL Vaultwarden uses internally
         # (Send links, password-reset emails, etc.).
         update_env_var "VAULT_DOMAIN" "https://vault-homebrain.local"
-    else
-        # Remote mode: vault.<tunnel-domain>, served via Pangolin TLS edge.
-        if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
-            update_env_var "VAULT_DOMAIN" "https://vault.${PANGOLIN_DOMAIN}"
-            update_env_var "VAULT_TRUSTED_DOMAINS" "vault.${PANGOLIN_DOMAIN}"
-        fi
     fi
 fi
 

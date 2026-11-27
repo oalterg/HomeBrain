@@ -29,7 +29,7 @@ you can decide the order to burn them in.
 | 2 | **Master password** (production, and the AMD64 test server) | Dashboard, Nextcloud, Home Assistant, Vault | Same as above, minus the need to reset anything. |
 | 3 | **Home Assistant long-lived token** (berlin, valid into 2036) | Full HA REST/WebSocket API | Every device HA controls — locks, cameras, alarms — plus anything HA is configured to shell out to. Does not expire on its own. |
 | 4 | **Registrar secret** (+ URL) | `Authorization: Bearer` on the Cloudflare Worker in `registrar/worker.js` | Creates Zitadel accounts in your org at will. Account-creation abuse against the identity provider, billed to you. |
-| 5 | **Pangolin `NEWT_ID` / `NEWT_SECRET`** (in the provisioning command lines) | Connects a tunnel client as *your site* | Impersonating the box at the tunnel edge — traffic for your domain can be answered by someone else's machine. |
+| 5 | **Pangolin `NEWT_ID` / `NEWT_SECRET`** (in the provisioning command lines) | Connects a tunnel client as *your site* | Impersonating the box at the tunnel edge — traffic for your domain can be answered by someone else's machine. HomeBrain no longer runs a tunnel, so no box needs this pair; the site in the Pangolin control plane is what keeps it useful. |
 | 6 | **SSH logins** for the production and test boxes | Shell on the box, and the boxes' SSH passwords are weak (`admin`) | Root, via the `docker` group. See the trust-boundary note in `AGENTS.md`. |
 | 7 | **Factory password** (`42`, in the provisioning command lines) | The box before setup completes, and during the handover window | Low on a long-provisioned box; high on a freshly reset one. |
 | 8 | **An account pair** (`OliAidana` + password) | Unclear from the file | I could not identify the service from the file, and did not guess. You know what it is — rotate it or strike it from this list. |
@@ -47,9 +47,10 @@ Dependencies first, so nothing you rotate gets rolled back by a step that follow
 3. **HA token (#3).** Independent of #2 — the token is separate from the HA login password that
    the master-password rotation touches. It must be revoked in Home Assistant itself.
 4. **SSH (#6).** Independent, and the cheapest to do.
-5. **Registrar secret (#4) and Pangolin credentials (#5).** Both need coordination outside the
-   box — a Cloudflare Worker env var and the Pangolin control plane — and both will break a box
-   that still holds the old value until it is updated.
+5. **Registrar secret (#4) and Pangolin credentials (#5).** Both live outside the box — a
+   Cloudflare Worker env var and the Pangolin control plane. The registrar secret will break a box
+   that still holds the old value until it is updated; the Pangolin pair is no longer used by any
+   box, so retire it rather than rotate it.
 6. **Factory password (#7)** only matters at the next reset or reprovision. Use a new one then.
 
 ---
@@ -93,11 +94,13 @@ Worker, and only during signup — nothing else on the box uses it.
 **Verify:** a signup from a rotated box succeeds; a request with the old secret returns 401.
 
 ### 5. Pangolin `NEWT_ID` / `NEWT_SECRET`
-Regenerate the site credentials in the Pangolin control plane, then Dashboard → **Connectivity →
-Update Tunnel** with the new pair (this rewrites `.env` and redeploys the `newt` container).
+HomeBrain no longer runs a tunnel: an update drops the keys from `.env` and removes the `newt`
+container. Once every box has updated, delete the site (and its resources) in the Pangolin control
+plane, and remove the DNS records that point the box's domains at it. Until then the leaked pair
+can still connect as the site.
 
-**Verify:** the tunnel reports connected, and the public Nextcloud and Home Assistant hostnames
-answer from outside the LAN.
+**Verify:** the site is gone from the control plane, and the old public hostnames no longer
+resolve or no longer answer.
 
 ### 6. SSH
 On each box: `passwd` for every account that has a password, choosing something not derived from
@@ -127,7 +130,7 @@ Rotating without changing how the credentials are stored just resets the clock.
 
 - **Do not re-create `misc` with the new values.** The reason the old ones leaked is that they sat
   in a plaintext file inside a repository that agents read.
-- Put the new values in the Vault (Vaultwarden is already in the stack, backed up and tunnelled).
+- Put the new values in the Vault (Vaultwarden is already in the stack, backed up and reachable over the private network).
 - If a note file is unavoidable, keep it outside the repository tree entirely — an agent working
   in this directory can read anything under it, and `.gitignore` governs commits, not reads.
 - `AGENTS.md` is the place to say "never read `misc`" if you keep it. A rule an agent can see is

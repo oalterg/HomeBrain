@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Dashboard readings for the two discrete cards this box ships with.
 
-An RX 9060 XT and an Arc Pro B60 must publish the same GPU object. The tunnel
-badge on a LAN-only box is Deactivated, not a red Stopped: there is no tunnel
-process because remote access was not turned on.
+An RX 9060 XT and an Arc Pro B60 must publish the same GPU object.
 
     python3 scripts/tests/test_dashboard_hardware.py
     pytest scripts/tests/test_dashboard_hardware.py
@@ -31,16 +29,6 @@ def _region(mem_class, total, used):
 
 def _blob(regions):
     return struct.pack("=II", len(regions), 0) + b"".join(regions)
-
-
-def test_local_tunnel_is_deactivated_not_stopped():
-    assert hb.present_tunnel_status("stopped", local=True) == "deactivated"
-    assert hb.present_tunnel_status("running", local=True) == "running"
-    assert hb.present_tunnel_status("unhealthy", local=True) == "unhealthy"
-
-
-def test_remote_tunnel_stopped_stays_a_fault():
-    assert hb.present_tunnel_status("stopped", local=False) == "stopped"
 
 
 def test_xe_vram_query_ignores_system_memory_and_sums_tiles():

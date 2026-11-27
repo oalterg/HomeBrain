@@ -626,22 +626,6 @@ network_dhcp() {
     echo "dhcp"
 }
 
-# --- Action: Activate Tunnels (Post-Setup) ---
-activate_tunnels() {
-    log_info "Initializing Tunnel Activation..."
-    load_env
-    
-    local profiles=$(get_tunnel_profiles)
-    
-    if [[ -z "$profiles" ]]; then
-        log_info "No tunnel profiles configured (Local Mode). Skipping activation."
-    else
-        log_info "Activating tunnel profiles: $profiles"
-        docker compose --env-file "$ENV_FILE" $(get_compose_args) $profiles up -d --remove-orphans
-        log_info "Tunnel services started."
-    fi
-}
-
 create_ha_admin() {
     local HA_PASSWORD="$1"
     if [ -z "$HA_PASSWORD" ]; then
@@ -1853,7 +1837,7 @@ openclaw_origins() {
     # touches the gateway WS; the proxy-side Origin rewriting we do server-side
     # doesn't help here because the check fires inside the user's browser.
     # Cover every way the dashboard is reachable: loopback, LAN IP, mDNS
-    # name, and (when remote mode is provisioned) the Pangolin domain.
+    # name, and (when remote access is on) the private-network address.
     local lan_ip
     lan_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
     local origins_jq='['
@@ -1861,9 +1845,6 @@ openclaw_origins() {
     origins_jq+='"https://homebrain.local","https://homebrain.local:443",'
     if [[ -n "${lan_ip:-}" ]]; then
         origins_jq+="\"https://${lan_ip}\",\"https://${lan_ip}:443\","
-    fi
-    if [[ -n "${PANGOLIN_DOMAIN:-}" ]]; then
-        origins_jq+="\"https://${PANGOLIN_DOMAIN}\","
     fi
     # The dashboard's private-network address (src/mesh.py DASHBOARD port).
     if [[ -n "${MESH_DOMAIN:-}" ]]; then
@@ -2040,8 +2021,8 @@ patch_openclaw_config() {
         # without them ("missing baseUrl" / "missing gateway.mode" → exit 78).
         # Existing configs migrated from older releases lacked these keys, so
         # we always (re)assert them. local mode is correct for the bundled
-        # llama-server on 127.0.0.1; remote-access tunnelling is handled by
-        # Pangolin/Caddy in front of the gateway, not by OpenClaw itself.
+        # llama-server on 127.0.0.1; remote access is handled by the
+        # manager and Caddy in front of the gateway, not by OpenClaw itself.
         .models.providers.llamacpp.baseUrl = "http://127.0.0.1:8001/v1" |
         # Auth fields on the llamacpp provider. Without these the embedded
         # agent fails every prompt with "No API key found for provider
@@ -2059,8 +2040,8 @@ patch_openclaw_config() {
         .gateway.mode = (.gateway.mode // "local") |
         # Single-origin UX: the HomeBrain manager reverse-proxies the
         # OpenClaw Control UI under /openclaw, so the user reaches it via
-        # the same master-password session as the dashboard (LAN and
-        # Pangolin both work). basePath tells the gateway to mount its
+        # the same master-password session as the dashboard (LAN and the
+        # private network both work). basePath tells the gateway to mount its
         # static assets and API routes under that prefix; bind stays on
         # loopback because the manager is the only legitimate ingress.
         .gateway.bind = "loopback" |
@@ -3702,9 +3683,6 @@ case "${1:-}" in
         ;;
     network_dhcp)
         network_dhcp
-        ;;
-    activate_tunnels)
-        activate_tunnels
         ;;
     finish_restore)
         # Closes out a restore that the setup wizard chained onto the first

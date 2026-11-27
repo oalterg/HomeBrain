@@ -8,6 +8,7 @@
 #     private-network name must make a box "remote" in this one too, or
 #     redeploy configures Nextcloud and Vault as LAN-only while the dashboard
 #     says otherwise — the half-applied state PR #256 was written against.
+#     Tunnel credentials left from before Pangolin was removed name no path.
 #   * ensure_tailscale never installs an unpinned build, and does nothing it
 #     cannot finish when it is not root.
 #   * the version is pinned, and the update only refreshes a client the owner
@@ -48,10 +49,8 @@ expect "a private-network name with no mode set is remote" remote \
     "$(mode MESH_DOMAIN=homebrain.tail1234.ts.net)"
 expect "opting out still wins over a private-network name" local \
     "$(mode MESH_DOMAIN=homebrain.tail1234.ts.net DEPLOYMENT_MODE=local)"
-expect "Pangolin credentials alone are still remote" remote \
-    "$(mode NEWT_ID=a NEWT_SECRET=b PANGOLIN_DOMAIN=home.example.com)"
-expect "partial Pangolin credentials are still local" local \
-    "$(mode NEWT_ID=a NEWT_SECRET=b)"
+expect "leftover Pangolin credentials are local" local \
+    "$(mode NEWT_ID=a NEWT_SECRET=b PANGOLIN_DOMAIN=home.example.com DEPLOYMENT_MODE=remote)"
 
 echo "ensure_tailscale"
 out="$(ensure_tailscale "" 2>&1)"; rc=$?
@@ -88,7 +87,7 @@ if grep -q '^MESH_DOMAIN=' "$REPO_ROOT/config/.env.template"; then ok ".env.temp
 else bad ".env.template is missing MESH_DOMAIN"; fi
 
 # A factory reset that leaves the box signed in keeps it published after the
-# password and data are gone — the newt defect PR #145 fixed, one layer down.
+# password and data are gone.
 nr="$REPO_ROOT/scripts/nuclear_reset.sh"
 if grep -q 'tailscale serve reset' "$nr" && grep -q 'tailscale logout' "$nr"; then
     ok "factory reset unpublishes and signs out"

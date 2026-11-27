@@ -283,8 +283,8 @@ def healthy(expected=None):
     scripts = str(ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.append(scripts)
-    from healthcheck import check_tunnel, check_openclaw_gateway
-    for check in (check_tunnel(env), check_openclaw_gateway(bool(record.get("has_gpu")))):
+    from healthcheck import check_remote_access, check_openclaw_gateway
+    for check in (check_remote_access(env), check_openclaw_gateway(bool(record.get("has_gpu")))):
         if check and check["level"] != "ok":
             raise NighttimeError(check["summary"])
     return [name for name, row in rows.items() if row.get("State") == "running"]

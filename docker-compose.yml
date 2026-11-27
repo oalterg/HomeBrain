@@ -88,8 +88,8 @@ services:
 
   caddy:
     # The only process that faces the LAN: HTTPS on 443, HTTP on 80 to redirect.
-    # Always runs, including remote mode — LAN names stay live when the tunnel
-    # is down, and the box CA is downloadable from homebrain.local either way.
+    # Always runs, including remote mode — LAN names stay live when the private
+    # network is down, and the box CA is downloadable from homebrain.local either way.
     image: caddy:2.11.9-alpine
     restart: unless-stopped
     ports:
@@ -162,8 +162,8 @@ services:
   searxng:
     # Web search for the agent. OpenClaw's web_search tool queries it over
     # loopback; it fans each query out to public engines from this box's IP.
-    # Not profile-gated: deploy, restore and tunnel redeploys run
-    # `up --remove-orphans` with tunnel profiles only, which would stop it.
+    # Not profile-gated: deploy and restore run `up --remove-orphans` without
+    # optional profiles, which would stop it.
     # Idle cost is about 120 MiB.
     image: searxng/searxng:2026.9.29-4e2c1ea7f
     restart: unless-stopped
@@ -251,63 +251,6 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
-
-  newt:
-    profiles:
-      - pangolin
-    image: fosrl/newt:1.16.0
-    restart: unless-stopped
-    # No docker.sock mount: newt only used it for optional container
-    # discovery in the Pangolin UI, and socket API access is root-equivalent
-    # on the host ("ro" only protects the socket file, not the API). Tunnel
-    # targets resolve via the compose network DNS.
-    #
-    # Fixed public upstreams, because Docker snapshots the host's
-    # /etc/resolv.conf when it creates the container's network sandbox and
-    # never refreshes it. On a Raspberry Pi, network-online.target fires
-    # before DHCP has a lease (nm-online -s returns when NetworkManager has
-    # finished starting), so the snapshot can carry a nameserver from a
-    # previous LAN — and newt then cannot resolve PANGOLIN_ENDPOINT until
-    # someone restarts the docker daemon. Observed: a box on 192.168.178.0/24
-    # retrying 192.168.1.1 for four hours with the tunnel down.
-    #
-    # On a user-defined network (which homebrain_default is) this does NOT
-    # replace the embedded resolver: /etc/resolv.conf in the container still
-    # points at 127.0.0.11, so nextcloud/homeassistant/vaultwarden keep
-    # resolving by name — these addresses only replace its WAN forwarders.
-    # Scoped to newt on purpose: making this global would send every
-    # container's lookups to a public resolver and break LAN hostnames that
-    # Home Assistant relies on.
-    dns:
-      - 1.1.1.1
-      - 9.9.9.9
-    environment:
-      - PANGOLIN_ENDPOINT=${PANGOLIN_ENDPOINT}
-      - NEWT_ID=${NEWT_ID}
-      - NEWT_SECRET=${NEWT_SECRET}
-  
-  cloudflared-nc:
-    profiles:
-      - cloudflare-nc
-    image: cloudflare/cloudflared:2026.7.2
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${CF_TOKEN_NC}
-    depends_on:
-      nextcloud:
-        condition: service_healthy
-  
-  cloudflared-ha:
-    profiles:
-      - cloudflare-ha
-    image: cloudflare/cloudflared:2026.7.2
-    restart: unless-stopped
-    command: tunnel run
-    environment:
-      - TUNNEL_TOKEN=${CF_TOKEN_HA}
-    depends_on:
-      - homeassistant
 
 networks:
   camofox: {}
