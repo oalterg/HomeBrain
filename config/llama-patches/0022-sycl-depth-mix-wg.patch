@@ -1,0 +1,219 @@
+sycl: 1024-item work-groups for the decode-size Inkling 2 depth mix
+
+HomeBrain patch on ggml-sycl. Applies on top of 0021.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+0019's depth mix runs one work-group per (token, query). At decode that is a
+single work-group on the device, and its two passes over the 2304 hidden
+values (the scores, then the weighted sum) are chains of dependent loads:
+26 us per call, 88 calls per token. With at most 8 (token, query) pairs the
+work-group now has 1024 items, so each pass takes 3 steps instead of 9;
+prefill keeps 256.
+
+diff --git a/ggml/src/ggml-sycl/inkling2.cpp b/ggml/src/ggml-sycl/inkling2.cpp
+index c59b535d3..c08a0a1cd 100644
+--- a/ggml/src/ggml-sycl/inkling2.cpp
++++ b/ggml/src/ggml-sycl/inkling2.cpp
+@@ -266,8 +266,6 @@ static void ggml_sycl_op_depth_mix(ggml_backend_sycl_context & ctx, const ggml_t
+                                    bool norm_cur, float eps, const ggml_tensor * query, float scale, ggml_tensor * dst) {
+     constexpr int MAX = GGML_SYCL_DEPTH_MIX_MAX_ROWS;
+     constexpr int R   = MAX + 2;  // [0, B): the stack rows, MAX: cur, MAX + 1: the sum of squares of cur
+-    constexpr int WG  = 256;
+-    constexpr int NW  = WG / WARP_SIZE;
+ 
+     const int n = cur->ne[0];
+     const int B = stack->ne[1];
+@@ -288,104 +286,115 @@ static void ggml_sycl_op_depth_mix(ggml_backend_sycl_context & ctx, const ggml_t
+     const int64_t cur_s1   = cur->nb[2] / sizeof(float);
+     const int64_t query_s1 = query->nb[1] / sizeof(float);
+ 
+-    ctx.stream()->submit([&](sycl::handler & cgh) {
+-        sycl::local_accessor<float, 1> s_acc(sycl::range<1>(NW * R), cgh);
+-        cgh.parallel_for(sycl::nd_range<2>(sycl::range<2>(T, (size_t) Q * WG), sycl::range<2>(1, WG)),
+-                         [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+-            const int  q    = it.get_group(1);
+-            const int  t    = it.get_group(0);
+-            const int  tid  = it.get_local_id(1);
+-            const auto sg   = it.get_sub_group();
+-            const int  lane = sg.get_local_linear_id();
+-            const int  warp = sg.get_group_linear_id();
++    // one work-group per (token, query): at decode that is a single work-group, so it gets 1024 items to shorten
++    // its two dependent loops over the hidden size; prefill keeps 256
++    auto launch = [&](auto wg_c) {
++        constexpr int WG = decltype(wg_c)::value;
++        constexpr int NW = WG / WARP_SIZE;
++        ctx.stream()->submit([&](sycl::handler & cgh) {
++            sycl::local_accessor<float, 1> s_acc(sycl::range<1>(NW * R), cgh);
++            cgh.parallel_for(sycl::nd_range<2>(sycl::range<2>(T, (size_t) Q * WG), sycl::range<2>(1, WG)),
++                             [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                const int  q    = it.get_group(1);
++                const int  t    = it.get_group(0);
++                const int  tid  = it.get_local_id(1);
++                const auto sg   = it.get_sub_group();
++                const int  lane = sg.get_local_linear_id();
++                const int  warp = sg.get_group_linear_id();
+ 
+-            const float * qv = qu_d + q * query_s1;
+-            const float * st = st_d + t * stack_s2;
+-            const float * xc = cu_d + t * cur_s1;
++                const float * qv = qu_d + q * query_s1;
++                const float * st = st_d + t * stack_s2;
++                const float * xc = cu_d + t * cur_s1;
+ 
+-            float acc[R];
+-#pragma unroll
+-            for (int r = 0; r < R; ++r) {
+-                acc[r] = 0.0f;
+-            }
++                float acc[R];
++    #pragma unroll
++                for (int r = 0; r < R; ++r) {
++                    acc[r] = 0.0f;
++                }
+ 
+-            for (int i = tid; i < n; i += WG) {
+-                const float qi = qv[i];
+-#pragma unroll
+-                for (int r = 0; r < MAX; ++r) {
+-                    if (r < B) {
+-                        acc[r] += st[r * stack_s1 + i] * qi;
++                for (int i = tid; i < n; i += WG) {
++                    const float qi = qv[i];
++    #pragma unroll
++                    for (int r = 0; r < MAX; ++r) {
++                        if (r < B) {
++                            acc[r] += st[r * stack_s1 + i] * qi;
++                        }
+                     }
++                    const float xi = xc[i];
++                    acc[MAX] += xi * qi;
++                    acc[MAX + 1] += xi * xi;
+                 }
+-                const float xi = xc[i];
+-                acc[MAX] += xi * qi;
+-                acc[MAX + 1] += xi * xi;
+-            }
+ 
+-            // B is uniform over the work-group, so the sub-group reductions are not divergent
+-#pragma unroll
+-            for (int r = 0; r < R; ++r) {
+-                if (r < B || r >= MAX) {
+-                    acc[r] = sycl::reduce_over_group(sg, acc[r], sycl::plus<float>());
+-                    if (lane == 0) {
+-                        s_acc[warp * R + r] = acc[r];
++                // B is uniform over the work-group, so the sub-group reductions are not divergent
++    #pragma unroll
++                for (int r = 0; r < R; ++r) {
++                    if (r < B || r >= MAX) {
++                        acc[r] = sycl::reduce_over_group(sg, acc[r], sycl::plus<float>());
++                        if (lane == 0) {
++                            s_acc[warp * R + r] = acc[r];
++                        }
+                     }
+                 }
+-            }
+-            sycl::group_barrier(it.get_group());
+-#pragma unroll
+-            for (int r = 0; r < R; ++r) {
+-                if (r < B || r >= MAX) {
+-                    acc[r] = 0.0f;
+-#pragma unroll
+-                    for (int wi = 0; wi < NW; ++wi) {
+-                        acc[r] += s_acc[wi * R + r];
++                sycl::group_barrier(it.get_group());
++    #pragma unroll
++                for (int r = 0; r < R; ++r) {
++                    if (r < B || r >= MAX) {
++                        acc[r] = 0.0f;
++    #pragma unroll
++                        for (int wi = 0; wi < NW; ++wi) {
++                            acc[r] += s_acc[wi * R + r];
++                        }
+                     }
+                 }
+-            }
+ 
+-            const float sc = norm_cur ? sycl::rsqrt(acc[MAX + 1] / n + eps) : 1.0f;
++                const float sc = norm_cur ? sycl::rsqrt(acc[MAX + 1] / n + eps) : 1.0f;
+ 
+-            float mx = scale * (sc * acc[MAX]);
+-#pragma unroll
+-            for (int r = 0; r < MAX; ++r) {
+-                if (r < B) {
+-                    acc[r] = scale * acc[r];
+-                    mx     = sycl::fmax(mx, acc[r]);
++                float mx = scale * (sc * acc[MAX]);
++    #pragma unroll
++                for (int r = 0; r < MAX; ++r) {
++                    if (r < B) {
++                        acc[r] = scale * acc[r];
++                        mx     = sycl::fmax(mx, acc[r]);
++                    }
+                 }
+-            }
+ 
+-            float p_cur = sycl::exp(scale * (sc * acc[MAX]) - mx);
+-            float sum   = 0.0f;
+-#pragma unroll
+-            for (int r = 0; r < MAX; ++r) {
+-                if (r < B) {
+-                    acc[r] = sycl::exp(acc[r] - mx);
+-                    sum += acc[r];
++                float p_cur = sycl::exp(scale * (sc * acc[MAX]) - mx);
++                float sum   = 0.0f;
++    #pragma unroll
++                for (int r = 0; r < MAX; ++r) {
++                    if (r < B) {
++                        acc[r] = sycl::exp(acc[r] - mx);
++                        sum += acc[r];
++                    }
+                 }
+-            }
+-            sum += p_cur;
+-
+-            const float inv = 1.0f / sum;
+-#pragma unroll
+-            for (int r = 0; r < MAX; ++r) {
+-                acc[r] *= inv;
+-            }
+-            p_cur *= inv * sc;
++                sum += p_cur;
+ 
+-            for (int i = tid; i < n; i += WG) {
+-                float o = 0.0f;
+-#pragma unroll
++                const float inv = 1.0f / sum;
++    #pragma unroll
+                 for (int r = 0; r < MAX; ++r) {
+-                    if (r < B) {
+-                        o += acc[r] * st[r * stack_s1 + i];
++                    acc[r] *= inv;
++                }
++                p_cur *= inv * sc;
++
++                for (int i = tid; i < n; i += WG) {
++                    float o = 0.0f;
++    #pragma unroll
++                    for (int r = 0; r < MAX; ++r) {
++                        if (r < B) {
++                            o += acc[r] * st[r * stack_s1 + i];
++                        }
+                     }
++                    o += p_cur * xc[i];
++                    ds_d[((int64_t) t * n + i) * Q + q] = o;
+                 }
+-                o += p_cur * xc[i];
+-                ds_d[((int64_t) t * n + i) * Q + q] = o;
+-            }
++            });
+         });
+-    });
++    };
++    if ((int64_t) T * Q <= 8) {
++        launch(std::integral_constant<int, 1024>{});
++    } else {
++        launch(std::integral_constant<int, 256>{});
++    }
+ }
+ 
+ // the loop controller: gate = w_down . [rms_norm(cur); rms_norm(msg)], dst = cur - tanh(w_forget . gate)*cur + tanh(w_gain . gate)*msg.

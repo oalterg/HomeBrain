@@ -3,28 +3,28 @@ sycl: indexed bias in the DPAS flash-attention decode kernel
 HomeBrain patch on ggml-sycl. Applies on top of 0017.
 Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
 
-With an indexed bias (0001), decode-size flash attention (at most 31 query
-rows) went to the tile kernel, which reads q8_0 K/V through a dequantizing
-loop and spreads the GQA heads over separate work-groups. The DPAS decode
-kernel now applies the bias too: it adds table[bin] to the mask value of
-each score, with the same F16 rounding as the dense mask the bias replaces,
-and keeps its s8 DPAS products, GQA rows and split-K combine. Inkling's
-decode at a 59K-token context goes from 15.2 to 27.3 t/s on the Arc Pro B60.
+With an indexed bias, decode-size flash attention (at most 31 query rows)
+went to the tile kernel, which reads q8_0 K/V through a dequantizing loop
+and spreads the GQA heads over separate work-groups. The DPAS decode kernel
+now applies the bias too: it adds table[bin] to the mask value of each score
+in F32, and keeps its s8 DPAS products, GQA rows and split-K combine.
+Inkling's decode at a 59K-token context goes from 15.2 to 27.3 t/s on the
+Arc Pro B60 (measured on the earlier pin).
 
 diff --git a/ggml/src/ggml-sycl/fattn-dpas.cpp b/ggml/src/ggml-sycl/fattn-dpas.cpp
-index 59c72f98b..2704de112 100644
+index 59c72f98b..ebc1d9fcb 100644
 --- a/ggml/src/ggml-sycl/fattn-dpas.cpp
 +++ b/ggml/src/ggml-sycl/fattn-dpas.cpp
 @@ -80,6 +80,16 @@ bool ggml_sycl_flash_attn_ext_dpas_supported(int device, const ggml_tensor * dst
      if (sinks && (sinks->nb[0] != sizeof(float) || sinks->ne[0] < Q->ne[2])) {
          return false;
      }
-+    // indexed bias: table [heads, bins, queries] f32, indices [keys, queries] i32, queries of all sequences flattened
++    // indexed bias: table [bins, heads, queries] f32, indices [keys, queries] i32, queries of all sequences flattened
 +    if (ggml_flash_attn_ext_has_indexed_bias(dst)) {
 +        const ggml_tensor * table = dst->src[6];
 +        const ggml_tensor * idx   = dst->src[7];
 +        if (!mask || !table || !idx || table->type != GGML_TYPE_F32 || idx->type != GGML_TYPE_I32 ||
-+            !ggml_is_contiguous(table) || table->ne[0] != Q->ne[2] || table->ne[2] < Q->ne[1] * Q->ne[3] ||
++            !ggml_is_contiguous(table) || table->ne[1] != Q->ne[2] || table->ne[2] < Q->ne[1] * Q->ne[3] ||
 +            idx->nb[0] != sizeof(int32_t) || idx->ne[0] < K->ne[1] || idx->nb[1] % sizeof(int32_t) != 0) {
 +            return false;
 +        }
@@ -36,14 +36,14 @@ index 59c72f98b..2704de112 100644
      int64_t        nb11, nb12, nb13;
      int64_t        nb21, nb22, nb23;
      int64_t        nb31, nb33;
-+    const float *   bias_table;  // indexed bias [heads, bins, queries], or null
++    const float *   bias_table;  // indexed bias [bins, heads, queries], or null
 +    const int32_t * bias_idx;    // its bins [keys, queries]
 +    int             bias_bins;
 +    int64_t         bias_stride; // int32 elements between the index rows of consecutive queries
  };
  
  // One work-group = one KV head x nq query tokens x one slice of the keys: S = Q K^T by s8 x s4 / s8 x s8 DPAS on the
-@@ -437,7 +451,15 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+@@ -437,7 +451,14 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
                                      const int c = c0 + r / G;
                                      if (r < R) {
                                          const bool  ok = jv && c < p.ne01;
@@ -53,27 +53,26 @@ index 59c72f98b..2704de112 100644
 +                                            const int64_t query = (int64_t) seq * p.ne01 + c;
 +                                            const int     bin   = p.bias_idx[query * p.bias_stride + j];
 +                                            if ((uint32_t) bin < (uint32_t) p.bias_bins) {
-+                                                // same F16 rounding as the dense mask the bias replaces
-+                                                mv = (float) sycl::half(mv + p.bias_table[(query * p.bias_bins + bin) * p.ne02 + kvh * G + r % G]);
++                                                mv += p.bias_table[(query * p.ne02 + kvh * G + r % G) * p.bias_bins + bin];
 +                                            }
 +                                        }
                                          sS[r * TK + kg * 16 + lane] = ok ? s[tt][m] + mv : -INFINITY;
                                      }
                                  }
-@@ -604,6 +626,11 @@ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+@@ -604,6 +625,11 @@ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
      p.nb23 = V->nb[3];
      p.nb31 = mask ? mask->nb[1] : 0;
      p.nb33 = mask ? mask->nb[3] : 0;
 +    const bool bias = ggml_flash_attn_ext_has_indexed_bias(dst);
 +    p.bias_table  = bias ? (const float *) dst->src[6]->data : nullptr;
 +    p.bias_idx    = bias ? (const int32_t *) dst->src[7]->data : nullptr;
-+    p.bias_bins   = bias ? (int) dst->src[6]->ne[1] : 0;
++    p.bias_bins   = bias ? (int) dst->src[6]->ne[0] : 0;
 +    p.bias_stride = bias ? (int64_t) (dst->src[7]->nb[1] / sizeof(int32_t)) : 0;
  
      // split the keys so that all work-groups run in one wave
      // SLM fits about 4 work-groups per Xe2 core with 16 rows, 2 with 32. Xe2 core = 8 EUs, nsm = EUs / 16.
 diff --git a/ggml/src/ggml-sycl/fattn.cpp b/ggml/src/ggml-sycl/fattn.cpp
-index 26592bd6d..c172dac75 100644
+index 314f6213d..0b39ebe89 100644
 --- a/ggml/src/ggml-sycl/fattn.cpp
 +++ b/ggml/src/ggml-sycl/fattn.cpp
 @@ -131,7 +131,7 @@ static best_fattn_kernel ggml_sycl_get_best_fattn_kernel(const int device, const

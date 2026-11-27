@@ -17,7 +17,7 @@ on the Arc Pro B60: 5.60 -> 1.53 ms at 1536 keys (its sliding-window layers),
 20480.
 
 diff --git a/ggml/src/ggml-sycl/fattn-mkl.cpp b/ggml/src/ggml-sycl/fattn-mkl.cpp
-index deea7be97..982291e5f 100644
+index 2c86a6653..05f9c1250 100644
 --- a/ggml/src/ggml-sycl/fattn-mkl.cpp
 +++ b/ggml/src/ggml-sycl/fattn-mkl.cpp
 @@ -4,6 +4,8 @@
@@ -135,7 +135,7 @@ index deea7be97..982291e5f 100644
                      + row * (int64_t)chunk_size;
                  sycl::half * __restrict S_row = S_f16
                      + row * (int64_t)chunk_size;
-@@ -192,6 +198,7 @@ static void mkl_fa_online_softmax_chunk(
+@@ -190,6 +196,7 @@ static void mkl_fa_online_softmax_chunk(
                  float local_max = -1e30f;
                  for (int i = local_id; i < chunk_size; i += local_size) {
                      float s = score(i);
@@ -143,7 +143,7 @@ index deea7be97..982291e5f 100644
                      if (s > local_max) local_max = s;
                  }
                  const float final_local_max = sycl::reduce_over_group(
-@@ -207,8 +214,7 @@ static void mkl_fa_online_softmax_chunk(
+@@ -205,8 +212,7 @@ static void mkl_fa_online_softmax_chunk(
                  // Pass 2: softmax numerators, strided; S row written once.
                  float local_sum = 0.0f;
                  for (int i = local_id; i < chunk_size; i += local_size) {
@@ -153,7 +153,7 @@ index deea7be97..982291e5f 100644
                      S_row[i] = sycl::half(val);
                      local_sum += val;
                  }
-@@ -222,25 +228,29 @@ static void mkl_fa_online_softmax_chunk(
+@@ -220,25 +226,29 @@ static void mkl_fa_online_softmax_chunk(
      });
  }
  
@@ -191,7 +191,7 @@ index deea7be97..982291e5f 100644
                  float   inv_sum  = 1.0f / KQ_sum[ksum_idx];
                  if (sinks) {
                      // the sink joins the softmax denominator, as in the tile kernel's final scale
-@@ -250,7 +260,7 @@ static void mkl_fa_normalize_head(
+@@ -248,7 +258,7 @@ static void mkl_fa_normalize_head(
                      inv_sum = scale / (KQ_sum[ksum_idx] * scale + sycl::native::exp(sink - m));
                  }
                  const float * __restrict src = VKQ_accum
@@ -200,7 +200,7 @@ index deea7be97..982291e5f 100644
                  // Interleaved dst layout (matching TILE):
                  // rows alternate between heads, then increment query.
                  // offset = (query * n_q_heads + head) * DV
-@@ -321,12 +331,18 @@ static mkl_fa_kv_desc mkl_fa_make_desc(const ggml_tensor * T, bool interleaved)
+@@ -319,12 +329,18 @@ static mkl_fa_kv_desc mkl_fa_make_desc(const ggml_tensor * T, bool interleaved)
      return d;
  }
  
@@ -221,7 +221,7 @@ index deea7be97..982291e5f 100644
      switch (d.mode) {
          case MKL_FA_KV_MODE_F16_DENSE: {
              // ib * nb3 selects this batch's KV (nb[3] != ne[1]*nb[1] for batched KV views)
-@@ -361,8 +377,8 @@ static void mkl_fa_dequant_chunk(
+@@ -359,8 +375,8 @@ static void mkl_fa_dequant_chunk(
              const int64_t base_blocks = (int64_t)ikvh * d.s02
                  + (int64_t)chunk_start * d.s01 + (int64_t)ib * d.nb3 / d.ts;
              const char * base = d.data + base_blocks * d.ts;
@@ -232,7 +232,7 @@ index deea7be97..982291e5f 100644
              break;
          }
      }
-@@ -427,6 +443,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -425,6 +441,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
      static int q_tile_env = ggml_sycl_get_env("GGML_SYCL_MKL_FA_Q_TILE", MKL_FA_Q_TILE);
      const int q_tile_rows = std::max(1, std::min(q_tile_env, n_query_rows));
  
@@ -248,7 +248,7 @@ index deea7be97..982291e5f 100644
      const int64_t wg_size = MKL_FA_WG_SIZE;
  
      // --- Debug output (gated by GGML_SYCL_MKL_FA_DEBUG=1) ---
-@@ -520,30 +545,30 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -518,30 +543,30 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
      // --- Allocate intermediates from pool ---
      ggml_sycl_pool & pool = ctx.pool();
  
@@ -292,7 +292,7 @@ index deea7be97..982291e5f 100644
          V_chunk_f16_ptr = V_chunk_f16.ptr;
      }
  
-@@ -572,20 +597,20 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -570,20 +595,20 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                  + m_batch * (mask->nb[3] / 2);  // 2 = actual fp16 device size
          }
  
@@ -318,7 +318,7 @@ index deea7be97..982291e5f 100644
  
              // 3. KV chunk loop (OUTER): dequant each chunk once, then tile queries.
              for (int chunk_start = 0; chunk_start < n_kv; chunk_start += chunk_size) {
-@@ -595,23 +620,31 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -593,23 +618,31 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                  {
                      MKL_TAKE_TIME(t0);
                      mkl_fa_dequant_chunk(stream, K_desc, KQV,
@@ -356,7 +356,7 @@ index deea7be97..982291e5f 100644
                              transpose::trans, transpose::nontrans,
                              this_chunk, q_rows, DKQ,
                              alpha,
-@@ -641,7 +674,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -639,7 +672,15 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                      // GEMM: VKQ_chunk = S × V_chunk
                      {
                          MKL_TAKE_TIME(t0);
@@ -373,7 +373,7 @@ index deea7be97..982291e5f 100644
                              transpose::nontrans, transpose::nontrans,
                              DV, q_rows, this_chunk,
                              alpha,
-@@ -672,15 +713,11 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -670,15 +711,11 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                  }
              }
  
@@ -394,7 +394,7 @@ index deea7be97..982291e5f 100644
          }
      }
  
-@@ -688,16 +725,16 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
+@@ -686,16 +723,16 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
  #undef MKL_ACCUM
  
      if (do_print) {

@@ -1,0 +1,284 @@
+sycl: fuse the MoE weighted expert reduction
+
+HomeBrain patch on ggml-sycl. Applies on top of 0022.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+A port of the CUDA fusion of #25952. After the down projection a MoE layer
+multiplies each expert's output by its weight scale and router weight,
+then sums the used experts through one view and one add per expert: for
+Inkling's 8 experts, 2 MULs, 8 views and 7 ADDs, 9 kernels per layer pass.
+They now run as one kernel, one work-item per output value, in the order of
+the unfused muls and adds. The matcher is CUDA's; graph_optimize keeps the
+inputs allocated until the fused node, and the memory-range check declines
+an output that overlaps an input. Other MoE models with up to 15 used
+experts take it too. test-backend-ops covers it as MOE_REDUCE.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 56e039d69..c77fe7a5c 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -90,6 +90,7 @@
+ #include "ggml-sycl/opt-step.hpp"
+ #include "ggml-sycl/solve_tri.hpp"
+ #include "ggml-sycl/gated_delta_net.hpp"
++#include "ggml-sycl/moe-weighted-reduction.hpp"
+ #include "ggml-sycl/pool.hpp"
+ #include "ggml-sycl/cross_entropy_loss.hpp"
+ 
+@@ -7453,6 +7454,20 @@ static void ggml_backend_sycl_event_wait(ggml_backend_t backend, ggml_backend_ev
+ static void ggml_backend_sycl_graph_optimize(ggml_backend_t backend, ggml_cgraph * cgraph,
+                                               ggml_backend_graph_optimize_params * params) {
+     GGML_UNUSED(backend);
++    // the fused MoE weighted reduction reads its inputs at the last add, they must stay allocated until then
++    for (int i = 0; g_ggml_sycl_enable_fusion && i < cgraph->n_nodes; ++i) {
++        ggml_sycl_moe_weighted_reduction_match match;
++        if (cgraph->nodes[i]->op != GGML_OP_MUL || !ggml_sycl_match_moe_weighted_reduction(cgraph, i, match)) {
++            continue;
++        }
++        for (const ggml_tensor * t : { match.experts, match.weights, match.expert_scale }) {
++            if (t != nullptr) {
++                ggml_tensor * keep = const_cast<ggml_tensor *>(t->view_src ? t->view_src : t);
++                params->add_alloc_dep(params->user_data, keep, match.dst);
++            }
++        }
++        i += match.node_count - 1;
++    }
+     for (int i = 0; i < cgraph->n_nodes; ++i) {
+         ggml_sycl_conv_window_match match;
+         if (cgraph->nodes[i]->op != GGML_OP_CONCAT || !ggml_sycl_match_conv_window(cgraph, i, match)) {
+diff --git a/ggml/src/ggml-sycl/moe-weighted-reduction.cpp b/ggml/src/ggml-sycl/moe-weighted-reduction.cpp
+new file mode 100644
+index 000000000..1fda8d556
+--- /dev/null
++++ b/ggml/src/ggml-sycl/moe-weighted-reduction.cpp
+@@ -0,0 +1,179 @@
++#include "moe-weighted-reduction.hpp"
++
++#include "ggml-impl.h"
++#include "topk-moe.hpp"
++
++#include <vector>
++
++// The long form spans 2*k + 1 nodes. ggml_can_fuse_subgraph() accepts at most 31 nodes, so k <= 15; larger values
++// use the per-operation path.
++static constexpr int MOE_WEIGHTED_REDUCTION_MAX_EXPERTS = 15;
++
++bool ggml_sycl_match_moe_weighted_reduction(const ggml_cgraph * cgraph, int node_idx,
++                                            ggml_sycl_moe_weighted_reduction_match & match) {
++    const ggml_tensor * first = cgraph->nodes[node_idx];
++    if (first->op != GGML_OP_MUL || first->type != GGML_TYPE_F32 || !ggml_is_contiguous(first)) {
++        return false;
++    }
++
++    auto split_mul = [](const ggml_tensor * mul, const ggml_tensor *& full, const ggml_tensor *& broadcast) {
++        auto is_weights = [mul](const ggml_tensor * t) {
++            return t && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t) && t->ne[0] == 1 && t->ne[1] == mul->ne[1] &&
++                   t->ne[2] == mul->ne[2] && t->ne[3] == mul->ne[3];
++        };
++        auto is_experts = [mul](const ggml_tensor * t) {
++            return t && t->type == GGML_TYPE_F32 && ggml_is_contiguous(t) && ggml_are_same_shape(t, mul);
++        };
++        if (is_experts(mul->src[0]) && is_weights(mul->src[1])) {
++            full      = mul->src[0];
++            broadcast = mul->src[1];
++            return true;
++        }
++        if (is_experts(mul->src[1]) && is_weights(mul->src[0])) {
++            full      = mul->src[1];
++            broadcast = mul->src[0];
++            return true;
++        }
++        return false;
++    };
++
++    const ggml_tensor * weighted     = first;
++    const ggml_tensor * experts      = nullptr;
++    const ggml_tensor * expert_scale = nullptr;
++    const ggml_tensor * weights      = nullptr;
++    int                 mul_count    = 1;
++
++    // (experts * expert_scale) * router_weight, or experts * router_weight
++    if (node_idx + 1 < cgraph->n_nodes) {
++        const ggml_tensor * second = cgraph->nodes[node_idx + 1];
++        const ggml_tensor * scaled = nullptr;
++        const ggml_tensor * route  = nullptr;
++        const ggml_tensor * raw    = nullptr;
++        const ggml_tensor * scale  = nullptr;
++        if (second->op == GGML_OP_MUL && second->type == GGML_TYPE_F32 && ggml_is_contiguous(second) &&
++            split_mul(second, scaled, route) && scaled == first && split_mul(first, raw, scale)) {
++            weighted     = second;
++            experts      = raw;
++            expert_scale = scale;
++            weights      = route;
++            mul_count    = 2;
++        }
++    }
++    if (experts == nullptr && !split_mul(first, experts, weights)) {
++        return false;
++    }
++
++    const int     n_expert_used = (int) weighted->ne[1];
++    const int64_t n_tokens      = weighted->ne[2] * weighted->ne[3];
++    if (n_expert_used < 2 || n_expert_used > MOE_WEIGHTED_REDUCTION_MAX_EXPERTS) {
++        return false;
++    }
++
++    const int node_count = 2 * n_expert_used + mul_count - 1;
++    if (node_idx + node_count > cgraph->n_nodes) {
++        return false;
++    }
++
++    std::vector<ggml_op> ops(node_count, GGML_OP_VIEW);
++    ops[0] = GGML_OP_MUL;
++    if (mul_count == 2) {
++        ops[1] = GGML_OP_MUL;
++    }
++    std::vector<const ggml_tensor *> views;
++    views.reserve(n_expert_used);
++    const ggml_tensor * previous = nullptr;
++    int                 n_adds   = 0;
++    for (int offset = mul_count; offset < node_count; ++offset) {
++        const ggml_tensor * candidate = cgraph->nodes[node_idx + offset];
++        ops[offset]                   = candidate->op;
++
++        if (candidate->op == GGML_OP_VIEW) {
++            const int expert = (int) views.size();
++            if (expert >= n_expert_used || candidate->src[0] != weighted || candidate->view_src != weighted ||
++                candidate->type != GGML_TYPE_F32 || candidate->ne[0] != weighted->ne[0] || candidate->ne[1] != n_tokens ||
++                candidate->ne[2] != 1 || candidate->ne[3] != 1 || candidate->nb[0] != weighted->nb[0] ||
++                candidate->nb[1] != weighted->nb[2] || candidate->view_offs != (size_t) expert * weighted->nb[1]) {
++                return false;
++            }
++            views.push_back(candidate);
++            continue;
++        }
++
++        if (candidate->op != GGML_OP_ADD || views.size() < 2 || n_adds + 1 >= (int) views.size()) {
++            return false;
++        }
++        const ggml_tensor * lhs = n_adds == 0 ? views[0] : previous;
++        const ggml_tensor * rhs = views[n_adds + 1];
++        if (candidate->src[0] != lhs || candidate->src[1] != rhs || candidate->type != GGML_TYPE_F32) {
++            return false;
++        }
++        previous = candidate;
++        ++n_adds;
++    }
++
++    if ((int) views.size() != n_expert_used || n_adds != n_expert_used - 1 || previous == nullptr) {
++        return false;
++    }
++    if (!ggml_is_contiguous(previous) || previous->ne[0] != weighted->ne[0] || previous->ne[1] != n_tokens ||
++        previous->ne[2] != 1 || previous->ne[3] != 1) {
++        return false;
++    }
++
++    const int output_idx = node_idx + node_count - 1;
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx, node_count, ops.data(), &output_idx, 1)) {
++        return false;
++    }
++
++    match.experts      = experts;
++    match.expert_scale = expert_scale;
++    match.weights      = weights;
++    match.dst          = cgraph->nodes[output_idx];
++    match.node_count   = node_count;
++    return true;
++}
++
++// one work-item per output value; the products and the sum run in the order of the unfused muls and adds
++static void moe_weighted_reduction_f32(const float * experts, const float * expert_scale, const float * weights,
++                                       float * dst, const int64_t n_embd, const int64_t n_tokens,
++                                       const int n_expert_used, dpct::queue_ptr stream) {
++    constexpr int WG = 256;
++    const int64_t nc = (n_embd + WG - 1) / WG;
++    stream->parallel_for(sycl::nd_range<2>(sycl::range<2>(n_tokens, nc * WG), sycl::range<2>(1, WG)),
++                         [=](sycl::nd_item<2> it) {
++                             const int64_t token = it.get_group(0);
++                             const int64_t col   = it.get_global_id(1);
++                             if (col >= n_embd) {
++                                 return;
++                             }
++                             const int64_t first_row   = token * n_expert_used;
++                             const float   first_scale = expert_scale ? expert_scale[first_row] : 1.0f;
++                             float         sum         = (experts[first_row * n_embd + col] * first_scale) * weights[first_row];
++                             for (int e = 1; e < n_expert_used; ++e) {
++                                 const int64_t row   = first_row + e;
++                                 const float   scale = expert_scale ? expert_scale[row] : 1.0f;
++                                 sum += (experts[row * n_embd + col] * scale) * weights[row];
++                             }
++                             dst[token * n_embd + col] = sum;
++                         });
++}
++
++int ggml_sycl_try_fuse_moe_weighted_reduction(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int i) {
++    if (cgraph->nodes[i]->op != GGML_OP_MUL) {
++        return 0;
++    }
++    ggml_sycl_moe_weighted_reduction_match match;
++    if (!ggml_sycl_match_moe_weighted_reduction(cgraph, i, match)) {
++        return 0;
++    }
++    const int output_idx = i + match.node_count - 1;
++    if (!ggml_sycl_check_fusion_memory_ranges(cgraph, i, match.node_count, &output_idx, 1)) {
++        return 0;
++    }
++    GGML_SYCL_DEBUG("[SYCL] fused moe weighted reduction (%d nodes)\n", match.node_count);
++    const ggml_tensor * experts = match.experts;
++    moe_weighted_reduction_f32((const float *) experts->data,
++                               match.expert_scale ? (const float *) match.expert_scale->data : nullptr,
++                               (const float *) match.weights->data, (float *) match.dst->data, experts->ne[0],
++                               experts->ne[2] * experts->ne[3], (int) experts->ne[1], ctx.stream());
++    return match.node_count - 1;
++}
+diff --git a/ggml/src/ggml-sycl/moe-weighted-reduction.hpp b/ggml/src/ggml-sycl/moe-weighted-reduction.hpp
+new file mode 100644
+index 000000000..424796a45
+--- /dev/null
++++ b/ggml/src/ggml-sycl/moe-weighted-reduction.hpp
+@@ -0,0 +1,22 @@
++#ifndef GGML_SYCL_MOE_WEIGHTED_REDUCTION_HPP
++#define GGML_SYCL_MOE_WEIGHTED_REDUCTION_HPP
++
++#include "common.hpp"
++
++// the weighted sum over the used experts of a MoE layer, a port of ggml-cuda's (#25952):
++//   (experts * expert_scale) * router_weight or experts * router_weight, then one view per expert and a chain of adds
++struct ggml_sycl_moe_weighted_reduction_match {
++    const ggml_tensor * experts      = nullptr;
++    const ggml_tensor * expert_scale = nullptr;
++    const ggml_tensor * weights      = nullptr;
++    ggml_tensor *       dst          = nullptr;
++    int                 node_count   = 0;
++};
++
++bool ggml_sycl_match_moe_weighted_reduction(const ggml_cgraph * cgraph, int node_idx,
++                                            ggml_sycl_moe_weighted_reduction_match & match);
++
++// run the fused reduction if the chain starts at node i, returns the number of following nodes consumed (0: no fusion)
++int ggml_sycl_try_fuse_moe_weighted_reduction(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int i);
++
++#endif  // GGML_SYCL_MOE_WEIGHTED_REDUCTION_HPP
+diff --git a/ggml/src/ggml-sycl/topk-moe.cpp b/ggml/src/ggml-sycl/topk-moe.cpp
+index ef5daa5fe..3e6a1b05c 100644
+--- a/ggml/src/ggml-sycl/topk-moe.cpp
++++ b/ggml/src/ggml-sycl/topk-moe.cpp
+@@ -7,6 +7,7 @@
+ #include "ggml-backend-impl.h"
+ #include "topk-moe.hpp"
+ #include "inkling2.hpp"
++#include "moe-weighted-reduction.hpp"
+ 
+ // SYCL port of ggml-cuda/topk-moe.cu. The kernel is a translation of the CUDA no-PDL path of
+ // topk_moe_cuda, routing bias included; the fusion-detection helpers below are ported near-verbatim
+@@ -620,6 +621,10 @@ int ggml_sycl_fuse(ggml_backend_sycl_context & ctx, ggml_cgraph * cgraph, int i)
+         return n;
+     }
+ 
++    if (int n = ggml_sycl_try_fuse_moe_weighted_reduction(ctx, cgraph, i)) {
++        return n;
++    }
++
+     return ggml_sycl_fuse_topk_moe(ctx, cgraph, i);
+ }
+ 

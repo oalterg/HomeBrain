@@ -16,10 +16,10 @@ test-backend-ops MUL_MAT f32/f16/bf16 and SCALE pass on SYCL0. Measured on an Ar
 Pro B60: Inkling prefill 192 -> 258 t/s at -ub 512.
 
 diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 16105f26d..c2f18e43c 100644
+index 3b303deb3..58cf7be81 100644
 --- a/ggml/src/ggml-sycl/ggml-sycl.cpp
 +++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
-@@ -5189,9 +5189,101 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
+@@ -5192,9 +5192,101 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
      return src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
  }
  

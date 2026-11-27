@@ -10,26 +10,26 @@
         "cmake_flags": "-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121a -DGGML_CUDA_FA_ALL_QUANTS=ON -DCMAKE_BUILD_TYPE=Release"
       },
       "x86_64-sycl": {
-        "git_ref": "19bc41dbb41e858eebc269b49ccdec1f0d28880c",
+        "git_ref": "98cc730cc8f8f798cf83d22c23a072c205b0e510",
         "patches": [
-          "config/llama-patches/0001-flash-attn-indexed-bias-pr32740.patch",
           "config/llama-patches/0002-sycl-flash-attn-indexed-bias.patch",
           "config/llama-patches/0003-sycl-strided-scale.patch",
           "config/llama-patches/0004-sycl-small-batched-matmul.patch",
-          "config/llama-patches/0005-sycl-nvfp4-grouped-gemm.patch",
-          "config/llama-patches/0006-situ-glu-op.patch",
-          "config/llama-patches/0007-sycl-row-norm-clip-fusion.patch",
-          "config/llama-patches/0008-sycl-depth-mix-fusion.patch",
-          "config/llama-patches/0009-sycl-nvfp4-decode.patch",
+          "config/llama-patches/0005-sycl-nvfp4-moe.patch",
           "config/llama-patches/0010-sycl-tanh-mul-fusion.patch",
           "config/llama-patches/0011-sycl-f32-gemv.patch",
-          "config/llama-patches/0012-sycl-conv-residual-scale.patch",
           "config/llama-patches/0013-sycl-topk-moe-bias.patch",
-          "config/llama-patches/0014-sycl-nvfp4-esimd-gemm.patch",
           "config/llama-patches/0015-sycl-mkl-fa-indexed-bias.patch",
           "config/llama-patches/0016-sycl-mkl-fa-batched-heads.patch",
           "config/llama-patches/0017-sycl-transpose-cpy.patch",
-          "config/llama-patches/0018-sycl-dpas-fa-indexed-bias.patch"
+          "config/llama-patches/0018-sycl-dpas-fa-indexed-bias.patch",
+          "config/llama-patches/0019-sycl-inkling2-fusions.patch",
+          "config/llama-patches/0020-sycl-nvfp4-reorder.patch",
+          "config/llama-patches/0021-sycl-half-gemv.patch",
+          "config/llama-patches/0022-sycl-depth-mix-wg.patch",
+          "config/llama-patches/0023-sycl-moe-weighted-reduction.patch",
+          "config/llama-patches/0024-sycl-mmid-weight-scale.patch",
+          "config/llama-patches/0025-sycl-dpas-fa-pipeline.patch"
         ],
         "cmake_flags": "-DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_SYCL_F16=ON -DLLAMA_OPENSSL=OFF -DCMAKE_BUILD_TYPE=Release",
         "oneapi": {
