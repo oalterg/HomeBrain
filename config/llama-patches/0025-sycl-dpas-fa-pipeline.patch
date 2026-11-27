@@ -1,0 +1,289 @@
+sycl: overlap the K/V staging with compute in the DPAS decode flash-attention kernel
+
+HomeBrain patch on ggml-sycl. Applies on top of 0024.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+The DPAS decode kernel for q8_0 K/V at head size 128 (Inkling's
+full-attention layers) staged each 256-key tile into SLM by dword loads,
+then waited at a barrier, for K before Q.K and again for V before P.V. The
+loads never overlapped compute: with the phases switched off one at a time,
+the 65,536-key decode case split into about 700 us of loads and 700 us of
+everything else. For one row tile (up to 16 query rows) the kernel now
+issues each tile's loads into registers one phase early (V during Q.K, the
+next K during the softmax and P.V) and stores them to SLM after the barrier
+that frees the tile; the L1 prefetches are dropped. P.V takes whole V
+blocks: four sub-groups share a block and split its key groups, so each
+block is read from SLM once instead of four times, and they add their O once
+at the end. The kernel holds a tile in flight in the 256-register file,
+which fits two work-groups per Xe2 core, and the key split targets two.
+test-backend-ops on the Arc Pro B60, Inkling's decode attention (8 KV heads,
+GQA 3, indexed bias, sinks): 28.4 -> 25.4 us at 1,024 keys, 99.3 -> 66.8 us
+at 4,096, 353 -> 214 us at 16,384 and 1,236 -> 832 us at 65,536. The
+llama.cpp branch adds a test-backend-ops sweep of q8_0 head-size-128 decode
+at 1 to 20,001 keys, 1, 2 and 5 queries, GQA 1, 3, 8 and 16, with and
+without mask and sinks.
+
+diff --git a/ggml/src/ggml-sycl/fattn-dpas.cpp b/ggml/src/ggml-sycl/fattn-dpas.cpp
+index ebc1d9fcb..1fb5c2574 100644
+--- a/ggml/src/ggml-sycl/fattn-dpas.cpp
++++ b/ggml/src/ggml-sycl/fattn-dpas.cpp
+@@ -215,7 +215,10 @@ struct fa_dpas_params {
+ // One work-group = one KV head x nq query tokens x one slice of the keys: S = Q K^T by s8 x s4 / s8 x s8 DPAS on the
+ // raw K blocks, online softmax, O^T += V^T P^T by f16 DPAS. ST: stage K/V tiles in SLM (1: 16-byte, 2: dword loads).
+ // LG: 256-register file (no spills at 32 rows, same occupancy). Q8: K/V are q8_0, else q4_0.
+-template <int D, int NR16, int KG, int TC, int ST, bool LG, bool Q8>
++// PIPE (ST 2, 16 rows): each staging load is issued into registers one phase early and stored to SLM after the barrier
++// that frees the tile, so the V loads overlap Q.K and the next K loads overlap the softmax and P.V. P.V then takes whole
++// V blocks: the sub-groups of one block split its key groups and add their O once at the end.
++template <int D, int NR16, int KG, int TC, int ST, bool LG, bool Q8, bool PIPE = false>
+ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int ne03, dpct::queue_ptr stream) {
+     constexpr int RMAX  = 16 * NR16;
+     constexpr int RTMAX = RMAX / 8;                         // 8-row tiles in Q.K
+@@ -234,6 +237,12 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+     constexpr int SW    = RW + 1;                           // odd SLM row stride: no bank conflicts for lane = key
+     static_assert(D % QK4_0 == 0 && D % DPS == 0 && NPV <= FA_DPAS_NSG && QK4_0 % DPS == 0, "unsupported head size");
+     static_assert(ST != 1 || RW % 4 == 0, "16-byte staging needs rows of 16-byte multiples");
++    constexpr int KSUB = PIPE ? FA_DPAS_NSG / NB : 1;      // PIPE: sub-groups sharing a V block in P.V
++    constexpr int XV   = PIPE ? QK4_0 / 8 : XT;            // 8-dim tiles per sub-group in P.V
++    constexpr int PNV  = TK * RW;                          // dwords per staged tile
++    constexpr int PPER = PIPE ? (PNV + FA_DPAS_WG - 1) / FA_DPAS_WG : 1;
++    static_assert(!PIPE || (ST == 2 && NR16 == 1 && FA_DPAS_NSG % NB == 0 && KG % KSUB == 0 &&
++                            NB * 16 * (QK4_0 + 1) <= TK * SW), "unsupported pipelined layout");
+ 
+     stream->submit([&](sycl::handler & cgh) {
+         sycl::local_accessor<fa_dpas_short8, 1> sQ8(sycl::range<1>(RTMAX * NB * 16), cgh); // Q s8 [tile][block][lane]
+@@ -309,17 +318,17 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                 const sycl::half * mrow = p.mask ? (const sycl::half *) (p.mask + (seq % p.ne33) * p.nb33) : nullptr;
+ 
+                 // O^T: lane = query row, element m = head dim
+-                fa_dpas_float8 o[NR16][XT];
++                fa_dpas_float8 o[NR16][XV];
+ #pragma unroll
+                 for (int t = 0; t < NR16; ++t) {
+ #pragma unroll
+-                    for (int x = 0; x < XT; ++x) {
++                    for (int x = 0; x < XV; ++x) {
+                         o[t][x] = 0.0f;
+                     }
+                 }
+                 // the dims of this sub-group lie in one V block
+-                const int vb  = (DPS * w) / QK4_0;
+-                const int vd0 = (DPS * w) % QK4_0;
++                const int vb  = PIPE ? w % NB : (DPS * w) / QK4_0;
++                const int vd0 = PIPE ? 0 : (DPS * w) % QK4_0;
+ 
+                 // keys past k_end repeat key k_begin, their scores are -inf
+                 auto stage = [&](const char * base, int64_t nb, int t0) {
+@@ -391,12 +400,46 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                     }
+                 };
+ 
++                // PIPE: the dwords of one tile in flight, element e = tid + i WG as in stage()
++                uint32_t pr[PPER];
++                auto issue = [&](const char * base, int64_t nb, int t0) {
++#pragma unroll
++                    for (int i = 0; i < PPER; ++i) {
++                        const int e = tid + i * FA_DPAS_WG;
++                        if (e < PNV) {
++                            const int key = e / RW;
++                            const int q   = e - key * RW;
++                            const int j   = t0 + key < k_end ? t0 + key : k_begin;
++                            pr[i] = ((const uint32_t *) (base + (int64_t) j * nb))[q];
++                        }
++                    }
++                };
++                auto commit = [&]() {
++#pragma unroll
++                    for (int i = 0; i < PPER; ++i) {
++                        const int e = tid + i * FA_DPAS_WG;
++                        if (e < PNV) {
++                            const int key = e / RW;
++                            sKV[key * SW + (e - key * RW)] = pr[i];
++                        }
++                    }
++                };
++                if constexpr (PIPE) {
++                    issue(Kh, p.nb11, k_begin);
++                    commit();
++                    it.barrier(sycl::access::fence_space::local_space);
++                }
++
+                 for (int t0 = k_begin; t0 < k_end; t0 += TK) {
+-                    if constexpr (ST) {
+-                        stage(Kh, p.nb11, t0);
+-                        it.barrier(sycl::access::fence_space::local_space);
++                    if constexpr (PIPE) {
++                        issue(Vh, p.nb21, t0);
++                    } else {
++                        if constexpr (ST) {
++                            stage(Kh, p.nb11, t0);
++                            it.barrier(sycl::access::fence_space::local_space);
++                        }
++                        prefetch_rows(Vh, p.nb21, t0);
+                     }
+-                    prefetch_rows(Vh, p.nb21, t0);
+ 
+                     // S = Q K^T, job = (key group, TC row tiles)
+                     const int nch = (RT + TC - 1) / TC;
+@@ -466,7 +509,12 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                         }
+                     }
+                     it.barrier(sycl::access::fence_space::local_space);
+-                    if constexpr (ST) {
++                    if constexpr (PIPE) {
++                        commit(); // V(t0); the softmax does not use sKV
++                        if (t0 + TK < k_end) {
++                            issue(Kh, p.nb11, t0 + TK);
++                        }
++                    } else if constexpr (ST) {
+                         stage(Vh, p.nb21, t0); // the softmax does not use sKV
+                     }
+ 
+@@ -499,19 +547,21 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                     }
+                     it.barrier(sycl::access::fence_space::local_space);
+ 
+-                    prefetch_rows(Kh, p.nb11, t0 + TK);
++                    if constexpr (!PIPE) {
++                        prefetch_rows(Kh, p.nb11, t0 + TK);
++                    }
+ 
+                     // O^T = diag(alpha) O^T + V^T P^T. A = V^T (8 dims x 16 keys, lane = key), B = P^T (16 keys x 16 rows)
+ #pragma unroll
+                     for (int t = 0; t < NR16; ++t) {
+                         const float a = sA[t * 16 + lane];
+ #pragma unroll
+-                        for (int x = 0; x < XT; ++x) {
++                        for (int x = 0; x < XV; ++x) {
+                             o[t][x] *= a;
+                         }
+                     }
+ #pragma unroll 1
+-                    for (int kg = 0; kg < ((ALLPV || w < NPV) ? KG : 0); ++kg) {
++                    for (int kg = PIPE ? w / NB : 0; kg < ((ALLPV || w < NPV) ? KG : 0); kg += KSUB) {
+                         const int  j  = t0 + kg * 16 + lane;
+                         const bool jv = j < k_end;
+                         const char *     vbp = Vh + (int64_t) (jv ? j : k_begin) * p.nb21;
+@@ -523,9 +573,9 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                         load_block(vr, vp, kg * 16 + lane, vb, wv);
+                         fa_dpas_split_block<NQ>(wv, (vb + vp) % 2 != 0, sc, q);
+                         const float dv = jv ? static_cast<float>(sycl::bit_cast<sycl::half>((uint16_t) sc)) : 0.0f;
+-                        fa_dpas_short8 va[XT];
++                        fa_dpas_short8 va[XV];
+ #pragma unroll
+-                        for (int x = 0; x < XT; ++x) {
++                        for (int x = 0; x < XV; ++x) {
+ #pragma unroll
+                             for (int m = 0; m < 8; ++m) {
+                                 const int d = vd0 + x * 8 + m;
+@@ -543,26 +593,59 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+                         for (int t = 0; t < NR16; ++t) {
+                             const fa_dpas_int8 pb = sP[((t * 16 + lane) * PS + kg * 16) / 16];
+ #pragma unroll
+-                            for (int x = 0; x < XT; ++x) {
++                            for (int x = 0; x < XV; ++x) {
+                                 fa_dpas_f16(va[x], pb, o[t][x]);
+                             }
+                         }
+                     }
+                     it.barrier(sycl::access::fence_space::local_space);
++                    if constexpr (PIPE) {
++                        if (t0 + TK < k_end) {
++                            commit(); // K(t0 + TK)
++                            it.barrier(sycl::access::fence_space::local_space);
++                        }
++                    }
++                }
++                if constexpr (PIPE) {
++                    // sKV is free after the last P.V barrier: add the O of key-group subsets 1 .. KSUB - 1 to subset 0
++                    float *   red = (float *) &sKV[0];
++                    const int ks  = w / NB;
++                    for (int s2 = 1; s2 < KSUB; ++s2) {
++                        if (ks == s2) {
++#pragma unroll
++                            for (int x = 0; x < XV; ++x) {
++#pragma unroll
++                                for (int m = 0; m < 8; ++m) {
++                                    red[(vb * 16 + lane) * (QK4_0 + 1) + x * 8 + m] = o[0][x][m];
++                                }
++                            }
++                        }
++                        it.barrier(sycl::access::fence_space::local_space);
++                        if (ks == 0) {
++#pragma unroll
++                            for (int x = 0; x < XV; ++x) {
++#pragma unroll
++                                for (int m = 0; m < 8; ++m) {
++                                    o[0][x][m] += red[(vb * 16 + lane) * (QK4_0 + 1) + x * 8 + m];
++                                }
++                            }
++                        }
++                        it.barrier(sycl::access::fence_space::local_space);
++                    }
+                 }
+ 
+ #pragma unroll
+                 for (int t = 0; t < NR16; ++t) {
+                     const int r = t * 16 + lane;
+                     const int c = c0 + r / G;
+-                    if ((ALLPV || w < NPV) && r < R && c < p.ne01) {
++                    if ((PIPE ? w < NB : (ALLPV || w < NPV)) && r < R && c < p.ne01) {
+                         const int64_t jdu = ((int64_t) seq * p.ne01 + c) * p.ne02 + kvh * G + r % G;
+                         const float   l   = sL[r];
+ #pragma unroll
+-                        for (int x = 0; x < XT; ++x) {
++                        for (int x = 0; x < XV; ++x) {
+ #pragma unroll
+                             for (int m = 0; m < 8; ++m) {
+-                                const int d = w * DPS + x * 8 + m;
++                                const int d = PIPE ? vb * QK4_0 + x * 8 + m : w * DPS + x * 8 + m;
+                                 if (p.nsplit == 1) {
+                                     p.dst[jdu * D + d] = l > 0.0f ? o[t][x][m] / l : 0.0f;
+                                 } else {
+@@ -585,7 +668,7 @@ static void fattn_dpas_kernel(const fa_dpas_params p, const int nkvh, const int
+     });
+ }
+ 
+-template <int D, int NR16, int KG, int TC, int ST, bool Q8>
++template <int D, int NR16, int KG, int TC, int ST, bool Q8, bool PIPE = false>
+ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
+     constexpr int TK = 16 * KG;
+ 
+@@ -632,9 +715,10 @@ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+     p.bias_stride = bias ? (int64_t) (dst->src[7]->nb[1] / sizeof(int32_t)) : 0;
+ 
+     // split the keys so that all work-groups run in one wave
+-    // SLM fits about 4 work-groups per Xe2 core with 16 rows, 2 with 32. Xe2 core = 8 EUs, nsm = EUs / 16.
++    // SLM fits about 4 work-groups per Xe2 core with 16 rows, 2 with 32; the 256-register file of PIPE fits 2.
++    // Xe2 core = 8 EUs, nsm = EUs / 16.
+     const int xe_cores = std::max(1, ggml_sycl_info().devices[ctx.device].nsm * 2);
+-    const int wave     = xe_cores * (NR16 == 1 ? 4 : 2);
++    const int wave     = xe_cores * (NR16 == 1 && !PIPE ? 4 : 2);
+     const int ntiles   = (ne11 + TK - 1) / TK;
+     int nsplit = std::max(1, std::min(wave / (nkvh * ne03 * p.nqc), ntiles));
+     p.chunk    = ((ntiles + nsplit - 1) / nsplit) * TK;
+@@ -651,11 +735,11 @@ static void fattn_dpas_case(ggml_backend_sycl_context & ctx, ggml_tensor * dst)
+     p.meta  = meta.get();
+ 
+     dpct::queue_ptr stream = ctx.stream();
+-    // the large register file pays off for 32-row launches from about 4K keys
+-    if (NR16 == 2 && ne11 >= 4096) {
+-        fattn_dpas_kernel<D, NR16, KG, TC, ST, true, Q8>(p, nkvh, ne03, stream);
++    // the large register file pays off for 32-row launches from about 4K keys, and holds PIPE's tile in flight
++    if (PIPE || (NR16 == 2 && ne11 >= 4096)) {
++        fattn_dpas_kernel<D, NR16, KG, TC, ST, true, Q8, PIPE>(p, nkvh, ne03, stream);
+     } else {
+-        fattn_dpas_kernel<D, NR16, KG, TC, ST, false, Q8>(p, nkvh, ne03, stream);
++        fattn_dpas_kernel<D, NR16, KG, TC, ST, false, Q8, PIPE>(p, nkvh, ne03, stream);
+     }
+ 
+     if (nsplit > 1) {
+@@ -711,7 +795,7 @@ template <bool Q8> static void fattn_dpas_dispatch(ggml_backend_sycl_context & c
+     }
+     if (Q8 && D == 128 && aligned4) {
+         if (rows16) {
+-            fattn_dpas_case<128, 1, 16, 1, 2, Q8>(ctx, dst);
++            fattn_dpas_case<128, 1, 16, 1, 2, Q8, true>(ctx, dst);
+         } else {
+             fattn_dpas_case<128, 2, 8, 2, 2, Q8>(ctx, dst);
+         }

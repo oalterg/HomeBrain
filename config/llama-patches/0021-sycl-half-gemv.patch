@@ -1,0 +1,65 @@
+sycl: f16 and bf16 decode GEMVs take the small-matmul kernel
+
+HomeBrain patch on ggml-sycl. Applies on top of 0020.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+Inkling's attention-sink projection is a bf16 [2304 x 24] weight against one
+token in each of its 48 layer passes. DMMV gave its 24 rows one sub-group
+each, so the 2304-long rows ran latency-bound: 24.6 us per call in the
+decode profile. f16 and bf16 weights now take 0011's one-work-group-per-
+output GEMV (at most 32 columns and 2^20 MACs), four weights per 8-byte
+load: 7.6 us for bf16 and 5.2 us for f16 at that shape on the Arc Pro B60.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 2879ff259..56e039d69 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -5256,7 +5256,9 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
+ // the same kernel: there the generic path's host cost exceeds the product's.
+ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+                                                 const ggml_tensor * src1, ggml_tensor * dst) {
+-    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
++    // f16 / bf16 weights only take the decode GEMV below (e.g. Inkling 2's attention-sink projection, 24 rows of 2304)
++    const bool half_w = src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16;
++    if ((src0->type != GGML_TYPE_F32 && !half_w) || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+         return false;
+     }
+     const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1];
+@@ -5281,6 +5283,37 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
+     const int64_t n_out = M * N * B2 * B3;
+     queue_ptr stream = ctx.stream();
+ 
++    if (half_w) {
++        if (!gemv || K < 64 || K % 4 != 0 || a0 != sizeof(uint16_t) || b0 != sizeof(float) || a1 % 8 != 0 ||
++                b1 % 16 != 0 || (uintptr_t) a % 8 != 0 || (uintptr_t) b % 16 != 0) {
++            return false;
++        }
++        // the f32 GEMV below with 4 weights per 8-byte load: one work-group per output, a group reduction
++        const bool bf16 = src0->type == GGML_TYPE_BF16;
++        const int  L    = K >= 1024 ? 256 : K >= 256 ? 64 : WARP_SIZE;
++        stream->parallel_for(sycl::nd_range<1>(sycl::range<1>(n_out * L), sycl::range<1>(L)),
++            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                const int64_t i = it.get_group(0) % M;
++                const int64_t j = it.get_group(0) / M;
++                const sycl::vec<uint16_t, 4> * pa = (const sycl::vec<uint16_t, 4> *) (a + i*a1);
++                const sycl::float4 *           pb = (const sycl::float4 *) (b + j*b1);
++                auto w = [bf16](uint16_t v) {
++                    return bf16 ? sycl::bit_cast<float>((uint32_t) v << 16) : (float) sycl::bit_cast<sycl::half>(v);
++                };
++                float sum = 0.0f;
++                for (int64_t k = it.get_local_id(0); k < K/4; k += L) {
++                    const sycl::vec<uint16_t, 4> x = pa[k];
++                    const sycl::float4           y = pb[k];
++                    sum += w(x.x())*y.x() + w(x.y())*y.y() + w(x.z())*y.z() + w(x.w())*y.w();
++                }
++                sum = sycl::reduce_over_group(it.get_group(), sum, sycl::plus<float>());
++                if (it.get_local_id(0) == 0) {
++                    *(float *) (d + i*d0 + j*d1) = sum;
++                }
++            });
++        return true;
++    }
++
+     if (gemv && K >= 64 && K % 4 == 0 && a0 == sizeof(float) && b0 == sizeof(float) && a1 % 16 == 0 &&
+             b1 % 16 == 0 && (uintptr_t) a % 16 == 0 && (uintptr_t) b % 16 == 0) {
+         // one work-group per output, float4 loads split over K (few rows of a long K would leave

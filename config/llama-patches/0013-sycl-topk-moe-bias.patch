@@ -1,6 +1,6 @@
 sycl: routing bias and an additive norm guard in the fused top-k MoE
 
-HomeBrain patch on ggml-sycl. Applies on top of 0012.
+HomeBrain patch on ggml-sycl. Applies on top of 0011.
 Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
 
 The SYCL top-k MoE fusion declined any routing bias, so Inkling's router

@@ -2191,3 +2191,312 @@ order flips. Before the split the largest top-5 probability difference was
 0.027. The DPAS split-K buffers come from the pool and are at most a few MB
 at decode sizes. Glimmer and the other models do not use the indexed bias,
 so their attention takes the same kernels as before.
+
+
+## 2026-11-27 — Arc Pro B60: Inkling on the llama.cpp master pin
+
+The SYCL source pin moves from `19bc41dbb` to master `98cc730cc`
+(2026-11-26), 176 upstream commits. Upstream now does part of what the
+series did:
+
+- #32740 puts the indexed bias on `FLASH_ATTN_EXT`, and #33053 uses it in
+  the Inkling graph. Master adds the bias in F32 from a contiguous
+  [bins, heads, queries] table; a backend that reports it unsupported gets
+  a dense mask instead. 0001 is dropped, and 0002, 0015 and 0018 are
+  re-targeted to that table.
+- #32940, #32855 and #32948 rebuild `clip()`, `mix()` and `control()` with
+  fewer ops, and #33060 fuses the new chains in CUDA. 0006 (the SITU op),
+  0007 (clip), 0008 (depth mix) and 0012 (conv residual) matched graph
+  shapes that no longer exist. The new 0019 ports #33060 to SYCL instead.
+- 0005, 0009 and 0014 become one patch, 0005, the commit of the open
+  upstream PR #32981.
+
+Eighteen patches are applied in order. Patch numbers are kept, so a number
+means the same change in both series:
+
+| patch | purpose |
+|---|---|
+| 0002 | SYCL tile-kernel indexed bias and attention sinks; unsupported kernel variants are excluded. |
+| 0003 | Strided SCALE keeps SITU activation views on the GPU. |
+| 0004 | Flatten a broadcast 2-D matrix into one GEMM; combine many tiny f32 batch products into one kernel. |
+| 0005 | NVFP4 MoE: decoding without `pow()` or tables, in the mat-vec, the XMX grouped GEMM and the ESIMD grouped GEMM. |
+| 0010 | TANH in the fused unary + mul kernel. |
+| 0011 | Decode-size f32 mat-vec products take the small-matmul kernel instead of the generic path. |
+| 0013 | Routing bias and an additive norm guard in the fused top-k MoE router. |
+| 0015 | Indexed bias and sinks in the MKL flash-attention path (XMX GEMMs). |
+| 0016 | One pass over the scores in the MKL path's softmax, and all KV heads in one pass of batched GEMMs when their scores fit. |
+| 0017 | A tiled (SLM) copy for `ggml_cont` of transposed f32 matrices. |
+| 0018 | The indexed bias in the DPAS flash-attention decode kernel. |
+| 0019 | SYCL port of #33060: situ, the L2 clip, the short conv with its state store, the depth mix and the loop controller as fused kernels. |
+| 0020 | NVFP4 expert weights reordered into [qs][d] for the MoE mat-vec and the grouped GEMMs. |
+| 0021 | f16 and bf16 decode mat-vecs take 0011's kernel: Inkling's bf16 attention-sink projection. |
+| 0022 | 1024-item work-groups for the decode-size depth mix. |
+| 0023 | SYCL port of the CUDA MoE weighted expert reduction (#25952): the scale, router-weight and sum chain after the down projection in one kernel. |
+| 0024 | The per-expert weight scale of NVFP4's MUL_MAT_ID (RESHAPE, REPEAT, GET_ROWS, MUL) in one kernel. |
+| 0025 | The DPAS decode attention kernel overlaps its K/V loads with compute, and P·V reads each V block once. |
+
+Applied to `98cc730cc`, the series reproduces the llama.cpp branch
+(`4e6a8b1de`) outside `tests/` and `docs/`, and the build id is
+`98cc730cc8f8f798cf83d22c23a072c205b0e510+pec1dd53b7cd6`. The
+`test-backend-ops` cases for the ported fusions, the NVFP4 MoE shapes, the
+Inkling decode shapes and the decode-attention sweep live on that branch
+and are excluded from the patches.
+
+### Speed
+
+Against 0001–0018 (#306), the series decodes 27% faster at a short context
+(37.3 → 47.3 t/s), 29% after 5,904 and 19,644 tokens (34.5 → 44.6 and
+32.4 → 41.9 t/s) and 32% after 59K (27.3 → 36.1 t/s). It prefills 12–14%
+faster up to 20K tokens (852 → 971 t/s at 5,904 tokens, 829 → 925 at
+19,644) and 2% faster at 59K. Against 0001–0017, the release build before
+it (window 29), decode is 41% faster at a short context (33.6 → 47.3 t/s)
+and 2.4 times as fast after 59K (15.2 → 36.1 t/s). 0001–0018 is from window
+32 and the full series from window 34; each step between them was measured
+against its predecessor in one window, below.
+
+Text-only, ctx 196608, q8_0 KV, `-b 2048 -ub 512`, the probes of the
+0018 section. Each window compares builds served one after another on the
+same day.
+
+Window 29, 2026-11-26:
+
+| build | prefill short / 5,904 / 19,644 / 59,042 | decode short / greedy | decode after 5,904 / 19,644 / 59,042 |
+|---|---:|---:|---:|
+| 0001–0017 | 735 / 852 / 830 / 708 t/s | 33.6 / 37.1 t/s | 28.9 / 23.5 / 15.2 t/s |
+| 0001–0018 | 736 / 852 / 829 / 708 t/s | 37.3 / 37.7 t/s | 34.6 / 32.4 / 27.3 t/s |
+| master + 0002–0019 | 801 / 912 / 873 / 704 t/s | 41.9 / 42.2 t/s | 38.1 / 35.4 / 29.2 t/s |
+
+On master, decode rises 12% over 0001–0018 at a short context and 7% after
+59K tokens; prefill rises 5–9% below 20K tokens. Both needles were found
+on all three builds.
+
+Window 30, 2026-11-27: 0020 adds 4–6% prefill (short 777 → 820 t/s, 5,904
+tokens 904 → 949, 19,644 tokens 866 → 906, the 59,042-token fill 696 →
+721). Decode is unchanged at 41.9 / 42.0 t/s, and 29.2 / 29.3 after the
+fill. The reorder lets the grouped GEMMs read the NVFP4 quants with 2-D
+block loads: the MUL_MAT_ID kernel at 512 tokens went from 1,275 to
+1,192 µs. The one-token mat-vec stays at 23.2–23.6 µs.
+
+Window 31, 2026-11-27, 0021 and 0022 on 0002–0020 (env toggles of a
+diagnostic build; the final code takes the last row's path):
+
+| build | decode short | decode greedy | decode after 5,904 |
+|---|---:|---:|---:|
+| 0002–0020 | 42.16 / 42.16 t/s | 42.43 / 42.47 t/s | 38.25 / 38.36 t/s |
+| + 0022 | 42.66 / 43.08 t/s | 43.39 t/s | 38.88 t/s |
+| + 0021 | 43.42 / 43.43 t/s | 43.71 t/s | 39.45 t/s |
+| + 0021 + 0022 | 44.42 / 44.43 t/s | 44.74 / 44.76 t/s | 40.15 / 40.27 t/s |
+
+Prefill stayed at 948 t/s at 5,904 tokens in every row. The decode profile
+before these patches charged 24.6 µs to each of the 48 bf16
+attention-sink projections per token ([2304 × 24], one sub-group per row
+in DMMV); 0021 runs it in 7.6 µs. Each of the 88 depth mixes per token
+was one 256-item work-group on the device, 26 µs per call; 0022 gives it
+1,024 items at decode.
+
+Window 32, 2026-11-27, 0002–0022 against 0001–0018 (#306):
+
+| build | prefill short / 5,904 / 19,644 / 59,042 | decode short / greedy | decode after 5,904 / 19,644 / 59,042 |
+|---|---:|---:|---:|
+| 0001–0018 | 736 / 852 / 829 / 708 t/s | 37.3 / 37.7 t/s | 34.5 / 32.4 / 27.3 t/s |
+| 0002–0022 | 819 / 948 / 904 / 720 t/s | 44.4 / 44.8 t/s | 40.3 / 37.2 / 30.4 t/s |
+
+Decode is 19% faster at a short context, 15% after 19,644 tokens and 11%
+after 59,042. Prefill is 11% faster up to 5,904 tokens, 9% at 19,644 and
+2% at 59,042. A second 0001–0018 server after the others decoded at
+37.32 / 37.33 t/s, so the card did not drift. Both needles were found and
+the tool call was parsed on both builds.
+
+Window 33, 2026-11-27, 0023 and 0024 on 0002–0022, two servers each:
+
+| build | prefill short | prefill 5,904 | decode short | decode greedy | decode after 5,904 |
+|---|---:|---:|---:|---:|---:|
+| 0002–0022 | 814 / 815 t/s | 947.1 / 946.6 t/s | 44.45 / 44.42 t/s | 44.76 / 44.76 t/s | 40.24 / 40.17 t/s |
+| + 0023 + 0024 | 830 / 828 t/s | 970.8 / 969.4 t/s | 46.13 / 46.11 t/s | 46.51 / 46.52 t/s | 41.54 / 41.57 t/s |
+
+The two fusions remove about 530 of some 2,650 kernels per token: decode
+gains 3.8% and prefill 2.5%. After a 59,054-token fill, prefill was 720.0 t/s
+and decode 31.18 t/s (719.6 and 30.39 without them, window 32). The greedy
+answer ends at 360 tokens instead of running to the 400-token limit: the
+fused reduction adds the experts in the same order but without the
+intermediate tensors' rounding, and greedy decoding follows the changed
+logits. The KL divergence below measures how far they moved.
+
+Window 34, 2026-11-27, 0025 on 0002–0024, two servers each:
+
+| build | decode short | decode greedy | after 5,904 | after 19,644 | after 59,054 |
+|---|---:|---:|---:|---:|---:|
+| 0002–0024 | 46.05 / 46.08 t/s | 46.50 / 46.50 t/s | 41.53 / 41.57 t/s | 38.34 / 38.39 t/s | 31.20 t/s |
+| + 0025 | 47.28 / 47.29 t/s | 47.59 / 47.63 t/s | 44.63 / 44.55 t/s | 41.87 / 41.86 t/s | 36.05 t/s |
+
+0025 changes only the decode attention kernel, so the gain grows with the
+context: 2.7% at a short one, 7.4% after 5,904 tokens, 9.2% after 19,644
+and 15.5% after 59,054. The 40 sliding-window layer passes per token run
+the same kernel over about 1,000 keys, which is the short-context gain.
+Prefill did not move (970 / 971 t/s at 5,904 tokens, 924–925 at 19,644,
+721 / 725 in the fill). Both needles were found on both builds. Decode
+after 59K tokens is now 24% below decode at 847 tokens, against 31% before
+0025.
+
+### Accuracy
+
+KL divergence against the logits of master + 0002–0019 (the base), wiki
+text, 512-token chunks, `llama-perplexity --kl-divergence`. The same
+build against its own base gives the noise floor:
+
+| build | ub | chunks | mean KLD | 99.9% KLD | same top token |
+|---|---:|---:|---:|---:|---:|
+| base again (floor) | 512 | 40 | 0.00138 | 0.0570 | 98.35% |
+| + 0020 | 512 | 40 | 0.00132 | 0.0459 | 98.18% |
+| + 0020–0022 | 512 | 40 | 0.00136 | 0.0578 | 98.45% |
+| base again (floor) | 1 | 4 | 0.00217 | 0.0649 | 97.75% |
+| + 0020 | 1 | 4 | 0.00229 | 0.1242 | 97.55% |
+| + 0020–0022 | 1 | 4 | 0.00140 | 0.0330 | 98.04% |
+
+All rows are at the floor. `-ub 1` runs every token through the decode
+kernels, including 0021's: at one token the series lowers the largest
+single KLD from 0.549 to 0.058. 0021 accumulates the bf16 weights in F32.
+
+Window 34 measured 0023–0025 against 0002–0022 with the same method:
+
+| build | KV cache | ub | chunks | mean KLD | 99.9% KLD | same top token |
+|---|---|---:|---:|---:|---:|---:|
+| 0002–0022 again (floor) | f16 | 512 | 40 | 0.00135 | 0.0673 | 98.59% |
+| + 0023 + 0024 | f16 | 512 | 40 | 0.00126 | 0.0499 | 98.55% |
+| + 0023–0025 | f16 | 512 | 40 | 0.00131 | 0.0531 | 98.57% |
+| 0002–0022 again (floor) | f16 | 1 | 4 | 0.00159 | 0.0338 | 97.35% |
+| + 0023 + 0024 | f16 | 1 | 4 | 0.00164 | 0.0365 | 97.84% |
+| 0002–0024 again (floor), base 0002–0024 | q8_0 | 1 | 4 | 0.00211 | 0.2331 | 97.75% |
+| + 0025, base 0002–0024 | q8_0 | 1 | 4 | 0.00186 | 0.0336 | 97.75% |
+
+All rows are at the floor. The decode kernel that 0025 changes handles only
+quantized caches. With an f16 cache, 0002–0025 at `-ub 1` gave results
+bit-identical to 0002–0024. The q8_0 rows (the production cache type,
+against a q8_0 base) run every token through it.
+
+The top-5 logprob probe on the 24.5K-token prompt (window 32, 0002–0022
+against 0001–0018) agreed on the first 11 of 32 tokens and split at the
+twelfth, the near tie that 0018's probe split at. Before the split the
+largest top-5 probability difference was 0.068.
+
+### Vision
+
+Window 31 compared the shipped vision profile (ctx 196608, the F16
+projector on the GPU) on 0001–0017 and on master + 0002–0020, twice
+each:
+
+| build | 4000x3000 image | wall | decode | 1024x1024 image | wall |
+|---|---:|---:|---:|---:|---:|
+| 0001–0017 | 589.0 / 589.4 t/s | 10.3 / 10.3 s | 30.2 t/s | 477.5 / 477.4 t/s | 4.3 / 4.3 s |
+| master + 0002–0020 | 692.6 / 693.0 t/s | 8.6 / 8.6 s | 39.0 t/s | 555.7 / 552.5 t/s | 4.0 / 3.6 s |
+
+Both images were read correctly in every run.
+
+Windows 30 and 32 sent the 4000x3000 image as the first image after a
+59K-token fill and took 18.6–18.8 s on the master pin, against 13.1 s for
+0001–0016 in the same probe. Window 33 separated the first image from the
+fill, on 0002–0022 and 0001–0018, one server each:
+
+| build | first image after start | second image | after a 58,723-token fill | fill prefill / decode |
+|---|---:|---:|---:|---:|
+| 0001–0018 | 444.5 t/s, 12.1 s | 596.7 t/s, 9.7 s | 598.1 t/s, 10.3 s | 655.4 / 27.40 t/s |
+| 0002–0022 | 496.6 t/s, 10.8 s | 703.8 t/s, 8.4 s | 704.3 t/s, 8.9 s | 719.0 / 30.35 t/s |
+
+The fill does not slow an image down. The first image after a server start
+is slow on both builds: it pays the encoder's first kernels and buffers.
+In windows 30 and 32 that first image also came straight after the fill,
+which made it slower still (about 260 t/s). In steady use the master pin
+reads the large image 18% faster than 0001–0018. With the projector loaded
+it also fills 10% faster and decodes 11% faster after the fill.
+VRAM on 0002–0022 was 21.69 GiB after loading, 21.87 GiB after the fill and
+22.28 GiB after the image (21.74, 21.92 and 22.34 GiB on 0001–0016).
+
+### The other Arc models
+
+The pin moves every model to 176 newer upstream commits; the patches that
+are new since 0001–0018 only change kernels on Inkling's path. Window 33 served
+each with its catalog flags on both builds and repeated each request three
+times. The first request of a fresh server compiles that model's kernels
+(SYCL is JIT-compiled here), so the table shows the repeats:
+
+| model | prefill 0001–0018 | prefill 0002–0022 | decode 0001–0018 | decode 0002–0022 |
+|---|---:|---:|---:|---:|
+| Muse Glimmer 30B | 1,056 t/s | 1,056 t/s | 21.76 t/s | 21.76 t/s |
+| Qwen3.8-27B Q5_K_M | 886 t/s | 866 t/s | 18.73 t/s | 19.02 t/s |
+| flint Q3_K_XL | 1,312 t/s | 1,312 t/s | 62.8 t/s | 63.3 t/s |
+| Nemotron 3.5 Bolt (window 32) | 389 t/s | 390 t/s | 28.0 t/s | 28.4 t/s |
+
+Prefill prompts were 7,573–8,342 tokens. Qwen3.8 prefills 2.2% slower and
+decodes 1.5% faster. Upstream changed its gated DeltaNet path in this range
+(#31762 adds an ESIMD kernel; #31669 replays instead of rolling back), and
+the series does not touch it. Glimmer's and Qwen3.8's short answers began
+with the same text on both builds.
+
+0024 is for NVFP4 checkpoints only. flint, a MoE with a q8_0 cache at head
+size 128, gains from 0023's reduction and 0025's attention kernel. Bolt
+runs few attention layers and changed little. Glimmer and Qwen3.8 are
+dense, Glimmer runs an f16 cache and Qwen3.8 has head size 256, so neither
+fusion nor the new kernel runs for them. Windows 33 and 34, repeats only:
+
+| model | build | prefill | decode short | decode after the prefill probe |
+|---|---|---:|---:|---:|
+| flint | 0002–0022 | 1,312 t/s | 63.3 t/s | 54.9 t/s |
+| flint | 0002–0024 | 1,379 t/s | 64.8 t/s | 56.1 t/s |
+| flint | 0002–0025 | 1,379 t/s | 66.6 t/s | 61.1 t/s |
+| Bolt | 0002–0024 | 405 t/s | 29.04 t/s | 28.6 t/s |
+| Bolt | 0002–0025 | 405 t/s | 29.09 t/s | 28.8 t/s |
+
+The first-request cost is the driver compiling kernels on their first use.
+In window 32 the first Qwen3.8 prompt on a never-run binary took 31 s.
+The compute runtime caches compiled kernels across server starts, so the
+same binary started again in window 33 needed 1.2 s. After an update, each
+model's first request compiles once. `SYCL_CACHE_PERSISTENT=1`, SYCL's own
+cache, crashed llama-server at startup (SIGSEGV, twice), so the catalog
+keeps it at 0.
+
+### Tests
+
+`test-backend-ops` on the B60, on the builds of windows 32–34. MUL_MAT_ID
+NVFP4 86/86, MUL_MAT_ID q4_K 114/114, TOPK_MOE 698/698, DEPTH_MIX 22/22,
+SHORT_CONV 70/70, LOOP_CTRL 4/4, L2_CLIP 16/16, SITU 4/4, CONT 91/91,
+SCALE 7/7, SOFT_MAX 215/215, MOE_REDUCE 8/8 and MUL_MAT_FUSION
+1,780/1,780 passed. In FLASH_ATTN_EXT, the q8_0 head-size-128 decode sweep
+passed 394/394, the indexed-bias cases 22/22, the GQA-16 q8_0 cases
+101/101 and q4_0 351/351.
+
+The fused paths ran in these tests: 7 of the 8 MOE_REDUCE cases (the eighth
+uses 16 experts, above the fusion's 15) and 266 MUL_MAT_FUSION cases. With
+P·V switched off in a diagnostic build, 292 of the 298 sweep cases failed,
+so the sweep reaches 0025's kernel.
+
+Two suites fail on this card for reasons outside the series. MUL_MAT_ID
+q8_0 runs out of device memory while production holds 22 GB, and does so
+on 0001–0018 too. The f16 FLASH_ATTN_EXT suite aborts in the tile kernel's
+dispatch on plain upstream master as well.
+
+The `kv_rows` indexed-bias cases are master's multi-sequence attention;
+SYCL reports them unsupported, and llama.cpp falls back to the dense mask.
+
+### What did not help
+
+- Two or four rows per sub-group in the reordered NVFP4 MoE mat-vec, for
+  fewer launches and shared activations: gate_up went from 79.9 to
+  81.9 µs (two rows) and 82.9 µs (four), and decode from 42.2 to 41.7 and
+  41.5 t/s. One row per sub-group stays.
+- More rows per work-group in the MoE mat-vec (2, 4 and 8 sub-groups):
+  79.8–81.1 µs against 79.8 µs at one, so occupancy does not limit it.
+- For the decode attention kernel: 128-key tiles (1,164–1,358 µs at 65,536
+  keys against 854 µs for 0025's kernel in the same diagnostic build),
+  issuing all of a tile's staging loads before its SLM stores (1,453 against
+  1,310 µs), and an extra L1 prefetch of the next K (neutral). Dropping the
+  old kernel's L1 prefetches made it slower (2,063 against 1,433 µs). The
+  prefetches were doing what 0025's early loads now do.
+
+### Remaining decode costs
+
+The profile before 0021 and 0022 ran about 2,650 kernels per token, and
+0023 and 0024 remove about 530 of them. The NVFP4 MoE mat-vecs are the
+largest share, 16.5%, at about half of the card's 456 GB/s. The q8_0 output
+projection runs at 424 GB/s and has no headroom. After 0025 the decode
+attention kernel reaches 160 GB/s at 65,536 keys, so long-context decode
+still has room there.

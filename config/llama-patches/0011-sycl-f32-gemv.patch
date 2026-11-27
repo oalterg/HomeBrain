@@ -3,21 +3,20 @@ sycl: decode-size f32 GEMVs take the small-matmul kernel
 HomeBrain patch on ggml-sycl. Applies on top of 0010.
 Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
 
-At decode, Inkling multiplies f32 weights by a single token 384 times per token:
-loop control (ctrl_down, ctrl_gain and ctrl_forget for q, k, v and ffn), the MoE
-router and the relative-bias table. The generic MUL_MAT path spent 15-19 us of
-host time on each, where a plain parallel_for costs about 5 us. Decode on the B60
-is bound by host dispatch: the main thread runs at 100% while the GPU waits.
-A 2-D f32 product with at most 32 columns and at most 2^20 MACs now takes 0004's
-small-matmul kernel. With K >= 64 and 16-byte aligned rows, a work-group per
-output splits K across float4 loads. Hadamard-hinted products keep their
-transform.
+At decode Inkling multiplies small f32 matrices by one token many times per
+token: the MoE router [2304 x 128], the relative-bias table and the K/V
+rotation matrices (the loop controller's are fused by 0019). The generic
+MUL_MAT path spent 15-19 us of host time on each, where a plain parallel_for
+costs about 5 us. A 2-D f32 product with at most 32 columns and at most
+2^20 MACs now takes 0004's small-matmul kernel. With K >= 64 and 16-byte
+aligned rows, a work-group per output splits K across float4 loads.
+Hadamard-hinted products keep their transform.
 
 diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 523d3aa1c..5cbaf7563 100644
+index 58cf7be81..9c6f72a9c 100644
 --- a/ggml/src/ggml-sycl/ggml-sycl.cpp
 +++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
-@@ -5191,7 +5191,9 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
+@@ -5194,7 +5194,9 @@ static bool can_use_mul_mat_q(const ggml_tensor * src0, const ggml_tensor * src1
  
  // Many independent tiny products dst[:, :, b] = src0[:, :, b]^T src1[:, :, b] (f32), e.g. Inkling 2's
  // per-token attention over earlier block outputs. The generic path issues one GEMM per batch, which
@@ -28,7 +27,7 @@ index 523d3aa1c..5cbaf7563 100644
  static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
                                                  const ggml_tensor * src1, ggml_tensor * dst) {
      if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
-@@ -5199,7 +5201,11 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
+@@ -5202,7 +5204,11 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
      }
      const int64_t K = src0->ne[0], M = src0->ne[1], N = src1->ne[1];
      const int64_t B2 = src1->ne[2], B3 = src1->ne[3];
@@ -41,7 +40,7 @@ index 523d3aa1c..5cbaf7563 100644
          return false;
      }
      if (B2 % src0->ne[2] != 0 || B3 % src0->ne[3] != 0) {
-@@ -5215,6 +5221,31 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
+@@ -5218,6 +5224,31 @@ static bool ggml_sycl_mul_mat_small_batched_f32(ggml_backend_sycl_context & ctx,
      const int64_t n_out = M * N * B2 * B3;
      queue_ptr stream = ctx.stream();
  

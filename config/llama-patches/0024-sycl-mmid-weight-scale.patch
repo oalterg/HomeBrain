@@ -1,0 +1,174 @@
+sycl: apply the per-expert weight scale of MUL_MAT_ID in one kernel
+
+HomeBrain patch on ggml-sycl. Applies on top of 0023.
+Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
+
+NVFP4 checkpoints carry one weight scale per expert. llama.cpp applies it
+after each MUL_MAT_ID as a RESHAPE, a REPEAT, a GET_ROWS by the expert ids
+and a MUL: four nodes, three kernels, per projection. The chain (the shape
+CUDA matches in ggml_cuda_get_mul_mat_id_scale) now runs as one kernel after
+the MUL_MAT_ID that reads the scale by the id directly. graph_optimize keeps
+the ids allocated until the MUL; 0023 then matches the reduction at the
+second MUL. Inkling scales both expert projections (gate_up and down) of
+its 44 MoE passes per token: 88 chains, 176 fewer kernels per token.
+test-backend-ops covers it in MUL_MAT_FUSION.
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index c77fe7a5c..8978e75bf 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -91,6 +91,7 @@
+ #include "ggml-sycl/solve_tri.hpp"
+ #include "ggml-sycl/gated_delta_net.hpp"
+ #include "ggml-sycl/moe-weighted-reduction.hpp"
++#include "ggml-sycl/mmid-scale.hpp"
+ #include "ggml-sycl/pool.hpp"
+ #include "ggml-sycl/cross_entropy_loss.hpp"
+ 
+@@ -6969,6 +6970,27 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+             }
+         }
+ 
++        // MUL_MAT_ID with one weight scale per expert: the product as usual, then one kernel applies the scales by the ids,
++        // in place of REPEAT, GET_ROWS and MUL
++        if (node->op == GGML_OP_MUL_MAT_ID && g_ggml_sycl_enable_fusion) {
++            if (const ggml_tensor * scale = ggml_sycl_match_mul_mat_id_scale(cgraph, i)) {
++                ggml_tensor *       mul      = cgraph->nodes[i + 4];
++                const ggml_tensor * ids      = node->src[2];
++                auto                overlaps = [](const ggml_tensor * a, const ggml_tensor * b) {
++                    const char * a0 = (const char *) a->data;
++                    const char * b0 = (const char *) b->data;
++                    return a0 < b0 + ggml_nbytes(b) && b0 < a0 + ggml_nbytes(a);
++                };
++                if (!overlaps(mul, ids) && (mul->data == node->data || !overlaps(mul, node))) {
++                    if (!ggml_sycl_compute_forward(*sycl_ctx, node)) {
++                        GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
++                    }
++                    ggml_sycl_op_mul_mat_id_scale(*sycl_ctx, node, scale, mul);
++                    i += 4;
++                    continue;
++                }
++            }
++        }
+         const int nodes_to_skip = ggml_sycl_fuse(*sycl_ctx, cgraph, i);
+         if (nodes_to_skip != 0) {
+             i += nodes_to_skip;
+@@ -7460,7 +7482,9 @@ static void ggml_backend_sycl_graph_optimize(ggml_backend_t backend, ggml_cgraph
+         if (cgraph->nodes[i]->op != GGML_OP_MUL || !ggml_sycl_match_moe_weighted_reduction(cgraph, i, match)) {
+             continue;
+         }
+-        for (const ggml_tensor * t : { match.experts, match.weights, match.expert_scale }) {
++        // with the expert scale fused into the MUL_MAT_ID below, the reduction starts at the second MUL and reads the first
++        const ggml_tensor * scaled = match.expert_scale ? cgraph->nodes[i] : nullptr;
++        for (const ggml_tensor * t : { match.experts, match.weights, match.expert_scale, scaled }) {
+             if (t != nullptr) {
+                 ggml_tensor * keep = const_cast<ggml_tensor *>(t->view_src ? t->view_src : t);
+                 params->add_alloc_dep(params->user_data, keep, match.dst);
+@@ -7468,6 +7492,14 @@ static void ggml_backend_sycl_graph_optimize(ggml_backend_t backend, ggml_cgraph
+         }
+         i += match.node_count - 1;
+     }
++    // the fused MUL_MAT_ID weight scale reads the ids at its MUL, after the GET_ROWS that last used them
++    for (int i = 0; g_ggml_sycl_enable_fusion && i < cgraph->n_nodes; ++i) {
++        if (cgraph->nodes[i]->op == GGML_OP_MUL_MAT_ID && ggml_sycl_match_mul_mat_id_scale(cgraph, i)) {
++            ggml_tensor * ids = cgraph->nodes[i]->src[2];
++            params->add_alloc_dep(params->user_data, ids->view_src ? ids->view_src : ids, cgraph->nodes[i + 4]);
++            i += 4;
++        }
++    }
+     for (int i = 0; i < cgraph->n_nodes; ++i) {
+         ggml_sycl_conv_window_match match;
+         if (cgraph->nodes[i]->op != GGML_OP_CONCAT || !ggml_sycl_match_conv_window(cgraph, i, match)) {
+diff --git a/ggml/src/ggml-sycl/mmid-scale.cpp b/ggml/src/ggml-sycl/mmid-scale.cpp
+new file mode 100644
+index 000000000..fd10b2bba
+--- /dev/null
++++ b/ggml/src/ggml-sycl/mmid-scale.cpp
+@@ -0,0 +1,67 @@
++#include "mmid-scale.hpp"
++
++#include "ggml-impl.h"
++
++const ggml_tensor * ggml_sycl_match_mul_mat_id_scale(const ggml_cgraph * cgraph, int node_idx) {
++    if (node_idx + 4 >= cgraph->n_nodes) {
++        return nullptr;
++    }
++    const ggml_tensor * mm      = cgraph->nodes[node_idx];
++    const ggml_tensor * reshape = cgraph->nodes[node_idx + 1];
++    const ggml_tensor * repeat  = cgraph->nodes[node_idx + 2];
++    const ggml_tensor * getrows = cgraph->nodes[node_idx + 3];
++    const ggml_tensor * mul     = cgraph->nodes[node_idx + 4];
++    if (mm->op != GGML_OP_MUL_MAT_ID || reshape->op != GGML_OP_RESHAPE || repeat->op != GGML_OP_REPEAT ||
++        getrows->op != GGML_OP_GET_ROWS || mul->op != GGML_OP_MUL) {
++        return nullptr;
++    }
++    // the chain of ggml_cuda_get_mul_mat_id_scale
++    if (repeat->src[0] != reshape || getrows->src[0] != repeat || getrows->src[1] != mm->src[2]) {
++        return nullptr;
++    }
++    if (!((mul->src[0] == mm && mul->src[1] == getrows) || (mul->src[0] == getrows && mul->src[1] == mm))) {
++        return nullptr;
++    }
++    const ggml_tensor * scale = reshape->src[0];
++    const ggml_tensor * ids   = mm->src[2];
++    if (scale == nullptr || scale->type != GGML_TYPE_F32 || !ggml_is_contiguous(scale) ||
++        ggml_nelements(scale) != mm->src[0]->ne[2] || mm->type != GGML_TYPE_F32 || mul->type != GGML_TYPE_F32 ||
++        !ggml_is_contiguous(mm) || !ggml_is_contiguous(mul) || !ggml_are_same_shape(mul, mm) || mm->ne[3] != 1 ||
++        ids->type != GGML_TYPE_I32 || ids->ne[0] != mm->ne[1] || ids->ne[1] != mm->ne[2]) {
++        return nullptr;
++    }
++    const ggml_op ops[5]  = { GGML_OP_MUL_MAT_ID, GGML_OP_RESHAPE, GGML_OP_REPEAT, GGML_OP_GET_ROWS, GGML_OP_MUL };
++    const int     out_idx = node_idx + 4;
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx, 5, ops, &out_idx, 1)) {
++        return nullptr;
++    }
++    return scale;
++}
++
++void ggml_sycl_op_mul_mat_id_scale(ggml_backend_sycl_context & ctx, const ggml_tensor * mm, const ggml_tensor * scale,
++                                   ggml_tensor * dst) {
++    const ggml_tensor * ids      = mm->src[2];
++    const int64_t       ne0      = mm->ne[0];
++    const int64_t       ne1      = mm->ne[1];
++    const int64_t       n        = ggml_nelements(mm);
++    const uint32_t      n_expert = (uint32_t) ggml_nelements(scale);
++    const size_t        ib0      = ids->nb[0];
++    const size_t        ib1      = ids->nb[1];
++    const float *       x        = (const float *) mm->data;
++    const float *       s        = (const float *) scale->data;
++    const char *        id       = (const char *) ids->data;
++    float *             d        = (float *) dst->data;
++
++    GGML_SYCL_DEBUG("[SYCL] fused mul_mat_id weight scale\n");
++    constexpr int WG = 256;
++    ctx.stream()->parallel_for(sycl::nd_range<1>(sycl::range<1>(((n + WG - 1) / WG) * WG), sycl::range<1>(WG)),
++                               [=](sycl::nd_item<1> it) {
++                                   const int64_t g = it.get_global_id(0);
++                                   if (g >= n) {
++                                       return;
++                                   }
++                                   const int64_t r = g / ne0;  // (slot, token)
++                                   const int32_t k = *(const int32_t *) (id + (r % ne1) * ib0 + (r / ne1) * ib1);
++                                   d[g]            = x[g] * ((uint32_t) k < n_expert ? s[k] : 0.0f);
++                               });
++}
+diff --git a/ggml/src/ggml-sycl/mmid-scale.hpp b/ggml/src/ggml-sycl/mmid-scale.hpp
+new file mode 100644
+index 000000000..d9e1f3bec
+--- /dev/null
++++ b/ggml/src/ggml-sycl/mmid-scale.hpp
+@@ -0,0 +1,14 @@
++#ifndef GGML_SYCL_MMID_SCALE_HPP
++#define GGML_SYCL_MMID_SCALE_HPP
++
++#include "common.hpp"
++
++// MUL_MAT_ID with one weight scale per expert (NVFP4 checkpoints): RESHAPE, REPEAT and GET_ROWS (by the ids) of the
++// scales, then the MUL. Returns the scales when the 5 nodes at node_idx have that form and may be fused, else null.
++const ggml_tensor * ggml_sycl_match_mul_mat_id_scale(const ggml_cgraph * cgraph, int node_idx);
++
++// dst = mm * scale[ids]: the MUL of the chain, reading the scales by the ids directly
++void ggml_sycl_op_mul_mat_id_scale(ggml_backend_sycl_context & ctx, const ggml_tensor * mm, const ggml_tensor * scale,
++                                   ggml_tensor * dst);
++
++#endif  // GGML_SYCL_MMID_SCALE_HPP

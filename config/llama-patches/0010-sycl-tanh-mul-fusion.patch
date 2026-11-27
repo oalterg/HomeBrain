@@ -1,15 +1,17 @@
 sycl: TANH in the fused unary + mul kernel
 
-HomeBrain patch on ggml-sycl. Applies on top of 0009.
+HomeBrain patch on ggml-sycl. Applies on top of 0005.
 Upstream tracking: https://github.com/ggml-org/llama.cpp/issues/32757
 
 control() gates each looped layer input with tanh(forget) * cur and
-tanh(gain) * message: two TANH + MUL pairs per call, 192 per decode token.
-The unary + mul and add + unary + mul fusions already take any single-element
-activation the dispatcher lists; TANH joins SILU, SIGMOID and SOFTPLUS there.
+tanh(gain) * message: two TANH + MUL pairs per call. 0019 fuses the whole
+loop controller for up to 8 tokens; prefill batches still run these pairs.
+The unary + mul and add + unary + mul fusions already take any
+single-element activation the dispatcher lists; TANH joins SILU, SIGMOID
+and SOFTPLUS there.
 
 diff --git a/ggml/src/ggml-sycl/element_wise.cpp b/ggml/src/ggml-sycl/element_wise.cpp
-index 882ab62b2..8e1c1b23e 100644
+index 247590f7c..ea8135ee5 100644
 --- a/ggml/src/ggml-sycl/element_wise.cpp
 +++ b/ggml/src/ggml-sycl/element_wise.cpp
 @@ -1019,6 +1019,7 @@ static void dispatch_fused_unary_op(ggml_unary_op uop, F && launch) {
@@ -21,10 +23,10 @@ index 882ab62b2..8e1c1b23e 100644
              GGML_ABORT("fused unary chain: unsupported unary op %s", ggml_unary_op_name(uop));
      }
 diff --git a/ggml/src/ggml-sycl/fusion.cpp b/ggml/src/ggml-sycl/fusion.cpp
-index c56ef198c..172b614d5 100644
+index 9ea6af6b0..8b002074d 100644
 --- a/ggml/src/ggml-sycl/fusion.cpp
 +++ b/ggml/src/ggml-sycl/fusion.cpp
-@@ -86,7 +86,7 @@ static bool ggml_sycl_should_fuse_mul_mat_glu(const ggml_tensor * gate, const gg
+@@ -85,7 +85,7 @@ static bool ggml_sycl_should_fuse_mul_mat_glu(const ggml_tensor * gate, const gg
  // the unary ops the fused unary chains in element_wise.cpp have a functor for
  static bool ggml_sycl_fused_unary_has_kernel(ggml_unary_op unary_op) {
      return unary_op == GGML_UNARY_OP_SILU || unary_op == GGML_UNARY_OP_SIGMOID ||

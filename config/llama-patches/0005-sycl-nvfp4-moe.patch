@@ -1,0 +1,267 @@
+sycl: NVFP4 in the grouped MoE GEMMs, and UE4M3 / E2M1 decoding from bits
+
+HomeBrain patch on ggml-sycl. Applies on top of 0004.
+Upstream PR: https://github.com/ggml-org/llama.cpp/pull/32981 (this patch is its commit)
+
+The former 0005, 0009 and 0014 in one patch, as submitted upstream. Prefill
+MUL_MAT_ID with NVFP4 experts takes the XMX joint_matrix and the ESIMD
+grouped GEMMs instead of the per-expert loop, and the MoE mat-vec decodes
+the UE4M3 scales and E2M1 codes from bits instead of pow() and table
+lookups. B60, 128 experts top-8, test-backend-ops perf: 82.7 -> 23.4 us at
+1 token, 4630 -> 1278 us at 512.
+
+diff --git a/ggml/src/ggml-sycl/common.hpp b/ggml/src/ggml-sycl/common.hpp
+index f9b7a2821..4c2ed8384 100644
+--- a/ggml/src/ggml-sycl/common.hpp
++++ b/ggml/src/ggml-sycl/common.hpp
+@@ -98,6 +98,7 @@ enum ggml_sycl_xmx_gather_type {
+     GGML_SYCL_XMX_GATHER_Q6_K     = 1 << 12,
+     GGML_SYCL_XMX_GATHER_Q2_K     = 1 << 13,
+     GGML_SYCL_XMX_GATHER_Q3_K     = 1 << 14,
++    GGML_SYCL_XMX_GATHER_NVFP4    = 1 << 15,
+ };
+ static constexpr int GGML_SYCL_XMX_GATHER_TYPES_DEFAULT = ~0;
+ extern int g_ggml_sycl_xmx_gather_types;
+@@ -1194,15 +1195,13 @@ static __dpct_inline__ float ggml_sycl_ue4m3_to_fp32(uint8_t x) {
+     if (x == 0 || x == 0x7F) {
+         return 0.0f;
+     }
+-    const int exp = (x >> 3) & 0xF;
+-    const int man = x & 0x7;
+-    float raw;
++    // built from bits since pow() is slow here; the * 0.5f that halves the doubled e2m1 values of kvalues_mxfp4 is folded in
++    const uint32_t exp = (x >> 3) & 0xF;
++    const uint32_t man = x & 0x7;
+     if (exp == 0) {
+-        raw = man * (1.0f / 8.0f) * sycl::pow(2.0f, -6.0f);
+-    } else {
+-        raw = (1.0f + man / 8.0f) * sycl::pow(2.0f, (float) exp - 7.0f);
++        return (float) man * (1.0f / 1024.0f);
+     }
+-    return raw * 0.5f;
++    return sycl::bit_cast<float>(((exp + 119u) << 23) | (man << 20));
+ }
+ 
+ #endif // GGML_SYCL_COMMON_HPP
+diff --git a/ggml/src/ggml-sycl/fused-gemm-esimd.cpp b/ggml/src/ggml-sycl/fused-gemm-esimd.cpp
+index 37f87e377..2452a2595 100644
+--- a/ggml/src/ggml-sycl/fused-gemm-esimd.cpp
++++ b/ggml/src/ggml-sycl/fused-gemm-esimd.cpp
+@@ -180,20 +180,20 @@ ESIMD_INLINE simd<sycl::half, GROUPED_GEMM_RC * 16> scale_half(simd<float, GROUP
+     return v;
+ }
+ 
+-// The iq4 codebook by byte, in SLM: entry b holds the values of its low and its high nibble as the
++// A 4-bit codebook kv (iq4_nl by default) by byte, in SLM: entry b holds the values of its low and its high nibble as the
+ // two 16-bit halves of one dword, as T (half, or int16 for an f32 product). A read-only table every
+ // lane indexes, which is what SLM is for: register-indirect iselect() over the same lanes cost
+ // 7.3 of 12.7 ms, a 16-entry SLM table per nibble about 0.4.
+-template <typename T> ESIMD_INLINE void iq4_pair_table_to_slm() {
++template <typename T> ESIMD_INLINE void iq4_pair_table_to_slm(const int8_t * kv = kvalues_iq4nl) {
+     static_assert(sizeof(T) == 2, "two values a dword");
+     simd<uint32_t, 16> lo;
+ #pragma unroll
+     for (int i = 0; i < 16; ++i) {
+-        lo[i] = sycl::bit_cast<uint16_t>((T) kvalues_iq4nl[i]);
++        lo[i] = sycl::bit_cast<uint16_t>((T) kv[i]);
+     }
+ #pragma unroll
+     for (int hi = 0; hi < 16; ++hi) {
+-        slm_block_store<uint32_t, 16>(hi * 64, lo | ((uint32_t) sycl::bit_cast<uint16_t>((T) kvalues_iq4nl[hi]) << 16));
++        slm_block_store<uint32_t, 16>(hi * 64, lo | ((uint32_t) sycl::bit_cast<uint16_t>((T) kv[hi]) << 16));
+     }
+ }
+ 
+@@ -824,6 +824,67 @@ template <int MR> struct grouped_gemm_esimd_a<block_iq3_xxs, MR> {
+     }
+ };
+ 
++// [d 4][qs 32] per 64 values: 4 sub-blocks of 16 values, each with a UE4M3 scale. k step j of a block is sub-blocks 2j and 2j + 1, one per k half.
++// In a sub-block, the low nibbles of its 8 qs bytes are values 0..7 and the high nibbles values 8..15. Canonical layout only: nvfp4 has no reorder.
++template <int MR> struct grouped_gemm_esimd_a<block_nvfp4, MR> {
++    static constexpr bool supported = true;
++    static constexpr int  qk        = QK_NVFP4;
++    static constexpr bool whole     = false;
++    static constexpr int  slm_bytes = 256 * sizeof(uint32_t);
++
++    static ESIMD_INLINE void init_slm() { grouped_gemm_esimd::iq4_pair_table_to_slm<sycl::half>(kvalues_mxfp4); }
++    struct raw {
++        grouped_gemm_esimd::simd<uint32_t, MR * 4> q;
++        grouped_gemm_esimd::simd<sycl::half, MR>   d0, d1;
++    };
++    struct sb_t {
++        grouped_gemm_esimd::simd<uint32_t, MR> d;  // the 4 scale bytes
++    };
++
++    static constexpr grouped_gemm_esimd::field D = { 0, 4, 0 }, QS = { 4, QK_NVFP4 / 2, 4 };
++    static bool ok(const int K, const bool aos) { return aos && K % qk == 0; }
++
++    // ggml_sycl_ue4m3_to_fp32 per lane; every scale (4 significant bits, 2^-10 to 224) is exact in half
++    static ESIMD_INLINE grouped_gemm_esimd::simd<sycl::half, MR> scale(grouped_gemm_esimd::simd<uint32_t, MR> x) {
++        using namespace grouped_gemm_esimd;
++        const simd<uint32_t, MR> e = (x >> 3) & 0xF, m = x & 0x7;
++        simd<uint32_t, MR>       b = ((e + 119u) << 23) | (m << 20);
++        simd<float, MR>          f = b.template bit_cast_view<float>();
++        f.merge(simd<float, MR>(m) * (1.0f / 1024.0f), e == 0u);
++        f.merge(simd<float, MR>(0.0f), x == 0x7Fu);
++        return f;
++    }
++    template <typename Sl> static ESIMD_INLINE void load_sb(sb_t & sb, const Sl & s, const int ib) {
++        sb.d = s.u32(D, ib, 0);
++    }
++    template <typename Sl> static ESIMD_INLINE void load(raw & r, sb_t & sb, const Sl & s, const int kb, const int j) {
++        using namespace grouped_gemm_esimd;
++        r.q  = s.template rows<4>(QS, kb / 2, 16 * j);
++        r.d0 = scale(byte_of(sb.d, 2 * j));
++        r.d1 = scale(byte_of(sb.d, 2 * j + 1));
++    }
++    // a code (at most 2 significant bits) times a scale (4) is exact in half, as in the joint_matrix stage
++    template <int g> static ESIMD_INLINE grouped_gemm_esimd::a_halves decode(raw & r) {
++        using namespace grouped_gemm_esimd;
++        constexpr int RC = GROUPED_GEMM_RC;
++        // 16 qs bytes per row, 8 per sub-block; each byte gives the pair (value j, value 8 + j) from the table
++        simd<uint32_t, RC * 16> off = r.q.template select<RC * 4, 1>(g * RC * 4).template bit_cast_view<uint8_t>();
++        simd<uint32_t, RC * 16> pr  = slm_gather<uint32_t, RC * 16>(off * 4);
++        auto                    pm  = pr.template bit_cast_view<sycl::half, RC, 32>();
++        a_halves                v;
++        auto                    vm  = v.template bit_cast_view<sycl::half, 2 * RC, 16>();  // [k half, row][16 k]
++#pragma unroll
++        for (int h = 0; h < 2; ++h) {
++            vm.template select<RC, 1, 8, 1>(h * RC, 0) = pm.template select<RC, 1, 8, 2>(0, 16 * h);
++            vm.template select<RC, 1, 8, 1>(h * RC, 8) = pm.template select<RC, 1, 8, 2>(0, 16 * h + 1);
++        }
++        simd<sycl::half, RC> d0 = r.d0.template select<RC, 1>(g * RC), d1 = r.d1.template select<RC, 1>(g * RC);
++        v.template select<RC * 16, 1>(0) *= d0.template replicate_vs_w_hs<RC, 1, 16, 0>(0);
++        v.template select<RC * 16, 1>(RC * 16) *= d1.template replicate_vs_w_hs<RC, 1, 16, 0>(0);
++        return v;
++    }
++};
++
+ // T is the dpas operand type, sycl::half or bfloat16: the type B is packed in. A is decoded in half
+ // either way and converted for bf16 (see the double rounding note at the conversion). AOS: the weight
+ // is in the canonical block layout rather than the reorder (SoA) one. A: the grouped_gemm_arch built for.
+@@ -1158,3 +1219,4 @@ GROUPED_GEMM_ESIMD_INSTANCE(block_q2_K)
+ GROUPED_GEMM_ESIMD_INSTANCE(block_q6_K)
+ GROUPED_GEMM_ESIMD_INSTANCE(block_q5_K)
+ GROUPED_GEMM_ESIMD_INSTANCE(block_q4_K)
++GROUPED_GEMM_ESIMD_INSTANCE(block_nvfp4)
+diff --git a/ggml/src/ggml-sycl/fused-gemm-esimd.hpp b/ggml/src/ggml-sycl/fused-gemm-esimd.hpp
+index 029d19480..1b6f41bee 100644
+--- a/ggml/src/ggml-sycl/fused-gemm-esimd.hpp
++++ b/ggml/src/ggml-sycl/fused-gemm-esimd.hpp
+@@ -19,7 +19,8 @@ constexpr bool ggml_sycl_grouped_gemm_esimd_has = std::is_same_v<block_q_t, bloc
+                                                   std::is_same_v<block_q_t, block_q3_K> ||
+                                                   std::is_same_v<block_q_t, block_q4_K> ||
+                                                   std::is_same_v<block_q_t, block_q5_K> ||
+-                                                  std::is_same_v<block_q_t, block_q6_K>;
++                                                  std::is_same_v<block_q_t, block_q6_K> ||
++                                                  std::is_same_v<block_q_t, block_nvfp4>;
+ 
+ template <typename block_q_t, typename T, int NW>
+ bool ggml_sycl_grouped_gemm_esimd(const char * src0_dd, size_t expert_stride, const ggml_sycl_grouped_gemm_tile * tiles,
+diff --git a/ggml/src/ggml-sycl/fused-gemm.cpp b/ggml/src/ggml-sycl/fused-gemm.cpp
+index 89096d561..a47d877e1 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.cpp
++++ b/ggml/src/ggml-sycl/fused-gemm.cpp
+@@ -1,6 +1,7 @@
+ #include "fused-gemm.hpp"
+ #include "fused-gemm-esimd.hpp"
+ #include "quants.hpp"
++#include "vecdotq.hpp"
+ 
+ #include <sycl/ext/oneapi/matrix/matrix.hpp>
+ 
+@@ -404,6 +405,7 @@ template <> struct fg_block_traits<block_q3_K>    { static constexpr int qk = QK
+ template <> struct fg_block_traits<block_q4_K>    { static constexpr int qk = QK_K; };
+ template <> struct fg_block_traits<block_q5_K>    { static constexpr int qk = QK_K; };
+ template <> struct fg_block_traits<block_q6_K>    { static constexpr int qk = QK_K; };
++template <> struct fg_block_traits<block_nvfp4>   { static constexpr int qk = QK_NVFP4; };
+ 
+ // The A stages below are the dequantize_block_iq* kernels rewritten for one k step. There a
+ // work-item handled one quarter (il) of one 32-wide sub-block (ib); here one lane produces the
+@@ -725,6 +727,30 @@ static __dpct_inline__ void fg_stage_a(const block_q6_K * __restrict__ xrow, con
+     fg_decode_q6_K<E>(blk->ql, blk->qh, blk->scales, (float) blk->d, ib, a);
+ }
+ 
++// nvfp4: 4 sub-blocks of 16 values per 64-value block, each with a UE4M3 scale. k step kb is sub-blocks 2 * (kb % 2) and 2 * (kb % 2) + 1 of block kb / 2.
++// In a sub-block, the low nibbles of its 8 qs bytes are values 0..7 and the high nibbles values 8..15.
++template <typename E>
++static __dpct_inline__ void fg_stage_a(const block_nvfp4 * __restrict__ xrow, const int kb, typename E::pair * a) {
++    const block_nvfp4 * blk = xrow + kb / 2;
++#pragma unroll
++    for (int ls = 0; ls < 2; ++ls) {
++        const int   s = 2 * (kb % 2) + ls;
++        const float d = ggml_sycl_ue4m3_to_fp32(blk->d[s]);
++        // two words of 4 qs bytes each, decoded 4 codes at a time
++#pragma unroll
++        for (int w = 0; w < 2; ++w) {
++            const uint32_t q  = get_int_b4(blk->qs, s * 2 + w);
++            const uint32_t lo = mxfp4_codes_to_int8(q & 0x0f0f0f0fu);
++            const uint32_t hi = mxfp4_codes_to_int8((q >> 4) & 0x0f0f0f0fu);
++#pragma unroll
++            for (int h = 0; h < 2; ++h) {
++                a[8 * ls + 2 * w + h]     = E::make(d * (int8_t) (lo >> 16 * h), d * (int8_t) (lo >> (16 * h + 8)));
++                a[8 * ls + 4 + 2 * w + h] = E::make(d * (int8_t) (hi >> 16 * h), d * (int8_t) (hi >> (16 * h + 8)));
++            }
++        }
++    }
++}
++
+ // Reorder (SoA) layout: each block field is one stream over the nblocks of the matrix (of the expert
+ // slice for MUL_MAT_ID), in the order reorder_qw() writes them. Block ib holds k step kb.
+ template <typename block_q_t> struct fg_soa {
+@@ -1062,7 +1088,7 @@ static void grouped_gemm_pack_b(const float * y, typename S::tsb * packed, const
+ template <typename T> static constexpr bool fg_plain_ok() {
+     return !std::is_same_v<T, block_q8_0> && !std::is_same_v<T, block_q2_K> && !std::is_same_v<T, block_q3_K> &&
+            !std::is_same_v<T, block_q4_K> && !std::is_same_v<T, block_q5_K> &&
+-           !std::is_same_v<T, block_q6_K>;
++           !std::is_same_v<T, block_q6_K> && !std::is_same_v<T, block_nvfp4>;
+ }
+ 
+ template <typename T, bool R> struct fg_tag {
+@@ -1100,6 +1126,7 @@ template <typename F> static bool fg_visit_type(ggml_type type, bool reordered,
+         case GGML_TYPE_Q4_K:    return fg_visit_layout<block_q4_K>(reordered, f);
+         case GGML_TYPE_Q5_K:    return fg_visit_layout<block_q5_K>(reordered, f);
+         case GGML_TYPE_Q6_K:    return fg_visit_layout<block_q6_K>(reordered, f);
++        case GGML_TYPE_NVFP4:   return fg_visit_layout<block_nvfp4>(reordered, f);
+         default:                return false;
+     }
+ }
+diff --git a/ggml/src/ggml-sycl/fused-gemm.hpp b/ggml/src/ggml-sycl/fused-gemm.hpp
+index e65e98fc8..edc54ec40 100644
+--- a/ggml/src/ggml-sycl/fused-gemm.hpp
++++ b/ggml/src/ggml-sycl/fused-gemm.hpp
+@@ -53,6 +53,10 @@ constexpr bool ggml_sycl_fused_dequant_gemm_type_ok(ggml_type src0_type, int64_t
+     if (src0_type == GGML_TYPE_IQ4_NL || src0_type == GGML_TYPE_Q8_0) {
+         return K % 32 == 0;
+     }
++    // nvfp4 stores 64 values per block, walked in two steps of 32
++    if (src0_type == GGML_TYPE_NVFP4) {
++        return K % 64 == 0;
++    }
+     const bool superblock =
+            src0_type == GGML_TYPE_Q2_K ||
+            src0_type == GGML_TYPE_Q3_K ||
+@@ -103,6 +107,7 @@ inline bool ggml_sycl_xmx_gather_type_enabled(ggml_type src0_type) {
+         case GGML_TYPE_Q4_K:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q4_K    ) != 0;
+         case GGML_TYPE_Q5_K:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q5_K    ) != 0;
+         case GGML_TYPE_Q6_K:    return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_Q6_K    ) != 0;
++        case GGML_TYPE_NVFP4:   return (g_ggml_sycl_xmx_gather_types & GGML_SYCL_XMX_GATHER_NVFP4   ) != 0;
+         default:          return false;
+     }
+ }
+diff --git a/ggml/src/ggml-sycl/vecdotq.hpp b/ggml/src/ggml-sycl/vecdotq.hpp
+index f2f34667a..2da7e25cc 100644
+--- a/ggml/src/ggml-sycl/vecdotq.hpp
++++ b/ggml/src/ggml-sycl/vecdotq.hpp
+@@ -1212,8 +1212,8 @@ static __dpct_inline__ float vec_dot_nvfp4_q8_1(const void * __restrict__ vbq,
+         const int32_t iqs0 = iqs + 2*i;
+         const int32_t iqs1 = iqs0 + 1;
+         const int32_t is = iqs0 >> 1;
+-        const sycl::int2   v0   = get_int_from_table_16(get_int_b4(bq4->qs, iqs0), kvalues_mxfp4);
+-        const sycl::int2   v1   = get_int_from_table_16(get_int_b4(bq4->qs, iqs1), kvalues_mxfp4);
++        const sycl::int2   v0   = get_int_from_mxfp4(get_int_b4(bq4->qs, iqs0));
++        const sycl::int2   v1   = get_int_from_mxfp4(get_int_b4(bq4->qs, iqs1));
+         const block_q8_1 * bq8 = bq8_1 + (is >> 1);
+         const int32_t i8 = ((is & 1) << 2);
+ 
