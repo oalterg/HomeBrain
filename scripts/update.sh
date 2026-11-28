@@ -460,6 +460,11 @@ ensure_homebrain_sudo || log_warn "Could not configure passwordless sudo for ${H
 command -v smartctl >/dev/null 2>&1 || apt-get install -y -qq smartmontools 2>/dev/null \
     || log_warn "smartmontools install failed — SMART monitoring disabled until next update."
 
+# The HA MCP runs on the system python and needs a websocket client for
+# device setup (registries, flows, translations are websocket-only).
+python3 -c 'import websocket' 2>/dev/null || apt-get install -y -qq python3-websocket 2>/dev/null \
+    || log_warn "python3-websocket install failed — the agent cannot set up Home Assistant devices."
+
 # Boxes provisioned before phone pairing shipped have no qrencode, and the
 # pairing card is the whole feature.
 command -v qrencode >/dev/null 2>&1 || apt-get install -y -qq qrencode 2>/dev/null \

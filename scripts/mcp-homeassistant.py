@@ -26,8 +26,11 @@ Legacy fallback (single-account installs pre-multi-account):
 from __future__ import annotations
 
 import os
+import re
 import sys
 import json
+import time
+import unicodedata
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -199,6 +202,54 @@ def _http(account: dict, method: str, path: str, body: Any = None,
         return e.code, e.read().decode()[:300]
     except urllib.error.URLError as e:
         return 0, str(e)
+
+
+def _ws(account: dict, commands: list[dict], timeout: int = 20) -> list[dict]:
+    """Run WS commands in one authenticated session; returns each command's
+    result frame ({success, result | error}). Device/area/entity registries,
+    flow progress and translations exist only on the websocket API."""
+    import websocket  # python3-websocket; lazy so the REST tools load without it
+    base = (account.get("base_url") or "").rstrip("/")
+    scheme, _, rest = base.partition("://")
+    # websocket-client's errors are not OSErrors; make them ConnectionErrors
+    # so callers see "Home Assistant did not answer", not a traceback.
+    try:
+        ws = websocket.create_connection(
+            ("wss://" if scheme == "https" else "ws://") + rest + "/api/websocket",
+            timeout=timeout)
+    except websocket.WebSocketException as e:
+        raise ConnectionError(f"websocket: {e}") from e
+    try:
+        ws.recv()
+        ws.send(json.dumps({"type": "auth",
+                            "access_token": _decrypt(account.get("token") or "")}))
+        if json.loads(ws.recv()).get("type") != "auth_ok":
+            raise ConnectionError("Home Assistant rejected the stored credential")
+        out = []
+        for i, cmd in enumerate(commands, start=1):
+            ws.send(json.dumps({**cmd, "id": i}))
+            while True:
+                msg = json.loads(ws.recv())
+                if msg.get("id") == i and msg.get("type") == "result":
+                    out.append(msg)
+                    break
+        return out
+    except websocket.WebSocketException as e:
+        raise ConnectionError(f"websocket: {e}") from e
+    finally:
+        ws.close()
+
+
+def _ws_results(account: dict, *commands: dict) -> list:
+    """Results of several WS commands; raises RuntimeError on the first
+    refusal (non-admin token, unknown device, ...)."""
+    out = []
+    for frame in _ws(account, list(commands)):
+        if not frame.get("success"):
+            raise RuntimeError((frame.get("error") or {}).get("message")
+                               or "Home Assistant refused the command")
+        out.append(frame.get("result"))
+    return out
 
 
 def _http_bytes(account: dict, path: str,
@@ -576,9 +627,10 @@ def t_history(args: dict) -> dict:
     hours = min(int(args.get("hours", 24) or 24), 168)
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
-    path = (f"/api/history/period/{start.isoformat()}"
-            f"?filter_entity_id={eid}"
-            f"&end_time={end.isoformat()}"
+    # quote(): a bare "+00:00" in the query decodes to a space and HA 400s.
+    path = (f"/api/history/period/{quote(start.isoformat())}"
+            f"?filter_entity_id={quote(eid, safe='.,')}"
+            f"&end_time={quote(end.isoformat())}"
             f"&minimal_response&significant_changes_only")
     code, body = _http(account, "GET", path, timeout=15)
     if code != 200:
@@ -944,6 +996,532 @@ def t_automation_delete(args: dict) -> dict:
     return ok(account=redeem_account["name"], deleted=redeemed["id"])
 
 
+# ---------------------------------------------------------------------------
+# Device setup — vendor-neutral. Pairing state lives in Home Assistant (flow
+# ids, permit windows), so every call here is stateless and multi-turn chats
+# just pass the flow_id / device_id back.
+# ---------------------------------------------------------------------------
+
+_FLOW = "/api/config/config_entries/flow"
+_OPTIONS_FLOW = "/api/config/config_entries/options/flow"
+DIAGNOSTICS_MAX_CHARS = 12000
+NEW_DEVICES_MAX_WAIT = 45
+
+
+def _ws_guard(fn):
+    """HA connection failures and timeouts (websocket or REST) become an
+    `unavailable` envelope, not a traceback."""
+    def run(args: dict) -> dict:
+        try:
+            return fn(args)
+        except ImportError:
+            return unavailable("python3-websocket is not installed on this HomeBrain")
+        except (OSError, RuntimeError, ConnectionError, ValueError) as e:
+            return unavailable(f"Home Assistant did not answer: {e}")
+    return run
+
+
+def _entries(account: dict) -> dict[str, dict]:
+    (rows,) = _ws_results(account, {"type": "config_entries/get"})
+    return {e["entry_id"]: e for e in rows or []}
+
+
+def _translations(account: dict, domain: str, category: str) -> dict:
+    try:
+        (res,) = _ws_results(account, {
+            "type": "frontend/get_translations", "language": "en",
+            "category": category, "integration": [domain], "config_flow": True})
+        return (res or {}).get("resources") or {}
+    except Exception:
+        return {}
+
+
+# Edit forms prefill current values as `suggested_value`. HA's frontend sends
+# them back; HA itself does not, so an omitted field would be wiped. Keep them
+# per flow and merge them under the model's answer.
+_FLOW_PREFILL: dict[str, dict] = {}
+
+
+def _suggested(f: dict) -> Any:
+    d = f.get("description")
+    return d.get("suggested_value") if isinstance(d, dict) else None
+
+
+# Integrations rarely mark credentials as password fields, so go by name too.
+_SECRET_NAME = re.compile(r"(^|_)(pass(word|phrase|wd)?|secret|token|key|psk|pin)($|_)", re.I)
+
+
+def _field(f: dict, label: str) -> dict:
+    """One form field from HA's serialized schema, compacted for the model."""
+    name = f.get("name") or ""
+    out: dict[str, Any] = {"name": name, "required": bool(f.get("required"))}
+    if label and label != name:
+        out["label"] = label
+    sel = f.get("selector")
+    if isinstance(sel, dict) and sel:
+        kind, cfg = next(iter(sel.items()))
+        cfg = cfg or {}
+        out["type"] = kind
+        raw = cfg.get("options") if kind == "select" else None
+        secret = kind == "text" and cfg.get("type") == "password"
+    else:
+        out["type"] = f.get("type")
+        raw = f.get("options")
+        secret = False
+    secret = secret or bool(_SECRET_NAME.search(name))
+    if secret:
+        out["secret"] = True
+    # The current value (suggested) wins over the schema default, as in HA's UI.
+    val = _suggested(f)
+    if val is None:
+        val = f.get("default")
+    if val is not None:
+        # A stored credential never goes back out; an omitted field keeps it.
+        if secret and val != "":
+            out["stored"] = True
+        else:
+            out["default"] = val
+    if raw:
+        opts = []
+        for o in raw[:80]:
+            if isinstance(o, dict):
+                v, lbl = o.get("value"), o.get("label")
+            elif isinstance(o, (list, tuple)) and o:
+                v, lbl = o[0], o[-1]
+            else:
+                v, lbl = o, o
+            opts.append(v if lbl in (None, v) else {"value": v, "label": lbl})
+        out["options"] = opts
+    return out
+
+
+def _flow_view(account: dict, res: Any, domain: str, options: bool) -> dict:
+    """Shape a flow step: fields, menu choices, HA's own instruction text."""
+    if not isinstance(res, dict):
+        return err(f"unexpected flow response: {str(res)[:200]}")
+    kind = res.get("type")
+    step = res.get("step_id") or ""
+    cat = "options" if options else "config"
+    tr = _translations(account, domain, cat)
+    ph = res.get("description_placeholders") or {}
+
+    def t(key: str, default: str = "") -> str:
+        text = tr.get(f"component.{domain}.{cat}.{key}") or default
+        for k, v in ph.items():
+            text = text.replace("{" + k + "}", str(v))
+        return text
+
+    out: dict[str, Any] = {"flow_id": res.get("flow_id"), "type": kind,
+                           "domain": domain}
+    if kind in ("form", "menu"):
+        out["step"] = step
+        for k in ("title", "description"):
+            if t(f"step.{step}.{k}"):
+                out[k] = t(f"step.{step}.{k}")
+    fid = res.get("flow_id") or ""
+    _FLOW_PREFILL.pop(fid, None)
+    if kind == "form":
+        schema = res.get("data_schema") or []
+        out["fields"] = [_field(f, t(f"step.{step}.data.{f.get('name')}")) for f in schema]
+        pre = {f["name"]: v for f in schema if f.get("name") and (v := _suggested(f)) is not None}
+        if pre and fid:
+            while len(_FLOW_PREFILL) >= 32:
+                _FLOW_PREFILL.pop(next(iter(_FLOW_PREFILL)))
+            _FLOW_PREFILL[fid] = pre
+        if res.get("errors"):
+            out["errors"] = {k: t(f"error.{v}", v) for k, v in res["errors"].items()}
+        out["hint"] = ("Fill the fields. A value you lack may be in ha.diagnostics "
+                       "of a related device already in HA; ask the owner only for "
+                       "the rest. Then call again with flow_id and input={name: value}. "
+                       "Omitted fields keep their default; null clears one.")
+    elif kind == "menu":
+        opts = res.get("menu_options") or []
+        out["options"] = [{"id": o, "label": t(f"step.{step}.menu_options.{o}", o)}
+                          for o in opts]
+        out["hint"] = 'Call again with flow_id and input={"next_step_id": "<option id>"}.'
+    elif kind == "create_entry":
+        out["title"] = res.get("title")
+        if isinstance(res.get("result"), dict):
+            out["entry_id"] = res["result"].get("entry_id")
+        out["hint"] = ("Saved. ha.new_devices lists what was added; "
+                       "ha.device_update names it and sets its room.")
+    elif kind == "abort":
+        out["reason"] = t(f"abort.{res.get('reason')}", res.get("reason") or "")
+    elif kind == "external":
+        out["url"] = res.get("url")
+        out["hint"] = ("Send the owner this link to finish in a browser, then "
+                       "call again with flow_id and no input.")
+    else:
+        out["hint"] = "Home Assistant is still working; call again with flow_id and no input."
+    return ok(**out)
+
+
+@_ws_guard
+def t_integration_setup(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    domain = (args.get("domain") or "").strip()
+    entry_id = (args.get("entry_id") or "").strip()
+    flow_id = (args.get("flow_id") or "").strip()
+    user_input = args.get("input")
+    if isinstance(user_input, str):
+        try:
+            user_input = json.loads(user_input)
+        except json.JSONDecodeError:
+            return err("input must be a JSON object")
+
+    if flow_id:
+        # Config and options flows share one id space but not one URL; try
+        # the config flow first so the model never has to carry the kind.
+        method = ("DELETE" if args.get("abort")
+                  else "POST" if user_input is not None else "GET")
+        body = None
+        if method == "POST":
+            if not isinstance(user_input, dict):
+                return err("input must be a JSON object")
+            merged = {**_FLOW_PREFILL.get(flow_id, {}), **user_input}
+            body = {k: v for k, v in merged.items() if v is not None}
+        options = False
+        code, res = _http(account, method, f"{_FLOW}/{flow_id}", body, timeout=60)
+        if code == 404:
+            options = True
+            code, res = _http(account, method, f"{_OPTIONS_FLOW}/{flow_id}",
+                              body, timeout=60)
+        if code == 404:
+            return err("flow not found (finished, cancelled or HA restarted)",
+                       hint="Start again with domain or entry_id.")
+        if code not in (200, 201):
+            return err(f"HA flow step failed (code {code}): {res}")
+        if method == "DELETE":
+            audit("homeassistant", "integration_setup.abort",
+                  account=account["name"], flow_id=flow_id)
+            return ok(account=account["name"], aborted=flow_id)
+        handler = res.get("handler") if isinstance(res, dict) else ""
+        dom = (_entries(account).get(handler, {}).get("domain", handler)
+               if options else handler)
+        view = _flow_view(account, res, dom, options)
+        audit("homeassistant", "integration_setup.step", account=account["name"],
+              domain=dom, type=view.get("type"), step=view.get("step"))
+        return view
+
+    if entry_id:
+        entry = _entries(account).get(entry_id)
+        if not entry:
+            return err("entry_id not found", hint="Call ha.integration_setup with no arguments to list entries.")
+        code, res = _http(account, "POST", _OPTIONS_FLOW,
+                          {"handler": entry_id, "show_advanced_options": True}, timeout=60)
+        if code not in (200, 201):
+            return err(f"'{entry['title']}' has no Configure options (code {code}): {res}")
+        audit("homeassistant", "integration_setup.options", account=account["name"],
+              domain=entry["domain"], entry_id=entry_id)
+        return _flow_view(account, res, entry["domain"], True)
+
+    if domain:
+        try:
+            (manifest,) = _ws_results(account, {"type": "manifest/get", "integration": domain})
+        except RuntimeError:
+            return err(f"no integration called '{domain}' is installed",
+                       hint="Use the domain from the integration's HA URL, e.g. hue, shelly, localtuya.")
+        code, res = _http(account, "POST", _FLOW,
+                          {"handler": domain, "show_advanced_options": True}, timeout=60)
+        if code not in (200, 201):
+            return err(f"could not start setup for '{domain}' (code {code}): {res}")
+        view = _flow_view(account, res, domain, False)
+        iot = (manifest or {}).get("iot_class") or ""
+        if iot.startswith("cloud"):
+            view["privacy"] = (f"{manifest.get('name', domain)} is a cloud integration "
+                               f"({iot}): its data goes through the vendor's servers. "
+                               "Tell the owner before continuing.")
+        if manifest and not manifest.get("is_built_in", True):
+            view["custom_integration"] = True
+        audit("homeassistant", "integration_setup.start", account=account["name"],
+              domain=domain, iot_class=iot)
+        return view
+
+    (progress,) = _ws_results(account, {"type": "config_entries/flow/progress"})
+    discovered = [{
+        "flow_id": f.get("flow_id"), "domain": f.get("handler"),
+        "step": f.get("step_id"),
+        "source": (f.get("context") or {}).get("source"),
+        "name": ((f.get("context") or {}).get("title_placeholders") or {}).get("name"),
+    } for f in progress or []]
+    configurable = [{"entry_id": e["entry_id"], "domain": e["domain"], "title": e["title"]}
+                    for e in _entries(account).values() if e.get("supports_options")]
+    return ok(account=account["name"], discovered=discovered, configurable=configurable,
+              hint=("domain=<integration> starts a new setup; entry_id opens an "
+                    "entry's Configure menu (e.g. to add a device to a hub); "
+                    "flow_id continues a discovered one."))
+
+
+def _device_name(d: dict) -> str:
+    return d.get("name_by_user") or d.get("name") or ""
+
+
+def _device_rows(account: dict) -> tuple[list[dict], dict, list[dict]]:
+    devs, ents = _ws_results(
+        account, {"type": "config/device_registry/list"},
+        {"type": "config/entity_registry/list_for_display"})
+    return devs or [], _entries(account), (ents or {}).get("entities") or []
+
+
+def _device_view(d: dict, entries: dict, ents: list[dict]) -> dict:
+    mine = [e["ei"] for e in ents if e.get("di") == d["id"]]
+    domains = sorted({entries.get(x, {}).get("domain", "?")
+                      for x in d.get("config_entries") or []})
+    return {"device_id": d["id"], "name": _device_name(d),
+            "manufacturer": d.get("manufacturer"), "model": d.get("model"),
+            "integration": ",".join(domains), "area": d.get("area_id"),
+            "entities": mine[:20], "ready": bool(mine)}
+
+
+def _find_device(devs: list[dict], ents: list[dict], ref: str) -> dict | None:
+    """A device by its id or by any of its entity ids — the model usually
+    knows `vacuum.x`, never HA's internal device id."""
+    if "." in ref:
+        ref = next((e.get("di") for e in ents if e.get("ei") == ref), None) or ""
+    return next((d for d in devs if d["id"] == ref), None) if ref else None
+
+
+@_ws_guard
+def t_new_devices(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    minutes = min(max(int(args.get("minutes") or 60), 1), 7 * 24 * 60)
+    wait_s = min(max(int(args.get("wait_s") or 0), 0), NEW_DEVICES_MAX_WAIT)
+    started = time.time()
+    while True:
+        devs, entries, ents = _device_rows(account)
+        devs = [d for d in devs if d.get("entry_type") != "service"]
+        recent = [d for d in devs if (d.get("created_at") or 0) >= started - minutes * 60]
+        if not wait_s or any((d.get("created_at") or 0) >= started for d in recent) \
+                or time.time() - started >= wait_s:
+            break
+        time.sleep(3)
+    recent.sort(key=lambda d: d.get("created_at") or 0, reverse=True)
+    out = [_device_view(d, entries, ents) for d in recent[:20]]
+    hint = ("Ask the owner what to call each device and which room it is in, "
+            "then ha.device_update.")
+    if any(not d["ready"] for d in out):
+        hint += (" A device with no entities is still being set up; battery "
+                 "devices need a button press every few seconds until ready.")
+    return ok(account=account["name"], minutes=minutes, devices=out,
+              total=len(out), hint=hint)
+
+
+ZIGBEE_JOIN_MAX_S = 254  # ZHA's permit ceiling
+
+
+@_ws_guard
+def t_zigbee_join(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    seconds = min(max(int(args.get("seconds") or 120), 10), ZIGBEE_JOIN_MAX_S)
+    body: dict[str, Any] = {"duration": seconds}
+    via = (args.get("via") or "").strip()
+    if via:
+        # ZHA waits for the router's reply, so an offline one hangs the call
+        # for over a minute — check first.
+        devs, _, ents = _device_rows(account)
+        via_id = (_find_device(devs, ents, via) or {}).get("id")
+        (zdevs,) = _ws_results(account, {"type": "zha/devices"})
+        dev = next((d for d in zdevs or [] if via_id and d.get("device_reg_id") == via_id), None)
+        if not dev or dev.get("device_type") not in ("Router", "Coordinator"):
+            return err("via must be the device_id of a mains-powered Zigbee device")
+        if not dev.get("available"):
+            return err(f"{dev.get('user_given_name') or dev.get('name')} is offline "
+                       f"(last seen {dev.get('last_seen')}); pick another or omit via")
+        body["ieee"] = dev["ieee"]
+    # Through a router HA waits for that device's reply, which can take ~20 s.
+    code, resp = _http(account, "POST", "/api/services/zha/permit", body, timeout=60)
+    if code == 400 and "not found" in str(resp).lower():
+        return err("Zigbee (ZHA) is not set up on this Home Assistant",
+                   hint="ha.integration_setup domain=zha sets it up on the USB stick.")
+    if code not in (200, 201):
+        return err(f"HA refused to open joining (code {code}): {resp}")
+    audit("homeassistant", "zigbee_join.ok", account=account["name"],
+          seconds=seconds, via=via or None)
+    until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return ok(account=account["name"], seconds=seconds,
+              open_until=until.isoformat(timespec="seconds"),
+              hint=("Tell the owner to put the device in pairing mode now (its "
+                    "manual's reset), then call ha.new_devices with wait_s=45."))
+
+
+def _slug(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return "_".join(p for p in re.split(r"[^a-z0-9]+", text.lower()) if p)
+
+
+@_ws_guard
+def t_device_update(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    did = (args.get("device_id") or "").strip()
+    name = (args.get("name") or "").strip()
+    area = (args.get("area") or "").strip()
+    wanted = args.get("entity_ids") or {}
+    if isinstance(wanted, str):
+        try:
+            wanted = json.loads(wanted)
+        except json.JSONDecodeError:
+            wanted = None
+    if not isinstance(wanted, dict):
+        return err("entity_ids must be an object {old_entity_id: new_entity_id}")
+    if not did or not (name or area or wanted):
+        return err("device_id and at least one of name / area / entity_ids are required")
+    devs, entries, ents = _device_rows(account)
+    dev = _find_device(devs, ents, did)
+    if not dev:
+        return err("device not found", hint="Pass a device_id or one of its entity ids.")
+    did = dev["id"]
+    mine = [e["ei"] for e in ents if e.get("di") == did]
+
+    # Validate every rename before touching anything.
+    plan: dict[str, str] = {}
+    if name and args.get("rename_entities"):
+        old, new = _slug(_device_name(dev)), _slug(name)
+        for ei in mine:
+            dom, obj = ei.split(".", 1)
+            if old and new and old != new and (obj == old or obj.startswith(old + "_")):
+                plan[ei] = f"{dom}.{new}{obj[len(old):]}"
+    for src, dst in wanted.items():
+        src, dst = str(src).strip(), str(dst).strip()
+        if src not in mine:
+            return err(f"{src} is not an entity of this device", hint="Its entities: " + ", ".join(mine))
+        dom = src.split(".", 1)[0]
+        dst = dst if "." in dst else f"{dom}.{dst}"
+        if not re.fullmatch(rf"{re.escape(dom)}\.[a-z0-9_]+", dst):
+            return err(f"{dst}: keep the '{dom}.' domain and use only a-z, 0-9 and _")
+        plan[src] = dst
+
+    upd: dict[str, Any] = {"type": "config/device_registry/update", "device_id": did}
+    if name:
+        upd["name_by_user"] = name
+    if area:
+        (areas,) = _ws_results(account, {"type": "config/area_registry/list"})
+        hit = next((a for a in areas or []
+                    if area.casefold() in (a["area_id"].casefold(), a["name"].casefold())),
+                   None)
+        if not hit:
+            (hit,) = _ws_results(account, {"type": "config/area_registry/create", "name": area})
+        upd["area_id"] = hit["area_id"]
+    updated = _ws_results(account, upd)[0] if (name or area) else None
+    renamed, failed = {}, []
+    for src, dst in plan.items():
+        if src == dst:
+            continue
+        try:
+            _ws_results(account, {"type": "config/entity_registry/update",
+                                  "entity_id": src, "new_entity_id": dst})
+            renamed[src] = dst
+        except RuntimeError as x:
+            failed.append(f"{src} ({x})")
+    kept = failed + ([e for e in mine if e not in plan]
+                     if plan or args.get("rename_entities") else [])
+    audit("homeassistant", "device_update.ok", account=account["name"],
+          device_id=did, name=name or None, area=upd.get("area_id"),
+          renamed=renamed or None)
+    view = _device_view(updated if isinstance(updated, dict) and updated.get("id")
+                        else {**dev, **upd}, entries, ents)
+    view["entities"] = [renamed.get(x, x) for x in view["entities"]]
+    return ok(account=account["name"], device=view,
+              renamed=renamed or None, unchanged=kept or None)
+
+
+@_ws_guard
+def t_device_remove(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    did = (args.get("device_id") or "").strip()
+    if not did:
+        return err("device_id is required")
+    whole = bool(args.get("remove_integration"))
+    devs, entries, ents = _device_rows(account)
+    dev = _find_device(devs, ents, did)
+    if not dev:
+        return err("device not found", hint="Pass a device_id or one of its entity ids.")
+    did = dev["id"]
+    eid = dev.get("primary_config_entry") or (dev.get("config_entries") or [""])[0]
+    entry = entries.get(eid) or {}
+    siblings = sum(1 for d in devs if eid in (d.get("config_entries") or []))
+    label = f"{_device_name(dev)} ({entry.get('domain', '?')})"
+    summary = (f"Home Assistant ({account['name']}): delete integration entry "
+               f"'{entry.get('title')}' ({entry.get('domain')}) and its {siblings} device(s)"
+               if whole else f"Home Assistant ({account['name']}): remove device {label}")
+    confirm = args.get("confirmation_token")
+    chat_id = args.get("_chat_id")
+    if not confirm:
+        payload = {"account": account["name"], "device_id": did,
+                   "entry_id": eid, "whole": whole}
+        return consent_required(Consent.issue("homeassistant", summary, payload, chat_id),
+                                summary)
+    redeemed = Consent.verify(confirm, "homeassistant", chat_id)
+    if not redeemed:
+        return err("confirmation_token invalid or expired")
+    if redeemed["whole"]:
+        code, resp = _http(account, "DELETE",
+                           f"/api/config/config_entries/entry/{redeemed['entry_id']}",
+                           timeout=60)
+        if code not in (200, 201):
+            return err(f"HA could not delete the entry (code {code}): {resp}")
+    else:
+        try:
+            _ws_results(account, {"type": "config/device_registry/remove_config_entry",
+                                  "device_id": redeemed["device_id"],
+                                  "config_entry_id": redeemed["entry_id"]})
+        except RuntimeError as x:
+            return err(f"{entry.get('domain')} refused to remove the device: {x}",
+                       hint=(f"remove_integration=true deletes the whole "
+                             f"'{entry.get('title')}' entry ({siblings} device(s))."))
+    audit("homeassistant", "device_remove.ok", account=account["name"],
+          device_id=redeemed["device_id"], entry_id=redeemed["entry_id"],
+          whole=redeemed["whole"])
+    return ok(account=account["name"], removed=label,
+              integration_removed=entry.get("title") if redeemed["whole"] else None)
+
+
+@_ws_guard
+def t_diagnostics(args: dict) -> dict:
+    account, ebody = _account_or_err(args)
+    if ebody is not None:
+        return ebody
+    did = (args.get("device_id") or "").strip()
+    if not did:
+        return err("device_id is required")
+    devs, entries, ents = _device_rows(account)
+    dev = _find_device(devs, ents, did)
+    if not dev:
+        return err("device not found", hint="Pass a device_id or one of its entity ids.")
+    did = dev["id"]
+    eid = dev.get("primary_config_entry") or (dev.get("config_entries") or [""])[0]
+    code, body = _http(account, "GET",
+                       f"/api/diagnostics/config_entry/{eid}/device/{did}", timeout=30)
+    if code != 200 or not isinstance(body, dict):
+        return err(f"{entries.get(eid, {}).get('domain', 'this integration')} "
+                   f"offers no device diagnostics (code {code})")
+    data: Any = body.get("data")
+    path = (args.get("path") or "").strip()
+    for key in [p for p in path.split(".") if p]:
+        if isinstance(data, dict) and key in data:
+            data = data[key]
+        elif isinstance(data, list) and key.isdigit() and int(key) < len(data):
+            data = data[int(key)]
+        else:
+            return err(f"no '{key}' under '{path}'")
+    if len(json.dumps(data, default=str)) > DIAGNOSTICS_MAX_CHARS:
+        if not isinstance(data, dict):
+            return err("too large to return; narrow it with a longer path")
+        return ok(account=account["name"], path=path or None,
+                  keys={k: len(json.dumps(v, default=str)) for k, v in data.items()},
+                  hint="Too large to return whole; call again with path=<key> (chars per key shown).")
+    return ok(account=account["name"], path=path or None, diagnostics=data)
+
+
 _ACCOUNT_PROP = {
     "type": "string",
     "description": "HA account name. Required if several are configured.",
@@ -1102,6 +1680,80 @@ TOOLS = [
          },
          "required": ["id"],
      }},
+    {"name": "ha.integration_setup",
+     "description": (
+         "Set up a device/service in HA step by step. No args: discovered + "
+         "configurable. domain: new setup; entry_id: Configure menu; "
+         "flow_id+input: answer step; abort."
+     ),
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "domain": {"type": "string", "description": "Integration, e.g. hue"},
+             "entry_id": {"type": "string"},
+             "flow_id": {"type": "string"},
+             "input": {"type": "object", "description": "Step answers {field: value}"},
+             "abort": {"type": "boolean"},
+         },
+     }},
+    {"name": "ha.zigbee_join",
+     "description": "Open the Zigbee network for new devices. seconds max 254; via = device_id of a powered device near the new one.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "seconds": {"type": "integer", "description": "Default 120"},
+             "via": {"type": "string", "description": "Device or entity id"},
+         },
+     }},
+    {"name": "ha.new_devices",
+     "description": "Devices recently added to HA, with entities. wait_s (max 45) waits for a new one.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "minutes": {"type": "integer", "description": "Lookback (default 60)"},
+             "wait_s": {"type": "integer"},
+         },
+     }},
+    {"name": "ha.device_update",
+     "description": "Rename a device, set its room (created if missing). rename_entities: entity ids follow the name; entity_ids={old: new} sets exact ones.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "device_id": {"type": "string", "description": "Device id or one of its entity ids"},
+             "name": {"type": "string"},
+             "area": {"type": "string", "description": "Room name"},
+             "rename_entities": {"type": "boolean"},
+             "entity_ids": {"type": "object", "description": "{old_entity_id: new_entity_id}"},
+         },
+         "required": ["device_id"],
+     }},
+    {"name": "ha.device_remove",
+     "description": "Remove a device. remove_integration=true deletes its whole integration entry. Replacing it? Read ha.diagnostics first: that data is gone after.",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "device_id": {"type": "string", "description": "Device id or one of its entity ids"},
+             "remove_integration": {"type": "boolean"},
+             "confirmation_token": {"type": "string"},
+         },
+         "required": ["device_id"],
+     }},
+    {"name": "ha.diagnostics",
+     "description": "A device's raw integration data (ids, data points, value ranges). path drills in: a.b",
+     "inputSchema": {
+         "type": "object",
+         "properties": {
+             "account": _ACCOUNT_PROP,
+             "device_id": {"type": "string", "description": "Device id or one of its entity ids"},
+             "path": {"type": "string"},
+         },
+         "required": ["device_id"],
+     }},
 ]
 
 DISPATCH = {
@@ -1121,6 +1773,12 @@ DISPATCH = {
     "ha.automation_get": t_automation_get,
     "ha.automation_upsert": t_automation_upsert,
     "ha.automation_delete": t_automation_delete,
+    "ha.integration_setup": t_integration_setup,
+    "ha.zigbee_join": t_zigbee_join,
+    "ha.new_devices": t_new_devices,
+    "ha.device_update": t_device_update,
+    "ha.device_remove": t_device_remove,
+    "ha.diagnostics": t_diagnostics,
 }
 
 
@@ -1132,4 +1790,4 @@ def dispatch(name: str, args: dict) -> dict:
 
 
 if __name__ == "__main__":
-    serve("homebrain-homeassistant", "0.6.0", TOOLS, dispatch)
+    serve("homebrain-homeassistant", "0.7.0", TOOLS, dispatch)

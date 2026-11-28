@@ -1440,7 +1440,7 @@ install_deps_enable_docker() {
     # Observed on the RPi4 test box (lists from March, glib2.0 404s, rc=100).
     apt-get update -qq
     # qrencode draws the phone-pairing code for Nextcloud's mobile apps.
-    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode avahi-daemon avahi-utils libnss-mdns"
+    local common_pkgs="ca-certificates gnupg lsb-release cron gpg rsync python3-flask python3-dotenv python3-requests python3-websocket python3-pip python3-venv jq moreutils pwgen git parted argon2 smartmontools unattended-upgrades qrencode avahi-daemon avahi-utils libnss-mdns"
     apt-get install -y -qq $common_pkgs
     install_needrestart_guard || true
 
