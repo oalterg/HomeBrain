@@ -262,6 +262,14 @@ default Vault bootstrap.
 - [ ] `connTest('homeassistant')` lists 5 tools.
 - [ ] `ha.call_service` with `homeassistant.restart` returns the allowlist
       denial without any HTTP call to HA.
+- [ ] Device setup: `sudo -u homebrain python3 scripts/e2e/ha_device_setup.py
+      <entity of a device> --write --zigbee` prints `PASS` (without flags it
+      changes nothing).
+- [ ] From Telegram, "pair a new Zigbee device": the agent opens joining,
+      you reset the device, the agent names the new device and asks for its
+      name and room, and HA shows both.
+- [ ] Moving a device to another integration keeps its entity ids
+      (`ha.device_update entity_ids`), so its automations still match.
 
 ### Nextcloud
 
