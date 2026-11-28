@@ -2500,3 +2500,111 @@ largest share, 16.5%, at about half of the card's 456 GB/s. The q8_0 output
 projection runs at 424 GB/s and has no headroom. After 0025 the decode
 attention kernel reaches 160 GB/s at 65,536 keys, so long-context decode
 still has room there.
+
+## 2026-11-28 — Arc Pro B60: Inkling in production
+
+v2026.11.27 ships the master pin (`98cc730cc` + 0002–0025) to the SYCL
+boxes. .69 serves the OpenClaw agent on it, on beta main from 2026-11-27
+20:17 UTC and on stable v2026.11.27 from 2026-11-28 12:06. Both are the
+same build, `+pec1dd53b7cd6`.
+
+### The shipped build holds window 34's numbers
+
+Window 38 (2026-11-28) served the same source on a test port with
+production's flags: ctx 196608, q8_0 KV, `-ub 512` and the vision projector
+loaded. It ran two server starts, each with the probes of the previous
+section after a discarded warm-up request:
+
+| server start | prefill 847 tokens | prefill 5,904 tokens | decode short | decode greedy | decode after 5,904 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 836 / 838 t/s | 971.3 t/s | 46.87 / 44.11 t/s | 46.52 t/s | 44.52 t/s |
+| 2 | 825 / 840 t/s | 971.5 t/s | 47.17 / 47.26 t/s | 47.60 t/s | 44.56 t/s |
+
+Window 34 measured, text-only, decode of 47.3 t/s short, 47.6 t/s greedy
+and 44.6 t/s after 5,904 tokens, with prefill at 971 t/s. The second start
+matches all four within 0.3%, with the projector loaded. On the first start,
+one short probe decoded at 44.1 t/s.
+
+### Real traffic
+
+The production journal from the deploy to 2026-11-28 11:51 UTC holds 182
+agent requests, with contexts up to 141,680 tokens. Decode speed, by context
+depth at the end of each request with at least 32 generated tokens:
+
+| context | requests | decode, median | range |
+|---|---:|---:|---:|
+| under 20K | 3 | 43.1 t/s | 42.2–47.6 t/s |
+| 20–35K | 16 | 39.2 t/s | 18.8–39.8 t/s |
+| 35–50K | 33 | 38.4 t/s | 25.7–39.0 t/s |
+| 50–80K | 60 | 34.8 t/s | 32.0–36.8 t/s |
+| 80–142K | 63 | 30.8 t/s | 27.5–33.2 t/s |
+
+170 of the 182 requests continued a cached conversation. They prefilled a
+median of 250 new tokens in 0.83 s.
+
+The other 12 processed the whole prompt again: 11,000–55,426 tokens at
+720–924 t/s, taking 11.9–77.0 s each. That was 9.2 of the 45.7 GPU-busy
+minutes (20%).
+- **Four were the first request after a server start:** the deploy, two
+  power-ons and a test window. The first after the deploy ran at 566 t/s,
+  because the new binary compiled its kernels.
+- **The other eight came mid-session.**
+
+### The prompt cache
+
+Inkling's sliding-window layers keep only the last 1,024 positions, so
+llama-server can't cut its cache back to an arbitrary shared prefix. It
+resumes from context checkpoints instead, which it saves near the end of a
+prompt (88.7 MiB each at 25K tokens). Window 38 replayed a session with
+production's flags and a 25,296-token prompt (a 100,000-character system
+prompt):
+
+| step | tokens processed | tokens reused | prefill |
+|---|---:|---:|---:|
+| cold | 25,296 | 0 | 29.7 s |
+| next turn | 16 | 25,292 | 0.3 s |
+| a request from another session | 19 | 0 | 0.2 s |
+| next turn after it | 15 | 25,304 | 0.3 s |
+| system prompt edited halfway | 25,334 | 0 | 29.2 s |
+| next turn | 16 | 25,330 | 0.3 s |
+| system prompt edited at 98% | 25,363 | 0 | 29.1 s |
+| first user message edited | 75 | 25,291 | 0.4 s |
+
+- **One slot survives requests from other sessions.** The server saves the
+  conversation, 952.6 MiB with its checkpoints, to the RAM prompt cache
+  (`--cache-ram`, 8 GiB by default) and restores it on the next turn.
+- **`--parallel 2 --kv-unified` gave the same reuse**, for 80 MiB more VRAM
+  and 4% slower prefill (31.0 against 29.7 s cold). The catalog keeps one
+  slot.
+- **Any change inside the system prompt re-processes the whole prompt, even
+  at 98% of its length.** No checkpoint sits before the end of the first
+  message. The journal doesn't record why the eight mid-session re-prefills
+  above started cold: a change in the agent's fixed prompt, a new session, or
+  a cache entry that was dropped.
+
+### The pin stays at `98cc730cc`
+
+Upstream #28898 (`a38695013`, 2026-11-27) moves the NVFP4 and FP8 weight
+scales into `MUL_MAT` and `MUL_MAT_ID`. Before, they were a separate `MUL`.
+SYCL reports these scaled ops as unsupported, so llama.cpp runs them on the
+CPU and keeps their weights in host memory. On plain upstream, before
+(`e087c6c4e`) and after (`8e23278c7`), with Inkling, q8_0 KV and
+`llama-bench -p 512 -n 128 -r 3` run twice each (window 40):
+
+| | `e087c6c4e` | `8e23278c7` |
+|---|---:|---:|
+| pp512 | 116.1 / 112.2 t/s | 29.1 / 28.4 t/s |
+| tg128 | 16.5 / 16.6 t/s | 10.4 / 10.4 t/s |
+| weights in the SYCL0 buffer (window 39) | 16,332 MiB | 5,397 MiB |
+
+- **`test-backend-ops support` shows the same thing without a model:** SYCL
+  declines all 76 NVFP4 `MUL_MAT_ID` cases after the change, against 1 of 74
+  before.
+- **Vulkan has the same `supports_op` check,** and upstream issue #33246
+  reports the slowdown there.
+- **What a bump needs:** a pin past `a38695013` needs SYCL support for
+  these scales first. That support would take over 0024's job.
+- **#33186 waits for the next bump.** Upstream PR #33186 on the pin
+  decodes at 47.34–47.37 t/s short, with the same prefill. It changes the
+  model's numerics (the greedy probe stops at 349 tokens instead of running
+  to 400), so it isn't applied separately and arrives with the next bump.
